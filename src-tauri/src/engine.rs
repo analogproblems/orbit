@@ -334,6 +334,7 @@ impl Engine {
             })
             .await;
             *self.synced_repos.lock().await = synced;
+            self.clean_worktrees().await;
             Ok::<(), String>(())
         }
         .await;
@@ -445,6 +446,7 @@ impl Engine {
             tokio::spawn(async move {
                 if let Err(err) = e.prepare(&id).await {
                     e.fail(&id, err).await;
+                    e.discard_worktree(&id).await;
                 }
             });
         }
@@ -464,6 +466,62 @@ impl Engine {
             }
         })
         .await;
+    }
+    /// Removes the worktree of a review whose preparation failed or was stopped.
+    /// Its Codex thread, if any, never reviewed anything, so it is dropped too.
+    async fn discard_worktree(&self, id: &str) {
+        let path = self.root.join("worktrees").join(id);
+        let removed = {
+            let _git = self.git_lock.lock().await;
+            remove_worktree(&path).await
+        };
+        self.update(|s| {
+            if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
+                if removed.is_ok() {
+                    r.worktree = None;
+                    r.thread_id = None;
+                }
+            }
+        })
+        .await;
+    }
+    /// Removes worktrees of finished reviews whose PR is no longer open in a
+    /// connected repository. Their chats stay readable; follow-ups are refused.
+    async fn clean_worktrees(&self) {
+        let stale: Vec<(String, String)> = {
+            let s = self.state.lock().await;
+            s.reviews
+                .iter()
+                .filter(|r| !active(&r.status) && r.status != "publishing")
+                .filter(|r| !s.prs.iter().any(|p| p.id == r.pr_id))
+                .filter_map(|r| Some((r.id.clone(), r.worktree.clone()?)))
+                .collect()
+        };
+        for (id, path) in stale {
+            let removed = {
+                let _git = self.git_lock.lock().await;
+                remove_worktree(Path::new(&path)).await
+            };
+            self.update(|s| {
+                let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) else {
+                    return;
+                };
+                match &removed {
+                    Ok(()) => {
+                        r.worktree = None;
+                        r.messages.push(Message::new(
+                            "system",
+                            "Removed this review's worktree because its pull request is no longer open.",
+                        ));
+                    }
+                    Err(e) => r.messages.push(Message::new(
+                        "system",
+                        format!("Could not remove this review's worktree at {path}: {e}"),
+                    )),
+                }
+            })
+            .await;
+        }
     }
     async fn live(&self, id: &str) -> Result<(), String> {
         if self
@@ -516,33 +574,42 @@ impl Engine {
             }
             self.live(id).await?;
             let reference = format!("refs/orbit/{id}");
-            git(
-                &cwd,
-                &[
-                    "fetch",
-                    "--no-tags",
-                    "origin",
-                    &format!("+refs/pull/{}/head:{reference}", pr.number),
-                    &r.base_sha,
-                ],
-            )
-            .await?;
-            let head = git(&cwd, &["rev-parse", &reference]).await?;
-            if head.trim() != r.head_sha {
-                return Err("The PR changed while preparing. Sync and start a new review.".into());
+            let added = async {
+                git(
+                    &cwd,
+                    &[
+                        "fetch",
+                        "--no-tags",
+                        "origin",
+                        &format!("+refs/pull/{}/head:{reference}", pr.number),
+                        &r.base_sha,
+                    ],
+                )
+                .await?;
+                let head = git(&cwd, &["rev-parse", &reference]).await?;
+                if head.trim() != r.head_sha {
+                    return Err(
+                        "The PR changed while preparing. Sync and start a new review.".into(),
+                    );
+                }
+                self.live(id).await?;
+                git(
+                    &cwd,
+                    &[
+                        "worktree",
+                        "add",
+                        "--detach",
+                        worktree.to_str().ok_or("Invalid workspace path")?,
+                        &r.head_sha,
+                    ],
+                )
+                .await
             }
-            self.live(id).await?;
-            git(
-                &cwd,
-                &[
-                    "worktree",
-                    "add",
-                    "--detach",
-                    worktree.to_str().ok_or("Invalid workspace path")?,
-                    &r.head_sha,
-                ],
-            )
-            .await?;
+            .await;
+            // The worktree's HEAD keeps the commit reachable, so no ref is kept in
+            // the user's clone. This also clears refs left by earlier versions.
+            prune_orbit_refs(&cwd).await;
+            added?;
         }
         self.update(|s| {
             if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
@@ -818,6 +885,9 @@ impl Engine {
             }
             if r.thread_id.is_none() {
                 return Err("Start a review first to create its Codex chat.".into());
+            }
+            if !r.worktree.as_deref().is_some_and(|w| Path::new(w).is_dir()) {
+                return Err("This review's worktree was removed after its pull request closed. Start a new review to continue.".into());
             }
             let old = r.clone();
             r.before_follow_up = Some(Outcome {
@@ -1103,6 +1173,40 @@ fn reuse_stats(pr: &mut PullRequest, previous: &[PullRequest]) -> bool {
     pr.changed_files = known.changed_files;
     true
 }
+/// Removes a review worktree and its registration in the source clone.
+async fn remove_worktree(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let location = path.to_str().ok_or("Invalid workspace path")?;
+    let common = git(path, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await;
+    if let Ok(common) = common {
+        let common = common.trim();
+        // Run against the source clone: Git will not remove the worktree it runs in.
+        let removed = git(
+            Path::new(common),
+            &["--git-dir", common, "worktree", "remove", "--force", location],
+        )
+        .await;
+        if removed.is_ok() {
+            return Ok(());
+        }
+        std::fs::remove_dir_all(path).map_err(|e| e.to_string())?;
+        let _ = git(Path::new(common), &["--git-dir", common, "worktree", "prune"]).await;
+        return Ok(());
+    }
+    // The source clone is gone or broken; its registration is pruned by Git later.
+    std::fs::remove_dir_all(path).map_err(|e| e.to_string())
+}
+/// Deletes Orbit's temporary PR refs from a clone.
+async fn prune_orbit_refs(cwd: &Path) {
+    let Ok(refs) = git(cwd, &["for-each-ref", "--format=%(refname)", "refs/orbit/"]).await else {
+        return;
+    };
+    for reference in refs.lines().filter(|r| !r.is_empty()) {
+        let _ = git(cwd, &["update-ref", "-d", reference]).await;
+    }
+}
 async fn git(cwd: &Path, args: &[&str]) -> Result<String, String> {
     let mut full = vec![
         "-c".to_string(),
@@ -1336,10 +1440,11 @@ mod tests {
     }
     #[tokio::test]
     async fn failed_follow_up_keeps_the_report_publishable() {
-        let (_d, e, id) = running_engine().await;
+        let (d, e, id) = running_engine().await;
         e.update(|s| {
             s.reviews[0].status = "ready".into();
             s.reviews[0].report = "Finding".into();
+            s.reviews[0].worktree = Some(d.path().to_string_lossy().into());
         })
         .await;
         // Codex is not connected, so the follow-up fails as soon as it starts.
@@ -1391,6 +1496,70 @@ mod tests {
         let r = restored.snapshot().await.reviews[0].clone();
         assert_eq!(r.status, "ready");
         assert!(r.error.unwrap().contains("restarted during the follow-up"));
+    }
+    async fn git_repo() -> (tempfile::TempDir, PathBuf) {
+        let d = tempfile::tempdir().unwrap();
+        let repo = d.path().join("clone");
+        std::fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-q"]).await.unwrap();
+        let identity = [
+            "-c",
+            "user.name=Orbit",
+            "-c",
+            "user.email=orbit@example.com",
+            "-c",
+            "commit.gpgsign=false",
+        ];
+        let commit = ["commit", "-q", "--allow-empty", "-m", "init"];
+        git(&repo, &[&identity[..], &commit[..]].concat()).await.unwrap();
+        (d, repo)
+    }
+    async fn worktree_count(repo: &Path) -> usize {
+        git(repo, &["worktree", "list", "--porcelain"])
+            .await
+            .unwrap()
+            .lines()
+            .filter(|l| l.starts_with("worktree "))
+            .count()
+    }
+    #[tokio::test]
+    async fn removes_worktrees_and_orbit_refs_from_the_clone() {
+        let (d, repo) = git_repo().await;
+        let worktree = d.path().join("review");
+        let location = worktree.to_str().unwrap();
+        git(&repo, &["worktree", "add", "--detach", location, "HEAD"]).await.unwrap();
+        git(&repo, &["update-ref", "refs/orbit/old-run", "HEAD"]).await.unwrap();
+        prune_orbit_refs(&repo).await;
+        assert_eq!(git(&repo, &["for-each-ref", "refs/orbit/"]).await.unwrap(), "");
+        assert_eq!(worktree_count(&repo).await, 2);
+        remove_worktree(&worktree).await.unwrap();
+        assert!(!worktree.exists());
+        assert_eq!(worktree_count(&repo).await, 1);
+        // Already gone is fine.
+        remove_worktree(&worktree).await.unwrap();
+    }
+    #[tokio::test]
+    async fn removes_worktrees_of_reviews_whose_pr_is_no_longer_open() {
+        let (d, repo) = git_repo().await;
+        let (_state, e, id) = running_engine().await;
+        let worktree = d.path().join("review");
+        let location = worktree.to_str().unwrap();
+        git(&repo, &["worktree", "add", "--detach", location, "HEAD"]).await.unwrap();
+        e.update(|s| {
+            s.reviews[0].status = "ready".into();
+            s.reviews[0].worktree = Some(location.into());
+        })
+        .await;
+        e.clean_worktrees().await;
+        assert!(worktree.exists(), "open PRs keep their worktrees");
+        e.update(|s| s.prs.clear()).await;
+        e.clean_worktrees().await;
+        let r = e.snapshot().await.reviews[0].clone();
+        assert!(r.worktree.is_none());
+        assert!(!worktree.exists());
+        assert_eq!(worktree_count(&repo).await, 1);
+        let error = e.message(&id, "One more question").await.unwrap_err();
+        assert!(error.contains("worktree was removed"), "{error}");
     }
     #[test]
     fn reuses_size_statistics_only_for_unchanged_prs() {
