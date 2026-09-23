@@ -1,7 +1,7 @@
 use crate::{github, rpc::Rpc, types::*};
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -23,7 +23,8 @@ pub struct Engine {
     items: Mutex<HashMap<String, Value>>,
     dirty: AtomicBool,
     stopping: AtomicBool,
-    synced_this_session: AtomicBool,
+    /// Repositories whose open PRs synced in the latest poll; autopilot only acts on these.
+    synced_repos: Mutex<HashSet<String>>,
     _instance_lock: std::fs::File,
 }
 impl Engine {
@@ -79,7 +80,7 @@ impl Engine {
             items: Mutex::new(HashMap::new()),
             dirty: AtomicBool::new(true),
             stopping: AtomicBool::new(false),
-            synced_this_session: AtomicBool::new(false),
+            synced_repos: Mutex::new(HashSet::new()),
             _instance_lock: instance_lock,
         }))
     }
@@ -267,20 +268,31 @@ impl Engine {
         let _ = self.flush().await;
         let result = async {
             let login = github::user().await?;
-            let scope = self.state.lock().await.settings.scope.clone();
-            let found = github::discover(&login, &scope).await?;
+            let (repos, previous) = {
+                let s = self.state.lock().await;
+                let repos: Vec<String> = s
+                    .settings
+                    .repositories
+                    .iter()
+                    .map(|r| r.name.clone())
+                    .collect();
+                (repos, s.prs.clone())
+            };
             let mut prs = vec![];
-            // Sequential requests respect GitHub secondary rate limits. Nothing is replaced on partial failure.
-            for (repo, number) in found {
-                match github::pull(&repo, number, &login).await {
-                    Ok(mut p) => {
-                        if scope == "reviewRequested" {
-                            p.review_requested = true
-                        }
-                        prs.push(p)
+            let mut synced = HashSet::new();
+            let mut failed = vec![];
+            // Sequential requests respect GitHub secondary rate limits.
+            for repo in &repos {
+                match sync_repo(repo, &login, &previous).await {
+                    Ok(found) => {
+                        prs.extend(found);
+                        synced.insert(repo.clone());
                     }
-                    Err(e) if e == "This pull request is no longer open." => continue,
-                    Err(e) => return Err(e),
+                    Err(e) => {
+                        // Keep what is known about this repository until it syncs again.
+                        prs.extend(previous.iter().filter(|p| &p.repo == repo).cloned());
+                        failed.push(format!("{repo}: {e}"));
+                    }
                 }
             }
             self.update(|s| {
@@ -294,11 +306,12 @@ impl Engine {
                     .retain(|p| !prs.iter().any(|current| current.id == p.id));
                 s.prs = prs;
                 s.github_user = Some(login);
-                s.github_error = None;
+                s.github_error = (!failed.is_empty())
+                    .then(|| format!("Could not sync {}", failed.join("; ")));
                 s.last_poll = Some(now());
             })
             .await;
-            self.synced_this_session.store(true, Ordering::SeqCst);
+            *self.synced_repos.lock().await = synced;
             Ok::<(), String>(())
         }
         .await;
@@ -352,14 +365,21 @@ impl Engine {
         Ok(id)
     }
     async fn schedule(self: &Arc<Self>) {
-        let s = self.snapshot().await;
-        if s.settings.automatic
-            && s.github_error.is_none()
-            && self.synced_this_session.load(Ordering::SeqCst)
-        {
-            for p in s.prs.iter().filter(|p| eligible(p, &s)) {
-                let _ = self.enqueue(&p.id, true).await;
+        let candidates: Vec<String> = {
+            let s = self.state.lock().await;
+            let synced = self.synced_repos.lock().await;
+            if s.settings.automatic {
+                s.prs
+                    .iter()
+                    .filter(|p| synced.contains(&p.repo) && eligible(p, &s))
+                    .map(|p| p.id.clone())
+                    .collect()
+            } else {
+                vec![]
             }
+        };
+        for id in candidates {
+            let _ = self.enqueue(&id, true).await;
         }
         loop {
             let next = {
@@ -1007,6 +1027,38 @@ impl Drop for Engine {
         let _ = self._instance_lock.unlock();
     }
 }
+/// Open PRs in one repository. Size statistics only come from the per-PR
+/// endpoint, so a PR is fetched individually only when it is new or changed.
+async fn sync_repo(
+    repo: &str,
+    login: &str,
+    previous: &[PullRequest],
+) -> Result<Vec<PullRequest>, String> {
+    let mut found = vec![];
+    for mut pr in github::open_pulls(repo, login).await? {
+        if !reuse_stats(&mut pr, previous) {
+            match github::pull(repo, pr.number, login).await {
+                Ok(detail) => pr = detail,
+                Err(e) if e == github::CLOSED => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        found.push(pr);
+    }
+    Ok(found)
+}
+fn reuse_stats(pr: &mut PullRequest, previous: &[PullRequest]) -> bool {
+    let Some(known) = previous
+        .iter()
+        .find(|p| p.id == pr.id && p.updated_at == pr.updated_at && p.head_sha == pr.head_sha)
+    else {
+        return false;
+    };
+    pr.additions = known.additions;
+    pr.deletions = known.deletions;
+    pr.changed_files = known.changed_files;
+    true
+}
 async fn git(cwd: &Path, args: &[&str]) -> Result<String, String> {
     let mut full = vec![
         "-c".to_string(),
@@ -1192,6 +1244,67 @@ mod tests {
         drop(e);
         let restored = Engine::new(d.path().into(), |_| {}).unwrap();
         assert_eq!(restored.snapshot().await.reviews[0].status, "cancelled");
+    }
+    #[test]
+    fn reuses_size_statistics_only_for_unchanged_prs() {
+        let mut known = crate::types::tests::pr();
+        known.additions = 12;
+        known.changed_files = 3;
+        let mut listed = known.clone();
+        listed.additions = 0;
+        listed.changed_files = 0;
+        assert!(reuse_stats(&mut listed, std::slice::from_ref(&known)));
+        assert_eq!((listed.additions, listed.changed_files), (12, 3));
+        let mut updated = listed.clone();
+        updated.updated_at = "later".into();
+        assert!(!reuse_stats(&mut updated, &[known]));
+    }
+    async fn autopilot_engine(pr: PullRequest) -> (tempfile::TempDir, Arc<Engine>) {
+        let d = tempfile::tempdir().unwrap();
+        let e = Engine::new(d.path().join("state"), |_| {}).unwrap();
+        let checkout = d.path().to_string_lossy().into_owned();
+        e.update(|s| {
+            s.codex_ready = true;
+            s.settings.automatic = true;
+            s.settings.repositories.push(Repository {
+                name: pr.repo.clone(),
+                path: checkout,
+                automatic: true,
+                setup_command: String::new(),
+                network_access: false,
+            });
+            s.prs.push(pr);
+        })
+        .await;
+        (d, e)
+    }
+    fn trusted_pr() -> PullRequest {
+        let mut p = crate::types::tests::pr();
+        p.head_repo = p.repo.clone();
+        p.author_association = "OWNER".into();
+        p
+    }
+    #[tokio::test]
+    async fn autopilot_reviews_trusted_prs_in_synced_repositories_once() {
+        let (_d, e) = autopilot_engine(trusted_pr()).await;
+        e.schedule().await;
+        assert!(
+            e.snapshot().await.reviews.is_empty(),
+            "nothing is scheduled before the repository syncs"
+        );
+        e.synced_repos.lock().await.insert("a/b".into());
+        e.schedule().await;
+        e.schedule().await;
+        let reviews = e.snapshot().await.reviews;
+        assert_eq!(reviews.len(), 1);
+        assert!(reviews[0].automatic);
+    }
+    #[tokio::test]
+    async fn autopilot_skips_untrusted_prs() {
+        let (_d, e) = autopilot_engine(crate::types::tests::pr()).await;
+        e.synced_repos.lock().await.insert("a/b".into());
+        e.schedule().await;
+        assert!(e.snapshot().await.reviews.is_empty());
     }
     #[test]
     fn rejects_other_checkout_origins() {

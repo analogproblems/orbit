@@ -76,7 +76,6 @@ export interface Settings {
   concurrency: number;
   model: string;
   effort: string;
-  scope: "involved" | "reviewRequested" | "authored";
   repositories: Repository[];
   trustedAuthors: string[];
 }
@@ -138,7 +137,6 @@ export const defaults: Settings = {
   concurrency: 2,
   model: "",
   effort: "",
-  scope: "involved",
   repositories: [],
   trustedAuthors: [],
 };

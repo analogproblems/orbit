@@ -654,14 +654,27 @@ export default function App() {
                     heading={
                       search
                         ? "No matching pull requests"
-                        : "Your inbox is clear"
+                        : s.settings.repositories.length
+                          ? "Your inbox is clear"
+                          : "No repositories connected"
                     }
                   >
                     {s.githubError
                       ? "GitHub could not sync. Check the connection in Settings."
                       : search
                         ? "Try a different title, repository, or author."
-                        : "Open PRs matching your GitHub scope will appear here."}
+                        : s.settings.repositories.length
+                          ? "Open pull requests in your connected repositories will appear here."
+                          : "Connect a repository to see its open pull requests here."}
+                    {!s.settings.repositories.length && !search && (
+                      <button
+                        className="button primary"
+                        onClick={() => setPage("repositories")}
+                      >
+                        <Plus size={14} />
+                        Connect a repository
+                      </button>
+                    )}
                   </Empty>
                 )}
               </div>
@@ -1663,7 +1676,10 @@ function Repositories() {
       },
     });
     setBusy(false);
-    if (!useOrbit.getState().error) setEditing(null);
+    if (!useOrbit.getState().error) {
+      setEditing(null);
+      void action("poll_now");
+    }
   };
   return (
     <div className="content-page">
@@ -1858,7 +1874,10 @@ function Repositories() {
                         ),
                       },
                     });
-                    if (!useOrbit.getState().error) setEditing(null);
+                    if (!useOrbit.getState().error) {
+                      setEditing(null);
+                      void action("poll_now");
+                    }
                   }}
                 >
                   <Trash2 size={14} />
@@ -2166,23 +2185,6 @@ function SettingsPage() {
               </select>
             </label>
           </div>
-          <label>
-            GitHub inbox scope
-            <select
-              value={draft.scope}
-              onChange={(e) =>
-                setDraft({
-                  ...draft,
-                  scope: e.target.value as Settings["scope"],
-                })
-              }
-            >
-              <option value="involved">Pull requests I’m involved in</option>
-              <option value="reviewRequested">My requested reviews</option>
-              <option value="authored">Pull requests I authored</option>
-            </select>
-            <small>Sync the inbox after changing its scope.</small>
-          </label>
         </section>
         <div className="settings-footer">
           <span>

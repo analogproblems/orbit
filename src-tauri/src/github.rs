@@ -79,12 +79,44 @@ pub async fn user() -> Result<String, String> {
         .map(str::to_owned)
         .ok_or("GitHub did not return a username.".into())
 }
+pub const CLOSED: &str = "This pull request is no longer open.";
 pub async fn pull(repo: &str, number: u64, login: &str) -> Result<PullRequest, String> {
     validate_repo(repo)?;
     let v = api(&format!("repos/{repo}/pulls/{number}"), "GET", &[], None).await?;
     if v["state"] != "open" {
-        return Err("This pull request is no longer open.".into());
+        return Err(CLOSED.into());
     }
+    parse_pull(&v, repo, login)
+}
+/// Open pull requests in one repository. The list endpoint omits the size
+/// statistics (additions, deletions, changed files), which stay zero here.
+pub async fn open_pulls(repo: &str, login: &str) -> Result<Vec<PullRequest>, String> {
+    validate_repo(repo)?;
+    let mut prs = vec![];
+    for page in 1..=10 {
+        let v = api(
+            &format!("repos/{repo}/pulls"),
+            "GET",
+            &[
+                ("state", "open".into()),
+                ("per_page", "100".into()),
+                ("page", page.to_string()),
+            ],
+            None,
+        )
+        .await?;
+        let items = v.as_array().ok_or("Invalid pull request list")?;
+        for item in items {
+            prs.push(parse_pull(item, repo, login)?);
+        }
+        if items.len() < 100 {
+            break;
+        }
+    }
+    Ok(prs)
+}
+fn parse_pull(v: &Value, repo: &str, login: &str) -> Result<PullRequest, String> {
+    let number = v["number"].as_u64().ok_or("Invalid PR number")?;
     let text = |key: &str| v[key].as_str().unwrap_or("").to_string();
     let pr = PullRequest {
         id: format!("{repo}#{number}"),
@@ -124,53 +156,6 @@ pub async fn pull(repo: &str, number: u64, login: &str) -> Result<PullRequest, S
         return Err("GitHub returned an invalid commit SHA.".into());
     }
     Ok(pr)
-}
-pub async fn discover(login: &str, scope: &str) -> Result<Vec<(String, u64)>, String> {
-    let qualifier = match scope {
-        "reviewRequested" => "review-requested",
-        "authored" => "author",
-        _ => "involves",
-    };
-    let mut found = vec![];
-    for page in 1..=10 {
-        let v = api(
-            "search/issues",
-            "GET",
-            &[
-                ("q", format!("is:pr is:open {qualifier}:{login}")),
-                ("per_page", "100".into()),
-                ("page", page.to_string()),
-                ("sort", "updated".into()),
-                ("order", "desc".into()),
-            ],
-            None,
-        )
-        .await?;
-        if v["incomplete_results"].as_bool() == Some(true) {
-            return Err("GitHub search returned incomplete results. Try syncing again.".into());
-        }
-        if v["total_count"].as_u64().unwrap_or(0) > 1000 {
-            return Err("This scope exceeds GitHub’s 1,000-result search limit. Choose a narrower inbox scope.".into());
-        }
-        let items = v["items"]
-            .as_array()
-            .ok_or("Missing GitHub search results")?;
-        for item in items {
-            let repo = item["repository_url"]
-                .as_str()
-                .and_then(|s| s.strip_prefix("https://api.github.com/repos/"))
-                .ok_or("Unexpected GitHub repository URL")?;
-            validate_repo(repo)?;
-            found.push((
-                repo.into(),
-                item["number"].as_u64().ok_or("Invalid PR number")?,
-            ));
-        }
-        if items.len() < 100 {
-            break;
-        }
-    }
-    Ok(found)
 }
 /// Repositories the signed-in user owns, collaborates on, or reaches through an
 /// organization, most recently pushed first.
@@ -290,6 +275,28 @@ pub async fn publish(pr: &PullRequest, r: &Review) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn parses_listed_pull_requests() {
+        let item = json!({
+            "number": 7, "title": "Fix", "body": null, "html_url": "https://github.com/me/app/pull/7",
+            "user": {"login": "claude[bot]"}, "author_association": "NONE",
+            "head": {"sha": "a".repeat(40), "ref": "fix", "repo": {"full_name": "me/app"}},
+            "base": {"sha": "b".repeat(40), "ref": "main"},
+            "updated_at": "2026-09-22T00:00:00Z", "draft": false,
+            "requested_reviewers": [{"login": "me"}], "labels": [{"name": "bug"}]
+        });
+        let pr = parse_pull(&item, "me/app", "me").unwrap();
+        assert_eq!(pr.id, "me/app#7");
+        assert_eq!(pr.author, "claude[bot]");
+        assert_eq!(pr.head_repo, "me/app");
+        assert_eq!(pr.author_association, "NONE");
+        assert!(pr.review_requested);
+        assert_eq!(pr.labels, ["bug"]);
+        assert_eq!((pr.additions, pr.changed_files), (0, 0));
+        let mut bad = item.clone();
+        bad["head"]["sha"] = json!("not-a-sha");
+        assert!(parse_pull(&bad, "me/app", "me").is_err());
+    }
     #[test]
     fn summarizes_accessible_repositories() {
         let items = json!([

@@ -139,7 +139,6 @@ pub struct Settings {
     pub concurrency: usize,
     pub model: String,
     pub effort: String,
-    pub scope: String,
     pub repositories: Vec<Repository>,
     /// Extra GitHub logins, such as bots acting for the user, whose same-repository
     /// PRs are trusted like those of owners, members, and collaborators.
@@ -154,7 +153,6 @@ impl Default for Settings {
             concurrency: 2,
             model: String::new(),
             effort: String::new(),
-            scope: "involved".into(),
             repositories: vec![],
             trusted_authors: vec![],
         }
@@ -167,9 +165,6 @@ impl Settings {
         }
         if !(1..=4).contains(&self.concurrency) {
             return Err("Choose between 1 and 4 concurrent reviews.".into());
-        }
-        if !["involved", "reviewRequested", "authored"].contains(&self.scope.as_str()) {
-            return Err("Unknown inbox scope.".into());
         }
         if self.trusted_authors.len() > 50 {
             return Err("Trust at most 50 accounts.".into());

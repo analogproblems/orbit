@@ -25,7 +25,7 @@ If needed, sign in with `gh auth login` and `codex login` first. Orbit does not 
 4. Sync the inbox, select a PR, and click **Start review**. The chat shows progress, execution logs, approval requests, and the final review. Continue the same conversation with a follow-up.
 5. Preview and publish the report using **Publish review**. Orbit posts an ordinary PR comment with the reviewed head/base SHAs, model, effort, and report.
 
-The default inbox scope is open PRs you are involved in. Settings can narrow this to reviews requested from you or PRs you authored. Search results are paginated up to GitHub's 1,000-result search limit; exceeding it produces a visible error instead of silently truncating the inbox. Draft PRs can be reviewed manually.
+The inbox shows every open PR in your connected repositories, including PRs opened by bots; use its filters to narrow the view to reviews requested from you or PRs you authored. Each sync lists each connected repository's open PRs with one request and fetches an individual PR only when it is new or has changed. A repository that fails to sync keeps its last-known PRs and shows an error while the others continue, and autopilot only acts on repositories that synced successfully in the current session. Draft PRs can be reviewed manually.
 
 ## Automatic and manual control
 
