@@ -62,16 +62,27 @@ impl Engine {
         } else {
             Snapshot::default()
         };
-        state.settings.validate()?;
-        // PR ids became case-insensitive; bring older state in line.
+        // Repository names and PR ids became case-insensitive. Older versions could
+        // save `a/b` and `A/B` as separate repositories, so merge those before
+        // validating: keep the first entry, automatic if either was.
+        let mut repositories: Vec<Repository> = vec![];
+        for repo in std::mem::take(&mut state.settings.repositories) {
+            match repositories
+                .iter_mut()
+                .find(|r| same_repo(&r.name, &repo.name))
+            {
+                Some(kept) => kept.automatic |= repo.automatic,
+                None => repositories.push(repo),
+            }
+        }
+        state.settings.repositories = repositories;
         for p in state.prs.iter_mut().chain(state.history_prs.iter_mut()) {
             p.id = p.id.to_ascii_lowercase();
         }
-        let open: HashSet<String> = state.prs.iter().map(|p| p.id.clone()).collect();
         let mut seen = HashSet::new();
-        state
-            .history_prs
-            .retain(|p| !open.contains(&p.id) && seen.insert(p.id.clone()));
+        state.prs.retain(|p| seen.insert(p.id.clone()));
+        state.history_prs.retain(|p| seen.insert(p.id.clone()));
+        state.settings.validate()?;
         for r in &mut state.reviews {
             r.pr_id = r.pr_id.to_ascii_lowercase();
             r.sensitive = credential_kinds(&r.report);
@@ -554,9 +565,10 @@ impl Engine {
         .await;
     }
     /// Ends a review whose preparation failed (`error`) or was stopped, and removes
-    /// its worktree. Its thread never reviewed anything, so the worktree and thread
-    /// are detached in the same update that ends the review: a follow-up cannot
-    /// start on them while the removal waits for the git lock.
+    /// its worktree. Its thread never reviewed anything, so it is detached in the
+    /// same update that ends the review: a follow-up cannot start while removal
+    /// waits for the git lock. The worktree stays recorded until it is gone, so a
+    /// removal interrupted by exiting is retried by a later cleanup.
     async fn abandon_preparation(&self, id: &str, error: Option<String>) {
         self.update(|s| {
             if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
@@ -567,7 +579,6 @@ impl Engine {
                         r.updated_at = now();
                     }
                 }
-                r.worktree = None;
                 r.thread_id = None;
             }
         })
@@ -577,12 +588,10 @@ impl Engine {
             let _git = self.git_lock.lock().await;
             remove_worktree(&path).await
         };
-        if removed.is_err() {
-            // Recorded again so a later cleanup retries; without a thread,
-            // follow-ups stay refused.
+        if removed.is_ok() {
             self.update(|s| {
                 if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
-                    r.worktree = Some(path.to_string_lossy().into());
+                    r.worktree = None;
                 }
             })
             .await;
@@ -1966,13 +1975,56 @@ mod tests {
         }
         let r = e.snapshot().await.reviews[0].clone();
         assert_eq!(r.status, "failed");
-        assert!(r.thread_id.is_none() && r.worktree.is_none());
+        assert!(r.thread_id.is_none());
+        // Still recorded, so exiting now leaves the removal for a later cleanup.
+        assert!(r.worktree.is_some());
         let error = e.message(&id, "What went wrong?").await.unwrap_err();
         assert!(error.contains("Start a review first"), "{error}");
         drop(fetch);
         abandon.await.unwrap();
         assert!(!path.exists());
-        assert_eq!(e.snapshot().await.reviews[0].status, "failed");
+        let r = e.snapshot().await.reviews[0].clone();
+        assert_eq!(r.status, "failed");
+        assert!(r.worktree.is_none());
+    }
+    #[tokio::test]
+    async fn merges_case_duplicate_repositories_saved_by_older_versions() {
+        let d = tempfile::tempdir().unwrap();
+        let repo = |name: &str, automatic: bool| Repository {
+            name: name.into(),
+            path: "/tmp/checkout".into(),
+            automatic,
+            setup_command: String::new(),
+            network_access: false,
+        };
+        let mut upper = crate::types::tests::pr();
+        upper.id = "A/B#1".into();
+        let mut lower = upper.clone();
+        lower.id = "a/b#1".into();
+        let mut saved = Snapshot {
+            prs: vec![upper, lower],
+            ..Snapshot::default()
+        };
+        saved.settings.repositories =
+            vec![repo("a/b", false), repo("A/B", true), repo("c/d", false)];
+        std::fs::write(
+            d.path().join("state.json"),
+            serde_json::to_vec(&saved).unwrap(),
+        )
+        .unwrap();
+        let s = Engine::new(d.path().into(), |_| {})
+            .unwrap()
+            .snapshot()
+            .await;
+        let names: Vec<_> = s
+            .settings
+            .repositories
+            .iter()
+            .map(|r| r.name.as_str())
+            .collect();
+        assert_eq!(names, ["a/b", "c/d"]);
+        assert!(s.settings.repositories[0].automatic);
+        assert_eq!(s.prs.len(), 1);
     }
     #[tokio::test]
     async fn pr_ids_ignore_repository_capitalization() {
