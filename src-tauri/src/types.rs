@@ -89,6 +89,15 @@ pub struct Review {
     /// Kinds of credential-like text found in the report, shown before publication.
     #[serde(default)]
     pub sensitive: Vec<String>,
+    /// The review's outcome, set aside while a follow-up question runs.
+    #[serde(default)]
+    pub before_follow_up: Option<Outcome>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Outcome {
+    pub status: String,
+    pub error: Option<String>,
 }
 pub fn active(status: &str) -> bool {
     matches!(
@@ -118,7 +127,20 @@ impl Review {
             automatic,
             is_review: true,
             sensitive: vec![],
+            before_follow_up: None,
         }
+    }
+    /// Ends a follow-up by restoring the outcome it set aside, so a stopped or
+    /// failed chat never discards a report or publication. Returns false when
+    /// no follow-up is running.
+    pub fn end_follow_up(&mut self, error: Option<String>) -> bool {
+        let Some(before) = self.before_follow_up.take() else {
+            return false;
+        };
+        self.status = before.status;
+        self.error = error.or(before.error);
+        self.updated_at = now();
+        true
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]

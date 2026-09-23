@@ -53,7 +53,12 @@ impl Engine {
         state.settings.validate()?;
         for r in &mut state.reviews {
             r.sensitive = credential_kinds(&r.report);
-            if active(&r.status) {
+            if active(&r.status)
+                && !r.end_follow_up(Some(
+                    "Orbit restarted during the follow-up, so its answer may be incomplete."
+                        .into(),
+                ))
+            {
                 r.status = "cancelled".into();
                 r.error = Some(
                     "Orbit restarted while this review was active. Start a new review to retry."
@@ -434,9 +439,11 @@ impl Engine {
                 .iter_mut()
                 .find(|r| r.id == id && active(&r.status))
             {
-                r.status = "failed".into();
-                r.error = Some(error);
-                r.updated_at = now();
+                if !r.end_follow_up(Some(format!("The follow-up failed: {error}"))) {
+                    r.status = "failed".into();
+                    r.error = Some(error);
+                    r.updated_at = now();
+                }
             }
         })
         .await;
@@ -638,8 +645,10 @@ impl Engine {
             if !active(&r.status) {
                 return Err("This review is not running.".into());
             }
-            r.status = "cancelled".into();
-            r.updated_at = now();
+            if !r.end_follow_up(None) {
+                r.status = "cancelled".into();
+                r.updated_at = now();
+            }
             r.clone()
         };
         self.dirty.store(true, Ordering::SeqCst);
@@ -794,10 +803,12 @@ impl Engine {
                 return Err("Start a review first to create its Codex chat.".into());
             }
             let old = r.clone();
-            r.status = "reviewing".into();
+            r.before_follow_up = Some(Outcome {
+                status: std::mem::replace(&mut r.status, "reviewing".into()),
+                error: r.error.take(),
+            });
             r.turn_id = None;
             r.is_review = false;
-            r.error = None;
             r.messages.push(Message::new("user", text));
             old
         };
@@ -885,7 +896,11 @@ impl Engine {
                 }
                 s.approvals.clear();
                 for r in &mut s.reviews {
-                    if active(&r.status) {
+                    if active(&r.status)
+                        && !r.end_follow_up(Some(
+                            "Codex disconnected during the follow-up.".into(),
+                        ))
+                    {
                         r.status = "failed".into();
                         r.error = Some("Codex disconnected. Start a new review to retry.".into());
                     }
@@ -992,10 +1007,10 @@ impl Engine {
      "exitedReviewMode"=>{r.report=item["review"].as_str().unwrap_or("").into();r.sensitive=credential_kinds(&r.report);if !r.report.is_empty(){r.messages.push(Message::new("agent",r.report.clone()));}},
      "commandExecution"=>{let output=item["aggregatedOutput"].as_str().unwrap_or("");if !output.is_empty(){r.messages.push(Message::new("system",output.chars().take(16000).collect::<String>()));}},_=>{}
     }},
-    "turn/completed"=>{match p["turn"]["status"].as_str().unwrap_or(""){
+    "turn/completed"=>{let turn_status=p["turn"]["status"].as_str().unwrap_or("");let follow_up_error=match turn_status{"completed"=>None,"interrupted"=>Some("The follow-up was interrupted.".to_string()),_=>Some(p["turn"]["error"]["message"].as_str().map_or("The follow-up failed.".into(),|m|format!("The follow-up failed: {m}")))};if !r.end_follow_up(follow_up_error){match turn_status{
      "completed"=>{if r.is_review&&r.report.trim().is_empty(){r.status="failed".into();r.error=Some("Codex completed without a review report. No comment was published.".into());}else{r.status=if r.comment_url.is_some(){"posted"}else{"ready"}.into();autopost=r.is_review&&r.automatic;}},
      "interrupted"=>r.status="cancelled".into(),_=>{r.status="failed".into();r.error=Some(p["turn"]["error"]["message"].as_str().unwrap_or("Codex review failed.").into());}
-    }},_=>{}
+    }}},_=>{}
    }
   }).await;
         if autopost {
@@ -1244,6 +1259,77 @@ mod tests {
         drop(e);
         let restored = Engine::new(d.path().into(), |_| {}).unwrap();
         assert_eq!(restored.snapshot().await.reviews[0].status, "cancelled");
+    }
+    async fn start_follow_up(e: &Engine, before: &str) {
+        e.update(|s| {
+            let r = &mut s.reviews[0];
+            r.status = "reviewing".into();
+            r.is_review = false;
+            r.report = "Finding".into();
+            r.before_follow_up = Some(Outcome {
+                status: before.into(),
+                error: None,
+            });
+        })
+        .await;
+    }
+    #[tokio::test]
+    async fn failed_follow_up_keeps_the_report_publishable() {
+        let (_d, e, id) = running_engine().await;
+        e.update(|s| {
+            s.reviews[0].status = "ready".into();
+            s.reviews[0].report = "Finding".into();
+        })
+        .await;
+        // Codex is not connected, so the follow-up fails as soon as it starts.
+        assert!(e.message(&id, "Why?").await.is_err());
+        let s = e.snapshot().await;
+        let r = &s.reviews[0];
+        assert_eq!(r.status, "ready");
+        assert!(r.error.as_deref().unwrap().starts_with("The follow-up failed"));
+        assert!(publishable(r, &s.prs[0]));
+    }
+    #[tokio::test]
+    async fn stopping_a_follow_up_restores_the_published_review() {
+        let (_d, e, id) = running_engine().await;
+        start_follow_up(&e, "posted").await;
+        e.cancel(&id).await.unwrap();
+        let r = e.snapshot().await.reviews[0].clone();
+        assert_eq!(r.status, "posted");
+        assert!(r.before_follow_up.is_none());
+    }
+    #[tokio::test]
+    async fn follow_up_failures_and_disconnects_restore_the_outcome() {
+        let (_d, e, _) = running_engine().await;
+        start_follow_up(&e, "ready").await;
+        e.event(json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"failed","error":{"message":"boom"}}}})).await;
+        let r = e.snapshot().await.reviews[0].clone();
+        assert_eq!(r.status, "ready");
+        assert_eq!(r.error.as_deref(), Some("The follow-up failed: boom"));
+        start_follow_up(&e, "ready").await;
+        e.event(json!({"method":"orbit/disconnected"})).await;
+        let r = e.snapshot().await.reviews[0].clone();
+        assert_eq!(r.status, "ready");
+        assert!(r.error.unwrap().contains("disconnected"));
+    }
+    #[tokio::test]
+    async fn completed_follow_up_keeps_the_review_outcome() {
+        let (_d, e, _) = running_engine().await;
+        start_follow_up(&e, "failed").await;
+        e.event(json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}})).await;
+        // A chat answer does not turn a failed review into a publishable one.
+        assert_eq!(e.snapshot().await.reviews[0].status, "failed");
+    }
+    #[tokio::test]
+    async fn restart_during_a_follow_up_restores_the_outcome() {
+        let (d, e, _) = running_engine().await;
+        start_follow_up(&e, "ready").await;
+        e.flush().await.unwrap();
+        drop(e);
+        let restored = Engine::new(d.path().into(), |_| {}).unwrap();
+        let r = restored.snapshot().await.reviews[0].clone();
+        assert_eq!(r.status, "ready");
+        assert!(r.error.unwrap().contains("restarted during the follow-up"));
     }
     #[test]
     fn reuses_size_statistics_only_for_unchanged_prs() {

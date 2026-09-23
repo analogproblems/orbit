@@ -55,6 +55,7 @@ export interface Review {
   automatic: boolean;
   isReview: boolean;
   sensitive?: string[];
+  beforeFollowUp?: { status: Status; error?: string };
 }
 export interface Repository {
   name: string;
