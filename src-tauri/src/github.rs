@@ -9,6 +9,15 @@ pub async fn run(
     cwd: Option<&Path>,
     input: Option<String>,
 ) -> Result<String, String> {
+    run_with_timeout(program, args, cwd, input, Duration::from_secs(120)).await
+}
+pub async fn run_with_timeout(
+    program: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+    input: Option<String>,
+    timeout: Duration,
+) -> Result<String, String> {
     let mut cmd = Command::new(program);
     cmd.args(args)
         .stdin(if input.is_some() {
@@ -37,9 +46,9 @@ pub async fn run(
             .await
             .map_err(|e| e.to_string())?;
     }
-    let out = tokio::time::timeout(Duration::from_secs(120), child.wait_with_output())
+    let out = tokio::time::timeout(timeout, child.wait_with_output())
         .await
-        .map_err(|_| format!("{program} timed out after 120 seconds."))?
+        .map_err(|_| format!("{program} timed out after {} seconds.", timeout.as_secs()))?
         .map_err(|e| e.to_string())?;
     if !out.status.success() {
         return Err(format!(
@@ -275,6 +284,19 @@ pub async fn publish(pr: &PullRequest, r: &Review) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn enforces_the_given_timeout() {
+        let args = ["-c".to_string(), "sleep 5".to_string()];
+        let error = run_with_timeout("sh", &args, None, None, Duration::from_millis(50))
+            .await
+            .unwrap_err();
+        assert_eq!(error, "sh timed out after 0 seconds.");
+        let args = ["-c".to_string(), "echo ok".to_string()];
+        assert_eq!(
+            run_with_timeout("sh", &args, None, None, Duration::from_secs(5)).await.unwrap(),
+            "ok\n"
+        );
+    }
     #[test]
     fn parses_listed_pull_requests() {
         let item = json!({

@@ -28,6 +28,8 @@ pub struct Engine {
     stopping: AtomicBool,
     /// Repositories whose open PRs synced in the latest poll; autopilot only acts on these.
     synced_repos: Mutex<HashSet<String>>,
+    /// Running preparations, so Stop can end a long fetch or checkout immediately.
+    preparing: std::sync::Mutex<HashMap<String, tokio::task::AbortHandle>>,
     _instance_lock: std::fs::File,
 }
 impl Engine {
@@ -90,6 +92,7 @@ impl Engine {
             changed: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
             synced_repos: Mutex::new(HashSet::new()),
+            preparing: std::sync::Mutex::new(HashMap::new()),
             _instance_lock: instance_lock,
         }))
     }
@@ -443,12 +446,18 @@ impl Engine {
             let Some(id) = next else { break };
             self.dirty.store(true, Ordering::SeqCst);
             let e = self.clone();
-            tokio::spawn(async move {
-                if let Err(err) = e.prepare(&id).await {
-                    e.fail(&id, err).await;
-                    e.discard_worktree(&id).await;
+            let task_id = id.clone();
+            let task = tokio::spawn(async move {
+                if let Err(err) = e.prepare(&task_id).await {
+                    e.fail(&task_id, err).await;
+                    e.discard_worktree(&task_id).await;
                 }
+                e.preparing.lock().unwrap().remove(&task_id);
             });
+            let mut preparing = self.preparing.lock().unwrap();
+            if !task.is_finished() {
+                preparing.insert(id, task.abort_handle());
+            }
         }
     }
     async fn fail(&self, id: &str, error: String) {
@@ -736,6 +745,15 @@ impl Engine {
             r.clone()
         };
         self.dirty.store(true, Ordering::SeqCst);
+        // Before its Codex thread exists, a review is still fetching, checking out,
+        // or running setup: abort it, which also kills any running git process.
+        if r.thread_id.is_none() {
+            let task = self.preparing.lock().unwrap().remove(id);
+            if let Some(task) = task {
+                task.abort();
+                self.discard_worktree(id).await;
+            }
+        }
         if let Ok(rpc) = self.client().await {
             if let (Some(thread), Some(turn)) = (r.thread_id, r.turn_id) {
                 let _ = rpc
@@ -1216,7 +1234,8 @@ async fn git(cwd: &Path, args: &[&str]) -> Result<String, String> {
         ),
     ];
     full.extend(args.iter().map(|s| s.to_string()));
-    github::run("git", &full, Some(cwd), None).await
+    // A first fetch or checkout of a large repository can take many minutes.
+    github::run_with_timeout("git", &full, Some(cwd), None, Duration::from_secs(30 * 60)).await
 }
 /// Why an automatic review's report must wait for a person, if it must.
 /// The report stays ready for manual publication either way.
@@ -1521,6 +1540,24 @@ mod tests {
             .lines()
             .filter(|l| l.starts_with("worktree "))
             .count()
+    }
+    #[tokio::test]
+    async fn stopping_a_preparing_review_aborts_its_task() {
+        let (_d, e, id) = running_engine().await;
+        e.update(|s| {
+            s.reviews[0].status = "preparing".into();
+            s.reviews[0].thread_id = None;
+            s.reviews[0].turn_id = None;
+        })
+        .await;
+        let task = tokio::spawn(tokio::time::sleep(Duration::from_secs(60)));
+        e.preparing
+            .lock()
+            .unwrap()
+            .insert(id.clone(), task.abort_handle());
+        e.cancel(&id).await.unwrap();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(e.snapshot().await.reviews[0].status, "cancelled");
     }
     #[tokio::test]
     async fn removes_worktrees_and_orbit_refs_from_the_clone() {
