@@ -177,15 +177,9 @@ fn parse_pull(v: &Value, repo: &str, login: &str) -> Result<PullRequest, String>
                     .collect()
             })
             .unwrap_or_default(),
-        head_repo: v["head"]["repo"]["full_name"]
-            .as_str()
-            .unwrap_or("")
-            .into(),
+        head_repo: v["head"]["repo"]["full_name"].as_str().unwrap_or("").into(),
         author_association: text("author_association"),
-        base_repo: v["base"]["repo"]["full_name"]
-            .as_str()
-            .unwrap_or("")
-            .into(),
+        base_repo: v["base"]["repo"]["full_name"].as_str().unwrap_or("").into(),
     };
     if !valid_sha(&pr.head_sha) || !valid_sha(&pr.base_sha) {
         return Err("GitHub returned an invalid commit SHA.".into());
@@ -286,9 +280,27 @@ pub async fn existing_comment(pr: &PullRequest, r: &Review) -> Result<Option<Str
     }
     Ok(None)
 }
-pub async fn publish(pr: &PullRequest, r: &Review) -> Result<String, String> {
+/// The PR comment for a review, including the marker used to reconcile retries.
+fn comment_body(r: &Review) -> String {
     let marker = format!("<!-- orbit-review:{} -->", r.id);
-    let body=format!("{marker}\n## Orbit · Codex review\n\nReviewed head `{}` against base `{}`.\n\n{}\n\n---\nModel: {} · Effort: {}",r.head_sha,r.base_sha,r.report,if r.model.is_empty(){"Codex default"}else{&r.model},if r.effort.is_empty(){"default"}else{&r.effort});
+    let model = if r.model.is_empty() {
+        "Codex default"
+    } else {
+        &r.model
+    };
+    let effort = if r.effort.is_empty() {
+        "default"
+    } else {
+        &r.effort
+    };
+    format!(
+        "{marker}\n## Orbit · Codex review\n\n\
+         Reviewed head `{}` against base `{}`.\n\n{}\n\n---\nModel: {model} · Effort: {effort}",
+        r.head_sha, r.base_sha, r.report
+    )
+}
+pub async fn publish(pr: &PullRequest, r: &Review) -> Result<String, String> {
+    let body = comment_body(r);
     if body.len() > 60000 {
         return Err(
             "Review exceeds GitHub’s comment size limit. Copy it from the chat instead.".into(),
@@ -319,7 +331,9 @@ mod tests {
         assert_eq!(error, "sh timed out after 0 seconds.");
         let args = ["-c".to_string(), "echo ok".to_string()];
         assert_eq!(
-            run_with_timeout("sh", &args, None, None, Duration::from_secs(5)).await.unwrap(),
+            run_with_timeout("sh", &args, None, None, Duration::from_secs(5))
+                .await
+                .unwrap(),
             "ok\n"
         );
     }
@@ -332,9 +346,11 @@ mod tests {
             marker.display()
         );
         let args = ["-c".to_string(), script];
-        assert!(run_with_timeout("sh", &args, None, None, Duration::from_millis(200))
-            .await
-            .is_err());
+        assert!(
+            run_with_timeout("sh", &args, None, None, Duration::from_millis(200))
+                .await
+                .is_err()
+        );
         for _ in 0..50 {
             if marker.exists() {
                 return;
@@ -342,6 +358,21 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         panic!("the command did not receive SIGTERM");
+    }
+    #[test]
+    fn formats_the_published_comment() {
+        let mut r = Review::new(&crate::types::tests::pr(), &Settings::default(), false);
+        r.id = "rid".into();
+        r.report = "No findings.".into();
+        let expected = format!(
+            "<!-- orbit-review:rid -->\n## Orbit · Codex review\n\nReviewed head `{}` against base `{}`.\n\nNo findings.\n\n---\nModel: Codex default · Effort: default",
+            "a".repeat(40),
+            "b".repeat(40)
+        );
+        assert_eq!(comment_body(&r), expected);
+        r.model = "gpt-x".into();
+        r.effort = "high".into();
+        assert!(comment_body(&r).ends_with("Model: gpt-x · Effort: high"));
     }
     #[test]
     fn parses_listed_pull_requests() {

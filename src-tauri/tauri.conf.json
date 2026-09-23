@@ -29,8 +29,6 @@
     "targets": "all",
     "shortDescription": "Your Codex review workspace",
     "category": "DeveloperTool",
-    "icon": [
-      "icons/icon.png"
-    ]
+    "icon": ["icons/icon.png"]
   }
 }

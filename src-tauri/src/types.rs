@@ -286,9 +286,7 @@ pub fn eligible(pr: &PullRequest, s: &Snapshot) -> bool {
 /// Whether a review's report matches the PR as it is now. `publish()` checks
 /// the review's status itself when it claims the review.
 pub fn publishable(r: &Review, pr: &PullRequest) -> bool {
-    !r.report.trim().is_empty()
-        && r.head_sha == pr.head_sha
-        && r.base_sha == pr.base_sha
+    !r.report.trim().is_empty() && r.head_sha == pr.head_sha && r.base_sha == pr.base_sha
 }
 /// Whether a PR may be reviewed and published without a person starting it.
 /// The agent can read files outside its worktree and setup runs PR code, so
@@ -442,7 +440,15 @@ pub(crate) mod tests {
         for good in ["claude[bot]", "dependabot[bot]", "JW-JCLS", "a"] {
             assert!(valid_login(good), "{good}");
         }
-        for bad in ["", "[bot]", "-lead", "has space", "a/b", "x[bot][bot]", &"a".repeat(40)] {
+        for bad in [
+            "",
+            "[bot]",
+            "-lead",
+            "has space",
+            "a/b",
+            "x[bot][bot]",
+            &"a".repeat(40),
+        ] {
             assert!(!valid_login(bad), "{bad}");
         }
         let mut s = Settings {

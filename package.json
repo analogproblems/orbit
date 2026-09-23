@@ -11,9 +11,10 @@
     "desktop": "tauri dev",
     "test": "vitest run",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml --no-default-features",
-    "format": "prettier --write src package.json tsconfig.json vite.config.ts && cargo fmt --manifest-path src-tauri/Cargo.toml",
+    "format": "prettier --write . && cargo fmt --manifest-path src-tauri/Cargo.toml",
+    "lint": "eslint . && prettier --check . && cargo fmt --manifest-path src-tauri/Cargo.toml --check && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",
     "check:desktop": "cargo check --manifest-path src-tauri/Cargo.toml --all-targets",
-    "check": "npm run build && npm test && npm run test:rust && npm run check:desktop",
+    "check": "npm run lint && npm run build && npm test && npm run test:rust && npm run check:desktop",
     "diagnose": "cargo run --manifest-path src-tauri/Cargo.toml --no-default-features --example diagnose"
   },
   "dependencies": {
@@ -25,12 +26,17 @@
     "zustand": "^5.0.8"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@tauri-apps/cli": "^2.8.4",
     "@types/react": "^19.1.13",
     "@types/react-dom": "^19.1.9",
     "@vitejs/plugin-react": "^5.0.3",
+    "eslint": "^10.11.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.12.0",
     "prettier": "^3.9.8",
     "typescript": "^5.9.2",
+    "typescript-eslint": "^8.70.1",
     "vite": "^7.1.7",
     "vitest": "^3.2.4"
   }

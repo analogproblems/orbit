@@ -54,8 +54,8 @@ impl Rpc {
         });
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(_line)) = lines.next_line().await { /* Drain stderr: model output and credentials are never written to diagnostics. */
-            }
+            // Drain stderr: model output and credentials are never written to diagnostics.
+            while let Ok(Some(_line)) = lines.next_line().await {}
         });
         tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();

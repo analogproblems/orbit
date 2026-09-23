@@ -58,9 +58,10 @@ Because the agent can read files outside its worktree, a pull request can plant 
 ## Development and verification
 
 ```sh
-npm run check      # TypeScript, production frontend build, UI-state tests, Rust tests
+npm run check      # Lint, TypeScript, production frontend build, UI-state tests, Rust tests, desktop build check
+npm run lint       # ESLint, Prettier, rustfmt, and Clippy with warnings as errors
 npm run diagnose   # Live read-only GitHub/Codex connection check; no inference or comments
-npm run format
+npm run format     # Prettier and rustfmt
 cargo check --manifest-path src-tauri/Cargo.toml
 npm run tauri -- build --no-bundle  # Produce a native executable
 ```
@@ -71,15 +72,15 @@ Tests exercise queue limits, cancellation, automatic versus manual publication, 
 
 ## Architecture
 
-| Area | Implementation |
-| --- | --- |
-| UI and navigation | `src/App.tsx`, `src/styles.css` |
-| Typed application state and native bridge | `src/types.ts`, `src/store.ts` |
-| Separate interactive demo | `src/demo.ts` and the demo adapter in `src/store.ts` |
-| Queue, worktrees, orchestration, persistence | `src-tauri/src/engine.rs` |
-| GitHub discovery, PR details, files, comments | `src-tauri/src/github.rs` |
-| Codex process and bidirectional RPC | `src-tauri/src/rpc.rs` |
-| Native command allowlist and lifecycle | `src-tauri/src/lib.rs` |
+| Area                                          | Implementation                                       |
+| --------------------------------------------- | ---------------------------------------------------- |
+| UI and navigation                             | `src/App.tsx`, `src/styles.css`                      |
+| Typed application state and native bridge     | `src/types.ts`, `src/store.ts`                       |
+| Separate interactive demo                     | `src/demo.ts` and the demo adapter in `src/store.ts` |
+| Queue, worktrees, orchestration, persistence  | `src-tauri/src/engine.rs`                            |
+| GitHub discovery, PR details, files, comments | `src-tauri/src/github.rs`                            |
+| Codex process and bidirectional RPC           | `src-tauri/src/rpc.rs`                               |
+| Native command allowlist and lifecycle        | `src-tauri/src/lib.rs`                               |
 
 The supplied architecture document was used as a recommendation. This implementation corrects the protocol lifecycle and event names, uses existing installed CLIs instead of bundling a Codex binary, and uses a small custom design system instead of an unverified component library.
 

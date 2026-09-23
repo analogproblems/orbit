@@ -1,5 +1,6 @@
 import {
   memo,
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -182,7 +183,9 @@ function Modal({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
-  closeRef.current = onClose;
+  useEffect(() => {
+    closeRef.current = onClose;
+  });
   const error = useOrbit((state) => state.error);
   useEffect(() => {
     const previous = document.activeElement as HTMLElement;
@@ -940,7 +943,7 @@ export default function App() {
                       onHistory={setSelectedReview}
                     />
                   ) : (
-                    <Files pr={pr} />
+                    <Files key={`${pr.id}:${pr.headSha}`} pr={pr} />
                   )}
                 </div>
                 <footer className="detail-footer">
@@ -1422,10 +1425,9 @@ function Files({ pr }: { pr: PullRequest }) {
   const { action } = useOrbit();
   const [files, setFiles] = useState<ChangedFile[] | null>(null);
   const [failed, setFailed] = useState(false);
+  // Keyed by PR and head commit, so a new revision starts from a fresh state.
   useEffect(() => {
     let alive = true;
-    setFiles(null);
-    setFailed(false);
     void action<ChangedFile[]>("get_files", { prId: pr.id }).then((result) => {
       if (alive) {
         setFiles(result ?? []);
@@ -1435,7 +1437,7 @@ function Files({ pr }: { pr: PullRequest }) {
     return () => {
       alive = false;
     };
-  }, [pr.id, pr.headSha, action]);
+  }, [pr.id, action]);
   return (
     <div className="files">
       {files === null ? (
@@ -1501,21 +1503,27 @@ function RepoPicker({
 }) {
   const { action } = useOrbit();
   const [repos, setRepos] = useState(repositoryCache);
-  const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [failed, setFailed] = useState(false);
   const [query, setQuery] = useState("");
-  const load = async () => {
-    setLoading(true);
-    const result = await action<RepositorySummary[]>("list_repositories");
-    if (result) repositoryCache = result;
-    setRepos(result ?? repositoryCache ?? []);
-    setFailed(!result);
-    setLoading(false);
-  };
+  const fetchRepos = useCallback(
+    () =>
+      action<RepositorySummary[]>("list_repositories").then((result) => {
+        if (result) repositoryCache = result;
+        setRepos(result ?? repositoryCache ?? []);
+        setFailed(!result);
+      }),
+    [action],
+  );
   useEffect(() => {
-    if (!repositoryCache) void load();
     // Load on first open only; later refreshes are explicit.
-  }, []);
+    if (!repositoryCache) void fetchRepos();
+  }, [fetchRepos]);
+  const refresh = async () => {
+    setRefreshing(true);
+    await fetchRepos();
+    setRefreshing(false);
+  };
   // GitHub names are case-insensitive, so `Acme/Repo` is `acme/repo`.
   const isConnected = (name: string) =>
     connected.some((c) => c.toLowerCase() === name.toLowerCase());
@@ -1581,10 +1589,10 @@ function RepoPicker({
           type="button"
           className="icon-button"
           aria-label="Refresh repositories"
-          disabled={loading}
-          onClick={() => void load()}
+          disabled={refreshing}
+          onClick={() => void refresh()}
         >
-          <RefreshCw size={14} className={loading ? "spin" : ""} />
+          <RefreshCw size={14} className={refreshing ? "spin" : ""} />
         </button>
       </div>
       <div className="repo-options">
