@@ -377,6 +377,7 @@ impl Engine {
                         .iter()
                         .filter(|p| {
                             s.settings.automatic
+                                && trusted_source(p)
                                 && s.settings
                                     .repositories
                                     .iter()

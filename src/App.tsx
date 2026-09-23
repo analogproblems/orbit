@@ -49,6 +49,7 @@ import {
   statusLabels,
   latestReview,
   canPublish,
+  trustedSource,
   type PullRequest,
   type Review,
   type Status,
@@ -765,6 +766,21 @@ export default function App() {
                       </button>
                     )}
                   </div>
+                  {s.settings.automatic &&
+                    !pr.draft &&
+                    !trustedSource(pr) &&
+                    s.prs.some((p) => p.id === pr.id) &&
+                    s.settings.repositories.some(
+                      (r) => r.name === pr.repo && r.automatic,
+                    ) && (
+                      <div className="inline-error autopilot-skip">
+                        <AlertCircle size={15} />
+                        Autopilot skips this pull request because it comes from
+                        a fork or from an author who isn’t an owner, member, or
+                        collaborator of the repository. You can still review it
+                        manually.
+                      </div>
+                    )}
                   <div className="detail-tabs" role="tablist">
                     {(
                       [
@@ -1833,7 +1849,9 @@ function SettingsPage() {
               <strong>Automatically review new pull requests</strong>
               <p>
                 Create a sandbox and chat for each new commit in enabled
-                repositories. Drafts are skipped.
+                repositories. Drafts are skipped, as are pull requests from
+                forks or from authors who aren’t owners, members, or
+                collaborators.
               </p>
             </div>
             <Toggle

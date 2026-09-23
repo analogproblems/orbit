@@ -95,9 +95,9 @@ export function freshDemo(): Snapshot {
     updatedAt: ago(12 + i * 27),
     draft: i === 3,
     reviewRequested: i < 3,
-    // #147 comes from an outside contributor's fork, so it is never auto-published.
-    headRepo: i === 1 ? `${d[3]}/${d[0]}` : `acme/${d[0]}`,
-    authorAssociation: i === 1 ? "CONTRIBUTOR" : "MEMBER",
+    // api#79 comes from an outside contributor's fork, so autopilot skips it.
+    headRepo: i === 5 ? `${d[3]}/${d[0]}` : `acme/${d[0]}`,
+    authorAssociation: i === 5 ? "CONTRIBUTOR" : "MEMBER",
     body:
       i === 0
         ? "## What changed\n\nAdds a dedicated configuration layer for each connected repository, so teams can tailor how their pull requests are reviewed.\n\n- Configure a local checkout and environment setup\n- Set automatic review behavior per repository\n- Keep review settings together in one place\n\n## Testing\n\nAdded coverage for config persistence and repository validation."

@@ -84,12 +84,8 @@ function demoSchedule() {
                 (repo) => repo.name === pr?.repo && repo.automatic,
               ) &&
               canPublish(r, pr)
-            ) {
-              if (trustedSource(pr)) r.status = "posted";
-              else
-                r.error =
-                  "Not published automatically: automatic publication is limited to pull requests opened from this repository by its owners, members, or collaborators. Check the report, then publish it manually.";
-            }
+            )
+              r.status = "posted";
             r.updatedAt = new Date().toISOString();
             r.messages.push({
               id: crypto.randomUUID(),
@@ -164,6 +160,7 @@ async function demoAction(
       for (const p of demo.prs.filter(
         (p) =>
           !p.draft &&
+          trustedSource(p) &&
           demo.settings.repositories.some(
             (r) => r.name === p.repo && r.automatic,
           ) &&

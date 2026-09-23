@@ -220,6 +220,7 @@ pub struct Snapshot {
 }
 pub fn eligible(pr: &PullRequest, s: &Snapshot) -> bool {
     !pr.draft
+        && trusted_source(pr)
         && s.settings
             .repositories
             .iter()
@@ -235,9 +236,10 @@ pub fn publishable(r: &Review, pr: &PullRequest) -> bool {
         && r.head_sha == pr.head_sha
         && r.base_sha == pr.base_sha
 }
-/// Whether a PR's report may be published without a person reading it first.
-/// The agent can read files outside its worktree, so anyone able to plant
-/// instructions in the diff could otherwise have local secrets posted publicly.
+/// Whether a PR may be reviewed and published without a person starting it.
+/// The agent can read files outside its worktree and setup runs PR code, so
+/// anyone able to plant instructions in the diff could otherwise have local
+/// secrets posted publicly.
 pub fn trusted_source(pr: &PullRequest) -> bool {
     pr.head_repo.eq_ignore_ascii_case(&pr.repo)
         && matches!(
@@ -292,7 +294,9 @@ pub(crate) mod tests {
     }
     #[test]
     fn automatic_jobs_are_deduplicated_by_commit_and_base() {
-        let p = pr();
+        let mut p = pr();
+        p.head_repo = p.repo.clone();
+        p.author_association = "OWNER".into();
         let mut s = Snapshot::default();
         s.settings.repositories.push(Repository {
             name: p.repo.clone(),
@@ -302,6 +306,9 @@ pub(crate) mod tests {
             network_access: false,
         });
         assert!(eligible(&p, &s));
+        let mut fork = p.clone();
+        fork.head_repo = "someone/b".into();
+        assert!(!eligible(&fork, &s));
         let mut r = Review::new(&p, &s.settings, true);
         r.status = "failed".into();
         s.reviews.push(r);

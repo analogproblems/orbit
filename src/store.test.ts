@@ -62,7 +62,7 @@ describe("review interactions", () => {
     expect(s.reviews.filter((r) => r.status === "queued")).toHaveLength(1);
     expect(s.reviews.filter((r) => r.status === "posted")).toHaveLength(0);
   });
-  it("automatically publishes only pull requests from repository insiders", async () => {
+  it("automatically reviews only pull requests from repository insiders", async () => {
     const store = useOrbit.getState();
     await store.action("save_settings", {
       settings: {
@@ -70,15 +70,17 @@ describe("review interactions", () => {
         automatic: true,
         autoPost: true,
         concurrency: 4,
+        repositories: store.snapshot.settings.repositories.map((r) => ({
+          ...r,
+          automatic: true,
+        })),
       },
     });
     await vi.advanceTimersByTimeAsync(6000);
     const reviews = useOrbit.getState().snapshot.reviews;
-    const review = (n: number) =>
-      reviews.find((r) => r.prId === `acme/orbit#${n}`)!;
-    expect(review(145).status).toBe("posted");
-    expect(review(147).status).toBe("ready");
-    expect(review(147).error).toMatch(/Not published automatically/);
+    const review = (id: string) => reviews.find((r) => r.prId === id);
+    expect(review("acme/api#82")?.status).toBe("posted");
+    expect(review("acme/api#79")).toBeUndefined();
   });
   it("treats forks and outside contributors as untrusted", () => {
     const p = useOrbit.getState().snapshot.prs[0];
