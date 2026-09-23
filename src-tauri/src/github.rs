@@ -123,34 +123,52 @@ pub async fn pull(repo: &str, number: u64, login: &str) -> Result<PullRequest, S
 /// statistics (additions, deletions, changed files), which stay zero here.
 pub async fn open_pulls(repo: &str, login: &str) -> Result<Vec<PullRequest>, String> {
     validate_repo(repo)?;
-    let mut prs = vec![];
-    for page in 1..=10 {
-        let v = api(
-            &format!("repos/{repo}/pulls"),
-            "GET",
-            &[
-                ("state", "open".into()),
-                ("per_page", "100".into()),
-                ("page", page.to_string()),
-            ],
-            None,
-        )
-        .await?;
+    let items = list_pages(|page| async move {
+        let fields = [
+            ("state", "open".to_string()),
+            ("per_page", "100".into()),
+            ("page", page.to_string()),
+        ];
+        api(&format!("repos/{repo}/pulls"), "GET", &fields, None).await
+    })
+    .await?;
+    items
+        .iter()
+        .map(|item| parse_pull(item, repo, login))
+        .collect()
+}
+/// Collects up to ten pages of 100 items. Ten full pages are only complete when
+/// an eleventh page is empty.
+async fn list_pages<F, Fut>(fetch: F) -> Result<Vec<Value>, String>
+where
+    F: Fn(u32) -> Fut,
+    Fut: std::future::Future<Output = Result<Value, String>>,
+{
+    let mut all = vec![];
+    for page in 1..=11 {
+        let v = fetch(page).await?;
         let items = v.as_array().ok_or("Invalid pull request list")?;
-        for item in items {
-            prs.push(parse_pull(item, repo, login)?);
+        if page == 11 {
+            if items.is_empty() {
+                break;
+            }
+            return Err(
+                "More than 1,000 open pull requests; Orbit lists at most 1,000 per repository."
+                    .into(),
+            );
         }
+        all.extend(items.iter().cloned());
         if items.len() < 100 {
-            return Ok(prs);
+            break;
         }
     }
-    Err("More than 1,000 open pull requests; Orbit lists at most 1,000 per repository.".into())
+    Ok(all)
 }
 fn parse_pull(v: &Value, repo: &str, login: &str) -> Result<PullRequest, String> {
     let number = v["number"].as_u64().ok_or("Invalid PR number")?;
     let text = |key: &str| v[key].as_str().unwrap_or("").to_string();
     let pr = PullRequest {
-        id: format!("{repo}#{number}"),
+        id: pr_id(repo, number),
         repo: repo.into(),
         number,
         title: text("title"),
@@ -373,6 +391,23 @@ mod tests {
         r.model = "gpt-x".into();
         r.effort = "high".into();
         assert!(comment_body(&r).ends_with("Model: gpt-x · Effort: high"));
+    }
+    #[tokio::test]
+    async fn lists_up_to_exactly_a_thousand_items() {
+        let pages = |total: usize| {
+            move |page: u32| async move {
+                let start = (page as usize - 1) * 100;
+                let count = total.saturating_sub(start).min(100);
+                Ok(json!(vec![json!({}); count]))
+            }
+        };
+        assert_eq!(list_pages(pages(0)).await.unwrap().len(), 0);
+        assert_eq!(list_pages(pages(250)).await.unwrap().len(), 250);
+        assert_eq!(list_pages(pages(1000)).await.unwrap().len(), 1000);
+        assert!(list_pages(pages(1001))
+            .await
+            .unwrap_err()
+            .contains("More than 1,000"));
     }
     #[test]
     fn parses_listed_pull_requests() {

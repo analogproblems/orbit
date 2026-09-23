@@ -244,6 +244,14 @@ pub fn valid_login(login: &str) -> bool {
         && !name.starts_with('-')
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
+/// PR ids ignore case, like GitHub repository names, so changing a repository's
+/// configured capitalization keeps its reviews attached to their PRs.
+pub fn pr_id(repo: &str, number: u64) -> String {
+    format!("{repo}#{number}").to_ascii_lowercase()
+}
+pub fn same_repo(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
 pub fn valid_sha(sha: &str) -> bool {
     sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit())
 }
@@ -277,7 +285,7 @@ pub fn eligible(pr: &PullRequest, s: &Snapshot) -> bool {
         && s.settings
             .repositories
             .iter()
-            .any(|r| r.name == pr.repo && r.automatic)
+            .any(|r| same_repo(&r.name, &pr.repo) && r.automatic)
         && !s.reviews.iter().any(|r| {
             r.pr_id == pr.id
                 && ((r.head_sha == pr.head_sha && r.base_sha == pr.base_sha) || active(&r.status))

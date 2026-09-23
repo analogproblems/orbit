@@ -54,6 +54,7 @@ import {
   latestReview,
   canPublish,
   publishTarget,
+  sameRepo,
   sameRepository,
   trustedSource,
   type PullRequest,
@@ -794,7 +795,7 @@ export default function App() {
                     !trustedSource(pr, s.settings.trustedAuthors) &&
                     s.prs.some((p) => p.id === pr.id) &&
                     s.settings.repositories.some(
-                      (r) => r.name === pr.repo && r.automatic,
+                      (r) => sameRepo(r.name, pr.repo) && r.automatic,
                     ) && (
                       <div className="inline-error autopilot-skip">
                         <AlertCircle size={15} />

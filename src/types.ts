@@ -149,11 +149,17 @@ export function latestReview(reviews: Review[], prId: string) {
     .filter((r) => r.prId === prId)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
 }
+// GitHub repository names ignore case.
+export function sameRepo(a: string, b: string) {
+  return a.toLowerCase() === b.toLowerCase();
+}
 // A PR that left the inbox may still be open if its repository was
 // disconnected; one from a connected repository has closed.
 export function publishTarget(s: Snapshot, pr: PullRequest) {
   if (s.prs.some((p) => p.id === pr.id)) return pr;
-  const connected = s.settings.repositories.some((r) => r.name === pr.repo);
+  const connected = s.settings.repositories.some((r) =>
+    sameRepo(r.name, pr.repo),
+  );
   return connected ? undefined : pr;
 }
 export function canPublish(review: Review, pr: PullRequest | undefined) {

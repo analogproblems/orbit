@@ -6,6 +6,7 @@ import {
   defaults,
   canPublish,
   activeStatuses,
+  sameRepo,
   trustedSource,
   type Snapshot,
   type Settings,
@@ -81,7 +82,8 @@ function demoSchedule() {
               demo.settings.automatic &&
               demo.settings.autoPost &&
               demo.settings.repositories.some(
-                (repo) => repo.name === pr?.repo && repo.automatic,
+                (repo) =>
+                  !!pr && sameRepo(repo.name, pr.repo) && repo.automatic,
               ) &&
               canPublish(r, pr)
             )
@@ -162,7 +164,7 @@ async function demoAction(
           !p.draft &&
           trustedSource(p, demo.settings.trustedAuthors) &&
           demo.settings.repositories.some(
-            (r) => r.name === p.repo && r.automatic,
+            (r) => sameRepo(r.name, p.repo) && r.automatic,
           ) &&
           !demo.reviews.some((r) => r.prId === p.id && r.headSha === p.headSha),
       ))

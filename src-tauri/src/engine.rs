@@ -63,7 +63,17 @@ impl Engine {
             Snapshot::default()
         };
         state.settings.validate()?;
+        // PR ids became case-insensitive; bring older state in line.
+        for p in state.prs.iter_mut().chain(state.history_prs.iter_mut()) {
+            p.id = p.id.to_ascii_lowercase();
+        }
+        let open: HashSet<String> = state.prs.iter().map(|p| p.id.clone()).collect();
+        let mut seen = HashSet::new();
+        state
+            .history_prs
+            .retain(|p| !open.contains(&p.id) && seen.insert(p.id.clone()));
         for r in &mut state.reviews {
+            r.pr_id = r.pr_id.to_ascii_lowercase();
             r.sensitive = credential_kinds(&r.report);
             if active(&r.status)
                 && !r.end_follow_up(Some(
@@ -372,11 +382,16 @@ impl Engine {
                 match sync_repo(repo, &login, &previous).await {
                     Ok(found) => {
                         prs.extend(found);
-                        synced.insert(repo.clone());
+                        synced.insert(repo.to_ascii_lowercase());
                     }
                     Err(e) => {
                         // Keep what is known about this repository until it syncs again.
-                        prs.extend(previous.iter().filter(|p| &p.repo == repo).cloned());
+                        prs.extend(
+                            previous
+                                .iter()
+                                .filter(|p| same_repo(&p.repo, repo))
+                                .cloned(),
+                        );
                         failed.push(format!("{repo}: {e}"));
                     }
                 }
@@ -438,7 +453,7 @@ impl Engine {
             .settings
             .repositories
             .iter()
-            .find(|r| r.name == pr.repo)
+            .find(|r| same_repo(&r.name, &pr.repo))
             .ok_or("Add this repository’s local checkout in Repositories first.")?;
         if !Path::new(&repo.path).is_dir() {
             return Err(
@@ -460,7 +475,7 @@ impl Engine {
             if s.settings.automatic {
                 s.prs
                     .iter()
-                    .filter(|p| synced.contains(&p.repo) && eligible(p, &s))
+                    .filter(|p| synced.contains(&p.repo.to_ascii_lowercase()) && eligible(p, &s))
                     .map(|p| p.id.clone())
                     .collect()
             } else {
@@ -490,7 +505,7 @@ impl Engine {
                                 && s.settings
                                     .repositories
                                     .iter()
-                                    .any(|r| r.name == p.repo && r.automatic)
+                                    .any(|r| same_repo(&r.name, &p.repo) && r.automatic)
                         })
                         .map(|p| p.id.clone())
                         .collect();
@@ -512,8 +527,7 @@ impl Engine {
             let task_id = id.clone();
             let task = tokio::spawn(async move {
                 if let Err(err) = e.prepare(&task_id).await {
-                    e.fail(&task_id, err).await;
-                    e.discard_worktree(&task_id).await;
+                    e.abandon_preparation(&task_id, Some(err)).await;
                 }
                 e.preparing.lock().unwrap().remove(&task_id);
             });
@@ -539,23 +553,40 @@ impl Engine {
         })
         .await;
     }
-    /// Removes the worktree of a review whose preparation failed or was stopped.
-    /// Its Codex thread, if any, never reviewed anything, so it is dropped too.
-    async fn discard_worktree(&self, id: &str) {
+    /// Ends a review whose preparation failed (`error`) or was stopped, and removes
+    /// its worktree. Its thread never reviewed anything, so the worktree and thread
+    /// are detached in the same update that ends the review: a follow-up cannot
+    /// start on them while the removal waits for the git lock.
+    async fn abandon_preparation(&self, id: &str, error: Option<String>) {
+        self.update(|s| {
+            if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
+                if let Some(error) = error {
+                    if active(&r.status) {
+                        r.status = "failed".into();
+                        r.error = Some(error);
+                        r.updated_at = now();
+                    }
+                }
+                r.worktree = None;
+                r.thread_id = None;
+            }
+        })
+        .await;
         let path = self.root.join("worktrees").join(id);
         let removed = {
             let _git = self.git_lock.lock().await;
             remove_worktree(&path).await
         };
-        self.update(|s| {
-            if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
-                if removed.is_ok() {
-                    r.worktree = None;
-                    r.thread_id = None;
+        if removed.is_err() {
+            // Recorded again so a later cleanup retries; without a thread,
+            // follow-ups stay refused.
+            self.update(|s| {
+                if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
+                    r.worktree = Some(path.to_string_lossy().into());
                 }
-            }
-        })
-        .await;
+            })
+            .await;
+        }
     }
     /// Removes worktrees of finished reviews whose PR is no longer open in a
     /// connected repository. Their chats stay readable; follow-ups are refused.
@@ -567,7 +598,11 @@ impl Engine {
                 .filter(|r| r.worktree.is_some() && !s.prs.iter().any(|p| p.id == r.pr_id))
                 .filter_map(|r| {
                     let pr = s.history_prs.iter().find(|p| p.id == r.pr_id)?;
-                    let connected = s.settings.repositories.iter().any(|c| c.name == pr.repo);
+                    let connected = s
+                        .settings
+                        .repositories
+                        .iter()
+                        .any(|c| same_repo(&c.name, &pr.repo));
                     Some((r.id.clone(), pr.clone(), connected))
                 })
                 .collect()
@@ -657,7 +692,7 @@ impl Engine {
             .settings
             .repositories
             .iter()
-            .find(|c| c.name == pr.repo)
+            .find(|c| same_repo(&c.name, &pr.repo))
             .ok_or("Repository configuration was removed")?
             .clone();
         let rpc = self.client().await?;
@@ -902,7 +937,7 @@ impl Engine {
             // Waits for the git lock, so it must not hold up Stop.
             let e = self.clone();
             let id = id.to_string();
-            tokio::spawn(async move { e.discard_worktree(&id).await });
+            tokio::spawn(async move { e.abandon_preparation(&id, None).await });
         }
         self.update(|s| s.approvals.retain(|a| a.review_id != id))
             .await;
@@ -975,7 +1010,7 @@ impl Engine {
                 && s.settings
                     .repositories
                     .iter()
-                    .any(|repo| repo.name == cached.repo && repo.automatic))
+                    .any(|repo| same_repo(&repo.name, &cached.repo) && repo.automatic))
             {
                 return Ok(());
             }
@@ -1018,7 +1053,7 @@ impl Engine {
                 && s.settings
                     .repositories
                     .iter()
-                    .any(|repo| repo.name == fresh.repo && repo.automatic))
+                    .any(|repo| same_repo(&repo.name, &fresh.repo) && repo.automatic))
             {
                 return Ok(());
             }
@@ -1905,6 +1940,75 @@ mod tests {
         assert_eq!(e.snapshot().await.reviews[0].status, "failed");
         old.shutdown().await;
         new.shutdown().await;
+    }
+    #[tokio::test]
+    async fn failed_preparation_refuses_follow_ups_while_removal_waits() {
+        let (_d, e, id) = running_engine().await;
+        let path = e.root.join("worktrees").join(&id);
+        std::fs::create_dir_all(&path).unwrap();
+        e.update(|s| s.reviews[0].worktree = Some(path.to_string_lossy().into()))
+            .await;
+        // Another review's long fetch holds the git lock.
+        let fetch = e.git_lock.lock().await;
+        let abandon = tokio::spawn({
+            let e = e.clone();
+            let id = id.clone();
+            async move {
+                e.abandon_preparation(&id, Some("review/start failed".into()))
+                    .await
+            }
+        });
+        for _ in 0..100 {
+            if e.snapshot().await.reviews[0].status == "failed" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let r = e.snapshot().await.reviews[0].clone();
+        assert_eq!(r.status, "failed");
+        assert!(r.thread_id.is_none() && r.worktree.is_none());
+        let error = e.message(&id, "What went wrong?").await.unwrap_err();
+        assert!(error.contains("Start a review first"), "{error}");
+        drop(fetch);
+        abandon.await.unwrap();
+        assert!(!path.exists());
+        assert_eq!(e.snapshot().await.reviews[0].status, "failed");
+    }
+    #[tokio::test]
+    async fn pr_ids_ignore_repository_capitalization() {
+        let d = tempfile::tempdir().unwrap();
+        let mut open = crate::types::tests::pr();
+        open.id = "A/B#1".into();
+        open.repo = "A/B".into();
+        let mut closed = open.clone();
+        closed.id = "A/B#2".into();
+        closed.number = 2;
+        let mut closed_lower = closed.clone();
+        closed_lower.id = "a/b#2".into();
+        let mut open_lower = open.clone();
+        open_lower.id = "a/b#1".into();
+        let mut review = Review::new(&open, &Settings::default(), false);
+        review.pr_id = "A/B#1".into();
+        let saved = Snapshot {
+            prs: vec![open],
+            history_prs: vec![open_lower, closed, closed_lower],
+            reviews: vec![review],
+            ..Snapshot::default()
+        };
+        std::fs::write(
+            d.path().join("state.json"),
+            serde_json::to_vec(&saved).unwrap(),
+        )
+        .unwrap();
+        let s = Engine::new(d.path().into(), |_| {})
+            .unwrap()
+            .snapshot()
+            .await;
+        assert_eq!(s.prs[0].id, "a/b#1");
+        assert_eq!(s.reviews[0].pr_id, "a/b#1");
+        let history: Vec<_> = s.history_prs.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(history, ["a/b#2"]);
+        assert_eq!(pr_id("A/B", 1), pr_id("a/b", 1));
     }
     #[tokio::test]
     async fn notes_a_failing_worktree_removal_once() {
