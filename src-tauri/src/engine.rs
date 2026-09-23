@@ -523,7 +523,7 @@ impl Engine {
                     "--no-tags",
                     "origin",
                     &format!("+refs/pull/{}/head:{reference}", pr.number),
-                    &pr.base_sha,
+                    &r.base_sha,
                 ],
             )
             .await?;
@@ -632,7 +632,7 @@ impl Engine {
             }
         })
         .await;
-        let result=rpc.request("review/start",json!({"threadId":thread_id,"delivery":"inline","target":{"type":"baseBranch","branch":pr.base_sha}})).await?;
+        let result=rpc.request("review/start",json!({"threadId":thread_id,"delivery":"inline","target":{"type":"baseBranch","branch":r.base_sha}})).await?;
         self.update(|s| {
             if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
                 r.turn_id = result["turn"]["id"].as_str().map(str::to_owned);
