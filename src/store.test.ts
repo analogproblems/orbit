@@ -83,8 +83,13 @@ describe("review interactions", () => {
     expect(review("acme/api#79")).toBeUndefined();
   });
   it("treats forks and outside contributors as untrusted", () => {
-    const p = useOrbit.getState().snapshot.prs[0];
+    const [bot, p] = useOrbit.getState().snapshot.prs;
     expect(trustedSource(p)).toBe(true);
+    expect(trustedSource(bot)).toBe(false);
+    expect(trustedSource(bot, ["Claude[bot]"])).toBe(true);
+    expect(
+      trustedSource({ ...bot, headRepo: "someone/orbit" }, ["claude[bot]"]),
+    ).toBe(false);
     expect(trustedSource({ ...p, headRepo: "someone/orbit" })).toBe(false);
     expect(trustedSource({ ...p, authorAssociation: "CONTRIBUTOR" })).toBe(
       false,

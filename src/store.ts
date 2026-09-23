@@ -36,7 +36,7 @@ interface Store {
 let demo: Snapshot;
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 function commit() {
-  localStorage.setItem("orbit-demo-v2", JSON.stringify(demo));
+  localStorage.setItem("orbit-demo-v3", JSON.stringify(demo));
   useOrbit.setState({ snapshot: structuredClone(demo) });
 }
 function demoSchedule() {
@@ -160,7 +160,7 @@ async function demoAction(
       for (const p of demo.prs.filter(
         (p) =>
           !p.draft &&
-          trustedSource(p) &&
+          trustedSource(p, demo.settings.trustedAuthors) &&
           demo.settings.repositories.some(
             (r) => r.name === p.repo && r.automatic,
           ) &&
@@ -258,7 +258,7 @@ export const useOrbit = create<Store>((set) => ({
     if (!desktop) {
       try {
         demo =
-          JSON.parse(localStorage.getItem("orbit-demo-v2") || "null") ||
+          JSON.parse(localStorage.getItem("orbit-demo-v3") || "null") ||
           freshDemo();
         demo.reviews.forEach((r) => {
           if (activeStatuses.includes(r.status) && !timers.has(r.id)) {

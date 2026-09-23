@@ -78,6 +78,7 @@ export interface Settings {
   effort: string;
   scope: "involved" | "reviewRequested" | "authored";
   repositories: Repository[];
+  trustedAuthors: string[];
 }
 export interface Model {
   id: string;
@@ -139,6 +140,7 @@ export const defaults: Settings = {
   effort: "",
   scope: "involved",
   repositories: [],
+  trustedAuthors: [],
 };
 export function latestReview(reviews: Review[], prId: string) {
   return reviews
@@ -154,10 +156,14 @@ export function canPublish(review: Review, pr: PullRequest | undefined) {
   );
 }
 // Mirrors trusted_source in src-tauri/src/types.rs.
-export function trustedSource(pr: PullRequest | undefined) {
+export function trustedSource(
+  pr: PullRequest | undefined,
+  trustedAuthors: string[] = [],
+) {
   return (
     !!pr &&
     pr.headRepo?.toLowerCase() === pr.repo.toLowerCase() &&
-    ["OWNER", "MEMBER", "COLLABORATOR"].includes(pr.authorAssociation ?? "")
+    (["OWNER", "MEMBER", "COLLABORATOR"].includes(pr.authorAssociation ?? "") ||
+      trustedAuthors.some((a) => a.toLowerCase() === pr.author.toLowerCase()))
   );
 }

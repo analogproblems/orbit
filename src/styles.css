@@ -2111,6 +2111,56 @@ code {
 .autopilot-skip {
   margin-top: 12px;
 }
+.autopilot-skip .text-button {
+  margin-left: auto;
+  align-self: center;
+  color: inherit;
+  font-weight: 550;
+}
+.trusted-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  margin-top: 13px;
+}
+.trusted-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 30px;
+  padding: 0 4px 0 9px;
+  border: 1px solid #3d413b;
+  border-radius: 5px;
+  background: #252724;
+  color: #c9d3c1;
+  font-size: 12px;
+}
+.trusted-chip button {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 4px;
+  color: #939790;
+}
+.trusted-chip button:hover {
+  background: #30332e;
+  color: #eef0ec;
+}
+.trusted-add {
+  display: inline-flex;
+  gap: 7px;
+}
+.trusted-add input {
+  width: 190px;
+  height: 30px;
+  font-size: 12px;
+  background: #171916;
+}
+.trusted-add .button {
+  height: 30px;
+  padding: 0 12px;
+  font-size: 12px;
+}
 .publish-target + .inline-error {
   margin: 17px 0 0;
 }

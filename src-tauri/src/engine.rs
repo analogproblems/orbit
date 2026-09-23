@@ -377,7 +377,7 @@ impl Engine {
                         .iter()
                         .filter(|p| {
                             s.settings.automatic
-                                && trusted_source(p)
+                                && trusted_source(p, &s.settings.trusted_authors)
                                 && s.settings
                                     .repositories
                                     .iter()
@@ -677,7 +677,9 @@ impl Engine {
             {
                 return Ok(());
             }
-            if let Some(reason) = automatic_hold(cached, &sensitive) {
+            if let Some(reason) =
+                automatic_hold(cached, &sensitive, &s.settings.trusted_authors)
+            {
                 return Err(reason);
             }
         } else if !sensitive.is_empty() && !allow_sensitive {
@@ -720,7 +722,9 @@ impl Engine {
             {
                 return Ok(());
             }
-            if let Some(reason) = automatic_hold(&fresh, &sensitive) {
+            if let Some(reason) =
+                automatic_hold(&fresh, &sensitive, &s.settings.trusted_authors)
+            {
                 return Err(reason);
             }
         }
@@ -1016,9 +1020,13 @@ async fn git(cwd: &Path, args: &[&str]) -> Result<String, String> {
 }
 /// Why an automatic review's report must wait for a person, if it must.
 /// The report stays ready for manual publication either way.
-fn automatic_hold(pr: &PullRequest, sensitive: &[String]) -> Option<String> {
-    if !trusted_source(pr) {
-        return Some("Not published automatically: automatic publication is limited to pull requests opened from this repository by its owners, members, or collaborators. Check the report, then publish it manually.".into());
+fn automatic_hold(
+    pr: &PullRequest,
+    sensitive: &[String],
+    trusted_authors: &[String],
+) -> Option<String> {
+    if !trusted_source(pr, trusted_authors) {
+        return Some("Not published automatically: automatic publication is limited to pull requests opened from this repository by its owners, members, collaborators, or trusted accounts. Check the report, then publish it manually.".into());
     }
     if !sensitive.is_empty() {
         return Some(format!(
@@ -1144,7 +1152,7 @@ mod tests {
         let (_d, e, id) = running_engine().await;
         ready_for_autopost(&e, "No actionable defects found.", false).await;
         let error = e.publish(&id, true, false).await.unwrap_err();
-        assert!(error.contains("owners, members, or collaborators"), "{error}");
+        assert!(error.contains("collaborators, or trusted accounts"), "{error}");
         assert_eq!(e.snapshot().await.reviews[0].status, "ready");
     }
     #[tokio::test]

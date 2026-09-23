@@ -12,7 +12,7 @@ const data = [
     "orbit",
     "148",
     "Add repository-level review configuration",
-    "morgan",
+    "claude[bot]",
     "feat/repository-config",
     214,
     38,
@@ -112,8 +112,9 @@ export function freshDemo(): Snapshot {
     draft: i === 3,
     reviewRequested: i < 3,
     // api#79 comes from an outside contributor's fork, so autopilot skips it.
+    // orbit#148 is from a coding agent's bot, trusted only once added in Settings.
     headRepo: i === 5 ? `${d[3]}/${d[0]}` : `acme/${d[0]}`,
-    authorAssociation: i === 5 ? "CONTRIBUTOR" : "MEMBER",
+    authorAssociation: i === 5 ? "CONTRIBUTOR" : i === 0 ? "NONE" : "MEMBER",
     body:
       i === 0
         ? "## What changed\n\nAdds a dedicated configuration layer for each connected repository, so teams can tailor how their pull requests are reviewed.\n\n- Configure a local checkout and environment setup\n- Set automatic review behavior per repository\n- Keep review settings together in one place\n\n## Testing\n\nAdded coverage for config persistence and repository validation."

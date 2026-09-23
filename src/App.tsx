@@ -771,17 +771,40 @@ export default function App() {
                   </div>
                   {s.settings.automatic &&
                     !pr.draft &&
-                    !trustedSource(pr) &&
+                    !trustedSource(pr, s.settings.trustedAuthors) &&
                     s.prs.some((p) => p.id === pr.id) &&
                     s.settings.repositories.some(
                       (r) => r.name === pr.repo && r.automatic,
                     ) && (
                       <div className="inline-error autopilot-skip">
                         <AlertCircle size={15} />
-                        Autopilot skips this pull request because it comes from
-                        a fork or from an author who isn’t an owner, member, or
-                        collaborator of the repository. You can still review it
-                        manually.
+                        {pr.author &&
+                        pr.headRepo?.toLowerCase() === pr.repo.toLowerCase() ? (
+                          <>
+                            <span>
+                              Autopilot skips pull requests from {pr.author}{" "}
+                              because it isn’t an owner, member, or collaborator
+                              of this repository. Trust it if it opens pull
+                              requests for you, like a coding agent’s bot.
+                            </span>
+                            <button
+                              type="button"
+                              className="text-button"
+                              onClick={() =>
+                                void save({
+                                  trustedAuthors: [
+                                    ...s.settings.trustedAuthors,
+                                    pr.author,
+                                  ],
+                                })
+                              }
+                            >
+                              Trust {pr.author}
+                            </button>
+                          </>
+                        ) : (
+                          "Autopilot skips this pull request because it comes from a fork. You can still review it manually."
+                        )}
                       </div>
                     )}
                   <div className="detail-tabs" role="tablist">
@@ -1866,6 +1889,16 @@ function SettingsPage() {
   const [draft, setDraft] = useState(s.settings);
   const [saved, setSaved] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const [newLogin, setNewLogin] = useState("");
+  const addLogin = () => {
+    const login = newLogin.trim();
+    if (
+      login &&
+      !draft.trustedAuthors.some((a) => a.toLowerCase() === login.toLowerCase())
+    )
+      setDraft({ ...draft, trustedAuthors: [...draft.trustedAuthors, login] });
+    setNewLogin("");
+  };
   const settingsKey = JSON.stringify(s.settings);
   useEffect(() => {
     setDraft(JSON.parse(settingsKey) as Settings);
@@ -2018,8 +2051,8 @@ function SettingsPage() {
               <p>
                 Create a sandbox and chat for each new commit in enabled
                 repositories. Drafts are skipped, as are pull requests from
-                forks or from authors who aren’t owners, members, or
-                collaborators.
+                forks or from authors who aren’t owners, members, collaborators,
+                or trusted accounts.
               </p>
             </div>
             <Toggle
@@ -2034,9 +2067,10 @@ function SettingsPage() {
               <p>
                 Post completed automatic reviews as PR comments using your
                 GitHub account. Only pull requests opened from the repository
-                itself by its owners, members, or collaborators are published
-                automatically, and never when a report looks like it contains
-                credentials. Everything else waits for you to publish it.
+                itself by its owners, members, collaborators, or trusted
+                accounts are published automatically, and never when a report
+                looks like it contains credentials. Everything else waits for
+                you to publish it.
               </p>
             </div>
             <Toggle
@@ -2044,6 +2078,59 @@ function SettingsPage() {
               checked={draft.autoPost}
               onChange={(autoPost) => setDraft({ ...draft, autoPost })}
             />
+          </div>
+          <div className="setting-row">
+            <div>
+              <strong>Trusted accounts</strong>
+              <p>
+                Pull requests these accounts open from a branch in the
+                repository are reviewed and published automatically, like your
+                own. Only add bots that act for you: anyone who can direct a
+                trusted bot can get its pull requests reviewed automatically.
+              </p>
+              <div className="trusted-list">
+                {draft.trustedAuthors.map((login) => (
+                  <span className="trusted-chip" key={login}>
+                    {login}
+                    <button
+                      type="button"
+                      aria-label={`Stop trusting ${login}`}
+                      onClick={() =>
+                        setDraft({
+                          ...draft,
+                          trustedAuthors: draft.trustedAuthors.filter(
+                            (a) => a !== login,
+                          ),
+                        })
+                      }
+                    >
+                      <X size={12} />
+                    </button>
+                  </span>
+                ))}
+                <span className="trusted-add">
+                  <input
+                    aria-label="Add a trusted account"
+                    placeholder="e.g. claude[bot]"
+                    value={newLogin}
+                    onChange={(e) => setNewLogin(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key !== "Enter") return;
+                      e.preventDefault();
+                      addLogin();
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="button secondary"
+                    disabled={!newLogin.trim()}
+                    onClick={addLogin}
+                  >
+                    Add
+                  </button>
+                </span>
+              </div>
+            </div>
           </div>
           <div className="form-grid">
             <label>

@@ -141,6 +141,9 @@ pub struct Settings {
     pub effort: String,
     pub scope: String,
     pub repositories: Vec<Repository>,
+    /// Extra GitHub logins, such as bots acting for the user, whose same-repository
+    /// PRs are trusted like those of owners, members, and collaborators.
+    pub trusted_authors: Vec<String>,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -153,6 +156,7 @@ impl Default for Settings {
             effort: String::new(),
             scope: "involved".into(),
             repositories: vec![],
+            trusted_authors: vec![],
         }
     }
 }
@@ -166,6 +170,18 @@ impl Settings {
         }
         if !["involved", "reviewRequested", "authored"].contains(&self.scope.as_str()) {
             return Err("Unknown inbox scope.".into());
+        }
+        if self.trusted_authors.len() > 50 {
+            return Err("Trust at most 50 accounts.".into());
+        }
+        let mut logins = std::collections::HashSet::new();
+        for login in &self.trusted_authors {
+            if !valid_login(login) {
+                return Err(format!("“{login}” is not a GitHub account name."));
+            }
+            if !logins.insert(login.to_ascii_lowercase()) {
+                return Err(format!("{login} is already trusted."));
+            }
         }
         let mut names = std::collections::HashSet::new();
         for repo in &self.repositories {
@@ -200,6 +216,13 @@ pub fn validate_repo(repo: &str) -> Result<(), String> {
     }
     Ok(())
 }
+/// A GitHub user login, or an app's bot login such as `claude[bot]`.
+pub fn valid_login(login: &str) -> bool {
+    let name = login.strip_suffix("[bot]").unwrap_or(login);
+    (1..=39).contains(&name.len())
+        && !name.starts_with('-')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
 pub fn valid_sha(sha: &str) -> bool {
     sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit())
 }
@@ -229,7 +252,7 @@ pub struct Snapshot {
 }
 pub fn eligible(pr: &PullRequest, s: &Snapshot) -> bool {
     !pr.draft
-        && trusted_source(pr)
+        && trusted_source(pr, &s.settings.trusted_authors)
         && s.settings
             .repositories
             .iter()
@@ -249,12 +272,14 @@ pub fn publishable(r: &Review, pr: &PullRequest) -> bool {
 /// The agent can read files outside its worktree and setup runs PR code, so
 /// anyone able to plant instructions in the diff could otherwise have local
 /// secrets posted publicly.
-pub fn trusted_source(pr: &PullRequest) -> bool {
+pub fn trusted_source(pr: &PullRequest, trusted_authors: &[String]) -> bool {
     pr.head_repo.eq_ignore_ascii_case(&pr.repo)
-        && matches!(
+        && (matches!(
             pr.author_association.as_str(),
             "OWNER" | "MEMBER" | "COLLABORATOR"
-        )
+        ) || trusted_authors
+            .iter()
+            .any(|login| login.eq_ignore_ascii_case(&pr.author)))
 }
 static CREDENTIAL_PATTERNS: LazyLock<Vec<(&str, Regex)>> = LazyLock::new(|| {
     [
@@ -346,21 +371,50 @@ pub(crate) mod tests {
     fn only_repository_insiders_are_trusted_for_automatic_publication() {
         let mut p = pr();
         // State saved before provenance was recorded deserializes as untrusted.
-        assert!(!trusted_source(&p));
+        assert!(!trusted_source(&p, &[]));
         p.head_repo = "A/B".into();
         for association in ["OWNER", "MEMBER", "COLLABORATOR"] {
             p.author_association = association.into();
-            assert!(trusted_source(&p), "{association}");
+            assert!(trusted_source(&p, &[]), "{association}");
         }
         for association in ["CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "NONE", ""] {
             p.author_association = association.into();
-            assert!(!trusted_source(&p), "{association}");
+            assert!(!trusted_source(&p, &[]), "{association}");
         }
         p.author_association = "MEMBER".into();
         p.head_repo = "someone/b".into();
-        assert!(!trusted_source(&p));
+        assert!(!trusted_source(&p, &[]));
         p.head_repo = String::new();
-        assert!(!trusted_source(&p));
+        assert!(!trusted_source(&p, &[]));
+    }
+    #[test]
+    fn trusted_accounts_extend_trust_only_to_same_repository_prs() {
+        let mut p = pr();
+        p.head_repo = p.repo.clone();
+        p.author = "claude[bot]".into();
+        p.author_association = "NONE".into();
+        let trusted = ["Claude[bot]".to_string()];
+        assert!(!trusted_source(&p, &[]));
+        assert!(trusted_source(&p, &trusted));
+        assert!(!trusted_source(&p, &["codex[bot]".to_string()]));
+        p.head_repo = "someone/b".into();
+        assert!(!trusted_source(&p, &trusted));
+    }
+    #[test]
+    fn validates_trusted_account_names() {
+        for good in ["claude[bot]", "dependabot[bot]", "JW-JCLS", "a"] {
+            assert!(valid_login(good), "{good}");
+        }
+        for bad in ["", "[bot]", "-lead", "has space", "a/b", "x[bot][bot]", &"a".repeat(40)] {
+            assert!(!valid_login(bad), "{bad}");
+        }
+        let mut s = Settings {
+            trusted_authors: vec!["claude[bot]".into(), "Claude[bot]".into()],
+            ..Settings::default()
+        };
+        assert!(s.validate().is_err());
+        s.trusted_authors.pop();
+        assert!(s.validate().is_ok());
     }
     #[test]
     fn detects_credential_shaped_text() {
