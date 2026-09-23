@@ -20,8 +20,10 @@ import {
   FolderGit2,
   GitBranch,
   GitPullRequest,
+  Globe,
   Inbox,
   Loader2,
+  Lock,
   MessageSquare,
   PanelLeftClose,
   Play,
@@ -55,6 +57,7 @@ import {
   type Status,
   type Settings,
   type Repository,
+  type RepositorySummary,
   type ChangedFile,
 } from "./types";
 
@@ -1448,6 +1451,168 @@ function Files({ pr }: { pr: PullRequest }) {
   );
 }
 
+function Visibility({ isPrivate }: { isPrivate: boolean }) {
+  return (
+    <span className={`visibility ${isPrivate ? "" : "public"}`}>
+      {isPrivate ? <Lock size={11} /> : <Globe size={11} />}
+      {isPrivate ? "Private" : "Public"}
+    </span>
+  );
+}
+// Loaded once per session; the refresh button picks up newly created repositories.
+let repositoryCache: RepositorySummary[] | null = null;
+function RepoPicker({
+  value,
+  onChange,
+  connected,
+}: {
+  value: string;
+  onChange: (name: string) => void;
+  connected: string[];
+}) {
+  const { action } = useOrbit();
+  const [repos, setRepos] = useState(repositoryCache);
+  const [loading, setLoading] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [query, setQuery] = useState("");
+  const load = async () => {
+    setLoading(true);
+    const result = await action<RepositorySummary[]>("list_repositories");
+    if (result) repositoryCache = result;
+    setRepos(result ?? repositoryCache ?? []);
+    setFailed(!result);
+    setLoading(false);
+  };
+  useEffect(() => {
+    if (!repositoryCache) void load();
+    // Load on first open only; later refreshes are explicit.
+  }, []);
+  const selected = repos?.find((r) => r.name === value);
+  if (value)
+    return (
+      <>
+        <div className="repo-picker-selected">
+          <FolderGit2 size={15} />
+          <strong>{value}</strong>
+          {selected && <Visibility isPrivate={selected.private} />}
+          <button
+            type="button"
+            className="text-button"
+            onClick={() => onChange("")}
+          >
+            Change
+          </button>
+        </div>
+        {selected && !selected.private && (
+          <small>
+            Public repository: published reviews are visible to anyone.
+          </small>
+        )}
+      </>
+    );
+  const q = query.trim().toLowerCase();
+  const matches = (repos ?? []).filter((r) =>
+    `${r.name} ${r.description}`.toLowerCase().includes(q),
+  );
+  const manual =
+    /^[\w.-]+\/[\w.-]+$/.test(query.trim()) &&
+    !matches.some((r) => r.name.toLowerCase() === q)
+      ? query.trim()
+      : null;
+  const pick = (name: string) => {
+    onChange(name);
+    setQuery("");
+  };
+  const limit = 50;
+  return (
+    <div className="repo-picker">
+      <div className="repo-picker-search">
+        <Search size={15} />
+        <input
+          aria-label="Search your repositories"
+          placeholder="Search your repositories…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            // Enter picks the first match instead of submitting the form.
+            if (e.key !== "Enter") return;
+            e.preventDefault();
+            const first = matches.find((r) => !connected.includes(r.name));
+            if (first) pick(first.name);
+            else if (manual) pick(manual);
+          }}
+        />
+        <button
+          type="button"
+          className="icon-button"
+          aria-label="Refresh repositories"
+          disabled={loading}
+          onClick={() => void load()}
+        >
+          <RefreshCw size={14} className={loading ? "spin" : ""} />
+        </button>
+      </div>
+      <div className="repo-options">
+        {repos === null ? (
+          <div className="repo-options-note">
+            <Loader2 className="spin" size={14} />
+            Loading your repositories…
+          </div>
+        ) : (
+          <>
+            {matches.slice(0, limit).map((r) => {
+              const taken = connected.includes(r.name);
+              return (
+                <button
+                  type="button"
+                  key={r.name}
+                  className="repo-option"
+                  disabled={taken}
+                  onClick={() => pick(r.name)}
+                >
+                  <span>
+                    <strong>{r.name}</strong>
+                    {r.description && <small>{r.description}</small>}
+                  </span>
+                  {taken ? (
+                    <em>Connected</em>
+                  ) : (
+                    <Visibility isPrivate={r.private} />
+                  )}
+                </button>
+              );
+            })}
+            {manual && (
+              <button
+                type="button"
+                className="repo-option"
+                onClick={() => pick(manual)}
+              >
+                <span>
+                  <strong>Use {manual}</strong>
+                  <small>Not in your repository list.</small>
+                </span>
+              </button>
+            )}
+            {matches.length > limit && (
+              <div className="repo-options-note">
+                Showing {limit} of {matches.length}. Keep typing to narrow the
+                list.
+              </div>
+            )}
+            {!matches.length && !manual && (
+              <div className="repo-options-note">
+                {failed
+                  ? "Couldn’t load your repositories. Type owner/name to connect one directly."
+                  : "No matching repositories. Type owner/name to connect one directly."}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
 function Repositories() {
   const { snapshot: s, action } = useOrbit();
   const [editing, setEditing] = useState<Repository | null>(null);
@@ -1587,17 +1752,16 @@ function Repositories() {
           onClose={() => setEditing(null)}
         >
           <form onSubmit={(e) => void save(e)}>
-            <label>
+            <div className="field">
               GitHub repository
-              <input
-                required
-                placeholder="owner/repository"
+              <RepoPicker
                 value={editing.name}
-                onChange={(e) =>
-                  setEditing({ ...editing, name: e.target.value })
-                }
+                onChange={(name) => setEditing({ ...editing, name })}
+                connected={s.settings.repositories
+                  .map((r) => r.name)
+                  .filter((name) => name !== original)}
               />
-            </label>
+            </div>
             <label>
               Local checkout path
               <input
@@ -1678,7 +1842,11 @@ function Repositories() {
                   Disconnect
                 </button>
               )}
-              <button className="button primary" disabled={busy} type="submit">
+              <button
+                className="button primary"
+                disabled={busy || !editing.name}
+                type="submit"
+              >
                 {busy ? (
                   <Loader2 size={14} className="spin" />
                 ) : (

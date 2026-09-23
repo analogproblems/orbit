@@ -20,7 +20,7 @@ If needed, sign in with `gh auth login` and `codex login` first. Orbit does not 
 ## Connect your repositories
 
 1. Open **Settings** and verify GitHub and Codex are connected. Models and supported reasoning efforts come from your installed Codex app-server; leaving either field blank uses its defaults.
-2. Open **Repositories → Add repository**. Enter `owner/repository` and the **absolute path** to an existing local clone. Its `origin` must match the same repository on github.com, over HTTPS or SSH.
+2. Open **Repositories → Add repository**. Pick the repository from the searchable list of repositories your GitHub account can access (owned, collaborator, or organization; archived repositories are hidden), or type `owner/repository`. Each entry shows whether it is private or public. Then enter the **absolute path** to an existing local clone. Its `origin` must match the same repository on github.com, over HTTPS or SSH.
 3. Optionally configure an environment setup command, such as `npm ci --ignore-scripts --cache .cache/npm`. It runs in the new worktree through Codex's sandboxed `command/exec`, with a five-minute timeout. Enable sandbox network access if setup must download dependencies. The command uses `/bin/sh` on Unix and PowerShell on Windows.
 4. Sync the inbox, select a PR, and click **Start review**. The chat shows progress, execution logs, approval requests, and the final review. Continue the same conversation with a follow-up.
 5. Preview and publish the report using **Publish review**. Orbit posts an ordinary PR comment with the reviewed head/base SHAs, model, effort, and report.

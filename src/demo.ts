@@ -3,6 +3,7 @@ import {
   type Snapshot,
   type PullRequest,
   type Review,
+  type RepositorySummary,
 } from "./types";
 const ago = (minutes: number) =>
   new Date(Date.now() - minutes * 60000).toISOString();
@@ -74,6 +75,21 @@ const data = [
     ["dependencies"],
   ],
 ] as const;
+export const demoRepositories: RepositorySummary[] = (
+  [
+    ["acme/orbit", true, "Pull request review workspace", 12],
+    ["acme/api", true, "HTTP API and background jobs", 40],
+    ["acme/dashboard", true, "Customer dashboard", 90],
+    ["acme/docs", false, "Public documentation site", 300],
+    ["acme/infra", true, "Terraform and deployment configuration", 1200],
+    ["you/dotfiles", false, "Shell and editor configuration", 4000],
+  ] as const
+).map(([name, isPrivate, description, minutes]) => ({
+  name,
+  private: isPrivate,
+  description,
+  pushedAt: ago(minutes),
+}));
 export const demoReport =
   "## Review findings\n\n### [P2] Preserve repository overrides when saving defaults\n\n`src/config/repositories.ts:48`\n\nSaving the global review configuration replaces the repository configuration object. A repository with its own model or environment setup loses those overrides the next time global settings are saved.\n\nMerge the updated defaults with the existing repository entries, and add a regression test that saves defaults after configuring an override.\n\n### [P2] Validate the workspace before enqueueing a review\n\n`src/reviews/queue.ts:72`\n\nA deleted or moved checkout still passes the current configuration check. The job enters the queue and fails during worktree creation without a useful recovery action.\n\nCheck that the configured directory is a Git repository before enqueueing, then show a link to repository settings when validation fails.\n\n---\nReviewed the configuration flow, queue behavior, and affected tests. These are illustrative findings in demo mode.";
 export function freshDemo(): Snapshot {

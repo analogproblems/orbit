@@ -172,6 +172,52 @@ pub async fn discover(login: &str, scope: &str) -> Result<Vec<(String, u64)>, St
     }
     Ok(found)
 }
+/// Repositories the signed-in user owns, collaborates on, or reaches through an
+/// organization, most recently pushed first.
+pub async fn repositories() -> Result<Vec<RepositorySummary>, String> {
+    let mut repos = vec![];
+    for page in 1..=10 {
+        let v = api(
+            "user/repos",
+            "GET",
+            &[
+                (
+                    "affiliation",
+                    "owner,collaborator,organization_member".into(),
+                ),
+                ("sort", "pushed".into()),
+                ("per_page", "100".into()),
+                ("page", page.to_string()),
+            ],
+            None,
+        )
+        .await?;
+        let items = v.as_array().ok_or("Invalid repository list")?;
+        repos.extend(summarize_repositories(items));
+        if items.len() < 100 {
+            break;
+        }
+    }
+    Ok(repos)
+}
+/// Archived repositories are omitted because they cannot receive new pull requests.
+fn summarize_repositories(items: &[Value]) -> Vec<RepositorySummary> {
+    items
+        .iter()
+        .filter(|r| r["archived"] != true)
+        .filter_map(|r| {
+            let name = r["full_name"].as_str()?;
+            validate_repo(name).ok()?;
+            Some(RepositorySummary {
+                name: name.into(),
+                // Unknown visibility is shown as public, the more cautious label.
+                private: r["private"].as_bool().unwrap_or(false),
+                description: r["description"].as_str().unwrap_or("").into(),
+                pushed_at: r["pushed_at"].as_str().unwrap_or("").into(),
+            })
+        })
+        .collect()
+}
 pub async fn files(repo: &str, number: u64) -> Result<Value, String> {
     validate_repo(repo)?;
     let mut files = vec![];
@@ -239,4 +285,27 @@ pub async fn publish(pr: &PullRequest, r: &Review) -> Result<String, String> {
         .as_str()
         .map(str::to_owned)
         .ok_or("GitHub did not return a comment URL.".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn summarizes_accessible_repositories() {
+        let items = json!([
+            {"full_name":"me/app","private":true,"description":"App","pushed_at":"2026-09-01T00:00:00Z"},
+            {"full_name":"me/site","private":false,"description":null},
+            {"full_name":"me/old","private":true,"archived":true},
+            {"full_name":"me/bad;name","private":true},
+            {"full_name":"org/unknown"}
+        ]);
+        let repos = summarize_repositories(items.as_array().unwrap());
+        let names: Vec<_> = repos.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["me/app", "me/site", "org/unknown"]);
+        assert!(repos[0].private);
+        assert_eq!(repos[0].description, "App");
+        assert!(!repos[1].private);
+        assert_eq!(repos[1].description, "");
+        assert!(!repos[2].private);
+    }
 }

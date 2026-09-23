@@ -1525,7 +1525,8 @@ code {
   gap: 20px;
 }
 .settings-section label,
-.modal label {
+.modal label,
+.modal .field {
   display: block;
   color: #b0baa8;
   font-size: 12px;
@@ -1997,6 +1998,115 @@ code {
   font-size: 12px;
   color: #cdd5c5;
   margin-top: 17px;
+}
+.repo-picker,
+.repo-picker-selected {
+  margin-top: 9px;
+  border: 1px solid #373836;
+  border-radius: 7px;
+  background: #171916;
+}
+.repo-picker {
+  overflow: hidden;
+}
+.repo-picker:focus-within {
+  border-color: #71756c;
+}
+.repo-picker-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px 0 11px;
+  border-bottom: 1px solid #2c2e2b;
+  color: #81887a;
+}
+.repo-picker-search input {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 13px;
+}
+.repo-options {
+  max-height: 232px;
+  overflow: auto;
+  padding: 4px;
+}
+.repo-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 9px;
+  border-radius: 5px;
+  text-align: left;
+}
+.repo-option:hover:not(:disabled) {
+  background: #262924;
+}
+.repo-option > span {
+  min-width: 0;
+}
+.repo-option strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: #d7dbd2;
+}
+.modal .repo-option small {
+  margin-top: 2px;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.repo-option em {
+  font-style: normal;
+  font-size: 11px;
+  color: #7d807a;
+  white-space: nowrap;
+}
+.repo-options-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 9px;
+  font-size: 12px;
+  font-weight: 400;
+  color: #7e8b77;
+}
+.repo-picker-selected {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 37px;
+  padding: 0 11px;
+  color: #d7dbd2;
+  font-size: 13px;
+}
+.repo-picker-selected strong {
+  font-weight: 500;
+}
+.repo-picker-selected .text-button {
+  margin-left: auto;
+}
+.visibility {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 400;
+  padding: 3px 6px;
+  border-radius: 4px;
+  color: #9da398;
+  background: #252724;
+}
+.visibility.public {
+  color: #ddba91;
+  background: #3b3420;
 }
 .autopilot-skip {
   margin-top: 12px;

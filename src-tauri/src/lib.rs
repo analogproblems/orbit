@@ -74,6 +74,10 @@ mod desktop {
         github::files(&pr.repo, pr.number).await
     }
     #[tauri::command]
+    async fn list_repositories() -> Result<Vec<types::RepositorySummary>, String> {
+        github::repositories().await
+    }
+    #[tauri::command]
     async fn open_github(url: String) -> Result<(), String> {
         if !url.starts_with("https://github.com/") || url.chars().any(|c| c.is_control()) {
             return Err("Only GitHub links can be opened.".into());
@@ -113,6 +117,7 @@ mod desktop {
                 send_message,
                 answer_approval,
                 get_files,
+                list_repositories,
                 open_github
             ])
             .build(tauri::generate_context!())

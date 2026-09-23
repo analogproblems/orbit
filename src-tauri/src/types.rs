@@ -38,6 +38,15 @@ pub struct PullRequest {
     #[serde(default)]
     pub author_association: String,
 }
+/// A repository the signed-in user can access, offered when connecting one.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositorySummary {
+    pub name: String,
+    pub private: bool,
+    pub description: String,
+    pub pushed_at: String,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Message {

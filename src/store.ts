@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { freshDemo, demoReport } from "./demo";
+import { freshDemo, demoReport, demoRepositories } from "./demo";
 import {
   defaults,
   canPublish,
@@ -241,6 +241,7 @@ async function demoAction(
           '@@ -0,0 +1,4 @@\n+it("persists repository configuration", async () => {\n+  await saveConfig(configuration);\n+  expect(await readConfig()).toEqual(configuration);\n+});',
       },
     ] satisfies ChangedFile[];
+  if (command === "list_repositories") return demoRepositories;
   if (command === "connect_services") {
     commit();
     return;

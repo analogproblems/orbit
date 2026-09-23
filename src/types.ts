@@ -63,6 +63,12 @@ export interface Repository {
   setupCommand: string;
   networkAccess: boolean;
 }
+export interface RepositorySummary {
+  name: string;
+  private: boolean;
+  description: string;
+  pushedAt: string;
+}
 export interface Settings {
   automatic: boolean;
   autoPost: boolean;
