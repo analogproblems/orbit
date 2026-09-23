@@ -12,7 +12,8 @@
     "test": "vitest run",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml --no-default-features",
     "format": "prettier --write src package.json tsconfig.json vite.config.ts && cargo fmt --manifest-path src-tauri/Cargo.toml",
-    "check": "npm run build && npm test && npm run test:rust",
+    "check:desktop": "cargo check --manifest-path src-tauri/Cargo.toml --all-targets",
+    "check": "npm run build && npm test && npm run test:rust && npm run check:desktop",
     "diagnose": "cargo run --manifest-path src-tauri/Cargo.toml --no-default-features --example diagnose"
   },
   "dependencies": {
