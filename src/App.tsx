@@ -1175,7 +1175,7 @@ export default function App() {
                   id: approval.id,
                   accept: false,
                 });
-                setApprovalOpen(false);
+                if (!useOrbit.getState().error) setApprovalOpen(false);
               }}
             >
               Deny
@@ -1187,7 +1187,7 @@ export default function App() {
                   id: approval.id,
                   accept: true,
                 });
-                setApprovalOpen(false);
+                if (!useOrbit.getState().error) setApprovalOpen(false);
               }}
             >
               Approve once
@@ -1911,9 +1911,21 @@ function SettingsPage() {
       setDraft({ ...draft, trustedAuthors: [...draft.trustedAuthors, login] });
     setNewLogin("");
   };
-  const settingsKey = JSON.stringify(s.settings);
+  // Repositories are edited on their own page and never saved from this form.
+  const formKey = (settings: Settings) =>
+    JSON.stringify({ ...settings, repositories: undefined });
+  const settingsKey = formKey(s.settings);
+  const baseline = useRef(settingsKey);
   useEffect(() => {
-    setDraft(JSON.parse(settingsKey) as Settings);
+    // Adopt changes made elsewhere only while the form has no unsaved edits.
+    // The updater runs later, so compare against the baseline captured now.
+    const previous = baseline.current;
+    baseline.current = settingsKey;
+    setDraft((current) =>
+      formKey(current) === previous
+        ? { ...(JSON.parse(settingsKey) as Settings), repositories: [] }
+        : current,
+    );
   }, [settingsKey]);
   const model =
     s.models.find((m) => m.model === draft.model) ||
