@@ -145,7 +145,13 @@ impl Engine {
         file.write_all(&data)
             .and_then(|_| file.sync_all())
             .map_err(|e| e.to_string())?;
-        std::fs::rename(temp, self.root.join("state.json")).map_err(|e| e.to_string())
+        std::fs::rename(temp, self.root.join("state.json")).map_err(|e| e.to_string())?;
+        // Make the rename itself durable.
+        #[cfg(unix)]
+        std::fs::File::open(&self.root)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|e| e.to_string())?;
+        Ok(())
     }
     pub fn launch(self: &Arc<Self>) {
         let e = self.clone();
@@ -755,6 +761,13 @@ impl Engine {
             r.clone()
         };
         self.dirty.store(true, Ordering::SeqCst);
+        if let Some(thread) = &r.thread_id {
+            let prefix = format!("{thread}:");
+            self.items
+                .lock()
+                .await
+                .retain(|key, _| !key.starts_with(&prefix));
+        }
         // Before its Codex thread exists, a review is still fetching, checking out,
         // or running setup: abort it, which also kills any running git process.
         if r.thread_id.is_none() {
@@ -872,6 +885,14 @@ impl Engine {
                 return Err(reason);
             }
         }
+        // Persisted first, so a crash mid-request is recovered as an interrupted publication.
+        self.update(|s| {
+            if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
+                r.status = "publishing".into();
+            }
+        })
+        .await;
+        let _ = self.flush().await;
         // A stable marker reconciles network timeouts or crashes without duplicate comments.
         match github::publish(&fresh, &r).await {
             Ok(url) => {
@@ -887,13 +908,13 @@ impl Engine {
                 self.flush().await
             }
             Err(error) => {
-                self.update(|s|{if let Some(r)=s.reviews.iter_mut().find(|r|r.id==id){r.error=Some(format!("Comment not confirmed: {error}. Retry will check for an existing comment."));}}).await;
+                self.update(|s|{if let Some(r)=s.reviews.iter_mut().find(|r|r.id==id){r.status="ready".into();r.error=Some(format!("Comment not confirmed: {error}. Retry will check for an existing comment."));}}).await;
                 Err(error)
             }
         }
     }
     pub async fn message(&self, id: &str, text: &str) -> Result<(), String> {
-        if text.trim().is_empty() || text.len() > 32000 {
+        if text.trim().is_empty() || text.chars().count() > 32000 {
             return Err("Enter a message between 1 and 32,000 characters.".into());
         }
         let r = {
@@ -913,6 +934,9 @@ impl Engine {
                 .ok_or("Unknown review")?;
             if active(&r.status) {
                 return Err("Wait for the current turn to finish, or stop it first.".into());
+            }
+            if r.status == "publishing" {
+                return Err("Wait for publication to finish.".into());
             }
             if r.thread_id.is_none() {
                 return Err("Start a review first to create its Codex chat.".into());
@@ -1553,6 +1577,28 @@ mod tests {
             .lines()
             .filter(|l| l.starts_with("worktree "))
             .count()
+    }
+    #[tokio::test]
+    async fn stopping_a_review_forgets_its_in_progress_items() {
+        let (_d, e, id) = running_engine().await;
+        e.event(json!({"method":"item/started","params":{"threadId":"thread-1","turnId":"turn-1","item":{"id":"cmd","type":"commandExecution","command":"ls"}}})).await;
+        assert_eq!(e.items.lock().await.len(), 1);
+        e.cancel(&id).await.unwrap();
+        assert!(e.items.lock().await.is_empty());
+    }
+    #[tokio::test]
+    async fn limits_follow_ups_by_characters_not_bytes() {
+        let (d, e, id) = running_engine().await;
+        e.update(|s| {
+            s.reviews[0].status = "ready".into();
+            s.reviews[0].worktree = Some(d.path().to_string_lossy().into());
+        })
+        .await;
+        // 32,000 two-byte characters are within the limit.
+        let error = e.message(&id, &"é".repeat(32000)).await.unwrap_err();
+        assert!(!error.contains("32,000"), "{error}");
+        let error = e.message(&id, &"é".repeat(32001)).await.unwrap_err();
+        assert!(error.contains("32,000"), "{error}");
     }
     #[tokio::test]
     async fn ignores_events_from_a_replaced_codex_connection() {

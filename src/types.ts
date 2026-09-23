@@ -4,6 +4,7 @@ export type Status =
   | "reviewing"
   | "awaitingApproval"
   | "ready"
+  | "publishing"
   | "posted"
   | "failed"
   | "cancelled";
@@ -127,6 +128,7 @@ export const statusLabels: Record<Status, string> = {
   reviewing: "Reviewing",
   awaitingApproval: "Needs approval",
   ready: "Ready to publish",
+  publishing: "Publishing",
   posted: "Published",
   failed: "Failed",
   cancelled: "Stopped",

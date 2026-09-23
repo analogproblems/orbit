@@ -1264,7 +1264,7 @@ function Chat({
   const step =
     review.status === "posted"
       ? 3
-      : review.status === "ready"
+      : review.status === "ready" || review.status === "publishing"
         ? 2
         : ["reviewing", "awaitingApproval"].includes(review.status)
           ? 1
