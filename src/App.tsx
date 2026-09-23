@@ -1,4 +1,5 @@
 import {
+  memo,
   useEffect,
   useRef,
   useState,
@@ -86,7 +87,8 @@ function Logo({ small = false }: { small?: boolean }) {
     />
   );
 }
-function Markdown({ children }: { children: string }) {
+// Every state update replaces the snapshot, so skip re-parsing unchanged text.
+const Markdown = memo(function Markdown({ children }: { children: string }) {
   return (
     <div className="markdown">
       <ReactMarkdown
@@ -99,7 +101,7 @@ function Markdown({ children }: { children: string }) {
       </ReactMarkdown>
     </div>
   );
-}
+});
 function StatusBadge({ status }: { status: Status | "unreviewed" | "draft" }) {
   const running = activeStatuses.includes(status as Status);
   return (

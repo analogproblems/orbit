@@ -15,13 +15,16 @@ pub struct Engine {
     pub state: Mutex<Snapshot>,
     pub rpc: Mutex<Option<Arc<Rpc>>>,
     root: PathBuf,
-    emit: Box<dyn Fn(Snapshot) + Send + Sync>,
+    emit: Box<dyn Fn(&Snapshot) + Send + Sync>,
     connect_lock: Mutex<()>,
     poll_lock: Mutex<()>,
     publish_lock: Mutex<()>,
     git_lock: Mutex<()>,
     items: Mutex<HashMap<String, Value>>,
+    /// State must be written to disk (and shown) on the next flush.
     dirty: AtomicBool,
+    /// State only needs to be shown, e.g. streamed text not yet worth persisting.
+    changed: AtomicBool,
     stopping: AtomicBool,
     /// Repositories whose open PRs synced in the latest poll; autopilot only acts on these.
     synced_repos: Mutex<HashSet<String>>,
@@ -30,7 +33,7 @@ pub struct Engine {
 impl Engine {
     pub fn new(
         root: PathBuf,
-        emit: impl Fn(Snapshot) + Send + Sync + 'static,
+        emit: impl Fn(&Snapshot) + Send + Sync + 'static,
     ) -> Result<Arc<Self>, String> {
         std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
         let instance_lock = std::fs::OpenOptions::new()
@@ -84,6 +87,7 @@ impl Engine {
             git_lock: Mutex::new(()),
             items: Mutex::new(HashMap::new()),
             dirty: AtomicBool::new(true),
+            changed: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
             synced_repos: Mutex::new(HashSet::new()),
             _instance_lock: instance_lock,
@@ -97,19 +101,29 @@ impl Engine {
         f(&mut s);
         self.dirty.store(true, Ordering::SeqCst);
     }
+    /// Like `update`, for changes the UI should show but that need not survive
+    /// a restart on their own, such as streamed text before its item completes.
+    async fn update_live(&self, f: impl FnOnce(&mut Snapshot)) {
+        let mut s = self.state.lock().await;
+        f(&mut s);
+        self.changed.store(true, Ordering::SeqCst);
+    }
     pub async fn flush(&self) -> Result<(), String> {
         let mut s = self.state.lock().await;
         if self.dirty.swap(false, Ordering::SeqCst) {
+            self.changed.store(false, Ordering::SeqCst);
             if let Err(e) = self.persist(&s) {
                 self.dirty.store(true, Ordering::SeqCst);
                 s.settings.automatic = false;
                 s.codex_error = Some(format!(
                     "Could not save local state; automation paused: {e}"
                 ));
-                (self.emit)(s.clone());
+                (self.emit)(&s);
                 return Err(e);
             }
-            (self.emit)(s.clone());
+            (self.emit)(&s);
+        } else if self.changed.swap(false, Ordering::SeqCst) {
+            (self.emit)(&s);
         }
         Ok(())
     }
@@ -148,15 +162,18 @@ impl Engine {
                 if e.flush().await.is_err() {
                     continue;
                 }
-                let s = e.snapshot().await;
-                if last_poll.elapsed().as_secs() >= s.settings.poll_seconds {
+                let (poll_seconds, codex_ready) = {
+                    let s = e.state.lock().await;
+                    (s.settings.poll_seconds, s.codex_ready)
+                };
+                if last_poll.elapsed().as_secs() >= poll_seconds {
                     last_poll = std::time::Instant::now();
                     let p = e.clone();
                     tokio::spawn(async move {
                         let _ = p.poll().await;
                     });
                 }
-                if s.codex_ready {
+                if codex_ready {
                     e.schedule().await;
                 }
             }
@@ -974,6 +991,13 @@ impl Engine {
             return;
         }
         let Some(id) = review_id else { return };
+        // Streamed text is shown immediately; the completed item persists it.
+        let durable = match method {
+            "turn/started" | "turn/completed" | "item/started" | "item/completed"
+            | "serverRequest/resolved" => true,
+            "item/agentMessage/delta" => false,
+            _ => return,
+        };
         let item_key = format!(
             "{}:{}",
             thread.unwrap_or(""),
@@ -994,7 +1018,7 @@ impl Engine {
                 .retain(|key, _| !key.starts_with(&prefix));
         }
         let mut autopost = false;
-        self.update(|s|{
+        let apply = |s: &mut Snapshot|{
    if method=="serverRequest/resolved"{s.approvals.retain(|a|a.id!=p["requestId"]);}
    if method=="turn/completed"{s.approvals.retain(|a|a.review_id!=id);}
    let Some(r)=s.reviews.iter_mut().find(|r|r.id==id)else{return};r.updated_at=now();
@@ -1012,7 +1036,12 @@ impl Engine {
      "interrupted"=>r.status="cancelled".into(),_=>{r.status="failed".into();r.error=Some(p["turn"]["error"]["message"].as_str().unwrap_or("Codex review failed.").into());}
     }}},_=>{}
    }
-  }).await;
+  };
+        if durable {
+            self.update(apply).await;
+        } else {
+            self.update_live(apply).await;
+        }
         if autopost {
             let e = self.clone();
             tokio::spawn(async move {
@@ -1259,6 +1288,38 @@ mod tests {
         drop(e);
         let restored = Engine::new(d.path().into(), |_| {}).unwrap();
         assert_eq!(restored.snapshot().await.reviews[0].status, "cancelled");
+    }
+    #[tokio::test]
+    async fn streamed_text_is_shown_but_persisted_only_when_its_item_completes() {
+        let d = tempfile::tempdir().unwrap();
+        let emits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = emits.clone();
+        let e = Engine::new(d.path().into(), move |_: &Snapshot| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        })
+        .unwrap();
+        let mut review = Review::new(&crate::types::tests::pr(), &Settings::default(), false);
+        review.status = "reviewing".into();
+        review.thread_id = Some("thread-1".into());
+        review.turn_id = Some("turn-1".into());
+        e.update(|s| s.reviews.push(review)).await;
+        e.flush().await.unwrap();
+        let saved = || std::fs::read_to_string(d.path().join("state.json")).unwrap();
+        let shown = emits.load(Ordering::SeqCst);
+
+        e.event(json!({"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"m","delta":"Streaming"}})).await;
+        e.flush().await.unwrap();
+        assert_eq!(emits.load(Ordering::SeqCst), shown + 1);
+        assert!(!saved().contains("Streaming"));
+
+        // Notifications Orbit does not use neither persist nor re-render.
+        e.event(json!({"method":"item/reasoning/textDelta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"r","delta":"..."}})).await;
+        e.flush().await.unwrap();
+        assert_eq!(emits.load(Ordering::SeqCst), shown + 1);
+
+        e.event(json!({"method":"item/completed","params":{"threadId":"thread-1","turnId":"turn-1","item":{"id":"m","type":"agentMessage","text":"Streaming done"}}})).await;
+        e.flush().await.unwrap();
+        assert!(saved().contains("Streaming done"));
     }
     async fn start_follow_up(e: &Engine, before: &str) {
         e.update(|s| {

@@ -96,7 +96,7 @@ mod desktop {
             .setup(|app| {
                 let handle = app.handle().clone();
                 let root = app.path().app_data_dir()?;
-                let engine = engine::Engine::new(root, move |snapshot| {
+                let engine = engine::Engine::new(root, move |snapshot: &types::Snapshot| {
                     let _ = handle.emit("orbit-state", snapshot);
                 })
                 .map_err(std::io::Error::other)?;
