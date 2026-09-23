@@ -279,9 +279,10 @@ pub fn eligible(pr: &PullRequest, s: &Snapshot) -> bool {
                 && ((r.head_sha == pr.head_sha && r.base_sha == pr.base_sha) || active(&r.status))
         })
 }
+/// Whether a review's report matches the PR as it is now. `publish()` checks
+/// the review's status itself when it claims the review.
 pub fn publishable(r: &Review, pr: &PullRequest) -> bool {
-    r.status == "ready"
-        && !r.report.trim().is_empty()
+    !r.report.trim().is_empty()
         && r.head_sha == pr.head_sha
         && r.base_sha == pr.base_sha
 }

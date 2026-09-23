@@ -802,13 +802,46 @@ impl Engine {
         allow_sensitive: bool,
     ) -> Result<(), String> {
         let _guard = self.publish_lock.lock().await;
+        // Claimed under the state lock, so a follow-up cannot start while GitHub is
+        // being checked. Anything short of a confirmed comment releases the claim.
+        let r = {
+            let mut s = self.state.lock().await;
+            let r = s
+                .reviews
+                .iter_mut()
+                .find(|r| r.id == id)
+                .ok_or("Unknown review")?;
+            if r.status != "ready" || r.before_follow_up.is_some() {
+                return Err(
+                    "Only a completed review of the current head and base can be published."
+                        .into(),
+                );
+            }
+            r.status = "publishing".into();
+            r.clone()
+        };
+        self.dirty.store(true, Ordering::SeqCst);
+        let result = self.publish_claimed(&r, automatic, allow_sensitive).await;
+        self.update(|s| {
+            if let Some(r) = s
+                .reviews
+                .iter_mut()
+                .find(|r| r.id == id && r.status == "publishing")
+            {
+                r.status = "ready".into();
+            }
+        })
+        .await;
+        result
+    }
+    async fn publish_claimed(
+        &self,
+        r: &Review,
+        automatic: bool,
+        allow_sensitive: bool,
+    ) -> Result<(), String> {
+        let id = r.id.as_str();
         let s = self.snapshot().await;
-        let r = s
-            .reviews
-            .iter()
-            .find(|r| r.id == id)
-            .ok_or("Unknown review")?
-            .clone();
         // A PR from a disconnected repository may still be open; the fresh fetch
         // below refuses closed ones.
         let cached = s
@@ -817,7 +850,7 @@ impl Engine {
             .chain(&s.history_prs)
             .find(|p| p.id == r.pr_id)
             .ok_or("Unknown pull request. Sync first.")?;
-        if !publishable(&r, cached) {
+        if !publishable(r, cached) {
             return Err(
                 "Only a completed review of the current head and base can be published.".into(),
             );
@@ -847,7 +880,7 @@ impl Engine {
         }
         // Reconcile before fresh-head and automation checks, so slow pagination
         // cannot leave a long gap between the final checks and the POST.
-        if let Some(url) = github::existing_comment(cached, &r).await? {
+        if let Some(url) = github::existing_comment(cached, r).await? {
             self.update(|s| {
                 if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
                     r.status = "posted".into();
@@ -864,7 +897,7 @@ impl Engine {
             s.github_user.as_deref().unwrap_or(""),
         )
         .await?;
-        if !publishable(&r, &fresh) {
+        if !publishable(r, &fresh) {
             return Err("The pull request changed since this review. Sync and review the new commits before publishing.".into());
         }
         // Recheck switches immediately before the write; disabling autopost cancels pending publication.
@@ -886,15 +919,9 @@ impl Engine {
             }
         }
         // Persisted first, so a crash mid-request is recovered as an interrupted publication.
-        self.update(|s| {
-            if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
-                r.status = "publishing".into();
-            }
-        })
-        .await;
         let _ = self.flush().await;
         // A stable marker reconciles network timeouts or crashes without duplicate comments.
-        match github::publish(&fresh, &r).await {
+        match github::publish(&fresh, r).await {
             Ok(url) => {
                 self.update(|s| {
                     if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
@@ -908,7 +935,7 @@ impl Engine {
                 self.flush().await
             }
             Err(error) => {
-                self.update(|s|{if let Some(r)=s.reviews.iter_mut().find(|r|r.id==id){r.status="ready".into();r.error=Some(format!("Comment not confirmed: {error}. Retry will check for an existing comment."));}}).await;
+                self.update(|s|{if let Some(r)=s.reviews.iter_mut().find(|r|r.id==id){r.error=Some(format!("Comment not confirmed: {error}. Retry will check for an existing comment."));}}).await;
                 Err(error)
             }
         }
@@ -1432,6 +1459,17 @@ mod tests {
         .await;
         let error = e.publish(&id, false, false).await.unwrap_err();
         assert!(error.contains("private key") && error.contains("confirm"), "{error}");
+        // Stopping early releases the publication claim.
+        assert_eq!(e.snapshot().await.reviews[0].status, "ready");
+    }
+    #[tokio::test]
+    async fn publication_waits_for_a_running_follow_up() {
+        let (_d, e, id) = running_engine().await;
+        start_follow_up(&e, "ready").await;
+        assert!(e.publish(&id, false, true).await.is_err());
+        let r = e.snapshot().await.reviews[0].clone();
+        assert_eq!(r.status, "reviewing");
+        assert!(r.before_follow_up.is_some());
     }
     #[tokio::test]
     async fn records_credential_kinds_when_the_report_arrives() {

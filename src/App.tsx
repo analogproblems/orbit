@@ -1912,20 +1912,26 @@ function SettingsPage() {
     setNewLogin("");
   };
   // Repositories are edited on their own page and never saved from this form.
-  const formKey = (settings: Settings) =>
-    JSON.stringify({ ...settings, repositories: undefined });
-  const settingsKey = formKey(s.settings);
+  const settingsKey = JSON.stringify({
+    ...s.settings,
+    repositories: undefined,
+  });
   const baseline = useRef(settingsKey);
   useEffect(() => {
-    // Adopt changes made elsewhere only while the form has no unsaved edits.
-    // The updater runs later, so compare against the baseline captured now.
-    const previous = baseline.current;
+    // Adopt each setting changed elsewhere, such as the header's autopilot
+    // switch, unless the form has its own unsaved edit to that setting.
+    const previous = JSON.parse(baseline.current) as Record<string, unknown>;
+    const incoming = JSON.parse(settingsKey) as Record<string, unknown>;
     baseline.current = settingsKey;
-    setDraft((current) =>
-      formKey(current) === previous
-        ? { ...(JSON.parse(settingsKey) as Settings), repositories: [] }
-        : current,
-    );
+    setDraft((current) => {
+      const next: Record<string, unknown> = { ...current };
+      for (const [key, value] of Object.entries(incoming)) {
+        const edited =
+          JSON.stringify(next[key]) !== JSON.stringify(previous[key]);
+        if (!edited) next[key] = value;
+      }
+      return next as unknown as Settings;
+    });
   }, [settingsKey]);
   const model =
     s.models.find((m) => m.model === draft.model) ||
