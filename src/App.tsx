@@ -53,6 +53,7 @@ import {
   latestReview,
   canPublish,
   publishTarget,
+  sameRepository,
   trustedSource,
   type PullRequest,
   type Review,
@@ -794,8 +795,7 @@ export default function App() {
                     ) && (
                       <div className="inline-error autopilot-skip">
                         <AlertCircle size={15} />
-                        {pr.author &&
-                        pr.headRepo?.toLowerCase() === pr.repo.toLowerCase() ? (
+                        {pr.author && sameRepository(pr) ? (
                           <>
                             <span>
                               Autopilot skips pull requests from {pr.author}{" "}
@@ -1516,7 +1516,12 @@ function RepoPicker({
     if (!repositoryCache) void load();
     // Load on first open only; later refreshes are explicit.
   }, []);
-  const selected = repos?.find((r) => r.name === value);
+  // GitHub names are case-insensitive, so `Acme/Repo` is `acme/repo`.
+  const isConnected = (name: string) =>
+    connected.some((c) => c.toLowerCase() === name.toLowerCase());
+  const selected = repos?.find(
+    (r) => r.name.toLowerCase() === value.toLowerCase(),
+  );
   if (value)
     return (
       <>
@@ -1566,7 +1571,8 @@ function RepoPicker({
             // Enter picks the first match instead of submitting the form.
             if (e.key !== "Enter") return;
             e.preventDefault();
-            const first = matches.find((r) => !connected.includes(r.name));
+            if (!q) return;
+            const first = matches.find((r) => !isConnected(r.name));
             if (first) pick(first.name);
             else if (manual) pick(manual);
           }}
@@ -1590,7 +1596,7 @@ function RepoPicker({
         ) : (
           <>
             {matches.slice(0, limit).map((r) => {
-              const taken = connected.includes(r.name);
+              const taken = isConnected(r.name);
               return (
                 <button
                   type="button"

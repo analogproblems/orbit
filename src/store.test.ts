@@ -90,6 +90,10 @@ describe("review interactions", () => {
     expect(
       trustedSource({ ...bot, headRepo: "someone/orbit" }, ["claude[bot]"]),
     ).toBe(false);
+    // After a rename, GitHub reports the new name for both sides.
+    expect(
+      trustedSource({ ...p, headRepo: "acme/new", baseRepo: "acme/new" }),
+    ).toBe(true);
     expect(trustedSource({ ...p, headRepo: "someone/orbit" })).toBe(false);
     expect(trustedSource({ ...p, authorAssociation: "CONTRIBUTOR" })).toBe(
       false,

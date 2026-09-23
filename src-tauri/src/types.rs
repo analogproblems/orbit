@@ -37,6 +37,10 @@ pub struct PullRequest {
     /// GitHub's `author_association`, e.g. OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE.
     #[serde(default)]
     pub author_association: String,
+    /// `owner/name` of the base repository as GitHub reports it now, which
+    /// differs from `repo` after a rename or transfer.
+    #[serde(default)]
+    pub base_repo: String,
 }
 /// A repository the signed-in user can access, offered when connecting one.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -203,7 +207,7 @@ impl Settings {
         let mut names = std::collections::HashSet::new();
         for repo in &self.repositories {
             validate_repo(&repo.name)?;
-            if !names.insert(&repo.name) {
+            if !names.insert(repo.name.to_ascii_lowercase()) {
                 return Err("Each repository can only be configured once.".into());
             }
             if !std::path::Path::new(&repo.path).is_absolute() {
@@ -291,7 +295,12 @@ pub fn publishable(r: &Review, pr: &PullRequest) -> bool {
 /// anyone able to plant instructions in the diff could otherwise have local
 /// secrets posted publicly.
 pub fn trusted_source(pr: &PullRequest, trusted_authors: &[String]) -> bool {
-    pr.head_repo.eq_ignore_ascii_case(&pr.repo)
+    let base = if pr.base_repo.is_empty() {
+        &pr.repo
+    } else {
+        &pr.base_repo
+    };
+    pr.head_repo.eq_ignore_ascii_case(base)
         && (matches!(
             pr.author_association.as_str(),
             "OWNER" | "MEMBER" | "COLLABORATOR"
@@ -417,6 +426,16 @@ pub(crate) mod tests {
         assert!(!trusted_source(&p, &["codex[bot]".to_string()]));
         p.head_repo = "someone/b".into();
         assert!(!trusted_source(&p, &trusted));
+    }
+    #[test]
+    fn renamed_repositories_are_not_mistaken_for_forks() {
+        let mut p = pr();
+        p.author_association = "OWNER".into();
+        p.base_repo = "a/renamed".into();
+        p.head_repo = "a/renamed".into();
+        assert!(trusted_source(&p, &[]));
+        p.head_repo = "someone/renamed".into();
+        assert!(!trusted_source(&p, &[]));
     }
     #[test]
     fn validates_trusted_account_names() {

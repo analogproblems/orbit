@@ -26,8 +26,9 @@ pub async fn run_with_timeout(
             Stdio::null()
         })
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+        .stderr(Stdio::piped());
+    #[cfg(not(unix))]
+    cmd.kill_on_drop(true);
     // Ignore Git hooks and prevent credential prompts from hanging the background worker.
     cmd.env("GIT_TERMINAL_PROMPT", "0")
         .env("GH_PROMPT_DISABLED", "1");
@@ -37,6 +38,8 @@ pub async fn run_with_timeout(
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Cannot start {program}: {e}"))?;
+    #[cfg(unix)]
+    let mut terminate = TerminateOnDrop(child.id());
     if let Some(body) = input {
         child
             .stdin
@@ -46,8 +49,13 @@ pub async fn run_with_timeout(
             .await
             .map_err(|e| e.to_string())?;
     }
-    let out = tokio::time::timeout(timeout, child.wait_with_output())
-        .await
+    let waited = tokio::time::timeout(timeout, child.wait_with_output()).await;
+    #[cfg(unix)]
+    if matches!(waited, Ok(Ok(_))) {
+        // The command exited and was reaped; there is nothing left to stop.
+        terminate.0 = None;
+    }
+    let out = waited
         .map_err(|_| format!("{program} timed out after {} seconds.", timeout.as_secs()))?
         .map_err(|e| e.to_string())?;
     if !out.status.success() {
@@ -57,6 +65,20 @@ pub async fn run_with_timeout(
         ));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+/// Stops a command that is abandoned before it finishes (a timeout or a stopped
+/// review) with SIGTERM rather than SIGKILL, so git can remove its lock files.
+#[cfg(unix)]
+struct TerminateOnDrop(Option<u32>);
+#[cfg(unix)]
+impl Drop for TerminateOnDrop {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0 {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGTERM);
+            }
+        }
+    }
 }
 pub async fn api(
     endpoint: &str,
@@ -119,10 +141,10 @@ pub async fn open_pulls(repo: &str, login: &str) -> Result<Vec<PullRequest>, Str
             prs.push(parse_pull(item, repo, login)?);
         }
         if items.len() < 100 {
-            break;
+            return Ok(prs);
         }
     }
-    Ok(prs)
+    Err("More than 1,000 open pull requests; Orbit lists at most 1,000 per repository.".into())
 }
 fn parse_pull(v: &Value, repo: &str, login: &str) -> Result<PullRequest, String> {
     let number = v["number"].as_u64().ok_or("Invalid PR number")?;
@@ -160,6 +182,10 @@ fn parse_pull(v: &Value, repo: &str, login: &str) -> Result<PullRequest, String>
             .unwrap_or("")
             .into(),
         author_association: text("author_association"),
+        base_repo: v["base"]["repo"]["full_name"]
+            .as_str()
+            .unwrap_or("")
+            .into(),
     };
     if !valid_sha(&pr.head_sha) || !valid_sha(&pr.base_sha) {
         return Err("GitHub returned an invalid commit SHA.".into());
@@ -297,13 +323,33 @@ mod tests {
             "ok\n"
         );
     }
+    #[tokio::test]
+    async fn asks_abandoned_commands_to_exit_with_sigterm() {
+        let d = tempfile::tempdir().unwrap();
+        let marker = d.path().join("terminated");
+        let script = format!(
+            "trap 'touch {}; exit 1' TERM; sleep 5 & wait",
+            marker.display()
+        );
+        let args = ["-c".to_string(), script];
+        assert!(run_with_timeout("sh", &args, None, None, Duration::from_millis(200))
+            .await
+            .is_err());
+        for _ in 0..50 {
+            if marker.exists() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("the command did not receive SIGTERM");
+    }
     #[test]
     fn parses_listed_pull_requests() {
         let item = json!({
             "number": 7, "title": "Fix", "body": null, "html_url": "https://github.com/me/app/pull/7",
             "user": {"login": "claude[bot]"}, "author_association": "NONE",
             "head": {"sha": "a".repeat(40), "ref": "fix", "repo": {"full_name": "me/app"}},
-            "base": {"sha": "b".repeat(40), "ref": "main"},
+            "base": {"sha": "b".repeat(40), "ref": "main", "repo": {"full_name": "me/app"}},
             "updated_at": "2026-09-22T00:00:00Z", "draft": false,
             "requested_reviewers": [{"login": "me"}], "labels": [{"name": "bug"}]
         });
@@ -312,6 +358,7 @@ mod tests {
         assert_eq!(pr.author, "claude[bot]");
         assert_eq!(pr.head_repo, "me/app");
         assert_eq!(pr.author_association, "NONE");
+        assert_eq!(pr.base_repo, "me/app");
         assert!(pr.review_requested);
         assert_eq!(pr.labels, ["bug"]);
         assert_eq!((pr.additions, pr.changed_files), (0, 0));

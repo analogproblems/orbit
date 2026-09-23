@@ -161,6 +161,7 @@ impl Engine {
         let e = self.clone();
         tokio::spawn(async move {
             let _ = e.poll().await;
+            e.clean_worktrees().await;
         });
         let e = self.clone();
         tokio::spawn(async move {
@@ -180,6 +181,7 @@ impl Engine {
                     let p = e.clone();
                     tokio::spawn(async move {
                         let _ = p.poll().await;
+                        p.clean_worktrees().await;
                     });
                 }
                 if codex_ready {
@@ -199,6 +201,7 @@ impl Engine {
         {
             return Ok(());
         }
+        self.retire_dead_connection().await;
         let (tx, rx) = mpsc::channel(2048);
         let rpc = match Rpc::start(tx).await {
             Ok(r) => r,
@@ -261,6 +264,39 @@ impl Engine {
                 self.event(event).await;
             }
         }
+    }
+    /// A dead connection's own disconnect event is dropped once it is replaced,
+    /// so its reviews are ended before a new connection takes over.
+    async fn retire_dead_connection(&self) {
+        let dead = self
+            .rpc
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|r| !r.alive.load(Ordering::SeqCst));
+        if dead {
+            self.disconnected().await;
+        }
+    }
+    /// Ends everything that ran on a Codex connection that has gone away.
+    async fn disconnected(&self) {
+        self.items.lock().await.clear();
+        self.update(|s| {
+            s.codex_ready = false;
+            if s.codex_error.is_none() {
+                s.codex_error = Some("Codex disconnected. Reconnect in Settings.".into());
+            }
+            s.approvals.clear();
+            for r in &mut s.reviews {
+                if active(&r.status)
+                    && !r.end_follow_up(Some("Codex disconnected during the follow-up.".into()))
+                {
+                    r.status = "failed".into();
+                    r.error = Some("Codex disconnected. Start a new review to retry.".into());
+                }
+            }
+        })
+        .await;
     }
     async fn client(&self) -> Result<Arc<Rpc>, String> {
         self.rpc
@@ -353,10 +389,12 @@ impl Engine {
             })
             .await;
             *self.synced_repos.lock().await = synced;
-            self.clean_worktrees().await;
             Ok::<(), String>(())
         }
         .await;
+        if result.is_err() {
+            self.synced_repos.lock().await.clear();
+        }
         self.update(|s| {
             s.polling = false;
             if let Err(e) = &result {
@@ -513,36 +551,66 @@ impl Engine {
     /// Removes worktrees of finished reviews whose PR is no longer open in a
     /// connected repository. Their chats stay readable; follow-ups are refused.
     async fn clean_worktrees(&self) {
-        let stale: Vec<(String, String)> = {
+        let candidates: Vec<(String, PullRequest, bool)> = {
             let s = self.state.lock().await;
             s.reviews
                 .iter()
-                .filter(|r| !active(&r.status) && r.status != "publishing")
-                .filter(|r| !s.prs.iter().any(|p| p.id == r.pr_id))
-                .filter_map(|r| Some((r.id.clone(), r.worktree.clone()?)))
+                .filter(|r| r.worktree.is_some() && !s.prs.iter().any(|p| p.id == r.pr_id))
+                .filter_map(|r| {
+                    let pr = s.history_prs.iter().find(|p| p.id == r.pr_id)?;
+                    let connected = s.settings.repositories.iter().any(|c| c.name == pr.repo);
+                    Some((r.id.clone(), pr.clone(), connected))
+                })
                 .collect()
         };
-        for (id, path) in stale {
-            let removed = {
-                let _git = self.git_lock.lock().await;
+        for (id, pr, connected) in candidates {
+            // A PR missing from one listing may have been skipped by pagination,
+            // so in a connected repository, confirm it has closed first.
+            if connected {
+                match github::pull(&pr.repo, pr.number, "").await {
+                    Err(e) if e == github::CLOSED => {}
+                    _ => continue,
+                }
+            }
+            // A long fetch holds the lock; try again after the next sync.
+            let Ok(_git) = self.git_lock.try_lock() else {
+                return;
+            };
+            // Claimed under the state lock, so a follow-up cannot start on it.
+            let path = {
+                let mut s = self.state.lock().await;
+                let reopened = s.prs.iter().any(|p| p.id == pr.id);
+                s.reviews
+                    .iter_mut()
+                    .find(|r| r.id == id)
+                    .filter(|r| {
+                        !reopened
+                            && !active(&r.status)
+                            && r.status != "publishing"
+                            && r.before_follow_up.is_none()
+                    })
+                    .and_then(|r| r.worktree.take())
+            };
+            let Some(path) = path else { continue };
+            let removed = if Path::new(&path).starts_with(self.root.join("worktrees")) {
                 remove_worktree(Path::new(&path)).await
+            } else {
+                Err("it is outside Orbit's worktree directory".into())
             };
             self.update(|s| {
                 let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) else {
                     return;
                 };
-                match &removed {
-                    Ok(()) => {
-                        r.worktree = None;
-                        r.messages.push(Message::new(
-                            "system",
-                            "Removed this review's worktree because its pull request is no longer open.",
-                        ));
+                let note = match removed {
+                    Ok(()) => "Removed this review's worktree because its pull request is no longer open in a connected repository.".to_string(),
+                    Err(e) => {
+                        r.worktree = Some(path.clone());
+                        format!("Could not remove this review's worktree at {path}: {e}")
                     }
-                    Err(e) => r.messages.push(Message::new(
-                        "system",
-                        format!("Could not remove this review's worktree at {path}: {e}"),
-                    )),
+                };
+                // A removal that keeps failing is retried quietly.
+                if r.messages.last().map(|m| &m.text) != Some(&note) {
+                    r.messages.push(Message::new("system", note));
                 }
             })
             .await;
@@ -743,7 +811,7 @@ impl Engine {
         }
         Ok(())
     }
-    pub async fn cancel(&self, id: &str) -> Result<(), String> {
+    pub async fn cancel(self: &Arc<Self>, id: &str) -> Result<(), String> {
         let r = {
             let mut s = self.state.lock().await;
             let r = s
@@ -769,14 +837,11 @@ impl Engine {
                 .retain(|key, _| !key.starts_with(&prefix));
         }
         // Before its Codex thread exists, a review is still fetching, checking out,
-        // or running setup: abort it, which also kills any running git process.
-        if r.thread_id.is_none() {
+        // or running setup: abort it, which also stops any running git process.
+        let aborted = r.thread_id.is_none() && {
             let task = self.preparing.lock().unwrap().remove(id);
-            if let Some(task) = task {
-                task.abort();
-                self.discard_worktree(id).await;
-            }
-        }
+            task.map(|task| task.abort()).is_some()
+        };
         if let Ok(rpc) = self.client().await {
             if let (Some(thread), Some(turn)) = (r.thread_id, r.turn_id) {
                 let _ = rpc
@@ -790,6 +855,12 @@ impl Engine {
                     )
                     .await;
             }
+        }
+        if aborted {
+            // Waits for the git lock, so it must not hold up Stop.
+            let e = self.clone();
+            let id = id.to_string();
+            tokio::spawn(async move { e.discard_worktree(&id).await });
         }
         self.update(|s| s.approvals.retain(|a| a.review_id != id))
             .await;
@@ -969,7 +1040,7 @@ impl Engine {
                 return Err("Start a review first to create its Codex chat.".into());
             }
             if !r.worktree.as_deref().is_some_and(|w| Path::new(w).is_dir()) {
-                return Err("This review's worktree was removed after its pull request closed. Start a new review to continue.".into());
+                return Err("This review's worktree was removed because its pull request is no longer open in a connected repository. Start a new review to continue.".into());
             }
             let old = r.clone();
             r.before_follow_up = Some(Outcome {
@@ -1057,25 +1128,7 @@ impl Engine {
         let method = event["method"].as_str().unwrap_or("");
         let p = &event["params"];
         if method == "orbit/disconnected" {
-            self.items.lock().await.clear();
-            self.update(|s| {
-                s.codex_ready = false;
-                if s.codex_error.is_none() {
-                    s.codex_error = Some("Codex disconnected. Reconnect in Settings.".into());
-                }
-                s.approvals.clear();
-                for r in &mut s.reviews {
-                    if active(&r.status)
-                        && !r.end_follow_up(Some(
-                            "Codex disconnected during the follow-up.".into(),
-                        ))
-                    {
-                        r.status = "failed".into();
-                        r.error = Some("Codex disconnected. Start a new review to retry.".into());
-                    }
-                }
-            })
-            .await;
+            self.disconnected().await;
             return;
         }
         let thread = p["threadId"].as_str();
@@ -1261,7 +1314,13 @@ async fn remove_worktree(path: &Path) -> Result<(), String> {
         return Ok(());
     }
     let location = path.to_str().ok_or("Invalid workspace path")?;
-    let common = git(path, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await;
+    // A worktree has a `.git` file. Without one (a partial checkout), Git would
+    // search parent directories and could act on an unrelated repository.
+    let common = if path.join(".git").is_file() {
+        git(path, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await
+    } else {
+        Err(String::new())
+    };
     if let Ok(common) = common {
         let common = common.trim();
         // Run against the source clone: Git will not remove the worktree it runs in.
@@ -1657,6 +1716,39 @@ mod tests {
         new.shutdown().await;
     }
     #[tokio::test]
+    async fn notes_a_failing_worktree_removal_once() {
+        let (_d, e, id) = running_engine().await;
+        // A plain file where the worktree should be cannot be removed as a directory.
+        let path = e.root.join("worktrees").join(&id);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "").unwrap();
+        e.update(|s| {
+            s.reviews[0].status = "ready".into();
+            s.reviews[0].worktree = Some(path.to_string_lossy().into());
+            s.history_prs = std::mem::take(&mut s.prs);
+        })
+        .await;
+        e.clean_worktrees().await;
+        e.clean_worktrees().await;
+        let r = e.snapshot().await.reviews[0].clone();
+        assert!(r.worktree.is_some(), "a failed removal keeps the worktree recorded");
+        let notes = r
+            .messages
+            .iter()
+            .filter(|m| m.text.starts_with("Could not remove"))
+            .count();
+        assert_eq!(notes, 1);
+    }
+    #[tokio::test]
+    async fn replacing_a_dead_connection_ends_its_reviews() {
+        let (_d, e, _) = running_engine().await;
+        let (dead, _) = crate::rpc::tests::fixture().await;
+        dead.shutdown().await;
+        *e.rpc.lock().await = Some(dead);
+        e.retire_dead_connection().await;
+        assert_eq!(e.snapshot().await.reviews[0].status, "failed");
+    }
+    #[tokio::test]
     async fn stopping_a_preparing_review_aborts_its_task() {
         let (_d, e, id) = running_engine().await;
         e.update(|s| {
@@ -1692,9 +1784,9 @@ mod tests {
     }
     #[tokio::test]
     async fn removes_worktrees_of_reviews_whose_pr_is_no_longer_open() {
-        let (d, repo) = git_repo().await;
+        let (_d, repo) = git_repo().await;
         let (_state, e, id) = running_engine().await;
-        let worktree = d.path().join("review");
+        let worktree = e.root.join("worktrees").join(&id);
         let location = worktree.to_str().unwrap();
         git(&repo, &["worktree", "add", "--detach", location, "HEAD"]).await.unwrap();
         e.update(|s| {
@@ -1704,7 +1796,8 @@ mod tests {
         .await;
         e.clean_worktrees().await;
         assert!(worktree.exists(), "open PRs keep their worktrees");
-        e.update(|s| s.prs.clear()).await;
+        // The PR left the inbox; its repository is not connected, so no closure check.
+        e.update(|s| s.history_prs = std::mem::take(&mut s.prs)).await;
         e.clean_worktrees().await;
         let r = e.snapshot().await.reviews[0].clone();
         assert!(r.worktree.is_none());

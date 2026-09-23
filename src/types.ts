@@ -29,6 +29,7 @@ export interface PullRequest {
   labels: string[];
   headRepo?: string;
   authorAssociation?: string;
+  baseRepo?: string;
 }
 export interface Message {
   id: string;
@@ -163,6 +164,12 @@ export function canPublish(review: Review, pr: PullRequest | undefined) {
     review.baseSha === pr?.baseSha
   );
 }
+// Compares against the base repository as GitHub reports it now, which
+// differs from the configured name after a rename or transfer.
+export function sameRepository(pr: PullRequest) {
+  const base = pr.baseRepo || pr.repo;
+  return pr.headRepo?.toLowerCase() === base.toLowerCase();
+}
 // Mirrors trusted_source in src-tauri/src/types.rs.
 export function trustedSource(
   pr: PullRequest | undefined,
@@ -170,7 +177,7 @@ export function trustedSource(
 ) {
   return (
     !!pr &&
-    pr.headRepo?.toLowerCase() === pr.repo.toLowerCase() &&
+    sameRepository(pr) &&
     (["OWNER", "MEMBER", "COLLABORATOR"].includes(pr.authorAssociation ?? "") ||
       trustedAuthors.some((a) => a.toLowerCase() === pr.author.toLowerCase()))
   );
