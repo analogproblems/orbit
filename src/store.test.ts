@@ -1,6 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { useOrbit } from "./store";
-import { canPublish } from "./types";
+import { canPublish, publishTarget, trustedSource } from "./types";
 
 vi.mock("@tauri-apps/api/core", () => ({
   isTauri: () => false,
@@ -61,6 +61,59 @@ describe("review interactions", () => {
     s = useOrbit.getState().snapshot;
     expect(s.reviews.filter((r) => r.status === "queued")).toHaveLength(1);
     expect(s.reviews.filter((r) => r.status === "posted")).toHaveLength(0);
+  });
+  it("automatically reviews only pull requests from repository insiders", async () => {
+    const store = useOrbit.getState();
+    await store.action("save_settings", {
+      settings: {
+        ...store.snapshot.settings,
+        automatic: true,
+        autoPost: true,
+        concurrency: 4,
+        repositories: store.snapshot.settings.repositories.map((r) => ({
+          ...r,
+          automatic: true,
+        })),
+      },
+    });
+    await vi.advanceTimersByTimeAsync(6000);
+    const reviews = useOrbit.getState().snapshot.reviews;
+    const review = (id: string) => reviews.find((r) => r.prId === id);
+    expect(review("acme/api#82")?.status).toBe("posted");
+    expect(review("acme/api#79")).toBeUndefined();
+  });
+  it("treats forks and outside contributors as untrusted", () => {
+    const [bot, p] = useOrbit.getState().snapshot.prs;
+    expect(trustedSource(p)).toBe(true);
+    expect(trustedSource(bot)).toBe(false);
+    expect(trustedSource(bot, ["Claude[bot]"])).toBe(true);
+    expect(
+      trustedSource({ ...bot, headRepo: "someone/orbit" }, ["claude[bot]"]),
+    ).toBe(false);
+    // After a rename, GitHub reports the new name for both sides.
+    expect(
+      trustedSource({ ...p, headRepo: "acme/new", baseRepo: "acme/new" }),
+    ).toBe(true);
+    expect(trustedSource({ ...p, headRepo: "someone/orbit" })).toBe(false);
+    expect(trustedSource({ ...p, authorAssociation: "CONTRIBUTOR" })).toBe(
+      false,
+    );
+    expect(trustedSource({ ...p, headRepo: undefined })).toBe(false);
+  });
+  it("publishes PRs that left the inbox only if their repository was disconnected", () => {
+    const s = useOrbit.getState().snapshot;
+    const pr = s.prs[0];
+    const closed = { ...s, prs: s.prs.slice(1), historyPrs: [pr] };
+    expect(publishTarget(s, pr)).toBe(pr);
+    expect(publishTarget(closed, pr)).toBeUndefined();
+    const disconnected = {
+      ...closed,
+      settings: {
+        ...s.settings,
+        repositories: s.settings.repositories.filter((r) => r.name !== pr.repo),
+      },
+    };
+    expect(publishTarget(disconnected, pr)).toBe(pr);
   });
   it("blocks publishing a stale base or head", () => {
     const s = useOrbit.getState().snapshot;

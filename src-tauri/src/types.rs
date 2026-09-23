@@ -1,5 +1,7 @@
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::LazyLock;
 
 pub fn now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
@@ -29,6 +31,25 @@ pub struct PullRequest {
     pub changed_files: u64,
     pub review_requested: bool,
     pub labels: Vec<String>,
+    /// `owner/name` of the head branch's repository; empty when unknown or the fork was deleted.
+    #[serde(default)]
+    pub head_repo: String,
+    /// GitHub's `author_association`, e.g. OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE.
+    #[serde(default)]
+    pub author_association: String,
+    /// `owner/name` of the base repository as GitHub reports it now, which
+    /// differs from `repo` after a rename or transfer.
+    #[serde(default)]
+    pub base_repo: String,
+}
+/// A repository the signed-in user can access, offered when connecting one.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositorySummary {
+    pub name: String,
+    pub private: bool,
+    pub description: String,
+    pub pushed_at: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -69,6 +90,18 @@ pub struct Review {
     pub comment_url: Option<String>,
     pub automatic: bool,
     pub is_review: bool,
+    /// Kinds of credential-like text found in the report, shown before publication.
+    #[serde(default)]
+    pub sensitive: Vec<String>,
+    /// The review's outcome, set aside while a follow-up question runs.
+    #[serde(default)]
+    pub before_follow_up: Option<Outcome>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Outcome {
+    pub status: String,
+    pub error: Option<String>,
 }
 pub fn active(status: &str) -> bool {
     matches!(
@@ -97,7 +130,21 @@ impl Review {
             comment_url: None,
             automatic,
             is_review: true,
+            sensitive: vec![],
+            before_follow_up: None,
         }
+    }
+    /// Ends a follow-up by restoring the outcome it set aside, so a stopped or
+    /// failed chat never discards a report or publication. Returns false when
+    /// no follow-up is running.
+    pub fn end_follow_up(&mut self, error: Option<String>) -> bool {
+        let Some(before) = self.before_follow_up.take() else {
+            return false;
+        };
+        self.status = before.status;
+        self.error = error.or(before.error);
+        self.updated_at = now();
+        true
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -118,8 +165,10 @@ pub struct Settings {
     pub concurrency: usize,
     pub model: String,
     pub effort: String,
-    pub scope: String,
     pub repositories: Vec<Repository>,
+    /// Extra GitHub logins, such as bots acting for the user, whose same-repository
+    /// PRs are trusted like those of owners, members, and collaborators.
+    pub trusted_authors: Vec<String>,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -130,8 +179,8 @@ impl Default for Settings {
             concurrency: 2,
             model: String::new(),
             effort: String::new(),
-            scope: "involved".into(),
             repositories: vec![],
+            trusted_authors: vec![],
         }
     }
 }
@@ -143,13 +192,22 @@ impl Settings {
         if !(1..=4).contains(&self.concurrency) {
             return Err("Choose between 1 and 4 concurrent reviews.".into());
         }
-        if !["involved", "reviewRequested", "authored"].contains(&self.scope.as_str()) {
-            return Err("Unknown inbox scope.".into());
+        if self.trusted_authors.len() > 50 {
+            return Err("Trust at most 50 accounts.".into());
+        }
+        let mut logins = std::collections::HashSet::new();
+        for login in &self.trusted_authors {
+            if !valid_login(login) {
+                return Err(format!("“{login}” is not a GitHub account name."));
+            }
+            if !logins.insert(login.to_ascii_lowercase()) {
+                return Err(format!("{login} is already trusted."));
+            }
         }
         let mut names = std::collections::HashSet::new();
         for repo in &self.repositories {
             validate_repo(&repo.name)?;
-            if !names.insert(&repo.name) {
+            if !names.insert(repo.name.to_ascii_lowercase()) {
                 return Err("Each repository can only be configured once.".into());
             }
             if !std::path::Path::new(&repo.path).is_absolute() {
@@ -178,6 +236,21 @@ pub fn validate_repo(repo: &str) -> Result<(), String> {
         return Err("Repository must be owner/name on github.com.".into());
     }
     Ok(())
+}
+/// A GitHub user login, or an app's bot login such as `claude[bot]`.
+pub fn valid_login(login: &str) -> bool {
+    let name = login.strip_suffix("[bot]").unwrap_or(login);
+    (1..=39).contains(&name.len())
+        && !name.starts_with('-')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+/// PR ids ignore case, like GitHub repository names, so changing a repository's
+/// configured capitalization keeps its reviews attached to their PRs.
+pub fn pr_id(repo: &str, number: u64) -> String {
+    format!("{repo}#{number}").to_ascii_lowercase()
+}
+pub fn same_repo(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
 }
 pub fn valid_sha(sha: &str) -> bool {
     sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit())
@@ -208,20 +281,69 @@ pub struct Snapshot {
 }
 pub fn eligible(pr: &PullRequest, s: &Snapshot) -> bool {
     !pr.draft
+        && trusted_source(pr, &s.settings.trusted_authors)
         && s.settings
             .repositories
             .iter()
-            .any(|r| r.name == pr.repo && r.automatic)
+            .any(|r| same_repo(&r.name, &pr.repo) && r.automatic)
         && !s.reviews.iter().any(|r| {
             r.pr_id == pr.id
                 && ((r.head_sha == pr.head_sha && r.base_sha == pr.base_sha) || active(&r.status))
         })
 }
+/// Whether a review's report matches the PR as it is now. `publish()` checks
+/// the review's status itself when it claims the review.
 pub fn publishable(r: &Review, pr: &PullRequest) -> bool {
-    r.status == "ready"
-        && !r.report.trim().is_empty()
-        && r.head_sha == pr.head_sha
-        && r.base_sha == pr.base_sha
+    !r.report.trim().is_empty() && r.head_sha == pr.head_sha && r.base_sha == pr.base_sha
+}
+/// Whether a PR may be reviewed and published without a person starting it.
+/// The agent can read files outside its worktree and setup runs PR code, so
+/// anyone able to plant instructions in the diff could otherwise have local
+/// secrets posted publicly.
+pub fn trusted_source(pr: &PullRequest, trusted_authors: &[String]) -> bool {
+    let base = if pr.base_repo.is_empty() {
+        &pr.repo
+    } else {
+        &pr.base_repo
+    };
+    pr.head_repo.eq_ignore_ascii_case(base)
+        && (matches!(
+            pr.author_association.as_str(),
+            "OWNER" | "MEMBER" | "COLLABORATOR"
+        ) || trusted_authors
+            .iter()
+            .any(|login| login.eq_ignore_ascii_case(&pr.author)))
+}
+static CREDENTIAL_PATTERNS: LazyLock<Vec<(&str, Regex)>> = LazyLock::new(|| {
+    [
+        (
+            "GitHub token",
+            r"\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})",
+        ),
+        ("private key", r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"),
+        ("AWS access key", r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
+        ("OpenAI or Anthropic API key", r"\bsk-[A-Za-z0-9_-]{20,}"),
+        ("Slack token", r"\bxox[abprs]-[A-Za-z0-9-]{10,}"),
+        ("Google API key", r"\bAIza[0-9A-Za-z_-]{35}"),
+        ("Stripe key", r"\b[rs]k_live_[0-9A-Za-z]{20,}"),
+        ("npm token", r"\bnpm_[A-Za-z0-9]{36}\b"),
+        (
+            "JSON web token",
+            r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}",
+        ),
+    ]
+    .into_iter()
+    .map(|(label, pattern)| (label, Regex::new(pattern).unwrap()))
+    .collect()
+});
+/// Kinds of well-known credential formats found in `text`. A best-effort net
+/// behind `trusted_source`, not a guarantee: arbitrary secrets have no format.
+pub fn credential_kinds(text: &str) -> Vec<String> {
+    CREDENTIAL_PATTERNS
+        .iter()
+        .filter(|(_, pattern)| pattern.is_match(text))
+        .map(|(label, _)| label.to_string())
+        .collect()
 }
 
 #[cfg(test)]
@@ -239,7 +361,9 @@ pub(crate) mod tests {
     }
     #[test]
     fn automatic_jobs_are_deduplicated_by_commit_and_base() {
-        let p = pr();
+        let mut p = pr();
+        p.head_repo = p.repo.clone();
+        p.author_association = "OWNER".into();
         let mut s = Snapshot::default();
         s.settings.repositories.push(Repository {
             name: p.repo.clone(),
@@ -249,6 +373,9 @@ pub(crate) mod tests {
             network_access: false,
         });
         assert!(eligible(&p, &s));
+        let mut fork = p.clone();
+        fork.head_repo = "someone/b".into();
+        assert!(!eligible(&fork, &s));
         let mut r = Review::new(&p, &s.settings, true);
         r.status = "failed".into();
         s.reviews.push(r);
@@ -272,6 +399,92 @@ pub(crate) mod tests {
         p.head_sha = r.head_sha.clone();
         p.base_sha = "d".repeat(40);
         assert!(!publishable(&r, &p));
+    }
+    #[test]
+    fn only_repository_insiders_are_trusted_for_automatic_publication() {
+        let mut p = pr();
+        // State saved before provenance was recorded deserializes as untrusted.
+        assert!(!trusted_source(&p, &[]));
+        p.head_repo = "A/B".into();
+        for association in ["OWNER", "MEMBER", "COLLABORATOR"] {
+            p.author_association = association.into();
+            assert!(trusted_source(&p, &[]), "{association}");
+        }
+        for association in ["CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "NONE", ""] {
+            p.author_association = association.into();
+            assert!(!trusted_source(&p, &[]), "{association}");
+        }
+        p.author_association = "MEMBER".into();
+        p.head_repo = "someone/b".into();
+        assert!(!trusted_source(&p, &[]));
+        p.head_repo = String::new();
+        assert!(!trusted_source(&p, &[]));
+    }
+    #[test]
+    fn trusted_accounts_extend_trust_only_to_same_repository_prs() {
+        let mut p = pr();
+        p.head_repo = p.repo.clone();
+        p.author = "claude[bot]".into();
+        p.author_association = "NONE".into();
+        let trusted = ["Claude[bot]".to_string()];
+        assert!(!trusted_source(&p, &[]));
+        assert!(trusted_source(&p, &trusted));
+        assert!(!trusted_source(&p, &["codex[bot]".to_string()]));
+        p.head_repo = "someone/b".into();
+        assert!(!trusted_source(&p, &trusted));
+    }
+    #[test]
+    fn renamed_repositories_are_not_mistaken_for_forks() {
+        let mut p = pr();
+        p.author_association = "OWNER".into();
+        p.base_repo = "a/renamed".into();
+        p.head_repo = "a/renamed".into();
+        assert!(trusted_source(&p, &[]));
+        p.head_repo = "someone/renamed".into();
+        assert!(!trusted_source(&p, &[]));
+    }
+    #[test]
+    fn validates_trusted_account_names() {
+        for good in ["claude[bot]", "dependabot[bot]", "JW-JCLS", "a"] {
+            assert!(valid_login(good), "{good}");
+        }
+        for bad in [
+            "",
+            "[bot]",
+            "-lead",
+            "has space",
+            "a/b",
+            "x[bot][bot]",
+            &"a".repeat(40),
+        ] {
+            assert!(!valid_login(bad), "{bad}");
+        }
+        let mut s = Settings {
+            trusted_authors: vec!["claude[bot]".into(), "Claude[bot]".into()],
+            ..Settings::default()
+        };
+        assert!(s.validate().is_err());
+        s.trusted_authors.pop();
+        assert!(s.validate().is_ok());
+    }
+    #[test]
+    fn detects_credential_shaped_text() {
+        // Built at runtime so secret scanners do not flag this file.
+        let github = format!("token: ghp_{}", "a1".repeat(18));
+        let key = format!("-----BEGIN OPENSSH {} KEY-----", "PRIVATE");
+        let aws = format!("AKIA{}", "ABCDEFGH23456789");
+        assert_eq!(credential_kinds(&github), ["GitHub token"]);
+        assert_eq!(credential_kinds(&key), ["private key"]);
+        assert_eq!(
+            credential_kinds(&format!("{aws} and {key}")),
+            ["private key", "AWS access key"]
+        );
+        let ordinary = format!(
+            "### [P2] Token refresh skips expiry\n`src/auth/task-scheduler.rs:42` uses \
+             `generate_token()`; reviewed head `{}`. Rotate the api_key in tests.",
+            "a".repeat(40)
+        );
+        assert!(credential_kinds(&ordinary).is_empty());
     }
     #[test]
     fn validates_settings_bounds() {

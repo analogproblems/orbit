@@ -1,4 +1,6 @@
 import {
+  memo,
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -20,8 +22,10 @@ import {
   FolderGit2,
   GitBranch,
   GitPullRequest,
+  Globe,
   Inbox,
   Loader2,
+  Lock,
   MessageSquare,
   PanelLeftClose,
   Play,
@@ -49,11 +53,16 @@ import {
   statusLabels,
   latestReview,
   canPublish,
+  publishTarget,
+  sameRepo,
+  sameRepository,
+  trustedSource,
   type PullRequest,
   type Review,
   type Status,
   type Settings,
   type Repository,
+  type RepositorySummary,
   type ChangedFile,
 } from "./types";
 
@@ -82,7 +91,8 @@ function Logo({ small = false }: { small?: boolean }) {
     />
   );
 }
-function Markdown({ children }: { children: string }) {
+// Every state update replaces the snapshot, so skip re-parsing unchanged text.
+const Markdown = memo(function Markdown({ children }: { children: string }) {
   return (
     <div className="markdown">
       <ReactMarkdown
@@ -95,7 +105,7 @@ function Markdown({ children }: { children: string }) {
       </ReactMarkdown>
     </div>
   );
-}
+});
 function StatusBadge({ status }: { status: Status | "unreviewed" | "draft" }) {
   const running = activeStatuses.includes(status as Status);
   return (
@@ -174,7 +184,9 @@ function Modal({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
-  closeRef.current = onClose;
+  useEffect(() => {
+    closeRef.current = onClose;
+  });
   const error = useOrbit((state) => state.error);
   useEffect(() => {
     const previous = document.activeElement as HTMLElement;
@@ -248,6 +260,7 @@ export default function App() {
   const [repoFilter, setRepoFilter] = useState("all");
   const [sidebar, setSidebar] = useState(true);
   const [publish, setPublish] = useState<Review | null>(null);
+  const [confirmSensitive, setConfirmSensitive] = useState(false);
   const [busy, setBusy] = useState(false);
   const [approvalOpen, setApprovalOpen] = useState(false);
   const [, setTime] = useState(0);
@@ -309,6 +322,10 @@ export default function App() {
     desktop
       ? action("open_github", { url })
       : window.open(url, "_blank", "noopener,noreferrer");
+  const closePublish = () => {
+    setPublish(null);
+    setConfirmSensitive(false);
+  };
   const start = async () => {
     if (!pr) return;
     setBusy(true);
@@ -645,14 +662,27 @@ export default function App() {
                     heading={
                       search
                         ? "No matching pull requests"
-                        : "Your inbox is clear"
+                        : s.settings.repositories.length
+                          ? "Your inbox is clear"
+                          : "No repositories connected"
                     }
                   >
                     {s.githubError
                       ? "GitHub could not sync. Check the connection in Settings."
                       : search
                         ? "Try a different title, repository, or author."
-                        : "Open PRs matching your GitHub scope will appear here."}
+                        : s.settings.repositories.length
+                          ? "Open pull requests in your connected repositories will appear here."
+                          : "Connect a repository to see its open pull requests here."}
+                    {!s.settings.repositories.length && !search && (
+                      <button
+                        className="button primary"
+                        onClick={() => setPage("repositories")}
+                      >
+                        <Plus size={14} />
+                        Connect a repository
+                      </button>
+                    )}
                   </Empty>
                 )}
               </div>
@@ -760,6 +790,43 @@ export default function App() {
                       </button>
                     )}
                   </div>
+                  {s.settings.automatic &&
+                    !pr.draft &&
+                    !trustedSource(pr, s.settings.trustedAuthors) &&
+                    s.prs.some((p) => p.id === pr.id) &&
+                    s.settings.repositories.some(
+                      (r) => sameRepo(r.name, pr.repo) && r.automatic,
+                    ) && (
+                      <div className="inline-error autopilot-skip">
+                        <AlertCircle size={15} />
+                        {pr.author && sameRepository(pr) ? (
+                          <>
+                            <span>
+                              Autopilot skips pull requests from {pr.author}{" "}
+                              because it isn’t an owner, member, or collaborator
+                              of this repository. Trust it if it opens pull
+                              requests for you, like a coding agent’s bot.
+                            </span>
+                            <button
+                              type="button"
+                              className="text-button"
+                              onClick={() =>
+                                void save({
+                                  trustedAuthors: [
+                                    ...s.settings.trustedAuthors,
+                                    pr.author,
+                                  ],
+                                })
+                              }
+                            >
+                              Trust {pr.author}
+                            </button>
+                          </>
+                        ) : (
+                          "Autopilot skips this pull request because it comes from a fork. You can still review it manually."
+                        )}
+                      </div>
+                    )}
                   <div className="detail-tabs" role="tablist">
                     {(
                       [
@@ -877,7 +944,7 @@ export default function App() {
                       onHistory={setSelectedReview}
                     />
                   ) : (
-                    <Files pr={pr} />
+                    <Files key={`${pr.id}:${pr.headSha}`} pr={pr} />
                   )}
                 </div>
                 <footer className="detail-footer">
@@ -890,12 +957,7 @@ export default function App() {
                   {review?.status === "ready" && (
                     <button
                       className="text-button"
-                      disabled={
-                        !canPublish(
-                          review,
-                          s.prs.find((p) => p.id === pr.id),
-                        )
-                      }
+                      disabled={!canPublish(review, publishTarget(s, pr))}
                       onClick={() => setPublish(review)}
                     >
                       Publish review <ArrowUpRight size={13} />
@@ -1019,7 +1081,7 @@ export default function App() {
               : "Simulate publishing a review"
           }
           wide
-          onClose={() => setPublish(null)}
+          onClose={closePublish}
         >
           <p className="modal-description">
             {desktop
@@ -1031,24 +1093,48 @@ export default function App() {
             {publish.prId}
             <code>{publish.headSha.slice(0, 7)}</code>
           </div>
+          {!!publish.sensitive?.length && (
+            <>
+              <div role="alert" className="inline-error">
+                <AlertCircle size={15} />
+                This report contains text that looks like credentials (
+                {publish.sensitive.join(", ")}). Codex can read files outside
+                the review worktree, so make sure nothing private is quoted
+                before publishing.
+              </div>
+              <div className="setting-row">
+                <div>
+                  <strong>I checked the report</strong>
+                  <p>Publish it even though it matches a credential format.</p>
+                </div>
+                <Toggle
+                  label="I checked the report"
+                  checked={confirmSensitive}
+                  onChange={setConfirmSensitive}
+                />
+              </div>
+            </>
+          )}
           <div className="publish-preview">
             <Markdown>{publish.report}</Markdown>
           </div>
           <div className="modal-actions">
-            <button
-              className="button secondary"
-              onClick={() => setPublish(null)}
-            >
+            <button className="button secondary" onClick={closePublish}>
               Cancel
             </button>
             <button
               className="button primary"
-              disabled={busy}
+              disabled={
+                busy || (!!publish.sensitive?.length && !confirmSensitive)
+              }
               onClick={async () => {
                 setBusy(true);
-                await action("publish_review", { reviewId: publish.id });
+                await action("publish_review", {
+                  reviewId: publish.id,
+                  allowSensitive: confirmSensitive,
+                });
                 setBusy(false);
-                setPublish(null);
+                closePublish();
               }}
             >
               {busy ? (
@@ -1093,7 +1179,7 @@ export default function App() {
                   id: approval.id,
                   accept: false,
                 });
-                setApprovalOpen(false);
+                if (!useOrbit.getState().error) setApprovalOpen(false);
               }}
             >
               Deny
@@ -1105,7 +1191,7 @@ export default function App() {
                   id: approval.id,
                   accept: true,
                 });
-                setApprovalOpen(false);
+                if (!useOrbit.getState().error) setApprovalOpen(false);
               }}
             >
               Approve once
@@ -1182,7 +1268,7 @@ function Chat({
   const step =
     review.status === "posted"
       ? 3
-      : review.status === "ready"
+      : review.status === "ready" || review.status === "publishing"
         ? 2
         : ["reviewing", "awaitingApproval"].includes(review.status)
           ? 1
@@ -1285,12 +1371,7 @@ function Chat({
             <span>Review complete. Your call from here.</span>
             <button
               className="text-button"
-              disabled={
-                !canPublish(
-                  review,
-                  s.prs.find((p) => p.id === pr.id),
-                )
-              }
+              disabled={!canPublish(review, publishTarget(s, pr))}
               onClick={() => onPublish(review)}
             >
               Publish findings <ArrowUpRight size={13} />
@@ -1345,10 +1426,9 @@ function Files({ pr }: { pr: PullRequest }) {
   const { action } = useOrbit();
   const [files, setFiles] = useState<ChangedFile[] | null>(null);
   const [failed, setFailed] = useState(false);
+  // Keyed by PR and head commit, so a new revision starts from a fresh state.
   useEffect(() => {
     let alive = true;
-    setFiles(null);
-    setFailed(false);
     void action<ChangedFile[]>("get_files", { prId: pr.id }).then((result) => {
       if (alive) {
         setFiles(result ?? []);
@@ -1358,7 +1438,7 @@ function Files({ pr }: { pr: PullRequest }) {
     return () => {
       alive = false;
     };
-  }, [pr.id, pr.headSha, action]);
+  }, [pr.id, action]);
   return (
     <div className="files">
       {files === null ? (
@@ -1403,6 +1483,180 @@ function Files({ pr }: { pr: PullRequest }) {
   );
 }
 
+function Visibility({ isPrivate }: { isPrivate: boolean }) {
+  return (
+    <span className={`visibility ${isPrivate ? "" : "public"}`}>
+      {isPrivate ? <Lock size={11} /> : <Globe size={11} />}
+      {isPrivate ? "Private" : "Public"}
+    </span>
+  );
+}
+// Loaded once per session; the refresh button picks up newly created repositories.
+let repositoryCache: RepositorySummary[] | null = null;
+function RepoPicker({
+  value,
+  onChange,
+  connected,
+}: {
+  value: string;
+  onChange: (name: string) => void;
+  connected: string[];
+}) {
+  const { action } = useOrbit();
+  const [repos, setRepos] = useState(repositoryCache);
+  const [refreshing, setRefreshing] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [query, setQuery] = useState("");
+  const fetchRepos = useCallback(
+    () =>
+      action<RepositorySummary[]>("list_repositories").then((result) => {
+        if (result) repositoryCache = result;
+        setRepos(result ?? repositoryCache ?? []);
+        setFailed(!result);
+      }),
+    [action],
+  );
+  useEffect(() => {
+    // Load on first open only; later refreshes are explicit.
+    if (!repositoryCache) void fetchRepos();
+  }, [fetchRepos]);
+  const refresh = async () => {
+    setRefreshing(true);
+    await fetchRepos();
+    setRefreshing(false);
+  };
+  // GitHub names are case-insensitive, so `Acme/Repo` is `acme/repo`.
+  const isConnected = (name: string) =>
+    connected.some((c) => c.toLowerCase() === name.toLowerCase());
+  const selected = repos?.find(
+    (r) => r.name.toLowerCase() === value.toLowerCase(),
+  );
+  if (value)
+    return (
+      <>
+        <div className="repo-picker-selected">
+          <FolderGit2 size={15} />
+          <strong>{value}</strong>
+          {selected && <Visibility isPrivate={selected.private} />}
+          <button
+            type="button"
+            className="text-button"
+            onClick={() => onChange("")}
+          >
+            Change
+          </button>
+        </div>
+        {selected && !selected.private && (
+          <small>
+            Public repository: published reviews are visible to anyone.
+          </small>
+        )}
+      </>
+    );
+  const q = query.trim().toLowerCase();
+  const matches = (repos ?? []).filter((r) =>
+    `${r.name} ${r.description}`.toLowerCase().includes(q),
+  );
+  const manual =
+    /^[\w.-]+\/[\w.-]+$/.test(query.trim()) &&
+    !matches.some((r) => r.name.toLowerCase() === q)
+      ? query.trim()
+      : null;
+  const pick = (name: string) => {
+    onChange(name);
+    setQuery("");
+  };
+  const limit = 50;
+  return (
+    <div className="repo-picker">
+      <div className="repo-picker-search">
+        <Search size={15} />
+        <input
+          aria-label="Search your repositories"
+          placeholder="Search your repositories…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            // Enter picks the first match instead of submitting the form.
+            if (e.key !== "Enter") return;
+            e.preventDefault();
+            if (!q) return;
+            const first = matches.find((r) => !isConnected(r.name));
+            if (first) pick(first.name);
+            else if (manual) pick(manual);
+          }}
+        />
+        <button
+          type="button"
+          className="icon-button"
+          aria-label="Refresh repositories"
+          disabled={refreshing}
+          onClick={() => void refresh()}
+        >
+          <RefreshCw size={14} className={refreshing ? "spin" : ""} />
+        </button>
+      </div>
+      <div className="repo-options">
+        {repos === null ? (
+          <div className="repo-options-note">
+            <Loader2 className="spin" size={14} />
+            Loading your repositories…
+          </div>
+        ) : (
+          <>
+            {matches.slice(0, limit).map((r) => {
+              const taken = isConnected(r.name);
+              return (
+                <button
+                  type="button"
+                  key={r.name}
+                  className="repo-option"
+                  disabled={taken}
+                  onClick={() => pick(r.name)}
+                >
+                  <span>
+                    <strong>{r.name}</strong>
+                    {r.description && <small>{r.description}</small>}
+                  </span>
+                  {taken ? (
+                    <em>Connected</em>
+                  ) : (
+                    <Visibility isPrivate={r.private} />
+                  )}
+                </button>
+              );
+            })}
+            {manual && (
+              <button
+                type="button"
+                className="repo-option"
+                onClick={() => pick(manual)}
+              >
+                <span>
+                  <strong>Use {manual}</strong>
+                  <small>Not in your repository list.</small>
+                </span>
+              </button>
+            )}
+            {matches.length > limit && (
+              <div className="repo-options-note">
+                Showing {limit} of {matches.length}. Keep typing to narrow the
+                list.
+              </div>
+            )}
+            {!matches.length && !manual && (
+              <div className="repo-options-note">
+                {failed
+                  ? "Couldn’t load your repositories. Type owner/name to connect one directly."
+                  : "No matching repositories. Type owner/name to connect one directly."}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
 function Repositories() {
   const { snapshot: s, action } = useOrbit();
   const [editing, setEditing] = useState<Repository | null>(null);
@@ -1430,7 +1684,10 @@ function Repositories() {
       },
     });
     setBusy(false);
-    if (!useOrbit.getState().error) setEditing(null);
+    if (!useOrbit.getState().error) {
+      setEditing(null);
+      void action("poll_now");
+    }
   };
   return (
     <div className="content-page">
@@ -1542,17 +1799,16 @@ function Repositories() {
           onClose={() => setEditing(null)}
         >
           <form onSubmit={(e) => void save(e)}>
-            <label>
+            <div className="field">
               GitHub repository
-              <input
-                required
-                placeholder="owner/repository"
+              <RepoPicker
                 value={editing.name}
-                onChange={(e) =>
-                  setEditing({ ...editing, name: e.target.value })
-                }
+                onChange={(name) => setEditing({ ...editing, name })}
+                connected={s.settings.repositories
+                  .map((r) => r.name)
+                  .filter((name) => name !== original)}
               />
-            </label>
+            </div>
             <label>
               Local checkout path
               <input
@@ -1579,13 +1835,19 @@ function Repositories() {
               />
               <small>
                 Runs in the new worktree, inside the Codex sandbox. Uses /bin/sh
-                on Unix or PowerShell on Windows. Five-minute timeout.
+                on Unix or PowerShell on Windows. Five-minute timeout. Setup can
+                run code from the pull request, such as package install scripts;
+                prefer options like --ignore-scripts.
               </small>
             </label>
             <div className="setting-row">
               <div>
                 <strong>Allow sandbox network access</strong>
-                <p>Enable when setup needs to download dependencies.</p>
+                <p>
+                  Enable when setup needs to download dependencies. Setup and
+                  the review agent can then reach the network, including code
+                  from the pull request.
+                </p>
               </div>
               <Toggle
                 checked={editing.networkAccess}
@@ -1620,14 +1882,21 @@ function Repositories() {
                         ),
                       },
                     });
-                    if (!useOrbit.getState().error) setEditing(null);
+                    if (!useOrbit.getState().error) {
+                      setEditing(null);
+                      void action("poll_now");
+                    }
                   }}
                 >
                   <Trash2 size={14} />
                   Disconnect
                 </button>
               )}
-              <button className="button primary" disabled={busy} type="submit">
+              <button
+                className="button primary"
+                disabled={busy || !editing.name}
+                type="submit"
+              >
                 {busy ? (
                   <Loader2 size={14} className="spin" />
                 ) : (
@@ -1647,9 +1916,37 @@ function SettingsPage() {
   const [draft, setDraft] = useState(s.settings);
   const [saved, setSaved] = useState(false);
   const [connecting, setConnecting] = useState(false);
-  const settingsKey = JSON.stringify(s.settings);
+  const [newLogin, setNewLogin] = useState("");
+  const addLogin = () => {
+    const login = newLogin.trim();
+    if (
+      login &&
+      !draft.trustedAuthors.some((a) => a.toLowerCase() === login.toLowerCase())
+    )
+      setDraft({ ...draft, trustedAuthors: [...draft.trustedAuthors, login] });
+    setNewLogin("");
+  };
+  // Repositories are edited on their own page and never saved from this form.
+  const settingsKey = JSON.stringify({
+    ...s.settings,
+    repositories: undefined,
+  });
+  const baseline = useRef(settingsKey);
   useEffect(() => {
-    setDraft(JSON.parse(settingsKey) as Settings);
+    // Adopt each setting changed elsewhere, such as the header's autopilot
+    // switch, unless the form has its own unsaved edit to that setting.
+    const previous = JSON.parse(baseline.current) as Record<string, unknown>;
+    const incoming = JSON.parse(settingsKey) as Record<string, unknown>;
+    baseline.current = settingsKey;
+    setDraft((current) => {
+      const next: Record<string, unknown> = { ...current };
+      for (const [key, value] of Object.entries(incoming)) {
+        const edited =
+          JSON.stringify(next[key]) !== JSON.stringify(previous[key]);
+        if (!edited) next[key] = value;
+      }
+      return next as unknown as Settings;
+    });
   }, [settingsKey]);
   const model =
     s.models.find((m) => m.model === draft.model) ||
@@ -1798,7 +2095,9 @@ function SettingsPage() {
               <strong>Automatically review new pull requests</strong>
               <p>
                 Create a sandbox and chat for each new commit in enabled
-                repositories. Drafts are skipped.
+                repositories. Drafts are skipped, as are pull requests from
+                forks or from authors who aren’t owners, members, collaborators,
+                or trusted accounts.
               </p>
             </div>
             <Toggle
@@ -1812,7 +2111,11 @@ function SettingsPage() {
               <strong>Automatically publish findings</strong>
               <p>
                 Post completed automatic reviews as PR comments using your
-                GitHub account.
+                GitHub account. Only pull requests opened from the repository
+                itself by its owners, members, collaborators, or trusted
+                accounts are published automatically, and never when a report
+                looks like it contains credentials. Everything else waits for
+                you to publish it.
               </p>
             </div>
             <Toggle
@@ -1820,6 +2123,59 @@ function SettingsPage() {
               checked={draft.autoPost}
               onChange={(autoPost) => setDraft({ ...draft, autoPost })}
             />
+          </div>
+          <div className="setting-row">
+            <div>
+              <strong>Trusted accounts</strong>
+              <p>
+                Pull requests these accounts open from a branch in the
+                repository are reviewed and published automatically, like your
+                own. Only add bots that act for you: anyone who can direct a
+                trusted bot can get its pull requests reviewed automatically.
+              </p>
+              <div className="trusted-list">
+                {draft.trustedAuthors.map((login) => (
+                  <span className="trusted-chip" key={login}>
+                    {login}
+                    <button
+                      type="button"
+                      aria-label={`Stop trusting ${login}`}
+                      onClick={() =>
+                        setDraft({
+                          ...draft,
+                          trustedAuthors: draft.trustedAuthors.filter(
+                            (a) => a !== login,
+                          ),
+                        })
+                      }
+                    >
+                      <X size={12} />
+                    </button>
+                  </span>
+                ))}
+                <span className="trusted-add">
+                  <input
+                    aria-label="Add a trusted account"
+                    placeholder="e.g. claude[bot]"
+                    value={newLogin}
+                    onChange={(e) => setNewLogin(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key !== "Enter") return;
+                      e.preventDefault();
+                      addLogin();
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="button secondary"
+                    disabled={!newLogin.trim()}
+                    onClick={addLogin}
+                  >
+                    Add
+                  </button>
+                </span>
+              </div>
+            </div>
           </div>
           <div className="form-grid">
             <label>
@@ -1855,23 +2211,6 @@ function SettingsPage() {
               </select>
             </label>
           </div>
-          <label>
-            GitHub inbox scope
-            <select
-              value={draft.scope}
-              onChange={(e) =>
-                setDraft({
-                  ...draft,
-                  scope: e.target.value as Settings["scope"],
-                })
-              }
-            >
-              <option value="involved">Pull requests I’m involved in</option>
-              <option value="reviewRequested">My requested reviews</option>
-              <option value="authored">Pull requests I authored</option>
-            </select>
-            <small>Sync the inbox after changing its scope.</small>
-          </label>
         </section>
         <div className="settings-footer">
           <span>

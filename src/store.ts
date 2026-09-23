@@ -1,11 +1,13 @@
 import { create } from "zustand";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { freshDemo, demoReport } from "./demo";
+import { freshDemo, demoReport, demoRepositories } from "./demo";
 import {
   defaults,
   canPublish,
   activeStatuses,
+  sameRepo,
+  trustedSource,
   type Snapshot,
   type Settings,
   type ChangedFile,
@@ -35,7 +37,7 @@ interface Store {
 let demo: Snapshot;
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 function commit() {
-  localStorage.setItem("orbit-demo-v1", JSON.stringify(demo));
+  localStorage.setItem("orbit-demo-v3", JSON.stringify(demo));
   useOrbit.setState({ snapshot: structuredClone(demo) });
 }
 function demoSchedule() {
@@ -80,7 +82,8 @@ function demoSchedule() {
               demo.settings.automatic &&
               demo.settings.autoPost &&
               demo.settings.repositories.some(
-                (repo) => repo.name === pr?.repo && repo.automatic,
+                (repo) =>
+                  !!pr && sameRepo(repo.name, pr.repo) && repo.automatic,
               ) &&
               canPublish(r, pr)
             )
@@ -159,8 +162,9 @@ async function demoAction(
       for (const p of demo.prs.filter(
         (p) =>
           !p.draft &&
+          trustedSource(p, demo.settings.trustedAuthors) &&
           demo.settings.repositories.some(
-            (r) => r.name === p.repo && r.automatic,
+            (r) => sameRepo(r.name, p.repo) && r.automatic,
           ) &&
           !demo.reviews.some((r) => r.prId === p.id && r.headSha === p.headSha),
       ))
@@ -239,6 +243,7 @@ async function demoAction(
           '@@ -0,0 +1,4 @@\n+it("persists repository configuration", async () => {\n+  await saveConfig(configuration);\n+  expect(await readConfig()).toEqual(configuration);\n+});',
       },
     ] satisfies ChangedFile[];
+  if (command === "list_repositories") return demoRepositories;
   if (command === "connect_services") {
     commit();
     return;
@@ -255,7 +260,7 @@ export const useOrbit = create<Store>((set) => ({
     if (!desktop) {
       try {
         demo =
-          JSON.parse(localStorage.getItem("orbit-demo-v1") || "null") ||
+          JSON.parse(localStorage.getItem("orbit-demo-v3") || "null") ||
           freshDemo();
         demo.reviews.forEach((r) => {
           if (activeStatuses.includes(r.status) && !timers.has(r.id)) {

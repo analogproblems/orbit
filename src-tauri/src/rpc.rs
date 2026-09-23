@@ -54,8 +54,8 @@ impl Rpc {
         });
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(_line)) = lines.next_line().await { /* Drain stderr: model output and credentials are never written to diagnostics. */
-            }
+            // Drain stderr: model output and credentials are never written to diagnostics.
+            while let Ok(Some(_line)) = lines.next_line().await {}
         });
         tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
@@ -169,7 +169,7 @@ impl Drop for Rpc {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     const FIXTURE: &str = r#"
 const readline = require('node:readline');
@@ -187,7 +187,7 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
  if(m.method==='crash')process.exit(0);
 });
 "#;
-    async fn fixture() -> (Arc<Rpc>, mpsc::Receiver<Value>) {
+    pub(crate) async fn fixture() -> (Arc<Rpc>, mpsc::Receiver<Value>) {
         let (tx, rx) = mpsc::channel(32);
         let mut command = Command::new("node");
         command.args(["-e", FIXTURE]);

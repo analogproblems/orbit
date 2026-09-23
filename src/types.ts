@@ -4,6 +4,7 @@ export type Status =
   | "reviewing"
   | "awaitingApproval"
   | "ready"
+  | "publishing"
   | "posted"
   | "failed"
   | "cancelled";
@@ -26,6 +27,9 @@ export interface PullRequest {
   changedFiles: number;
   reviewRequested: boolean;
   labels: string[];
+  headRepo?: string;
+  authorAssociation?: string;
+  baseRepo?: string;
 }
 export interface Message {
   id: string;
@@ -52,6 +56,8 @@ export interface Review {
   commentUrl?: string;
   automatic: boolean;
   isReview: boolean;
+  sensitive?: string[];
+  beforeFollowUp?: { status: Status; error?: string };
 }
 export interface Repository {
   name: string;
@@ -60,6 +66,12 @@ export interface Repository {
   setupCommand: string;
   networkAccess: boolean;
 }
+export interface RepositorySummary {
+  name: string;
+  private: boolean;
+  description: string;
+  pushedAt: string;
+}
 export interface Settings {
   automatic: boolean;
   autoPost: boolean;
@@ -67,8 +79,8 @@ export interface Settings {
   concurrency: number;
   model: string;
   effort: string;
-  scope: "involved" | "reviewRequested" | "authored";
   repositories: Repository[];
+  trustedAuthors: string[];
 }
 export interface Model {
   id: string;
@@ -117,6 +129,7 @@ export const statusLabels: Record<Status, string> = {
   reviewing: "Reviewing",
   awaitingApproval: "Needs approval",
   ready: "Ready to publish",
+  publishing: "Publishing",
   posted: "Published",
   failed: "Failed",
   cancelled: "Stopped",
@@ -128,13 +141,26 @@ export const defaults: Settings = {
   concurrency: 2,
   model: "",
   effort: "",
-  scope: "involved",
   repositories: [],
+  trustedAuthors: [],
 };
 export function latestReview(reviews: Review[], prId: string) {
   return reviews
     .filter((r) => r.prId === prId)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+}
+// GitHub repository names ignore case.
+export function sameRepo(a: string, b: string) {
+  return a.toLowerCase() === b.toLowerCase();
+}
+// A PR that left the inbox may still be open if its repository was
+// disconnected; one from a connected repository has closed.
+export function publishTarget(s: Snapshot, pr: PullRequest) {
+  if (s.prs.some((p) => p.id === pr.id)) return pr;
+  const connected = s.settings.repositories.some((r) =>
+    sameRepo(r.name, pr.repo),
+  );
+  return connected ? undefined : pr;
 }
 export function canPublish(review: Review, pr: PullRequest | undefined) {
   return (
@@ -142,5 +168,23 @@ export function canPublish(review: Review, pr: PullRequest | undefined) {
     !!review.report &&
     review.headSha === pr?.headSha &&
     review.baseSha === pr?.baseSha
+  );
+}
+// Compares against the base repository as GitHub reports it now, which
+// differs from the configured name after a rename or transfer.
+export function sameRepository(pr: PullRequest) {
+  const base = pr.baseRepo || pr.repo;
+  return pr.headRepo?.toLowerCase() === base.toLowerCase();
+}
+// Mirrors trusted_source in src-tauri/src/types.rs.
+export function trustedSource(
+  pr: PullRequest | undefined,
+  trustedAuthors: string[] = [],
+) {
+  return (
+    !!pr &&
+    sameRepository(pr) &&
+    (["OWNER", "MEMBER", "COLLABORATOR"].includes(pr.authorAssociation ?? "") ||
+      trustedAuthors.some((a) => a.toLowerCase() === pr.author.toLowerCase()))
   );
 }

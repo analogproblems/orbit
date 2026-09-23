@@ -39,8 +39,12 @@ mod desktop {
         engine.cancel(&review_id).await
     }
     #[tauri::command]
-    async fn publish_review(engine: State<'_, AppState>, review_id: String) -> Result<(), String> {
-        engine.publish(&review_id, false).await
+    async fn publish_review(
+        engine: State<'_, AppState>,
+        review_id: String,
+        allow_sensitive: bool,
+    ) -> Result<(), String> {
+        engine.publish(&review_id, false, allow_sensitive).await
     }
     #[tauri::command]
     async fn send_message(
@@ -70,6 +74,10 @@ mod desktop {
         github::files(&pr.repo, pr.number).await
     }
     #[tauri::command]
+    async fn list_repositories() -> Result<Vec<types::RepositorySummary>, String> {
+        github::repositories().await
+    }
+    #[tauri::command]
     async fn open_github(url: String) -> Result<(), String> {
         if !url.starts_with("https://github.com/") || url.chars().any(|c| c.is_control()) {
             return Err("Only GitHub links can be opened.".into());
@@ -88,7 +96,7 @@ mod desktop {
             .setup(|app| {
                 let handle = app.handle().clone();
                 let root = app.path().app_data_dir()?;
-                let engine = engine::Engine::new(root, move |snapshot| {
+                let engine = engine::Engine::new(root, move |snapshot: &types::Snapshot| {
                     let _ = handle.emit("orbit-state", snapshot);
                 })
                 .map_err(std::io::Error::other)?;
@@ -109,6 +117,7 @@ mod desktop {
                 send_message,
                 answer_approval,
                 get_files,
+                list_repositories,
                 open_github
             ])
             .build(tauri::generate_context!())
