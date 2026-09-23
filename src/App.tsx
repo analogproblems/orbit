@@ -52,6 +52,7 @@ import {
   statusLabels,
   latestReview,
   canPublish,
+  publishTarget,
   trustedSource,
   type PullRequest,
   type Review,
@@ -952,12 +953,7 @@ export default function App() {
                   {review?.status === "ready" && (
                     <button
                       className="text-button"
-                      disabled={
-                        !canPublish(
-                          review,
-                          s.prs.find((p) => p.id === pr.id),
-                        )
-                      }
+                      disabled={!canPublish(review, publishTarget(s, pr))}
                       onClick={() => setPublish(review)}
                     >
                       Publish review <ArrowUpRight size={13} />
@@ -1371,12 +1367,7 @@ function Chat({
             <span>Review complete. Your call from here.</span>
             <button
               className="text-button"
-              disabled={
-                !canPublish(
-                  review,
-                  s.prs.find((p) => p.id === pr.id),
-                )
-              }
+              disabled={!canPublish(review, publishTarget(s, pr))}
               onClick={() => onPublish(review)}
             >
               Publish findings <ArrowUpRight size={13} />

@@ -786,11 +786,14 @@ impl Engine {
             .find(|r| r.id == id)
             .ok_or("Unknown review")?
             .clone();
+        // A PR from a disconnected repository may still be open; the fresh fetch
+        // below refuses closed ones.
         let cached = s
             .prs
             .iter()
+            .chain(&s.history_prs)
             .find(|p| p.id == r.pr_id)
-            .ok_or("PR is no longer open in this inbox. Sync first.")?;
+            .ok_or("Unknown pull request. Sync first.")?;
         if !publishable(&r, cached) {
             return Err(
                 "Only a completed review of the current head and base can be published.".into(),

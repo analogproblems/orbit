@@ -1,6 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { useOrbit } from "./store";
-import { canPublish, trustedSource } from "./types";
+import { canPublish, publishTarget, trustedSource } from "./types";
 
 vi.mock("@tauri-apps/api/core", () => ({
   isTauri: () => false,
@@ -95,6 +95,21 @@ describe("review interactions", () => {
       false,
     );
     expect(trustedSource({ ...p, headRepo: undefined })).toBe(false);
+  });
+  it("publishes PRs that left the inbox only if their repository was disconnected", () => {
+    const s = useOrbit.getState().snapshot;
+    const pr = s.prs[0];
+    const closed = { ...s, prs: s.prs.slice(1), historyPrs: [pr] };
+    expect(publishTarget(s, pr)).toBe(pr);
+    expect(publishTarget(closed, pr)).toBeUndefined();
+    const disconnected = {
+      ...closed,
+      settings: {
+        ...s.settings,
+        repositories: s.settings.repositories.filter((r) => r.name !== pr.repo),
+      },
+    };
+    expect(publishTarget(disconnected, pr)).toBe(pr);
   });
   it("blocks publishing a stale base or head", () => {
     const s = useOrbit.getState().snapshot;
