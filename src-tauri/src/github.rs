@@ -114,6 +114,11 @@ pub async fn pull(repo: &str, number: u64, login: &str) -> Result<PullRequest, S
                     .collect()
             })
             .unwrap_or_default(),
+        head_repo: v["head"]["repo"]["full_name"]
+            .as_str()
+            .unwrap_or("")
+            .into(),
+        author_association: text("author_association"),
     };
     if !valid_sha(&pr.head_sha) || !valid_sha(&pr.base_sha) {
         return Err("GitHub returned an invalid commit SHA.".into());

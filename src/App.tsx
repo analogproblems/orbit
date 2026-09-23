@@ -248,6 +248,7 @@ export default function App() {
   const [repoFilter, setRepoFilter] = useState("all");
   const [sidebar, setSidebar] = useState(true);
   const [publish, setPublish] = useState<Review | null>(null);
+  const [confirmSensitive, setConfirmSensitive] = useState(false);
   const [busy, setBusy] = useState(false);
   const [approvalOpen, setApprovalOpen] = useState(false);
   const [, setTime] = useState(0);
@@ -309,6 +310,10 @@ export default function App() {
     desktop
       ? action("open_github", { url })
       : window.open(url, "_blank", "noopener,noreferrer");
+  const closePublish = () => {
+    setPublish(null);
+    setConfirmSensitive(false);
+  };
   const start = async () => {
     if (!pr) return;
     setBusy(true);
@@ -1019,7 +1024,7 @@ export default function App() {
               : "Simulate publishing a review"
           }
           wide
-          onClose={() => setPublish(null)}
+          onClose={closePublish}
         >
           <p className="modal-description">
             {desktop
@@ -1031,24 +1036,48 @@ export default function App() {
             {publish.prId}
             <code>{publish.headSha.slice(0, 7)}</code>
           </div>
+          {!!publish.sensitive?.length && (
+            <>
+              <div role="alert" className="inline-error">
+                <AlertCircle size={15} />
+                This report contains text that looks like credentials (
+                {publish.sensitive.join(", ")}). Codex can read files outside
+                the review worktree, so make sure nothing private is quoted
+                before publishing.
+              </div>
+              <div className="setting-row">
+                <div>
+                  <strong>I checked the report</strong>
+                  <p>Publish it even though it matches a credential format.</p>
+                </div>
+                <Toggle
+                  label="I checked the report"
+                  checked={confirmSensitive}
+                  onChange={setConfirmSensitive}
+                />
+              </div>
+            </>
+          )}
           <div className="publish-preview">
             <Markdown>{publish.report}</Markdown>
           </div>
           <div className="modal-actions">
-            <button
-              className="button secondary"
-              onClick={() => setPublish(null)}
-            >
+            <button className="button secondary" onClick={closePublish}>
               Cancel
             </button>
             <button
               className="button primary"
-              disabled={busy}
+              disabled={
+                busy || (!!publish.sensitive?.length && !confirmSensitive)
+              }
               onClick={async () => {
                 setBusy(true);
-                await action("publish_review", { reviewId: publish.id });
+                await action("publish_review", {
+                  reviewId: publish.id,
+                  allowSensitive: confirmSensitive,
+                });
                 setBusy(false);
-                setPublish(null);
+                closePublish();
               }}
             >
               {busy ? (
@@ -1579,13 +1608,19 @@ function Repositories() {
               />
               <small>
                 Runs in the new worktree, inside the Codex sandbox. Uses /bin/sh
-                on Unix or PowerShell on Windows. Five-minute timeout.
+                on Unix or PowerShell on Windows. Five-minute timeout. Setup can
+                run code from the pull request, such as package install scripts;
+                prefer options like --ignore-scripts.
               </small>
             </label>
             <div className="setting-row">
               <div>
                 <strong>Allow sandbox network access</strong>
-                <p>Enable when setup needs to download dependencies.</p>
+                <p>
+                  Enable when setup needs to download dependencies. Setup and
+                  the review agent can then reach the network, including code
+                  from the pull request.
+                </p>
               </div>
               <Toggle
                 checked={editing.networkAccess}
@@ -1812,7 +1847,10 @@ function SettingsPage() {
               <strong>Automatically publish findings</strong>
               <p>
                 Post completed automatic reviews as PR comments using your
-                GitHub account.
+                GitHub account. Only pull requests opened from the repository
+                itself by its owners, members, or collaborators are published
+                automatically, and never when a report looks like it contains
+                credentials. Everything else waits for you to publish it.
               </p>
             </div>
             <Toggle

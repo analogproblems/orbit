@@ -51,6 +51,7 @@ impl Engine {
         };
         state.settings.validate()?;
         for r in &mut state.reviews {
+            r.sensitive = credential_kinds(&r.report);
             if active(&r.status) {
                 r.status = "cancelled".into();
                 r.error = Some(
@@ -639,7 +640,12 @@ impl Engine {
             .await;
         self.flush().await
     }
-    pub async fn publish(&self, id: &str, automatic: bool) -> Result<(), String> {
+    pub async fn publish(
+        &self,
+        id: &str,
+        automatic: bool,
+        allow_sensitive: bool,
+    ) -> Result<(), String> {
         let _guard = self.publish_lock.lock().await;
         let s = self.snapshot().await;
         let r = s
@@ -658,16 +664,26 @@ impl Engine {
                 "Only a completed review of the current head and base can be published.".into(),
             );
         }
-        if automatic
-            && !(s.settings.automatic
+        let sensitive = credential_kinds(&r.report);
+        if automatic {
+            if !(s.settings.automatic
                 && s.settings.auto_post
                 && r.automatic
                 && s.settings
                     .repositories
                     .iter()
                     .any(|repo| repo.name == cached.repo && repo.automatic))
-        {
-            return Ok(());
+            {
+                return Ok(());
+            }
+            if let Some(reason) = automatic_hold(cached, &sensitive) {
+                return Err(reason);
+            }
+        } else if !sensitive.is_empty() && !allow_sensitive {
+            return Err(format!(
+                "The report contains text that looks like credentials ({}). Check it, then confirm to publish.",
+                sensitive.join(", ")
+            ));
         }
         // Reconcile before fresh-head and automation checks, so slow pagination
         // cannot leave a long gap between the final checks and the POST.
@@ -702,6 +718,9 @@ impl Engine {
                     .any(|repo| repo.name == fresh.repo && repo.automatic))
             {
                 return Ok(());
+            }
+            if let Some(reason) = automatic_hold(&fresh, &sensitive) {
+                return Err(reason);
             }
         }
         // A stable marker reconciles network timeouts or crashes without duplicate comments.
@@ -945,7 +964,7 @@ impl Engine {
     "item/started"=>{if p["item"]["type"]=="commandExecution"{r.messages.push(Message::new("system",format!("Running: {}",p["item"]["command"].as_str().unwrap_or("command"))));}},
     "item/completed"=>{let item=&p["item"];let item_id=item["id"].as_str().unwrap_or("");match item["type"].as_str().unwrap_or(""){
      "agentMessage"=>{let text=item["text"].as_str().unwrap_or("");if let Some(m)=r.messages.iter_mut().find(|m|m.id==item_id){m.text=text.into()}else{r.messages.push(Message{id:item_id.into(),role:"agent".into(),text:text.into(),created_at:now()});}},
-     "exitedReviewMode"=>{r.report=item["review"].as_str().unwrap_or("").into();if !r.report.is_empty(){r.messages.push(Message::new("agent",r.report.clone()));}},
+     "exitedReviewMode"=>{r.report=item["review"].as_str().unwrap_or("").into();r.sensitive=credential_kinds(&r.report);if !r.report.is_empty(){r.messages.push(Message::new("agent",r.report.clone()));}},
      "commandExecution"=>{let output=item["aggregatedOutput"].as_str().unwrap_or("");if !output.is_empty(){r.messages.push(Message::new("system",output.chars().take(16000).collect::<String>()));}},_=>{}
     }},
     "turn/completed"=>{match p["turn"]["status"].as_str().unwrap_or(""){
@@ -957,7 +976,7 @@ impl Engine {
         if autopost {
             let e = self.clone();
             tokio::spawn(async move {
-                if let Err(error) = e.publish(&id, true).await {
+                if let Err(error) = e.publish(&id, true, false).await {
                     e.update(|s| {
                         if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
                             r.error = Some(error);
@@ -993,6 +1012,20 @@ async fn git(cwd: &Path, args: &[&str]) -> Result<String, String> {
     ];
     full.extend(args.iter().map(|s| s.to_string()));
     github::run("git", &full, Some(cwd), None).await
+}
+/// Why an automatic review's report must wait for a person, if it must.
+/// The report stays ready for manual publication either way.
+fn automatic_hold(pr: &PullRequest, sensitive: &[String]) -> Option<String> {
+    if !trusted_source(pr) {
+        return Some("Not published automatically: automatic publication is limited to pull requests opened from this repository by its owners, members, or collaborators. Check the report, then publish it manually.".into());
+    }
+    if !sensitive.is_empty() {
+        return Some(format!(
+            "Not published automatically: the report contains text that looks like credentials ({}). Check it before publishing manually.",
+            sensitive.join(", ")
+        ));
+    }
+    None
 }
 fn matches_origin(origin: &str, repo: &str) -> bool {
     let origin = origin
@@ -1082,6 +1115,65 @@ mod tests {
             s.approvals[0].params["itemDetails"]["changes"][0]["diff"],
             "-old\n+new"
         );
+    }
+    async fn ready_for_autopost(e: &Engine, report: &str, trusted: bool) {
+        e.update(|s| {
+            s.settings.automatic = true;
+            s.settings.auto_post = true;
+            s.settings.repositories.push(Repository {
+                name: "a/b".into(),
+                path: "/tmp/a-b".into(),
+                automatic: true,
+                setup_command: String::new(),
+                network_access: false,
+            });
+            if trusted {
+                s.prs[0].head_repo = "a/b".into();
+                s.prs[0].author_association = "MEMBER".into();
+            }
+            let r = &mut s.reviews[0];
+            r.status = "ready".into();
+            r.automatic = true;
+            r.report = report.into();
+        })
+        .await;
+    }
+    #[tokio::test]
+    async fn holds_automatic_publication_for_external_pull_requests() {
+        let (_d, e, id) = running_engine().await;
+        ready_for_autopost(&e, "No actionable defects found.", false).await;
+        let error = e.publish(&id, true, false).await.unwrap_err();
+        assert!(error.contains("owners, members, or collaborators"), "{error}");
+        assert_eq!(e.snapshot().await.reviews[0].status, "ready");
+    }
+    #[tokio::test]
+    async fn holds_automatic_publication_of_credential_shaped_reports() {
+        let (_d, e, id) = running_engine().await;
+        let report = format!("Found ghp_{} in the fixture.", "a1".repeat(18));
+        ready_for_autopost(&e, &report, true).await;
+        // Confirmation is a manual-only escape hatch; automatic runs ignore it.
+        let error = e.publish(&id, true, true).await.unwrap_err();
+        assert!(error.contains("GitHub token"), "{error}");
+        assert_eq!(e.snapshot().await.reviews[0].status, "ready");
+    }
+    #[tokio::test]
+    async fn manual_publication_of_credential_shaped_reports_needs_confirmation() {
+        let (_d, e, id) = running_engine().await;
+        let report = format!("-----BEGIN RSA {} KEY-----", "PRIVATE");
+        e.update(|s| {
+            s.reviews[0].status = "ready".into();
+            s.reviews[0].report = report;
+        })
+        .await;
+        let error = e.publish(&id, false, false).await.unwrap_err();
+        assert!(error.contains("private key") && error.contains("confirm"), "{error}");
+    }
+    #[tokio::test]
+    async fn records_credential_kinds_when_the_report_arrives() {
+        let (_d, e, _) = running_engine().await;
+        let review = format!("Leaked -----BEGIN {} KEY----- in docs.", "PRIVATE");
+        e.event(json!({"method":"item/completed","params":{"threadId":"thread-1","turnId":"turn-1","item":{"id":"review","type":"exitedReviewMode","review":review}}})).await;
+        assert_eq!(e.snapshot().await.reviews[0].sensitive, ["private key"]);
     }
     #[tokio::test]
     async fn refuses_duplicate_instances_and_recovers_interrupted_runs() {

@@ -1,6 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { useOrbit } from "./store";
-import { canPublish } from "./types";
+import { canPublish, trustedSource } from "./types";
 
 vi.mock("@tauri-apps/api/core", () => ({
   isTauri: () => false,
@@ -61,6 +61,33 @@ describe("review interactions", () => {
     s = useOrbit.getState().snapshot;
     expect(s.reviews.filter((r) => r.status === "queued")).toHaveLength(1);
     expect(s.reviews.filter((r) => r.status === "posted")).toHaveLength(0);
+  });
+  it("automatically publishes only pull requests from repository insiders", async () => {
+    const store = useOrbit.getState();
+    await store.action("save_settings", {
+      settings: {
+        ...store.snapshot.settings,
+        automatic: true,
+        autoPost: true,
+        concurrency: 4,
+      },
+    });
+    await vi.advanceTimersByTimeAsync(6000);
+    const reviews = useOrbit.getState().snapshot.reviews;
+    const review = (n: number) =>
+      reviews.find((r) => r.prId === `acme/orbit#${n}`)!;
+    expect(review(145).status).toBe("posted");
+    expect(review(147).status).toBe("ready");
+    expect(review(147).error).toMatch(/Not published automatically/);
+  });
+  it("treats forks and outside contributors as untrusted", () => {
+    const p = useOrbit.getState().snapshot.prs[0];
+    expect(trustedSource(p)).toBe(true);
+    expect(trustedSource({ ...p, headRepo: "someone/orbit" })).toBe(false);
+    expect(trustedSource({ ...p, authorAssociation: "CONTRIBUTOR" })).toBe(
+      false,
+    );
+    expect(trustedSource({ ...p, headRepo: undefined })).toBe(false);
   });
   it("blocks publishing a stale base or head", () => {
     const s = useOrbit.getState().snapshot;

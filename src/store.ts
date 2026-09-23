@@ -6,6 +6,7 @@ import {
   defaults,
   canPublish,
   activeStatuses,
+  trustedSource,
   type Snapshot,
   type Settings,
   type ChangedFile,
@@ -35,7 +36,7 @@ interface Store {
 let demo: Snapshot;
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 function commit() {
-  localStorage.setItem("orbit-demo-v1", JSON.stringify(demo));
+  localStorage.setItem("orbit-demo-v2", JSON.stringify(demo));
   useOrbit.setState({ snapshot: structuredClone(demo) });
 }
 function demoSchedule() {
@@ -83,8 +84,12 @@ function demoSchedule() {
                 (repo) => repo.name === pr?.repo && repo.automatic,
               ) &&
               canPublish(r, pr)
-            )
-              r.status = "posted";
+            ) {
+              if (trustedSource(pr)) r.status = "posted";
+              else
+                r.error =
+                  "Not published automatically: automatic publication is limited to pull requests opened from this repository by its owners, members, or collaborators. Check the report, then publish it manually.";
+            }
             r.updatedAt = new Date().toISOString();
             r.messages.push({
               id: crypto.randomUUID(),
@@ -255,7 +260,7 @@ export const useOrbit = create<Store>((set) => ({
     if (!desktop) {
       try {
         demo =
-          JSON.parse(localStorage.getItem("orbit-demo-v1") || "null") ||
+          JSON.parse(localStorage.getItem("orbit-demo-v2") || "null") ||
           freshDemo();
         demo.reviews.forEach((r) => {
           if (activeStatuses.includes(r.status) && !timers.has(r.id)) {

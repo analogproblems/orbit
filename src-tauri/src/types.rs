@@ -1,5 +1,7 @@
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::LazyLock;
 
 pub fn now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
@@ -29,6 +31,12 @@ pub struct PullRequest {
     pub changed_files: u64,
     pub review_requested: bool,
     pub labels: Vec<String>,
+    /// `owner/name` of the head branch's repository; empty when unknown or the fork was deleted.
+    #[serde(default)]
+    pub head_repo: String,
+    /// GitHub's `author_association`, e.g. OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, NONE.
+    #[serde(default)]
+    pub author_association: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -69,6 +77,9 @@ pub struct Review {
     pub comment_url: Option<String>,
     pub automatic: bool,
     pub is_review: bool,
+    /// Kinds of credential-like text found in the report, shown before publication.
+    #[serde(default)]
+    pub sensitive: Vec<String>,
 }
 pub fn active(status: &str) -> bool {
     matches!(
@@ -97,6 +108,7 @@ impl Review {
             comment_url: None,
             automatic,
             is_review: true,
+            sensitive: vec![],
         }
     }
 }
@@ -223,6 +235,47 @@ pub fn publishable(r: &Review, pr: &PullRequest) -> bool {
         && r.head_sha == pr.head_sha
         && r.base_sha == pr.base_sha
 }
+/// Whether a PR's report may be published without a person reading it first.
+/// The agent can read files outside its worktree, so anyone able to plant
+/// instructions in the diff could otherwise have local secrets posted publicly.
+pub fn trusted_source(pr: &PullRequest) -> bool {
+    pr.head_repo.eq_ignore_ascii_case(&pr.repo)
+        && matches!(
+            pr.author_association.as_str(),
+            "OWNER" | "MEMBER" | "COLLABORATOR"
+        )
+}
+static CREDENTIAL_PATTERNS: LazyLock<Vec<(&str, Regex)>> = LazyLock::new(|| {
+    [
+        (
+            "GitHub token",
+            r"\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})",
+        ),
+        ("private key", r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"),
+        ("AWS access key", r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
+        ("OpenAI or Anthropic API key", r"\bsk-[A-Za-z0-9_-]{20,}"),
+        ("Slack token", r"\bxox[abprs]-[A-Za-z0-9-]{10,}"),
+        ("Google API key", r"\bAIza[0-9A-Za-z_-]{35}"),
+        ("Stripe key", r"\b[rs]k_live_[0-9A-Za-z]{20,}"),
+        ("npm token", r"\bnpm_[A-Za-z0-9]{36}\b"),
+        (
+            "JSON web token",
+            r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}",
+        ),
+    ]
+    .into_iter()
+    .map(|(label, pattern)| (label, Regex::new(pattern).unwrap()))
+    .collect()
+});
+/// Kinds of well-known credential formats found in `text`. A best-effort net
+/// behind `trusted_source`, not a guarantee: arbitrary secrets have no format.
+pub fn credential_kinds(text: &str) -> Vec<String> {
+    CREDENTIAL_PATTERNS
+        .iter()
+        .filter(|(_, pattern)| pattern.is_match(text))
+        .map(|(label, _)| label.to_string())
+        .collect()
+}
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -272,6 +325,45 @@ pub(crate) mod tests {
         p.head_sha = r.head_sha.clone();
         p.base_sha = "d".repeat(40);
         assert!(!publishable(&r, &p));
+    }
+    #[test]
+    fn only_repository_insiders_are_trusted_for_automatic_publication() {
+        let mut p = pr();
+        // State saved before provenance was recorded deserializes as untrusted.
+        assert!(!trusted_source(&p));
+        p.head_repo = "A/B".into();
+        for association in ["OWNER", "MEMBER", "COLLABORATOR"] {
+            p.author_association = association.into();
+            assert!(trusted_source(&p), "{association}");
+        }
+        for association in ["CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "NONE", ""] {
+            p.author_association = association.into();
+            assert!(!trusted_source(&p), "{association}");
+        }
+        p.author_association = "MEMBER".into();
+        p.head_repo = "someone/b".into();
+        assert!(!trusted_source(&p));
+        p.head_repo = String::new();
+        assert!(!trusted_source(&p));
+    }
+    #[test]
+    fn detects_credential_shaped_text() {
+        // Built at runtime so secret scanners do not flag this file.
+        let github = format!("token: ghp_{}", "a1".repeat(18));
+        let key = format!("-----BEGIN OPENSSH {} KEY-----", "PRIVATE");
+        let aws = format!("AKIA{}", "ABCDEFGH23456789");
+        assert_eq!(credential_kinds(&github), ["GitHub token"]);
+        assert_eq!(credential_kinds(&key), ["private key"]);
+        assert_eq!(
+            credential_kinds(&format!("{aws} and {key}")),
+            ["private key", "AWS access key"]
+        );
+        let ordinary = format!(
+            "### [P2] Token refresh skips expiry\n`src/auth/task-scheduler.rs:42` uses \
+             `generate_token()`; reviewed head `{}`. Rotate the api_key in tests.",
+            "a".repeat(40)
+        );
+        assert!(credential_kinds(&ordinary).is_empty());
     }
     #[test]
     fn validates_settings_bounds() {

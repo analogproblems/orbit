@@ -26,6 +26,8 @@ export interface PullRequest {
   changedFiles: number;
   reviewRequested: boolean;
   labels: string[];
+  headRepo?: string;
+  authorAssociation?: string;
 }
 export interface Message {
   id: string;
@@ -52,6 +54,7 @@ export interface Review {
   commentUrl?: string;
   automatic: boolean;
   isReview: boolean;
+  sensitive?: string[];
 }
 export interface Repository {
   name: string;
@@ -142,5 +145,13 @@ export function canPublish(review: Review, pr: PullRequest | undefined) {
     !!review.report &&
     review.headSha === pr?.headSha &&
     review.baseSha === pr?.baseSha
+  );
+}
+// Mirrors trusted_source in src-tauri/src/types.rs.
+export function trustedSource(pr: PullRequest | undefined) {
+  return (
+    !!pr &&
+    pr.headRepo?.toLowerCase() === pr.repo.toLowerCase() &&
+    ["OWNER", "MEMBER", "COLLABORATOR"].includes(pr.authorAssociation ?? "")
   );
 }

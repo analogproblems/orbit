@@ -39,8 +39,12 @@ mod desktop {
         engine.cancel(&review_id).await
     }
     #[tauri::command]
-    async fn publish_review(engine: State<'_, AppState>, review_id: String) -> Result<(), String> {
-        engine.publish(&review_id, false).await
+    async fn publish_review(
+        engine: State<'_, AppState>,
+        review_id: String,
+        allow_sensitive: bool,
+    ) -> Result<(), String> {
+        engine.publish(&review_id, false, allow_sensitive).await
     }
     #[tauri::command]
     async fn send_message(

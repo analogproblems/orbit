@@ -1998,6 +1998,9 @@ code {
   color: #cdd5c5;
   margin-top: 17px;
 }
+.publish-target + .inline-error {
+  margin: 17px 0 0;
+}
 .publish-target code {
   margin-left: auto;
   color: #a4b09b;
