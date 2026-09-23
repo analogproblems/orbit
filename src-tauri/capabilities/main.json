@@ -1,0 +1,6 @@
+{
+  "identifier": "main",
+  "description": "Orbit main window event subscription. Native operations use narrow Rust commands.",
+  "windows": ["main"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}
