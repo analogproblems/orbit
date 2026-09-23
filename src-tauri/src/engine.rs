@@ -193,7 +193,7 @@ impl Engine {
         {
             return Ok(());
         }
-        let (tx, mut rx) = mpsc::channel(2048);
+        let (tx, rx) = mpsc::channel(2048);
         let rpc = match Rpc::start(tx).await {
             Ok(r) => r,
             Err(err) => {
@@ -206,12 +206,7 @@ impl Engine {
             }
         };
         *self.rpc.lock().await = Some(rpc.clone());
-        let e = self.clone();
-        tokio::spawn(async move {
-            while let Some(event) = rx.recv().await {
-                e.event(event).await;
-            }
-        });
+        tokio::spawn(self.clone().pump(rpc.clone(), rx));
         let result = async {
             let account = rpc
                 .request("account/read", json!({"refreshToken":false}))
@@ -245,6 +240,21 @@ impl Engine {
             rpc.shutdown().await;
         }
         result
+    }
+    /// Delivers one connection's events. Events from a connection that has been
+    /// replaced are dropped, so its late disconnect cannot fail newer reviews.
+    async fn pump(self: Arc<Self>, rpc: Arc<Rpc>, mut events: mpsc::Receiver<Value>) {
+        while let Some(event) = events.recv().await {
+            let current = self
+                .rpc
+                .lock()
+                .await
+                .as_ref()
+                .is_some_and(|r| Arc::ptr_eq(r, &rpc));
+            if current {
+                self.event(event).await;
+            }
+        }
     }
     async fn client(&self) -> Result<Arc<Rpc>, String> {
         self.rpc
@@ -1543,6 +1553,24 @@ mod tests {
             .lines()
             .filter(|l| l.starts_with("worktree "))
             .count()
+    }
+    #[tokio::test]
+    async fn ignores_events_from_a_replaced_codex_connection() {
+        let (_d, e, _) = running_engine().await;
+        let (old, _) = crate::rpc::tests::fixture().await;
+        let (new, _) = crate::rpc::tests::fixture().await;
+        *e.rpc.lock().await = Some(new.clone());
+        let disconnect = |rpc: &Arc<Rpc>| {
+            let (tx, rx) = mpsc::channel(1);
+            tx.try_send(json!({"method":"orbit/disconnected"})).unwrap();
+            e.clone().pump(rpc.clone(), rx)
+        };
+        disconnect(&old).await;
+        assert_eq!(e.snapshot().await.reviews[0].status, "reviewing");
+        disconnect(&new).await;
+        assert_eq!(e.snapshot().await.reviews[0].status, "failed");
+        old.shutdown().await;
+        new.shutdown().await;
     }
     #[tokio::test]
     async fn stopping_a_preparing_review_aborts_its_task() {
