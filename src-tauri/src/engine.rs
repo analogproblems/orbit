@@ -938,7 +938,11 @@ impl Engine {
             }
         }).await;
         let saved = self.flush().await;
-        removed.map(|_| saved.err().map(|e| format!("Cleanup finished, but its completion record could not be saved: {e}. Orbit will retry saving and reconcile the recorded removal on restart.")))
+        match removed {
+            Ok(true) => Ok(saved.err().map(|e| format!("Cleanup finished, but its completion record could not be saved: {e}. Orbit will retry saving and reconcile the recorded removal on restart."))),
+            Ok(false) => Ok(None), // The reopened PR kept its worktree.
+            Err(error) => Err(error),
+        }
     }
     /// Cleanup does not discard chat history or change automatic-review deduplication.
     async fn clean_worktrees(self: &Arc<Self>) {
