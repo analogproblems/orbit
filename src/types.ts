@@ -103,6 +103,7 @@ export interface StorageUsage {
 export interface CleanupResult {
   reviewId: string;
   error?: string;
+  warning?: string;
 }
 export interface Model {
   id: string;

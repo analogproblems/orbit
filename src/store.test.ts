@@ -156,3 +156,32 @@ describe("older demo storage", () => {
     expect(useOrbit.getState().snapshot.reviews[2].worktree).toBeUndefined();
   });
 });
+
+describe("save feedback", () => {
+  it("expires successful settings and repository feedback without dismissing later failures", async () => {
+    useOrbit.setState({ saves: {} });
+    const store = useOrbit.getState();
+    const repo = store.snapshot.settings.repositories[0];
+    await store.updateSettings({ concurrency: 3 });
+    await store.mutate(
+      "set_repository_automatic",
+      { name: repo.name, automatic: false },
+      `repository:${repo.name}`,
+    );
+    expect(useOrbit.getState().saves.concurrency.state).toBe("saved");
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(useOrbit.getState().saves).toEqual({});
+
+    await store.updateSettings({ trustedAuthors: ["bot"] });
+    await vi.advanceTimersByTimeAsync(1000);
+    const failed = await store.updateSettings({
+      trustedAuthors: ["invalid/name"],
+    });
+    expect(failed.ok).toBe(false);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(useOrbit.getState().saves.trustedAuthors.state).toBe("error");
+    expect(useOrbit.getState().saves.trustedAuthors.args.patch).toEqual({
+      trustedAuthors: ["invalid/name"],
+    });
+  });
+});

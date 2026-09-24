@@ -69,15 +69,21 @@ mod desktop {
         // Rust owns the dialog and generated content; no general file-write API
         // or frontend-supplied destination is exposed.
         tauri::async_runtime::spawn_blocking(move || {
-            let path = app
-                .dialog()
-                .file()
-                .set_file_name(name)
-                .add_filter("Markdown report", &["md"])
-                .blocking_save_file();
-            let path = path
-                .map(|p| p.into_path().map_err(|e| e.to_string()))
-                .transpose()?;
+            let path = storage::select_report_path(name.into(), |suggested| {
+                let mut dialog = app
+                    .dialog()
+                    .file()
+                    .set_title("Save Markdown report (.md)")
+                    .set_file_name(suggested.file_name().unwrap_or_default().to_string_lossy())
+                    .add_filter("Markdown report", &["md"]);
+                if let Some(parent) = suggested.parent().filter(|p| !p.as_os_str().is_empty()) {
+                    dialog = dialog.set_directory(parent);
+                }
+                dialog
+                    .blocking_save_file()
+                    .map(|p| p.into_path().map_err(|e| e.to_string()))
+                    .transpose()
+            })?;
             storage::write_report(path.as_deref(), &text)
         })
         .await

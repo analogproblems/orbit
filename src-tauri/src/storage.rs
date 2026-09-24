@@ -31,6 +31,7 @@ pub struct UnrecognizedUsage {
 pub struct CleanupResult {
     pub review_id: String,
     pub error: Option<String>,
+    pub warning: Option<String>,
 }
 
 pub fn inactive(r: &Review) -> bool {
@@ -87,10 +88,14 @@ fn bytes(path: &Path, errors: &mut Vec<String>) -> u64 {
     if !metadata.is_dir() {
         return 0;
     }
+    directory_bytes(path, errors)
+}
+
+fn directory_bytes(path: &Path, errors: &mut Vec<String>) -> u64 {
     match std::fs::read_dir(path) {
         Ok(entries) => entries
             .map(|entry| match entry {
-                Ok(entry) => bytes(&entry.path(), errors),
+                Ok(entry) => entry_bytes(&entry, errors),
                 Err(e) => {
                     errors.push(format!("{}: {e}", path.display()));
                     0
@@ -104,6 +109,34 @@ fn bytes(path: &Path, errors: &mut Vec<String>) -> u64 {
     }
 }
 
+fn entry_bytes(entry: &std::fs::DirEntry, errors: &mut Vec<String>) -> u64 {
+    let size: std::io::Result<u64> = (|| {
+        // The entry type is cached on most filesystems. Only regular files
+        // need metadata for their sizes; never read metadata through a symlink.
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            return Ok(directory_bytes(&entry.path(), errors));
+        }
+        if kind.is_file() {
+            let metadata = entry.metadata()?;
+            return Ok(if metadata.is_file() {
+                metadata.len()
+            } else {
+                0
+            });
+        }
+        Ok(0)
+    })();
+    match size {
+        Ok(size) => size,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(e) => {
+            errors.push(format!("{}: {e}", entry.path().display()));
+            0
+        }
+    }
+}
+
 pub fn inspect(root: &Path, snapshot: &Snapshot) -> StorageUsage {
     let mut usage = StorageUsage::default();
     usage.state_bytes = bytes(&root.join("state.json"), &mut usage.errors);
@@ -112,6 +145,11 @@ pub fn inspect(root: &Path, snapshot: &Snapshot) -> StorageUsage {
         let Some(recorded) = &review.worktree else {
             continue;
         };
+        // Invalid recorded paths still belong to this review's row. Do not
+        // list its UUID directory again as unrecognized or count it twice.
+        if uuid::Uuid::parse_str(&review.id).is_ok() {
+            known.insert(root.join("worktrees").join(&review.id));
+        }
         let mut errors = vec![];
         let size = match worktree_path(root, &review.id, recorded) {
             Ok(path) => {
@@ -120,7 +158,12 @@ pub fn inspect(root: &Path, snapshot: &Snapshot) -> StorageUsage {
             }
             Err(e) => {
                 errors.push(e);
-                0
+                let expected = root.join("worktrees").join(&review.id);
+                // Keep any measurable owned bytes on the review row even when
+                // its recorded path is invalid. The error still prevents removal.
+                worktree_path(root, &review.id, &expected.to_string_lossy())
+                    .map(|path| bytes(&path, &mut errors))
+                    .unwrap_or(0)
             }
         };
         usage.worktree_bytes += size;
@@ -143,7 +186,7 @@ pub fn inspect(root: &Path, snapshot: &Snapshot) -> StorageUsage {
                     match entry {
                         Ok(entry) if !known.contains(&entry.path()) => {
                             let mut errors = vec![];
-                            let size = bytes(&entry.path(), &mut errors);
+                            let size = entry_bytes(&entry, &mut errors);
                             usage.unrecognized_bytes += size;
                             usage.unrecognized.push(UnrecognizedUsage {
                                 name: entry.file_name().to_string_lossy().into_owned(),
@@ -201,6 +244,27 @@ pub fn report(snapshot: &Snapshot, review_id: &str) -> Result<(String, String), 
     body.push_str(&r.report);
     body.push('\n');
     Ok((name, body))
+}
+
+pub fn select_report_path(
+    mut suggested: PathBuf,
+    mut choose: impl FnMut(&Path) -> Result<Option<PathBuf>, String>,
+) -> Result<Option<PathBuf>, String> {
+    loop {
+        let Some(path) = choose(&suggested)? else {
+            return Ok(None);
+        };
+        if path
+            .extension()
+            .is_none_or(|extension| extension.is_empty())
+        {
+            // Ask the native dialog to confirm the completed filename and any
+            // overwrite. Never silently change the user-selected destination.
+            suggested = path.with_extension("md");
+        } else {
+            return Ok(Some(path));
+        }
+    }
 }
 
 pub fn write_report(path: Option<&Path>, text: &str) -> Result<Option<String>, String> {
@@ -267,6 +331,58 @@ mod tests {
         assert_eq!(std::fs::read_to_string(path).unwrap(), "report");
     }
     #[test]
+    fn extensionless_export_requires_confirmation_of_the_final_destination() {
+        let d = tempfile::tempdir().unwrap();
+        let bare = d.path().join("chosen");
+        let markdown = bare.with_extension("md");
+        std::fs::write(&markdown, "existing report").unwrap();
+        let mut selections = std::collections::VecDeque::from([Some(bare.clone()), None]);
+        let mut suggestions = vec![];
+        let selected = select_report_path("default.md".into(), |suggested| {
+            suggestions.push(suggested.to_path_buf());
+            Ok(selections.pop_front().unwrap())
+        })
+        .unwrap();
+        assert!(selected.is_none());
+        assert_eq!(suggestions[1], markdown);
+        assert_eq!(
+            std::fs::read_to_string(&markdown).unwrap(),
+            "existing report"
+        );
+        assert!(write_report(selected.as_deref(), "cancelled")
+            .unwrap()
+            .is_none());
+
+        let mut selections = std::collections::VecDeque::from([Some(bare), Some(markdown.clone())]);
+        let selected =
+            select_report_path("default.md".into(), |_| Ok(selections.pop_front().unwrap()))
+                .unwrap();
+        assert_eq!(selected, Some(markdown.clone()));
+        write_report(selected.as_deref(), "confirmed").unwrap();
+        assert_eq!(std::fs::read_to_string(markdown).unwrap(), "confirmed");
+        let explicit = d.path().join("chosen.txt");
+        assert_eq!(
+            select_report_path("default.md".into(), |_| Ok(Some(explicit.clone()))).unwrap(),
+            Some(explicit)
+        );
+    }
+    #[test]
+    fn invalid_registered_paths_are_counted_once_on_the_review_row() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = snapshot();
+        let path = d.path().join("worktrees").join(&s.reviews[0].id);
+        std::fs::create_dir_all(path.join("nested")).unwrap();
+        std::fs::write(path.join("nested/file"), "12345").unwrap();
+        s.reviews[0].worktree = Some("/wrong/location".into());
+        let usage = inspect(d.path(), &s);
+        assert_eq!(usage.worktree_bytes, 5);
+        assert_eq!(usage.worktrees[0].bytes, 5);
+        assert!(usage.worktrees[0].error.is_some());
+        assert!(!usage.worktrees[0].removable);
+        assert!(usage.unrecognized.is_empty());
+        assert_eq!(usage.unrecognized_bytes, 0);
+    }
+    #[test]
     fn rejects_unregistered_paths_and_accepts_missing_owned_directories() {
         let d = tempfile::tempdir().unwrap();
         let id = uuid::Uuid::new_v4().to_string();
@@ -308,6 +424,8 @@ mod tests {
         assert_eq!(usage.worktree_bytes, 0);
         assert!(!usage.worktrees[0].removable);
         assert!(usage.worktrees[0].error.is_some());
+        assert_eq!(usage.unrecognized.len(), 1);
+        assert_eq!(usage.unrecognized[0].name, "unknown");
         std::fs::remove_dir_all(d.path().join("worktrees")).unwrap();
         symlink(outside.path(), d.path().join("worktrees")).unwrap();
         assert!(!inspect(d.path(), &s).errors.is_empty());

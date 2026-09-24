@@ -207,7 +207,10 @@ describe("autosave and follow-ups", () => {
     fireEvent.keyDown(document, { key: ",", ctrlKey: true });
     expect(
       screen.getByRole("combobox", { name: "Poll interval" }),
-    ).toHaveProperty("value", "60");
+    ).toHaveProperty("value", "120");
+    expect(screen.getByRole("alert").textContent).toContain(
+      "Not applied — Poll interval: 60 seconds",
+    );
     expect(
       screen.getByRole("textbox", { name: "Add a trusted account" }),
     ).toHaveProperty("value", "half-typed");
@@ -410,6 +413,96 @@ describe("storage and export", () => {
 });
 
 describe("review regression cases", () => {
+  it("shows active automation consistently and retains the failed request beside Retry", async () => {
+    let fail = true;
+    invoke.mockImplementation((cmd, args) =>
+      cmd === "update_settings" && fail
+        ? Promise.reject(Error("Read-only state directory"))
+        : backend(cmd, args),
+    );
+    await mount();
+    fireEvent.keyDown(document, { key: ",", ctrlKey: true });
+    await user().click(
+      screen.getByRole("switch", {
+        name: "Automatically review new pull requests",
+      }),
+    );
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Not applied — Automatic reviews: On",
+    );
+    for (const name of [
+      "Automatic PR reviews",
+      "Automatically review new pull requests",
+    ]) {
+      expect(
+        screen.getByRole("switch", { name }).getAttribute("aria-checked"),
+      ).toBe("false");
+    }
+    await user().click(screen.getByRole("button", { name: "Review activity" }));
+    fireEvent.keyDown(document, { key: ",", ctrlKey: true });
+    expect(
+      screen
+        .getByRole("switch", { name: "Automatically review new pull requests" })
+        .getAttribute("aria-checked"),
+    ).toBe("false");
+    expect(screen.getByRole("alert").textContent).toContain(
+      "Automatic reviews: On",
+    );
+    fail = false;
+    await user().click(screen.getByRole("button", { name: "Retry saving" }));
+    for (const name of [
+      "Automatic PR reviews",
+      "Automatically review new pull requests",
+    ]) {
+      expect(
+        screen.getByRole("switch", { name }).getAttribute("aria-checked"),
+      ).toBe("true");
+    }
+  });
+  it("reports removed worktrees with a persistence warning without offering removal again", async () => {
+    invoke.mockImplementation(async (cmd, args) => {
+      if (cmd === "get_storage_usage")
+        return {
+          stateBytes: 80,
+          worktreeBytes: 20,
+          unrecognizedBytes: 0,
+          unrecognized: [],
+          errors: [],
+          worktrees: snapshot.reviews[0].worktree
+            ? [{ reviewId: snapshot.reviews[0].id, bytes: 20, removable: true }]
+            : [],
+        };
+      if (cmd === "remove_worktrees") {
+        snapshot.reviews[0].worktree = undefined;
+        emit();
+        return [
+          {
+            reviewId: snapshot.reviews[0].id,
+            warning: "Completion record could not be saved",
+          },
+        ];
+      }
+      return backend(cmd, args);
+    });
+    await mount();
+    fireEvent.keyDown(document, { key: ",", ctrlKey: true });
+    await user().click(screen.getByRole("button", { name: "Inspect storage" }));
+    await user().click(await screen.findByRole("checkbox"));
+    await user().click(
+      screen.getByRole("button", { name: "Remove worktrees (1)" }),
+    );
+    await user().click(screen.getByRole("button", { name: "Confirm removal" }));
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Completion record could not be saved",
+    );
+    expect(
+      screen.getByText(/Worktree removed; report and chat retained/),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Remove worktrees (0)" }),
+    ).toHaveProperty("disabled", true);
+    expect(screen.queryByRole("checkbox")).toBeNull();
+  });
   it("disables Autopilot while repository validation is still pending", async () => {
     const validation = deferred<void>();
     snapshot.settings.automatic = true;

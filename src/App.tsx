@@ -71,6 +71,7 @@ import {
   type Repository,
   type RepositorySummary,
   type ChangedFile,
+  type SettingsPatch,
 } from "./types";
 
 const shortcutKey = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl";
@@ -1958,7 +1959,7 @@ function SettingsPage() {
   } = useOrbit();
   const draft = { ...s.settings };
   for (const save of Object.values(saves)) {
-    if (save.command === "update_settings" && save.state !== "saved")
+    if (save.command === "update_settings" && save.state === "saving")
       Object.assign(draft, save.args.patch);
   }
   const [connecting, setConnecting] = useState(false);
@@ -2260,7 +2261,40 @@ function SettingsPage() {
 }
 
 function SaveFeedback({ saveKey }: { saveKey?: string }) {
-  const { saves, retrySave } = useOrbit();
+  const { saves, retrySave, snapshot } = useOrbit();
+  const describePatch = (patch: SettingsPatch) => {
+    const labels: Record<keyof SettingsPatch, string> = {
+      automatic: "Automatic reviews",
+      autoPost: "Automatic publication",
+      model: "Model",
+      effort: "Reasoning effort",
+      concurrency: "Concurrent reviews",
+      pollSeconds: "Poll interval",
+      trustedAuthors: "Trusted accounts",
+    };
+    return Object.entries(patch)
+      .map(([key, value]) => {
+        const label = labels[key as keyof SettingsPatch];
+        const display =
+          typeof value === "boolean"
+            ? value
+              ? "On"
+              : "Off"
+            : key === "model"
+              ? snapshot.models.find((m) => m.model === value)?.displayName ||
+                value ||
+                "Codex default"
+              : key === "effort"
+                ? value || "Model default"
+                : key === "pollSeconds"
+                  ? `${value} seconds`
+                  : Array.isArray(value)
+                    ? value.join(", ") || "None"
+                    : value;
+        return `${label}: ${display}`;
+      })
+      .join("; ");
+  };
   const entries = Object.entries(saves).filter(([key]) =>
     saveKey ? key === saveKey : !key.startsWith("repository:"),
   );
@@ -2279,6 +2313,12 @@ function SaveFeedback({ saveKey }: { saveKey?: string }) {
         .filter(([, value]) => value.state === "error")
         .map(([key, value]) => (
           <div role="alert" key={key}>
+            {value.command === "update_settings" && (
+              <span>
+                Not applied — {describePatch(value.args.patch as SettingsPatch)}
+                . Controls show the active settings.{" "}
+              </span>
+            )}
             {value.error}{" "}
             <button className="text-button" onClick={() => void retrySave(key)}>
               Retry saving

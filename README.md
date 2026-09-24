@@ -39,7 +39,7 @@ The queue supports one to four concurrent reviews. Polling and review orchestrat
 
 ## Settings, reports, and storage
 
-Settings switches and selections autosave with **Saving**, **Saved**, and local error/**Retry saving** feedback. Failed changes remain visible across page navigation but do not become active until persisted. A failed model change must be retried or replaced before selecting effort. Trusted accounts save on Add, Enter, or removal; partly typed names remain local. Repository dialogs retain **Save repository**. Narrow updates preserve unrelated settings; global settings and repository operations are ordered independently so slow checkout validation cannot delay turning Autopilot off.
+Settings switches and selections autosave with **Saving**, brief **Saved**, and local error/**Retry saving** feedback. After a failed write, controls show the active values; the unapplied request and error remain beside Retry across page navigation. A failed model change must be retried or replaced before selecting effort. Trusted accounts save on Add, Enter, or removal; partly typed names remain local. Repository dialogs retain **Save repository**. Narrow updates preserve unrelated settings; global settings and repository operations are ordered independently so slow checkout validation cannot delay turning Autopilot off. Filesystem validation runs off the async workers with a bounded wait.
 
 Reports distinguish **Ready to publish**, **Outdated report**, and **Saved report**, while published runs retain their status. The chat explains why a follow-up cannot send and retains composed text while waiting. Changed files have a retry action and reload when head or base changes. Use Ctrl/Cmd+K to open and focus inbox search and Ctrl/Cmd+, for Settings; open dialogs keep navigation shortcuts from taking over.
 
@@ -47,7 +47,11 @@ Reports distinguish **Ready to publish**, **Outdated report**, and **Saved repor
 
 Confirmation closes immediately while removal runs in the background; progress and results survive navigation. Interrupted automatic cleanup rechecks PR closure on restart, independently of initial inbox sync. Automatic sweeps skip busy Git operations. Confirmed manual removal can wait for Git and continues even if its PR is open. If Orbit cannot save the removal record, it keeps the files and shows an error: free space or restore write access to its data directory, then retry.
 
+If files were removed but saving the completion record fails, Storage reports success with a separate warning. Orbit retries saving and reconciles the durable removal record after restart; the UI does not offer to remove the same worktree again.
+
 **Export report** opens a native Save As dialog for inactive runs with a report. The Markdown includes PR/commit/model/effort/publication metadata and excludes chats and logs. Rust generates and writes the report; the frontend supplies only a review ID. The browser demo simulates storage/cleanup and downloads Markdown.
+
+If you enter an extensionless filename, the native dialog asks you to confirm the name with `.md` added, including any overwrite confirmation. Orbit writes only the final destination chosen in that dialog.
 
 ## How isolation works
 

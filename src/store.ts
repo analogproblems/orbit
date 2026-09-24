@@ -418,21 +418,33 @@ export const useOrbit = create<Store>((set, get) => ({
         const result = await get().action<Settings>(command, args, {
           quiet: true,
         });
+        const completed: SaveState = {
+          state: result.ok ? "saved" : "error",
+          error: result.ok ? undefined : result.error,
+          command,
+          args,
+        };
         set((s) =>
           s.saves[key] === pending
             ? {
                 saves: {
                   ...s.saves,
-                  [key]: {
-                    state: result.ok ? "saved" : "error",
-                    error: result.ok ? undefined : result.error,
-                    command,
-                    args,
-                  },
+                  [key]: completed,
                 },
               }
             : {},
         );
+        if (result.ok) {
+          setTimeout(() => {
+            set((s) => {
+              // A previous success must not dismiss a newer pending write or error.
+              if (s.saves[key] !== completed) return {};
+              const saves = { ...s.saves };
+              delete saves[key];
+              return { saves };
+            });
+          }, 2500);
+        }
         return result;
       },
     );

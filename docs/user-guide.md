@@ -66,6 +66,8 @@ In **Repositories**, click **Add repository** or **Connect a repository**.
 
 Click **Save repository**. Saving a new repository or changing its name/path verifies an existing Git working tree and a matching supported GitHub `origin`, then stores the canonical checkout root. Validation does not fetch or run setup. Errors stay in the dialog so you can correct the configuration. Saving starts an inbox sync. Review preparation checks the checkout again because it may have changed. An unavailable existing checkout does not prevent disabling automation, disconnecting it, or changing unrelated Settings.
 
+Filesystem validation runs outside the async workers, with a ten-second wait limit per filesystem check. If a mount stalls, validation reports a timeout and leaves the configuration unchanged. The operating system may finish the underlying filesystem request later; its late result does not save the repository.
+
 The picker loads up to 1,000 accessible repository entries and omits archived repositories. It displays the first 50 search matches at a time; narrow the search or enter `owner/name` directly. Repository names are treated case-insensitively and cannot be connected twice.
 
 The clone's `origin` must match the configured GitHub repository. Accepted forms include `https://github.com/owner/name`, `git@github.com:owner/name`, and `ssh://git@github.com/owner/name`, with an optional `.git` suffix. Custom SSH host aliases do not match these forms.
@@ -204,7 +206,7 @@ Trust only accounts whose PRs you intend to review automatically. Anyone able to
 | Poll interval                          | 2 minutes     | 30 seconds; 1, 2, 5, 10, 30, or 60 minutes.                                                                       |
 | Trusted accounts                       | Empty         | Up to 50 account logins.                                                                                          |
 
-Settings switches and selections save immediately. Changing the model also resets effort to **Model default** in the same update. **Saving…**, **Saved**, or an error with **Retry saving** shows the result. A failed write leaves the active configuration unchanged; the requested value, typed account input, and error remain available across page navigation. Retry after resolving the failure. If a model change fails, effort stays disabled until you retry successfully or choose a model again; this prevents a later retry from resetting a newly selected effort.
+Settings switches and selections save immediately. Changing the model also resets effort to **Model default** in the same update. **Saving…**, **Saved**, or an error with **Retry saving** shows the result. **Saved** clears after 2.5 seconds; errors remain until resolved. After a failed write, controls return to the active values. The unapplied request is listed beside its error and **Retry saving**, and survives page navigation along with typed account input. Retry after resolving the failure. If a model change fails, effort stays disabled until you retry successfully or choose a model again; this prevents a later retry from resetting a newly selected effort.
 
 The header Autopilot switch, repository-card automation switches, and PR **Trust** button also save immediately. Updates change only their intended fields. Global Settings changes are ordered separately from repository changes, so slow checkout validation does not delay turning Autopilot off. Repository dialogs retain **Save repository** because their fields form one configuration that must be validated together.
 
@@ -238,11 +240,13 @@ Select inactive runs and choose **Remove worktrees**. The confirmation lists the
 
 Removal is recorded before files are touched. The confirmation closes as removal starts, and you can navigate freely while cleanup waits for other Git work. Progress and results remain available when you return to Settings; open **Inspect storage** to see per-run results. Failures are shown per run; correct the cause, refresh storage, and select the failed run again to retry. Confirmed pending manual removals resume after restart, including when the directory was already removed before exit. No report or history deletion is part of this action.
 
+If deletion succeeds but its completion record cannot be saved, Storage shows **Worktree removed** with a separate warning. There is no removal to retry. Resolve the local write problem; Orbit retries saving automatically and reconciles the recorded removal after restart. Automatic review scheduling pauses while state cannot be saved. A path-validation failure retains its original error even if saving that error also fails.
+
 If the disk is full or Orbit cannot write its data directory, cleanup cannot save its removal record and leaves the files intact. The run shows a retryable error. Free some space outside Orbit or restore write access to the data directory, then retry removal. Orbit always requires a saved removal record before deleting a worktree.
 
 ### Export a report
 
-For an inactive run with a nonempty report, choose **Export report** in its chat or Review activity. The desktop app opens a native **Save As** dialog. Choose a Markdown destination or cancel normally. A write failure is shown next to the action and can be retried.
+For an inactive run with a nonempty report, choose **Export report** in its chat or Review activity. The desktop app opens a native **Save As** dialog. Choose a Markdown destination or cancel normally. If you omit the extension, the dialog opens again with `.md` added for you to confirm the final filename and any overwrite. An explicitly entered extension is kept. Orbit writes only the final dialog-selected destination. A write failure is shown next to the action and can be retried.
 
 The Markdown contains the stored report, PR identity/link, reviewed head and base commits, creation time, saved model/effort labels, and publication link when available. It excludes chat transcripts and execution logs. Export does not post to GitHub. In the browser demo, export downloads Markdown; storage sizes and cleanup are simulated.
 

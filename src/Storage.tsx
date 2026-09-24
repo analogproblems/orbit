@@ -231,6 +231,7 @@ export function Storage() {
                 <p key={r.reviewId} role={r.error ? "alert" : undefined}>
                   {describe(r.reviewId)}:{" "}
                   {r.error || "Worktree removed; report and chat retained."}
+                  {r.warning && <span role="alert"> {r.warning}</span>}
                 </p>
               ))}
             </div>
