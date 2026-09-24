@@ -96,6 +96,10 @@ pub struct Review {
     /// The review's outcome, set aside while a follow-up question runs.
     #[serde(default)]
     pub before_follow_up: Option<Outcome>,
+    #[serde(default)]
+    pub cleanup_pending: bool,
+    #[serde(default)]
+    pub cleanup_error: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -132,6 +136,8 @@ impl Review {
             is_review: true,
             sensitive: vec![],
             before_follow_up: None,
+            cleanup_pending: false,
+            cleanup_error: None,
         }
     }
     /// Ends a follow-up by restoring the outcome it set aside, so a stopped or
@@ -169,6 +175,43 @@ pub struct Settings {
     /// Extra GitHub logins, such as bots acting for the user, whose same-repository
     /// PRs are trusted like those of owners, members, and collaborators.
     pub trusted_authors: Vec<String>,
+}
+/// Only supplied fields change. Repository mutations have separate commands.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SettingsPatch {
+    pub automatic: Option<bool>,
+    pub auto_post: Option<bool>,
+    pub poll_seconds: Option<u64>,
+    pub concurrency: Option<usize>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub trusted_authors: Option<Vec<String>>,
+}
+impl SettingsPatch {
+    pub fn apply(self, settings: &mut Settings) {
+        if let Some(v) = self.automatic {
+            settings.automatic = v;
+        }
+        if let Some(v) = self.auto_post {
+            settings.auto_post = v;
+        }
+        if let Some(v) = self.poll_seconds {
+            settings.poll_seconds = v;
+        }
+        if let Some(v) = self.concurrency {
+            settings.concurrency = v;
+        }
+        if let Some(v) = self.model {
+            settings.model = v;
+        }
+        if let Some(v) = self.effort {
+            settings.effort = v;
+        }
+        if let Some(v) = self.trusted_authors {
+            settings.trusted_authors = v;
+        }
+    }
 }
 impl Default for Settings {
     fn default() -> Self {

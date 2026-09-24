@@ -2,6 +2,8 @@
 
 A local desktop workspace for routing GitHub pull requests to Codex review agents. Built with Tauri 2, Rust, React 19, TypeScript, and Zustand.
 
+For operating instructions checked against the implementation, see the [user guide](docs/user-guide.md).
+
 ## Run
 
 Install Node.js 22.12+ (or a newer supported version), current stable Rust (tested with 1.98), Git, the GitHub CLI, the Codex CLI, and the [Tauri native prerequisites](https://v2.tauri.app/start/prerequisites/). The app uses the `gh`, `git`, and `codex` executables on your `PATH`.
@@ -20,10 +22,10 @@ If needed, sign in with `gh auth login` and `codex login` first. Orbit does not 
 ## Connect your repositories
 
 1. Open **Settings** and verify GitHub and Codex are connected. Models and supported reasoning efforts come from your installed Codex app-server; leaving either field blank uses its defaults.
-2. Open **Repositories → Add repository**. Pick the repository from the searchable list of repositories your GitHub account can access (owned, collaborator, or organization; archived repositories are hidden), or type `owner/repository`. Each entry shows whether it is private or public. Then enter the **absolute path** to an existing local clone. Its `origin` must match the same repository on github.com, over HTTPS or SSH.
+2. Open **Repositories → Add repository**. Pick the repository from the searchable list of repositories your GitHub account can access (owned, collaborator, or organization; archived repositories are hidden), or type `owner/repository`. Each entry shows whether it is private or public. Then enter the **absolute path** to an existing local clone. **Save repository** verifies its working tree and matching GitHub `origin` and stores the canonical checkout root, without fetching or running setup. Errors stay in the dialog.
 3. Optionally configure an environment setup command, such as `npm ci --ignore-scripts --cache .cache/npm`. It runs in the new worktree through Codex's sandboxed `command/exec`, with a five-minute timeout. Enable sandbox network access if setup must download dependencies. The command uses `/bin/sh` on Unix and PowerShell on Windows.
 4. Sync the inbox, select a PR, and click **Start review**. The chat shows progress, execution logs, approval requests, and the final review. Continue the same conversation with a follow-up.
-5. Preview and publish the report using **Publish review**. Orbit posts an ordinary PR comment with the reviewed head/base SHAs, model, effort, and report.
+5. Preview and publish the report using **Publish review**. Orbit posts an ordinary PR comment with the reviewed head/base SHAs, model, effort, and report. A failed request keeps the preview open for retry; confirmed comments have a **View comment on GitHub** action.
 
 The inbox shows every open PR in your connected repositories, including PRs opened by bots; use its filters to narrow the view to reviews requested from you or PRs you authored. Each sync lists each connected repository's open PRs with one request and fetches an individual PR only when it is new or has changed. A repository that fails to sync keeps its last-known PRs and shows an error while the others continue, and autopilot only acts on repositories that synced successfully in the current session. Draft PRs can be reviewed manually.
 
@@ -34,6 +36,16 @@ Automation starts **off**. Enable individual repositories, then turn on **Autopi
 **Automatically publish findings** is a separate opt-in. Only automatically started reviews are eligible for automatic commenting, and only for pull requests opened from the repository itself (not a fork) by an owner, organization member, collaborator, or trusted account. A report is also never published automatically when it contains text matching a well-known credential format (GitHub, OpenAI/Anthropic, AWS, Slack, Google, Stripe, and npm tokens, private keys, and JSON web tokens). Held reports show the reason and stay available for manual publication. Publishing a credential-shaped report manually requires an explicit confirmation. The scan is a best-effort backstop, not a guarantee: secrets without a recognizable format are not detected. Turning autopilot off pauses queued automatic reviews; already running reviews continue and can be stopped individually. Turning automatic publication off leaves reports available for manual publication. A request already sent to GitHub cannot be recalled by turning the switch off.
 
 The queue supports one to four concurrent reviews. Polling and review orchestration run in Rust, independent of which view is open. Orbit must remain running; this version does not install a background daemon or GitHub webhook.
+
+## Settings, reports, and storage
+
+Settings switches and selections autosave with **Saving**, **Saved**, and local error/**Retry saving** feedback. Failed changes remain visible across page navigation but do not become active until persisted. Trusted accounts save on Add, Enter, or removal; partly typed names remain local. Repository dialogs retain **Save repository**. Narrow, serialized updates avoid overwriting unrelated settings.
+
+Reports distinguish **Ready to publish**, **Outdated report**, and **Saved report**, while published runs retain their status. The chat explains why a follow-up cannot send and retains composed text while waiting. Changed files have a retry action and reload when head or base changes. Use Ctrl/Cmd+K to open and focus inbox search and Ctrl/Cmd+, for Settings; open dialogs keep navigation shortcuts from taking over.
+
+**Settings → Storage → Inspect storage** estimates saved-state and worktree file sizes without following symlinks. Scans happen on request, report incomplete results, and list unrecognized entries without making them removable. Select inactive runs, preview the estimated space and loss of follow-ups, then confirm **Remove worktrees**. Rust checks registered ownership and eligibility under the Git lock, persists cleanup intent, and recovers pending removals after restart. Failures remain retryable. Reports, chats, publication metadata, and automatic-review deduplication are preserved; there is no age-based retention or history deletion.
+
+**Export report** opens a native Save As dialog for inactive runs with a report. The Markdown includes PR/commit/model/effort/publication metadata and excludes chats and logs. Rust generates and writes the report; the frontend supplies only a review ID. The browser demo simulates storage/cleanup and downloads Markdown.
 
 ## How isolation works
 
@@ -68,19 +80,21 @@ npm run tauri -- build --no-bundle  # Produce a native executable
 
 The diagnostic uses a temporary state directory. `src-tauri/target/release/orbit` is the Linux executable after building. Native prerequisites vary by OS; macOS/Windows installers, signing, auto-update distribution, and container-backed environments are not included in this initial version.
 
-Tests exercise queue limits, cancellation, automatic versus manual publication, stale revisions, streamed reports, out-of-order RPC responses, timeouts, disconnects, approval context, persistence, restart recovery, and the instance lock. Browser checks cover search, review/chat actions, publication previews, changed files, repository configuration, and responsive navigation. Real authentication/model discovery were verified; live inference and posting are not part of the read-only diagnostic.
+Tests exercise queue limits, cancellation, publication retry/link rendering, stale file responses, navigation shortcuts, autosave failures/serialization, status/send eligibility, repository validation, worktree cleanup contention/containment/recovery, Markdown export, streamed reports, RPC failures, persistence, and the instance lock. Rust filesystem tests use disposable repositories and state; native dialog presentation requires an interactive desktop check. Browser checks cover search, review/chat actions, publication previews, changed files, repository configuration, and responsive navigation. Real authentication/model discovery were verified; live inference and posting are not part of the read-only diagnostic.
 
 ## Architecture
 
-| Area                                          | Implementation                                       |
-| --------------------------------------------- | ---------------------------------------------------- |
-| UI and navigation                             | `src/App.tsx`, `src/styles.css`                      |
-| Typed application state and native bridge     | `src/types.ts`, `src/store.ts`                       |
-| Separate interactive demo                     | `src/demo.ts` and the demo adapter in `src/store.ts` |
-| Queue, worktrees, orchestration, persistence  | `src-tauri/src/engine.rs`                            |
-| GitHub discovery, PR details, files, comments | `src-tauri/src/github.rs`                            |
-| Codex process and bidirectional RPC           | `src-tauri/src/rpc.rs`                               |
-| Native command allowlist and lifecycle        | `src-tauri/src/lib.rs`                               |
+| Area                                                    | Implementation                                       |
+| ------------------------------------------------------- | ---------------------------------------------------- |
+| UI and navigation                                       | `src/App.tsx`, `src/styles.css`                      |
+| Typed application state and native bridge               | `src/types.ts`, `src/store.ts`                       |
+| Separate interactive demo                               | `src/demo.ts` and the demo adapter in `src/store.ts` |
+| Queue, worktrees, orchestration, persistence            | `src-tauri/src/engine.rs`                            |
+| GitHub discovery, PR details, files, comments           | `src-tauri/src/github.rs`                            |
+| Codex process and bidirectional RPC                     | `src-tauri/src/rpc.rs`                               |
+| Storage inspection, ownership checks, report generation | `src-tauri/src/storage.rs`                           |
+| Storage and report actions                              | `src/Storage.tsx`, `src/ReviewActions.tsx`           |
+| Native command allowlist and lifecycle                  | `src-tauri/src/lib.rs`                               |
 
 The supplied architecture document was used as a recommendation. This implementation corrects the protocol lifecycle and event names, uses existing installed CLIs instead of bundling a Codex binary, and uses a small custom design system instead of an unverified component library.
 

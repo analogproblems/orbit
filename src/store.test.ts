@@ -34,12 +34,13 @@ describe("review interactions", () => {
   });
   it("keeps manual reviews unpublished even when automatic posting is enabled", async () => {
     const store = useOrbit.getState();
-    await store.action("save_settings", {
-      settings: {
-        ...store.snapshot.settings,
+    for (const repo of store.snapshot.settings.repositories) {
+      await store.action("disconnect_repository", { name: repo.name });
+    }
+    await store.action("update_settings", {
+      patch: {
         automatic: true,
         autoPost: true,
-        repositories: [],
       },
     });
     await store.action("start_review", { prId: store.snapshot.prs[1].id });
@@ -48,14 +49,14 @@ describe("review interactions", () => {
   });
   it("honors queue capacity and pauses automatic jobs when autopilot is disabled", async () => {
     const store = useOrbit.getState();
-    await store.action("save_settings", {
-      settings: { ...store.snapshot.settings, automatic: true, concurrency: 1 },
+    await store.action("update_settings", {
+      patch: { automatic: true, concurrency: 1 },
     });
     let s = useOrbit.getState().snapshot;
     expect(s.reviews.filter((r) => r.status === "preparing")).toHaveLength(1);
     expect(s.reviews.filter((r) => r.status === "queued")).toHaveLength(1);
-    await store.action("save_settings", {
-      settings: { ...s.settings, automatic: false },
+    await store.action("update_settings", {
+      patch: { automatic: false },
     });
     await vi.advanceTimersByTimeAsync(10000);
     s = useOrbit.getState().snapshot;
@@ -64,16 +65,17 @@ describe("review interactions", () => {
   });
   it("automatically reviews only pull requests from repository insiders", async () => {
     const store = useOrbit.getState();
-    await store.action("save_settings", {
-      settings: {
-        ...store.snapshot.settings,
+    for (const repo of store.snapshot.settings.repositories) {
+      await store.action("set_repository_automatic", {
+        name: repo.name,
+        automatic: true,
+      });
+    }
+    await store.action("update_settings", {
+      patch: {
         automatic: true,
         autoPost: true,
         concurrency: 4,
-        repositories: store.snapshot.settings.repositories.map((r) => ({
-          ...r,
-          automatic: true,
-        })),
       },
     });
     await vi.advanceTimersByTimeAsync(6000);

@@ -11,6 +11,12 @@ import {
   type Snapshot,
   type Settings,
   type ChangedFile,
+  type ActionResult,
+  type SettingsPatch,
+  type Repository,
+  type StorageUsage,
+  followUpUnavailable,
+  canExport,
 } from "./types";
 export const desktop = isTauri();
 const empty: Snapshot = {
@@ -22,19 +28,41 @@ const empty: Snapshot = {
   polling: false,
   codexReady: false,
 };
+export interface SaveState {
+  state: "saving" | "saved" | "error";
+  error?: string;
+  command: string;
+  args: Record<string, unknown>;
+}
 interface Store {
   snapshot: Snapshot;
   loaded: boolean;
   error: string | null;
-  toast: string | null;
+  saves: Record<string, SaveState>;
+  trustedInput: string;
+  setTrustedInput: (text: string) => void;
+  chatDrafts: Record<string, string>;
+  setChatDraft: (id: string, text: string) => void;
+  mutate: (
+    command: string,
+    args: Record<string, unknown>,
+    key: string,
+  ) => Promise<ActionResult<Settings>>;
+  updateSettings: (
+    patch: SettingsPatch,
+    key?: string,
+  ) => Promise<ActionResult<Settings>>;
+  retrySave: (key: string) => Promise<ActionResult<Settings>>;
   init: () => Promise<() => void>;
   action: <T = void>(
     command: string,
     args?: Record<string, unknown>,
-  ) => Promise<T | undefined>;
+    options?: { quiet?: boolean },
+  ) => Promise<ActionResult<T>>;
   clearError: () => void;
 }
 let demo: Snapshot;
+let mutationTail: Promise<unknown> = Promise.resolve();
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 function commit() {
   localStorage.setItem("orbit-demo-v3", JSON.stringify(demo));
@@ -115,12 +143,15 @@ function demoRun(prId: string, automatic = false) {
   )
     throw Error("This pull request already has an active review.");
   const now = new Date().toISOString();
+  const id = crypto.randomUUID();
   demo.reviews.unshift({
-    id: crypto.randomUUID(),
+    id,
     prId,
     headSha: pr.headSha,
     baseSha: pr.baseSha,
     status: "queued",
+    threadId: crypto.randomUUID(),
+    worktree: "demo-worktree",
     model: demo.settings.model || "codex-default",
     effort: demo.settings.effort || "medium",
     createdAt: now,
@@ -138,6 +169,7 @@ function demoRun(prId: string, automatic = false) {
     isReview: true,
   });
   demoSchedule();
+  return id;
 }
 async function demoAction(
   command: string,
@@ -155,8 +187,53 @@ async function demoAction(
     commit();
     return;
   }
-  if (command === "save_settings") {
-    demo.settings = args.settings as Settings;
+  if (
+    [
+      "update_settings",
+      "save_repository",
+      "set_repository_automatic",
+      "disconnect_repository",
+    ].includes(command)
+  ) {
+    const next = structuredClone(demo.settings);
+    if (command === "update_settings") {
+      const patch = args.patch as SettingsPatch;
+      if (
+        Object.keys(patch).some(
+          (key) => key === "repositories" || !(key in next),
+        )
+      )
+        throw Error("Unknown settings field.");
+      Object.assign(next, patch);
+    }
+    if (command === "save_repository") {
+      const repo = args.repository as Repository;
+      if (!repo.path.startsWith("/"))
+        throw Error("Use an absolute checkout path.");
+      if (args.original)
+        next.repositories = next.repositories.map((r) =>
+          sameRepo(r.name, args.original as string) ? repo : r,
+        );
+      else next.repositories.push(repo);
+    }
+    if (command === "disconnect_repository")
+      next.repositories = next.repositories.filter(
+        (r) => !sameRepo(r.name, args.name as string),
+      );
+    if (command === "set_repository_automatic")
+      next.repositories = next.repositories.map((r) =>
+        sameRepo(r.name, args.name as string)
+          ? { ...r, automatic: args.automatic as boolean }
+          : r,
+      );
+    if (
+      next.trustedAuthors.length > 50 ||
+      next.trustedAuthors.some(
+        (a) => !/^[a-z\d][a-z\d-]{0,38}(\[bot\])?$/i.test(a),
+      )
+    )
+      throw Error("Enter a valid GitHub account name (at most 50 accounts).");
+    demo.settings = next;
     commit();
     if (demo.settings.automatic)
       for (const p of demo.prs.filter(
@@ -170,11 +247,10 @@ async function demoAction(
       ))
         demoRun(p.id, true);
     demoSchedule();
-    return;
+    return structuredClone(demo.settings);
   }
   if (command === "start_review") {
-    demoRun(args.prId as string);
-    return;
+    return demoRun(args.prId as string);
   }
   if (command === "cancel_review") {
     const r = demo.reviews.find((r) => r.id === args.reviewId)!;
@@ -194,11 +270,62 @@ async function demoAction(
     )
       throw Error("Only current, completed reviews can be published.");
     r.status = "posted";
+    r.commentUrl = demo.prs.find((p) => p.id === r.prId)?.url;
     commit();
     return;
   }
+  if (command === "get_storage_usage") {
+    const worktrees = demo.reviews
+      .filter((r) => r.worktree)
+      .map((r) => ({
+        reviewId: r.id,
+        bytes: 12 * 1024 * 1024,
+        removable:
+          !activeStatuses.includes(r.status) &&
+          r.status !== "publishing" &&
+          !r.cleanupPending,
+      }));
+    return {
+      stateBytes: new TextEncoder().encode(JSON.stringify(demo)).length,
+      worktreeBytes: worktrees.reduce((n, r) => n + r.bytes, 0),
+      unrecognizedBytes: 0,
+      unrecognized: [],
+      worktrees,
+      errors: [],
+    } satisfies StorageUsage;
+  }
+  if (command === "remove_worktrees") {
+    const results = (args.reviewIds as string[]).map((id) => {
+      const r = demo.reviews.find((r) => r.id === id);
+      if (!r || activeStatuses.includes(r.status) || r.status === "publishing")
+        return { reviewId: id, error: "This run is still active." };
+      r.worktree = undefined;
+      return { reviewId: id, error: null };
+    });
+    commit();
+    return results;
+  }
+  if (command === "export_report") {
+    const r = demo.reviews.find((r) => r.id === args.reviewId);
+    const pr = demo.prs.find((p) => p.id === r?.prId);
+    if (!r || !pr || !canExport(r))
+      throw Error("Export requires an inactive review with a report.");
+    const content = `# Orbit review: ${pr.title}\n\nPR: ${pr.id} (${pr.url})\n\nCreated: ${r.createdAt}\n\nHead: ${r.headSha}\n\nBase: ${r.baseSha}\n\nModel: ${r.model || "Codex default"} · Effort: ${r.effort || "Model default"}\n\n${r.commentUrl ? `Published comment: ${r.commentUrl}\n\n` : ""}${r.report}\n`;
+    const name = `orbit-${pr.repo.replaceAll("/", "-")}-pr-${pr.number}-${r.headSha.slice(0, 7)}.md`;
+    const url = URL.createObjectURL(
+      new Blob([content], { type: "text/markdown;charset=utf-8" }),
+    );
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = name;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return name;
+  }
   if (command === "send_message") {
     const r = demo.reviews.find((r) => r.id === args.reviewId)!;
+    const reason = followUpUnavailable(demo, r);
+    if (reason) throw Error(reason);
     r.messages.push(
       {
         id: crypto.randomUUID(),
@@ -250,11 +377,49 @@ async function demoAction(
   }
   throw Error("This action is available in the desktop app.");
 }
-export const useOrbit = create<Store>((set) => ({
+export const useOrbit = create<Store>((set, get) => ({
   snapshot: empty,
   loaded: false,
   error: null,
-  toast: null,
+  saves: {},
+  trustedInput: "",
+  setTrustedInput: (trustedInput) => set({ trustedInput }),
+  chatDrafts: {},
+  setChatDraft: (id, text) =>
+    set((s) => ({ chatDrafts: { ...s.chatDrafts, [id]: text } })),
+  mutate: (command, args, key) => {
+    const pending: SaveState = { state: "saving", command, args };
+    set((s) => ({ saves: { ...s.saves, [key]: pending } }));
+    const task = mutationTail.then(async () => {
+      const result = await get().action<Settings>(command, args, {
+        quiet: true,
+      });
+      set((s) =>
+        s.saves[key] === pending
+          ? {
+              saves: {
+                ...s.saves,
+                [key]: {
+                  state: result.ok ? "saved" : "error",
+                  error: result.ok ? undefined : result.error,
+                  command,
+                  args,
+                },
+              },
+            }
+          : {},
+      );
+      return result;
+    });
+    mutationTail = task.catch(() => {});
+    return task;
+  },
+  updateSettings: (patch, key = Object.keys(patch)[0]) =>
+    get().mutate("update_settings", { patch }, key),
+  retrySave: (key) => {
+    const save = get().saves[key];
+    return get().mutate(save.command, save.args, key);
+  },
   clearError: () => set({ error: null }),
   init: async () => {
     if (!desktop) {
@@ -284,16 +449,20 @@ export const useOrbit = create<Store>((set) => ({
     }
     return unlisten;
   },
-  action: async <T>(command: string, args: Record<string, unknown> = {}) => {
+  action: async <T>(
+    command: string,
+    args: Record<string, unknown> = {},
+    options: { quiet?: boolean } = {},
+  ): Promise<ActionResult<T>> => {
     try {
-      set({ error: null });
+      if (!options.quiet) set({ error: null });
       const result = desktop
         ? await invoke<T>(command, args)
         : ((await demoAction(command, args)) as T);
-      return result;
+      return { ok: true, data: result };
     } catch (e) {
-      set({ error: String(e) });
-      return undefined;
+      if (!options.quiet) set({ error: String(e) });
+      return { ok: false, error: String(e) };
     }
   },
 }));
