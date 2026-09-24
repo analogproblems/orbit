@@ -34,12 +34,13 @@ describe("review interactions", () => {
   });
   it("keeps manual reviews unpublished even when automatic posting is enabled", async () => {
     const store = useOrbit.getState();
-    await store.action("save_settings", {
-      settings: {
-        ...store.snapshot.settings,
+    for (const repo of store.snapshot.settings.repositories) {
+      await store.action("disconnect_repository", { name: repo.name });
+    }
+    await store.action("update_settings", {
+      patch: {
         automatic: true,
         autoPost: true,
-        repositories: [],
       },
     });
     await store.action("start_review", { prId: store.snapshot.prs[1].id });
@@ -48,14 +49,14 @@ describe("review interactions", () => {
   });
   it("honors queue capacity and pauses automatic jobs when autopilot is disabled", async () => {
     const store = useOrbit.getState();
-    await store.action("save_settings", {
-      settings: { ...store.snapshot.settings, automatic: true, concurrency: 1 },
+    await store.action("update_settings", {
+      patch: { automatic: true, concurrency: 1 },
     });
     let s = useOrbit.getState().snapshot;
     expect(s.reviews.filter((r) => r.status === "preparing")).toHaveLength(1);
     expect(s.reviews.filter((r) => r.status === "queued")).toHaveLength(1);
-    await store.action("save_settings", {
-      settings: { ...s.settings, automatic: false },
+    await store.action("update_settings", {
+      patch: { automatic: false },
     });
     await vi.advanceTimersByTimeAsync(10000);
     s = useOrbit.getState().snapshot;
@@ -64,16 +65,17 @@ describe("review interactions", () => {
   });
   it("automatically reviews only pull requests from repository insiders", async () => {
     const store = useOrbit.getState();
-    await store.action("save_settings", {
-      settings: {
-        ...store.snapshot.settings,
+    for (const repo of store.snapshot.settings.repositories) {
+      await store.action("set_repository_automatic", {
+        name: repo.name,
+        automatic: true,
+      });
+    }
+    await store.action("update_settings", {
+      patch: {
         automatic: true,
         autoPost: true,
         concurrency: 4,
-        repositories: store.snapshot.settings.repositories.map((r) => ({
-          ...r,
-          automatic: true,
-        })),
       },
     });
     await vi.advanceTimersByTimeAsync(6000);
@@ -122,5 +124,64 @@ describe("review interactions", () => {
     expect(canPublish(r, p)).toBe(true);
     expect(canPublish(r, { ...p, headSha: "f".repeat(40) })).toBe(false);
     expect(canPublish(r, { ...p, baseSha: "f".repeat(40) })).toBe(false);
+  });
+});
+
+describe("older demo storage", () => {
+  it("backfills simulated chat metadata without restoring deliberately removed worktrees", async () => {
+    const old = structuredClone(useOrbit.getState().snapshot);
+    const seeded = old.reviews[0];
+    delete seeded.threadId;
+    const legacyRun = { ...seeded, id: "legacy-run", worktree: undefined };
+    const removed = {
+      ...seeded,
+      id: "removed-run",
+      threadId: "known-thread",
+      worktree: undefined,
+    };
+    old.reviews.push(legacyRun, removed);
+    localStorage.setItem("orbit-demo-v3", JSON.stringify(old));
+    await useOrbit.getState().init();
+    const s = useOrbit.getState().snapshot;
+    expect(s.reviews[0].threadId).toBeTruthy();
+    expect(s.reviews[1].worktree).toBeTruthy();
+    expect(s.reviews[2].worktree).toBeUndefined();
+    expect(s.reviews[0].report).toBe(seeded.report);
+    expect(s.reviews[0].messages).toEqual(seeded.messages);
+    const sent = await useOrbit
+      .getState()
+      .action("send_message", { reviewId: legacyRun.id, text: "Follow-up" });
+    expect(sent.ok).toBe(true);
+    await useOrbit.getState().init();
+    expect(useOrbit.getState().snapshot.reviews[2].worktree).toBeUndefined();
+  });
+});
+
+describe("save feedback", () => {
+  it("expires successful settings and repository feedback without dismissing later failures", async () => {
+    useOrbit.setState({ saves: {} });
+    const store = useOrbit.getState();
+    const repo = store.snapshot.settings.repositories[0];
+    await store.updateSettings({ concurrency: 3 });
+    await store.mutate(
+      "set_repository_automatic",
+      { name: repo.name, automatic: false },
+      `repository:${repo.name}`,
+    );
+    expect(useOrbit.getState().saves.concurrency.state).toBe("saved");
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(useOrbit.getState().saves).toEqual({});
+
+    await store.updateSettings({ trustedAuthors: ["bot"] });
+    await vi.advanceTimersByTimeAsync(1000);
+    const failed = await store.updateSettings({
+      trustedAuthors: ["invalid/name"],
+    });
+    expect(failed.ok).toBe(false);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(useOrbit.getState().saves.trustedAuthors.state).toBe("error");
+    expect(useOrbit.getState().saves.trustedAuthors.args.patch).toEqual({
+      trustedAuthors: ["invalid/name"],
+    });
   });
 });

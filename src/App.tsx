@@ -1,3 +1,4 @@
+import { Modal } from "./Modal";
 import {
   memo,
   useCallback,
@@ -46,11 +47,18 @@ import {
   CheckCircle2,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
+import { Storage } from "./Storage";
+import { ReviewActions } from "./ReviewActions";
 import { parseDiff } from "./diff";
 import { useOrbit, desktop } from "./store";
 import {
   activeStatuses,
   statusLabels,
+  displayStatusLabels,
+  reviewDisplayStatus,
+  followUpUnavailable,
+  canStartReview,
+  type DisplayStatus,
   latestReview,
   canPublish,
   publishTarget,
@@ -60,11 +68,13 @@ import {
   type PullRequest,
   type Review,
   type Status,
-  type Settings,
   type Repository,
   type RepositorySummary,
   type ChangedFile,
+  type SettingsPatch,
 } from "./types";
+
+const shortcutKey = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl";
 
 type Page = "inbox" | "activity" | "repositories" | "settings";
 type Tab = "overview" | "chat" | "files";
@@ -106,7 +116,11 @@ const Markdown = memo(function Markdown({ children }: { children: string }) {
     </div>
   );
 });
-function StatusBadge({ status }: { status: Status | "unreviewed" | "draft" }) {
+function StatusBadge({
+  status,
+}: {
+  status: DisplayStatus | "unreviewed" | "draft";
+}) {
   const running = activeStatuses.includes(status as Status);
   return (
     <span className={`status status-${status}`}>
@@ -125,7 +139,7 @@ function StatusBadge({ status }: { status: Status | "unreviewed" | "draft" }) {
         ? "Not reviewed"
         : status === "draft"
           ? "Draft"
-          : statusLabels[status]}
+          : displayStatusLabels[status]}
     </span>
   );
 }
@@ -171,84 +185,6 @@ function Empty({
     </div>
   );
 }
-function Modal({
-  title,
-  children,
-  onClose,
-  wide = false,
-}: {
-  title: string;
-  children: ReactNode;
-  onClose: () => void;
-  wide?: boolean;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  const closeRef = useRef(onClose);
-  useEffect(() => {
-    closeRef.current = onClose;
-  });
-  const error = useOrbit((state) => state.error);
-  useEffect(() => {
-    const previous = document.activeElement as HTMLElement;
-    ref.current?.focus();
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeRef.current();
-      if (e.key === "Tab") {
-        const elements = Array.from(
-          ref.current?.querySelectorAll<HTMLElement>(
-            'button:not(:disabled),input,textarea,select,[tabindex="0"]',
-          ) || [],
-        );
-        if (!elements.length) return;
-        const first = elements[0],
-          last = elements.at(-1);
-        if (e.shiftKey && document.activeElement === first) {
-          e.preventDefault();
-          last?.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
-          e.preventDefault();
-          first.focus();
-        }
-      }
-    };
-    document.addEventListener("keydown", handler);
-    return () => {
-      document.removeEventListener("keydown", handler);
-      previous?.focus();
-    };
-  }, []);
-  return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div
-        ref={ref}
-        tabIndex={-1}
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        className={`modal ${wide ? "wide" : ""}`}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="modal-heading">
-          <h2>{title}</h2>
-          <button
-            className="icon-button"
-            aria-label="Close dialog"
-            onClick={onClose}
-          >
-            <X size={19} />
-          </button>
-        </div>
-        {error && (
-          <div role="alert" className="inline-error">
-            {error}
-          </div>
-        )}
-        {children}
-      </div>
-    </div>
-  );
-}
-
 export default function App() {
   const { snapshot: s, loaded, error, clearError, init, action } = useOrbit();
   const [page, setPage] = useState<Page>("inbox");
@@ -261,6 +197,8 @@ export default function App() {
   const [sidebar, setSidebar] = useState(true);
   const [publish, setPublish] = useState<Review | null>(null);
   const [confirmSensitive, setConfirmSensitive] = useState(false);
+  const [publishError, setPublishError] = useState<string | null>(null);
+  const [focusSearch, setFocusSearch] = useState(0);
   const [busy, setBusy] = useState(false);
   const [approvalOpen, setApprovalOpen] = useState(false);
   const [, setTime] = useState(0);
@@ -283,15 +221,22 @@ export default function App() {
   }, []);
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if (document.querySelector('[role="dialog"]')) return;
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
         setPage("inbox");
-        searchRef.current?.focus();
+        setFocusSearch((value) => value + 1);
+      } else if ((e.metaKey || e.ctrlKey) && e.key === ",") {
+        e.preventDefault();
+        setPage("settings");
       }
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
   }, []);
+  useEffect(() => {
+    if (page === "inbox" && focusSearch) searchRef.current?.focus();
+  }, [page, focusSearch, loaded]);
   const knownPrs = [...s.prs, ...(s.historyPrs ?? [])];
   const pr = knownPrs.find((p) => p.id === selected) ?? s.prs[0];
   const review =
@@ -308,7 +253,15 @@ export default function App() {
         .includes(search.toLowerCase()),
   );
   const active = s.reviews.filter((r) => activeStatuses.includes(r.status));
-  const ready = s.reviews.filter((r) => r.status === "ready");
+  const ready = s.reviews.filter((r) => reviewDisplayStatus(s, r) === "ready");
+  const publishRun = s.reviews.find((r) => r.id === publish?.id);
+  const publishPr = [...s.prs, ...(s.historyPrs ?? [])].find(
+    (p) => p.id === publishRun?.prId,
+  );
+  const publishEligible =
+    !!publishRun &&
+    !!publishPr &&
+    canPublish(publishRun, publishTarget(s, publishPr));
   const approval = s.approvals[0];
   const choose = (p: PullRequest, r?: Review) => {
     setSelected(p.id);
@@ -316,8 +269,8 @@ export default function App() {
     setTab(r ? "chat" : "overview");
     setPage("inbox");
   };
-  const save = (patch: Partial<Settings>) =>
-    action("save_settings", { settings: { ...s.settings, ...patch } });
+  const save = useOrbit((state) => state.updateSettings);
+  const saves = useOrbit((state) => state.saves);
   const openGithub = (url: string) =>
     desktop
       ? action("open_github", { url })
@@ -325,13 +278,16 @@ export default function App() {
   const closePublish = () => {
     setPublish(null);
     setConfirmSensitive(false);
+    setPublishError(null);
   };
   const start = async () => {
     if (!pr) return;
     setBusy(true);
-    setSelectedReview(null);
-    await action("start_review", { prId: pr.id });
-    setTab("chat");
+    const result = await action<string>("start_review", { prId: pr.id });
+    if (result.ok) {
+      setSelectedReview(result.data ?? null);
+      setTab("chat");
+    }
     setBusy(false);
   };
   return (
@@ -437,7 +393,7 @@ export default function App() {
           >
             <Settings2 size={17} />
             <span>Settings</span>
-            <span className="keyboard-hint">⌘ ,</span>
+            <span className="keyboard-hint">{shortcutKey} ,</span>
           </button>
           <div className="profile">
             <div className="avatar">
@@ -516,6 +472,7 @@ export default function App() {
             <Toggle
               checked={s.settings.automatic}
               onChange={(v) => void save({ automatic: v })}
+              disabled={saves.automatic?.state === "saving"}
               label="Automatic PR reviews"
             />
             <span className="top-divider" />
@@ -528,6 +485,11 @@ export default function App() {
             </button>
           </div>
         </header>
+        {Object.entries(saves).some(
+          ([key, value]) =>
+            !key.startsWith("repository:") && value.state === "error",
+        ) &&
+          page !== "settings" && <SaveFeedback />}
         {error && (
           <div className="error-banner" role="alert">
             <AlertCircle size={17} />
@@ -584,7 +546,7 @@ export default function App() {
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                 />
-                <kbd>⌘ K</kbd>
+                <kbd>{shortcutKey} K</kbd>
               </div>
               <div className="inbox-filters">
                 <div className="segmented" aria-label="Filter pull requests">
@@ -649,7 +611,11 @@ export default function App() {
                         </span>
                         <StatusBadge
                           status={
-                            r?.status ?? (p.draft ? "draft" : "unreviewed")
+                            r
+                              ? reviewDisplayStatus(s, r)
+                              : p.draft
+                                ? "draft"
+                                : "unreviewed"
                           }
                         />
                       </div>
@@ -756,7 +722,7 @@ export default function App() {
                     <div>
                       <h3>
                         {review
-                          ? statusLabels[review.status]
+                          ? displayStatusLabels[reviewDisplayStatus(s, review)]
                           : "A fresh pair of eyes, on demand."}
                       </h3>
                       <p>
@@ -775,10 +741,10 @@ export default function App() {
                         <Square size={13} />
                         Stop
                       </button>
-                    ) : (
+                    ) : !review || canStartReview(s, pr.id) ? (
                       <button
                         className="button primary small-button"
-                        disabled={busy || !s.prs.some((p) => p.id === pr.id)}
+                        disabled={busy || !canStartReview(s, pr.id)}
                         onClick={() => void start()}
                       >
                         {busy ? (
@@ -788,7 +754,7 @@ export default function App() {
                         )}{" "}
                         {review ? "Review again" : "Start review"}
                       </button>
-                    )}
+                    ) : null}
                   </div>
                   {s.settings.automatic &&
                     !pr.draft &&
@@ -866,14 +832,16 @@ export default function App() {
                         <div className="findings-preview">
                           <div className="section-heading">
                             <h3>
-                              <Sparkles size={15} /> Review is ready
+                              <Sparkles size={15} /> Review report
                             </h3>
-                            <StatusBadge status={review.status} />
+                            <StatusBadge
+                              status={reviewDisplayStatus(s, review)}
+                            />
                           </div>
                           <p>
-                            Codex has finished reviewing this change. Read the
-                            findings, ask a follow-up, or publish the review to
-                            GitHub.
+                            {reviewDisplayStatus(s, review) === "outdated"
+                              ? "The pull request changed after this report. Read the saved findings, then review the current commits before publishing."
+                              : "The report is saved with this run. Open its chat to read the findings and available actions."}
                           </p>
                           <button
                             className="text-button"
@@ -944,7 +912,10 @@ export default function App() {
                       onHistory={setSelectedReview}
                     />
                   ) : (
-                    <Files key={`${pr.id}:${pr.headSha}`} pr={pr} />
+                    <Files
+                      key={`${pr.id}:${pr.headSha}:${pr.baseSha}`}
+                      pr={pr}
+                    />
                   )}
                 </div>
                 <footer className="detail-footer">
@@ -963,11 +934,8 @@ export default function App() {
                       Publish review <ArrowUpRight size={13} />
                     </button>
                   )}
-                  {review?.status === "posted" && (
-                    <span className="published-label">
-                      <CheckCheck size={14} />
-                      {desktop ? "Comment published" : "Demo comment published"}
-                    </span>
+                  {review?.status === "posted" && tab !== "chat" && (
+                    <ReviewActions review={review} exportable={false} />
                   )}
                 </footer>
               </section>
@@ -1038,8 +1006,9 @@ export default function App() {
                         {r.automatic ? "Automatic" : "Manual"}
                       </span>
                     </button>
-                    <StatusBadge status={r.status} />
+                    <StatusBadge status={reviewDisplayStatus(s, r)} />
                     <time>{relative(r.updatedAt)}</time>
+                    <ReviewActions review={r} />
                     {activeStatuses.includes(r.status) ? (
                       <button
                         className="icon-button"
@@ -1081,7 +1050,10 @@ export default function App() {
               : "Simulate publishing a review"
           }
           wide
-          onClose={closePublish}
+          onClose={() => {
+            if (!busy) closePublish();
+          }}
+          error={publishError}
         >
           <p className="modal-description">
             {desktop
@@ -1119,22 +1091,34 @@ export default function App() {
             <Markdown>{publish.report}</Markdown>
           </div>
           <div className="modal-actions">
-            <button className="button secondary" onClick={closePublish}>
+            <button
+              className="button secondary"
+              disabled={busy}
+              onClick={closePublish}
+            >
               Cancel
             </button>
             <button
               className="button primary"
               disabled={
-                busy || (!!publish.sensitive?.length && !confirmSensitive)
+                busy ||
+                !publishEligible ||
+                (!!publish.sensitive?.length && !confirmSensitive)
               }
               onClick={async () => {
                 setBusy(true);
-                await action("publish_review", {
-                  reviewId: publish.id,
-                  allowSensitive: confirmSensitive,
-                });
+                setPublishError(null);
+                const result = await action(
+                  "publish_review",
+                  {
+                    reviewId: publish.id,
+                    allowSensitive: confirmSensitive,
+                  },
+                  { quiet: true },
+                );
                 setBusy(false);
-                closePublish();
+                if (result.ok) closePublish();
+                else setPublishError(result.error);
               }}
             >
               {busy ? (
@@ -1142,7 +1126,11 @@ export default function App() {
               ) : (
                 <Send size={15} />
               )}{" "}
-              {desktop ? "Publish comment" : "Simulate publish"}
+              {publishError
+                ? "Retry publication"
+                : desktop
+                  ? "Publish comment"
+                  : "Simulate publish"}
             </button>
           </div>
         </Modal>
@@ -1175,11 +1163,11 @@ export default function App() {
             <button
               className="button secondary"
               onClick={async () => {
-                await action("answer_approval", {
+                const result = await action("answer_approval", {
                   id: approval.id,
                   accept: false,
                 });
-                if (!useOrbit.getState().error) setApprovalOpen(false);
+                if (result.ok) setApprovalOpen(false);
               }}
             >
               Deny
@@ -1187,11 +1175,11 @@ export default function App() {
             <button
               className="button primary"
               onClick={async () => {
-                await action("answer_approval", {
+                const result = await action("answer_approval", {
                   id: approval.id,
                   accept: true,
                 });
-                if (!useOrbit.getState().error) setApprovalOpen(false);
+                if (result.ok) setApprovalOpen(false);
               }}
             >
               Approve once
@@ -1236,11 +1224,17 @@ function Chat({
   onHistory: (id: string) => void;
 }) {
   const { snapshot: s, action } = useOrbit();
-  const [text, setText] = useState("");
+  const text = useOrbit((state) => state.chatDrafts[review?.id ?? ""] ?? "");
+  const setChatDraft = useOrbit((state) => state.setChatDraft);
+  const setText = (value: string) => {
+    if (review) setChatDraft(review.id, value);
+  };
+  const [messageError, setMessageError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
   const end = useRef<HTMLDivElement>(null);
   const running = !!review && activeStatuses.includes(review.status);
+  const unavailable = review ? followUpUnavailable(s, review) : null;
   const history = s.reviews.filter((r) => r.prId === pr.id);
   useEffect(() => {
     if (running)
@@ -1251,7 +1245,11 @@ function Chat({
       <Empty icon={<Sparkles />} heading="Meet your review partner">
         Start a review to give Codex a dedicated sandbox and a conversation
         about this pull request.
-        <button className="button primary" onClick={onStart}>
+        <button
+          className="button primary"
+          onClick={onStart}
+          disabled={!canStartReview(s, pr.id)}
+        >
           <Play size={14} />
           Start review
         </button>
@@ -1259,10 +1257,16 @@ function Chat({
     );
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!text.trim() || sending) return;
+    if (!text.trim() || sending || unavailable) return;
     setSending(true);
-    await action("send_message", { reviewId: review.id, text });
-    if (!useOrbit.getState().error) setText("");
+    setMessageError(null);
+    const result = await action(
+      "send_message",
+      { reviewId: review.id, text },
+      { quiet: true },
+    );
+    if (result.ok) setText("");
+    else setMessageError(result.error);
     setSending(false);
   };
   const step =
@@ -1308,7 +1312,7 @@ function Chat({
           {history.map((r, i) => (
             <option value={r.id} key={r.id}>
               Review {history.length - i} · {relative(r.createdAt)} ·{" "}
-              {statusLabels[r.status]}
+              {displayStatusLabels[reviewDisplayStatus(s, r)]}
             </option>
           ))}
         </select>
@@ -1380,6 +1384,22 @@ function Chat({
         )}
         <div ref={end} />
       </div>
+      <ReviewActions review={review} />
+      {unavailable && (
+        <div className="action-notice" role="status">
+          {unavailable}
+          {!review.worktree && canStartReview(s, pr.id) && (
+            <button className="text-button" onClick={onStart}>
+              Review again
+            </button>
+          )}
+        </div>
+      )}
+      {messageError && (
+        <div className="inline-error" role="alert">
+          {messageError}
+        </div>
+      )}
       <form className="composer" onSubmit={(e) => void submit(e)}>
         <textarea
           aria-label="Message Codex"
@@ -1389,7 +1409,9 @@ function Chat({
               : "Ask a follow-up about this pull request…"
           }
           value={text}
-          disabled={running || (!review.threadId && desktop)}
+          disabled={
+            !review.threadId || !review.worktree || review.cleanupPending
+          }
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -1409,7 +1431,7 @@ function Chat({
             className="send-button"
             type="submit"
             aria-label="Send message"
-            disabled={!text.trim() || running || sending}
+            disabled={!text.trim() || !!unavailable || sending}
           >
             <ArrowUp size={18} />
           </button>
@@ -1425,20 +1447,25 @@ function Chat({
 function Files({ pr }: { pr: PullRequest }) {
   const { action } = useOrbit();
   const [files, setFiles] = useState<ChangedFile[] | null>(null);
-  const [failed, setFailed] = useState(false);
-  // Keyed by PR and head commit, so a new revision starts from a fresh state.
+  const [fileError, setFileError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  // Keyed by PR, head, and base commits, so a new revision starts from a fresh state.
   useEffect(() => {
     let alive = true;
-    void action<ChangedFile[]>("get_files", { prId: pr.id }).then((result) => {
+    void action<ChangedFile[]>(
+      "get_files",
+      { prId: pr.id },
+      { quiet: true },
+    ).then((result) => {
       if (alive) {
-        setFiles(result ?? []);
-        setFailed(!result);
+        setFiles(result.ok ? result.data : []);
+        setFileError(result.ok ? null : result.error);
       }
     });
     return () => {
       alive = false;
     };
-  }, [pr.id, action]);
+  }, [pr.id, action, attempt]);
   return (
     <div className="files">
       {files === null ? (
@@ -1446,9 +1473,19 @@ function Files({ pr }: { pr: PullRequest }) {
           <Loader2 className="spin" size={18} />
           Loading changes…
         </div>
-      ) : failed ? (
+      ) : fileError ? (
         <Empty icon={<AlertCircle />} heading="Couldn’t load changed files">
-          Check the connection error above and try syncing again.
+          {fileError}
+          <button
+            className="button secondary"
+            onClick={() => {
+              setFiles(null);
+              setFileError(null);
+              setAttempt((n) => n + 1);
+            }}
+          >
+            Retry
+          </button>
         </Empty>
       ) : (
         files.map((f) => (
@@ -1510,9 +1547,9 @@ function RepoPicker({
   const fetchRepos = useCallback(
     () =>
       action<RepositorySummary[]>("list_repositories").then((result) => {
-        if (result) repositoryCache = result;
-        setRepos(result ?? repositoryCache ?? []);
-        setFailed(!result);
+        if (result.ok) repositoryCache = result.data;
+        setRepos(result.ok ? result.data : (repositoryCache ?? []));
+        setFailed(!result.ok);
       }),
     [action],
   );
@@ -1658,7 +1695,8 @@ function RepoPicker({
   );
 }
 function Repositories() {
-  const { snapshot: s, action } = useOrbit();
+  const { snapshot: s, action, mutate, saves } = useOrbit();
+  const [repoError, setRepoError] = useState<string | null>(null);
   const [editing, setEditing] = useState<Repository | null>(null);
   const [original, setOriginal] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1673,21 +1711,17 @@ function Repositories() {
     e.preventDefault();
     if (!editing) return;
     setBusy(true);
-    await action("save_settings", {
-      settings: {
-        ...s.settings,
-        repositories: original
-          ? s.settings.repositories.map((r) =>
-              r.name === original ? editing : r,
-            )
-          : [...s.settings.repositories, editing],
-      },
-    });
+    setRepoError(null);
+    const result = await mutate(
+      "save_repository",
+      { repository: editing, original },
+      `repository:${original ?? editing.name}`,
+    );
     setBusy(false);
-    if (!useOrbit.getState().error) {
+    if (result.ok) {
       setEditing(null);
       void action("poll_now");
-    }
+    } else setRepoError(result.error);
   };
   return (
     <div className="content-page">
@@ -1703,6 +1737,7 @@ function Repositories() {
         <button
           className="button primary"
           onClick={() => {
+            setRepoError(null);
             setEditing(blank);
             setOriginal(null);
           }}
@@ -1722,6 +1757,7 @@ function Repositories() {
                 className="icon-button"
                 aria-label={`Configure ${repo.name}`}
                 onClick={() => {
+                  setRepoError(null);
                   setEditing({ ...repo });
                   setOriginal(repo.name);
                 }}
@@ -1755,23 +1791,23 @@ function Repositories() {
               <Toggle
                 label={`Automatic reviews for ${repo.name}`}
                 checked={repo.automatic}
+                disabled={saves[`repository:${repo.name}`]?.state === "saving"}
                 onChange={(automatic) =>
-                  void action("save_settings", {
-                    settings: {
-                      ...s.settings,
-                      repositories: s.settings.repositories.map((r) =>
-                        r.name === repo.name ? { ...r, automatic } : r,
-                      ),
-                    },
-                  })
+                  void mutate(
+                    "set_repository_automatic",
+                    { name: repo.name, automatic },
+                    `repository:${repo.name}`,
+                  )
                 }
               />
             </div>
+            <SaveFeedback saveKey={`repository:${repo.name}`} />
           </article>
         ))}
         <button
           className="add-repository"
           onClick={() => {
+            setRepoError(null);
             setEditing(blank);
             setOriginal(null);
           }}
@@ -1797,6 +1833,7 @@ function Repositories() {
         <Modal
           title={original ? "Repository settings" : "Connect a repository"}
           onClose={() => setEditing(null)}
+          error={repoError}
         >
           <form onSubmit={(e) => void save(e)}>
             <div className="field">
@@ -1873,19 +1910,19 @@ function Repositories() {
                 <button
                   type="button"
                   className="button danger-quiet"
+                  disabled={busy}
                   onClick={async () => {
-                    await action("save_settings", {
-                      settings: {
-                        ...s.settings,
-                        repositories: s.settings.repositories.filter(
-                          (r) => r.name !== original,
-                        ),
-                      },
-                    });
-                    if (!useOrbit.getState().error) {
+                    setBusy(true);
+                    const result = await mutate(
+                      "disconnect_repository",
+                      { name: original },
+                      `repository:${original}`,
+                    );
+                    setBusy(false);
+                    if (result.ok) {
                       setEditing(null);
                       void action("poll_now");
-                    }
+                    } else setRepoError(result.error);
                   }}
                 >
                   <Trash2 size={14} />
@@ -1912,55 +1949,36 @@ function Repositories() {
   );
 }
 function SettingsPage() {
-  const { snapshot: s, action } = useOrbit();
-  const [draft, setDraft] = useState(s.settings);
-  const [saved, setSaved] = useState(false);
+  const {
+    snapshot: s,
+    action,
+    updateSettings,
+    saves,
+    trustedInput: newLogin,
+    setTrustedInput: setNewLogin,
+  } = useOrbit();
+  const draft = { ...s.settings };
+  for (const save of Object.values(saves)) {
+    if (save.command === "update_settings" && save.state === "saving")
+      Object.assign(draft, save.args.patch);
+  }
   const [connecting, setConnecting] = useState(false);
-  const [newLogin, setNewLogin] = useState("");
-  const addLogin = () => {
+  const addLogin = async () => {
     const login = newLogin.trim();
+    if (!login || saves.trustedAuthors?.state === "saving") return;
     if (
-      login &&
-      !draft.trustedAuthors.some((a) => a.toLowerCase() === login.toLowerCase())
+      draft.trustedAuthors.some((a) => a.toLowerCase() === login.toLowerCase())
     )
-      setDraft({ ...draft, trustedAuthors: [...draft.trustedAuthors, login] });
-    setNewLogin("");
-  };
-  // Repositories are edited on their own page and never saved from this form.
-  const settingsKey = JSON.stringify({
-    ...s.settings,
-    repositories: undefined,
-  });
-  const baseline = useRef(settingsKey);
-  useEffect(() => {
-    // Adopt each setting changed elsewhere, such as the header's autopilot
-    // switch, unless the form has its own unsaved edit to that setting.
-    const previous = JSON.parse(baseline.current) as Record<string, unknown>;
-    const incoming = JSON.parse(settingsKey) as Record<string, unknown>;
-    baseline.current = settingsKey;
-    setDraft((current) => {
-      const next: Record<string, unknown> = { ...current };
-      for (const [key, value] of Object.entries(incoming)) {
-        const edited =
-          JSON.stringify(next[key]) !== JSON.stringify(previous[key]);
-        if (!edited) next[key] = value;
-      }
-      return next as unknown as Settings;
+      return;
+    const result = await updateSettings({
+      trustedAuthors: [...draft.trustedAuthors, login],
     });
-  }, [settingsKey]);
+    if (result.ok && useOrbit.getState().trustedInput === newLogin)
+      setNewLogin("");
+  };
   const model =
     s.models.find((m) => m.model === draft.model) ||
     s.models.find((m) => m.isDefault);
-  const save = async (e: FormEvent) => {
-    e.preventDefault();
-    await action("save_settings", {
-      settings: { ...draft, repositories: s.settings.repositories },
-    });
-    if (!useOrbit.getState().error) {
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2500);
-    }
-  };
   return (
     <div className="content-page settings-page">
       <div className="page-intro">
@@ -2041,7 +2059,7 @@ function SettingsPage() {
           </div>
         )}
       </section>
-      <form onSubmit={(e) => void save(e)}>
+      <div className="settings-autosave">
         <section className="settings-section">
           <div className="section-heading">
             <h3>Review agent</h3>
@@ -2052,8 +2070,12 @@ function SettingsPage() {
               Model
               <select
                 value={draft.model}
+                disabled={saves.model?.state === "saving"}
                 onChange={(e) =>
-                  setDraft({ ...draft, model: e.target.value, effort: "" })
+                  void updateSettings(
+                    { model: e.target.value, effort: "" },
+                    "model",
+                  )
                 }
               >
                 <option value="">Codex default</option>
@@ -2071,7 +2093,13 @@ function SettingsPage() {
               Reasoning effort
               <select
                 value={draft.effort}
-                onChange={(e) => setDraft({ ...draft, effort: e.target.value })}
+                disabled={
+                  saves.effort?.state === "saving" ||
+                  (!!saves.model && saves.model.state !== "saved")
+                }
+                onChange={(e) =>
+                  void updateSettings({ effort: e.target.value })
+                }
               >
                 <option value="">Model default</option>
                 {model?.supportedReasoningEfforts.map((e) => (
@@ -2081,7 +2109,11 @@ function SettingsPage() {
                   </option>
                 ))}
               </select>
-              <small>More effort gives the agent more time to reason.</small>
+              <small>
+                {saves.model?.state === "error"
+                  ? "Retry the failed model change or choose a model again before changing effort."
+                  : "More effort gives the agent more time to reason."}
+              </small>
             </label>
           </div>
         </section>
@@ -2103,7 +2135,8 @@ function SettingsPage() {
             <Toggle
               label="Automatically review new pull requests"
               checked={draft.automatic}
-              onChange={(automatic) => setDraft({ ...draft, automatic })}
+              disabled={saves.automatic?.state === "saving"}
+              onChange={(automatic) => void updateSettings({ automatic })}
             />
           </div>
           <div className="setting-row">
@@ -2121,7 +2154,8 @@ function SettingsPage() {
             <Toggle
               label="Automatically publish findings"
               checked={draft.autoPost}
-              onChange={(autoPost) => setDraft({ ...draft, autoPost })}
+              disabled={saves.autoPost?.state === "saving"}
+              onChange={(autoPost) => void updateSettings({ autoPost })}
             />
           </div>
           <div className="setting-row">
@@ -2140,9 +2174,9 @@ function SettingsPage() {
                     <button
                       type="button"
                       aria-label={`Stop trusting ${login}`}
+                      disabled={saves.trustedAuthors?.state === "saving"}
                       onClick={() =>
-                        setDraft({
-                          ...draft,
+                        void updateSettings({
                           trustedAuthors: draft.trustedAuthors.filter(
                             (a) => a !== login,
                           ),
@@ -2162,14 +2196,17 @@ function SettingsPage() {
                     onKeyDown={(e) => {
                       if (e.key !== "Enter") return;
                       e.preventDefault();
-                      addLogin();
+                      void addLogin();
                     }}
                   />
                   <button
                     type="button"
                     className="button secondary"
-                    disabled={!newLogin.trim()}
-                    onClick={addLogin}
+                    disabled={
+                      !newLogin.trim() ||
+                      saves.trustedAuthors?.state === "saving"
+                    }
+                    onClick={() => void addLogin()}
                   >
                     Add
                   </button>
@@ -2182,8 +2219,9 @@ function SettingsPage() {
               Concurrent reviews
               <select
                 value={draft.concurrency}
+                disabled={saves.concurrency?.state === "saving"}
                 onChange={(e) =>
-                  setDraft({ ...draft, concurrency: Number(e.target.value) })
+                  void updateSettings({ concurrency: Number(e.target.value) })
                 }
               >
                 {[1, 2, 3, 4].map((n) => (
@@ -2197,8 +2235,9 @@ function SettingsPage() {
               Poll interval
               <select
                 value={draft.pollSeconds}
+                disabled={saves.pollSeconds?.state === "saving"}
                 onChange={(e) =>
-                  setDraft({ ...draft, pollSeconds: Number(e.target.value) })
+                  void updateSettings({ pollSeconds: Number(e.target.value) })
                 }
               >
                 {[30, 60, 120, 300, 600, 1800, 3600].map((n) => (
@@ -2213,16 +2252,79 @@ function SettingsPage() {
           </div>
         </section>
         <div className="settings-footer">
-          <span>
-            <ShieldCheck size={14} />
-            Settings are saved on this device.
-          </span>
-          <button className="button primary" type="submit">
-            {saved ? <Check size={15} /> : <CheckCheck size={15} />}{" "}
-            {saved ? "Saved" : "Save changes"}
-          </button>
+          <SaveFeedback />
         </div>
-      </form>
+      </div>
+      <Storage />
+    </div>
+  );
+}
+
+function SaveFeedback({ saveKey }: { saveKey?: string }) {
+  const { saves, retrySave, snapshot } = useOrbit();
+  const describePatch = (patch: SettingsPatch) => {
+    const labels: Record<keyof SettingsPatch, string> = {
+      automatic: "Automatic reviews",
+      autoPost: "Automatic publication",
+      model: "Model",
+      effort: "Reasoning effort",
+      concurrency: "Concurrent reviews",
+      pollSeconds: "Poll interval",
+      trustedAuthors: "Trusted accounts",
+    };
+    return Object.entries(patch)
+      .map(([key, value]) => {
+        const label = labels[key as keyof SettingsPatch];
+        const display =
+          typeof value === "boolean"
+            ? value
+              ? "On"
+              : "Off"
+            : key === "model"
+              ? snapshot.models.find((m) => m.model === value)?.displayName ||
+                value ||
+                "Codex default"
+              : key === "effort"
+                ? value || "Model default"
+                : key === "pollSeconds"
+                  ? `${value} seconds`
+                  : Array.isArray(value)
+                    ? value.join(", ") || "None"
+                    : value;
+        return `${label}: ${display}`;
+      })
+      .join("; ");
+  };
+  const entries = Object.entries(saves).filter(([key]) =>
+    saveKey ? key === saveKey : !key.startsWith("repository:"),
+  );
+  return (
+    <div className="save-feedback" aria-live="polite">
+      {entries.some(([, value]) => value.state === "saving")
+        ? "Saving…"
+        : entries.some(([, value]) => value.state === "error")
+          ? "Some changes were not saved."
+          : entries.length
+            ? "Saved"
+            : saveKey
+              ? null
+              : "Changes save automatically on this device."}
+      {entries
+        .filter(([, value]) => value.state === "error")
+        .map(([key, value]) => (
+          <div role="alert" key={key}>
+            {value.command === "update_settings" && (
+              <span>
+                Not applied — {describePatch(value.args.patch as SettingsPatch)}
+                . Controls show the active settings.{" "}
+              </span>
+            )}
+            {value.error}{" "}
+            <button className="text-button" onClick={() => void retrySave(key)}>
+              Retry saving
+            </button>
+          </div>
+        ))}
     </div>
   );
 }

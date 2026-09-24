@@ -124,6 +124,7 @@ export function freshDemo(): Snapshot {
   }));
   const review: Review = {
     id: "demo-completed",
+    threadId: "demo-thread",
     prId: prs[0].id,
     headSha: prs[0].headSha,
     baseSha: prs[0].baseSha,

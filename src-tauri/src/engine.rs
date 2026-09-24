@@ -1,4 +1,4 @@
-use crate::{github, rpc::Rpc, types::*};
+use crate::{github, rpc::Rpc, storage, types::*};
 use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},
@@ -37,6 +37,7 @@ pub struct Engine {
     synced_repos: Mutex<HashSet<String>>,
     /// Running preparations, so Stop can end a long fetch or checkout immediately.
     preparing: std::sync::Mutex<HashMap<String, tokio::task::AbortHandle>>,
+    cleanup_lock: Mutex<()>,
     _instance_lock: std::fs::File,
 }
 impl Engine {
@@ -123,6 +124,7 @@ impl Engine {
             stopping: AtomicBool::new(false),
             synced_repos: Mutex::new(HashSet::new()),
             preparing: std::sync::Mutex::new(HashMap::new()),
+            cleanup_lock: Mutex::new(()),
             _instance_lock: instance_lock,
         }))
     }
@@ -192,6 +194,10 @@ impl Engine {
         tokio::spawn(async move {
             let _ = e.poll().await;
             e.clean_worktrees().await;
+        });
+        let e = self.clone();
+        tokio::spawn(async move {
+            e.resume_cleanup().await;
         });
         let e = self.clone();
         tokio::spawn(async move {
@@ -336,10 +342,9 @@ impl Engine {
             .filter(|r| r.alive.load(Ordering::SeqCst))
             .ok_or("Connect Codex in Settings first.".into())
     }
-    pub async fn save_settings(&self, settings: Settings) -> Result<(), String> {
+    fn commit_settings(&self, s: &mut Snapshot, settings: Settings) -> Result<(), String> {
         settings.validate()?;
         {
-            let s = self.state.lock().await;
             let changed =
                 settings.model != s.settings.model || settings.effort != s.settings.effort;
             // Connection trouble must never prevent turning automation off.
@@ -364,8 +369,98 @@ impl Engine {
                 }
             }
         }
-        self.update(|s| s.settings = settings).await;
-        self.flush().await
+        let mut next = s.clone();
+        next.settings = settings;
+        self.persist(&next)
+            .map_err(|e| format!("Settings were not saved: {e}"))?;
+        *s = next;
+        self.dirty.store(false, Ordering::SeqCst);
+        self.changed.store(false, Ordering::SeqCst);
+        (self.emit)(s);
+        Ok(())
+    }
+    #[cfg(test)]
+    pub async fn save_settings(&self, settings: Settings) -> Result<(), String> {
+        self.commit_settings(&mut *self.state.lock().await, settings)
+    }
+    pub async fn update_settings(&self, patch: SettingsPatch) -> Result<Settings, String> {
+        let mut s = self.state.lock().await;
+        let mut settings = s.settings.clone();
+        patch.apply(&mut settings);
+        self.commit_settings(&mut s, settings)?;
+        Ok(s.settings.clone())
+    }
+    pub async fn save_repository(
+        &self,
+        mut repository: Repository,
+        original: Option<String>,
+    ) -> Result<Settings, String> {
+        repository.name = repository.name.trim().into();
+        repository.path = repository.path.trim().into();
+        let validate = {
+            let s = self.state.lock().await;
+            original
+                .as_ref()
+                .and_then(|name| {
+                    s.settings
+                        .repositories
+                        .iter()
+                        .find(|r| same_repo(&r.name, name))
+                })
+                .is_none_or(|old| {
+                    !same_repo(&old.name, &repository.name) || old.path != repository.path
+                })
+        };
+        if validate {
+            repository.path = validate_checkout(&repository.name, &repository.path).await?;
+        }
+        let mut s = self.state.lock().await;
+        let mut settings = s.settings.clone();
+        if let Some(name) = original {
+            let old = settings
+                .repositories
+                .iter_mut()
+                .find(|r| same_repo(&r.name, &name))
+                .ok_or("This repository was disconnected. Add it again.")?;
+            *old = repository;
+        } else {
+            settings.repositories.push(repository);
+        }
+        self.commit_settings(&mut s, settings)?;
+        Ok(s.settings.clone())
+    }
+    pub async fn set_repository_automatic(
+        &self,
+        name: &str,
+        automatic: bool,
+    ) -> Result<Settings, String> {
+        let mut s = self.state.lock().await;
+        let mut settings = s.settings.clone();
+        settings
+            .repositories
+            .iter_mut()
+            .find(|r| same_repo(&r.name, name))
+            .ok_or("Repository is no longer connected.")?
+            .automatic = automatic;
+        self.commit_settings(&mut s, settings)?;
+        Ok(s.settings.clone())
+    }
+    pub async fn disconnect_repository(&self, name: &str) -> Result<Settings, String> {
+        let mut s = self.state.lock().await;
+        let mut settings = s.settings.clone();
+        settings.repositories.retain(|r| !same_repo(&r.name, name));
+        self.commit_settings(&mut s, settings)?;
+        Ok(s.settings.clone())
+    }
+    pub async fn storage_usage(&self) -> Result<storage::StorageUsage, String> {
+        let snapshot = self.snapshot().await;
+        let root = self.root.clone();
+        tokio::task::spawn_blocking(move || storage::inspect(&root, &snapshot))
+            .await
+            .map_err(|e| e.to_string())
+    }
+    pub async fn export_report(&self, id: &str) -> Result<(String, String), String> {
+        storage::report(&self.snapshot().await, id)
     }
     pub async fn poll(&self) -> Result<(), String> {
         let Ok(_guard) = self.poll_lock.try_lock() else {
@@ -569,7 +664,8 @@ impl Engine {
     /// same update that ends the review: a follow-up cannot start while removal
     /// waits for the git lock. The worktree stays recorded until it is gone, so a
     /// removal interrupted by exiting is retried by a later cleanup.
-    async fn abandon_preparation(&self, id: &str, error: Option<String>) {
+    async fn abandon_preparation(self: &Arc<Self>, id: &str, error: Option<String>) {
+        let path = self.root.join("worktrees").join(id);
         self.update(|s| {
             if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
                 if let Some(error) = error {
@@ -580,31 +676,296 @@ impl Engine {
                     }
                 }
                 r.thread_id = None;
+                if r.worktree.is_none() && path.exists() {
+                    r.worktree = Some(path.to_string_lossy().into());
+                }
             }
         })
         .await;
-        let path = self.root.join("worktrees").join(id);
-        let removed = {
-            let _git = self.git_lock.lock().await;
-            remove_worktree(&path).await
-        };
-        if removed.is_ok() {
-            self.update(|s| {
-                if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
-                    r.worktree = None;
+        let _ = self.remove_review_worktree(id, false, false).await;
+    }
+    pub async fn remove_worktrees(
+        self: &Arc<Self>,
+        ids: Vec<String>,
+    ) -> Vec<storage::CleanupResult> {
+        let mut results = vec![];
+        let mut seen = HashSet::new();
+        for id in ids {
+            if seen.insert(id.clone()) {
+                let (error, warning) = match self.remove_review_worktree(&id, false, false).await {
+                    Ok(warning) => (None, warning),
+                    Err(error) => (Some(error), None),
+                };
+                results.push(storage::CleanupResult {
+                    review_id: id,
+                    error,
+                    warning,
+                });
+            }
+        }
+        results
+    }
+    async fn resume_cleanup(self: &Arc<Self>) {
+        self.resume_cleanup_with(|pr| async move {
+            match github::pull(&pr.repo, pr.number, "").await {
+                Err(error) if error == github::CLOSED => Ok(true),
+                Ok(_) => Ok(false),
+                Err(error) => Err(error),
+            }
+        })
+        .await;
+    }
+    async fn resume_cleanup_with<F, Fut>(self: &Arc<Self>, is_closed: F)
+    where
+        F: Fn(PullRequest) -> Fut,
+        Fut: std::future::Future<Output = Result<bool, String>>,
+    {
+        let pending: Vec<_> = self
+            .snapshot()
+            .await
+            .reviews
+            .into_iter()
+            .filter(|r| r.cleanup_pending)
+            .collect();
+        for r in pending {
+            if r.cleanup_closed_only.unwrap_or(true) {
+                let s = self.snapshot().await;
+                let pr = s.prs.iter().chain(&s.history_prs).find(|p| p.id == r.pr_id);
+                let closed = match pr {
+                    Some(pr)
+                        if s.settings
+                            .repositories
+                            .iter()
+                            .any(|c| same_repo(&c.name, &pr.repo)) =>
+                    {
+                        is_closed(pr.clone()).await
+                    }
+                    Some(_) => Ok(true), // Disconnected repository.
+                    None => Ok(false),   // Missing metadata cannot authorize automatic deletion.
+                };
+                // A skipped automatic removal is reconsidered by later sweeps.
+                // It must not leave follow-ups blocked while another Git job runs.
+                self.release_cleanup(
+                    &r.id,
+                    closed
+                        .as_ref()
+                        .err()
+                        .map(|e| format!("Could not recheck interrupted cleanup: {e}")),
+                )
+                .await;
+                if closed != Ok(true) {
+                    continue;
                 }
-            })
-            .await;
+                let _ = self.remove_review_worktree(&r.id, false, true).await;
+            } else {
+                let _ = self.remove_review_worktree(&r.id, true, false).await;
+            }
         }
     }
-    /// Removes worktrees of finished reviews whose PR is no longer open in a
-    /// connected repository. Their chats stay readable; follow-ups are refused.
-    async fn clean_worktrees(&self) {
+    async fn release_cleanup(&self, id: &str, error: Option<String>) {
+        self.update(|s| {
+            if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
+                r.cleanup_pending = false;
+                r.cleanup_closed_only = None;
+                r.cleanup_error = error;
+            }
+        })
+        .await;
+        let _ = self.flush().await;
+    }
+    async fn remove_review_worktree(
+        self: &Arc<Self>,
+        id: &str,
+        resume: bool,
+        closed_only: bool,
+    ) -> Result<Option<String>, String> {
+        // Stop may abort the preparing task which requested cleanup. Once
+        // dispatched, cleanup has its own lifetime and must finish its claim.
+        let e = self.clone();
+        let id = id.to_string();
+        tokio::spawn(async move {
+            e.remove_review_worktree_inner(&id, resume, closed_only)
+                .await
+        })
+        .await
+        .map_err(|error| format!("Cleanup worker failed: {error}"))?
+    }
+    async fn remove_review_worktree_inner(
+        &self,
+        id: &str,
+        resume: bool,
+        closed_only: bool,
+    ) -> Result<Option<String>, String> {
+        if !resume
+            && self
+                .state
+                .lock()
+                .await
+                .reviews
+                .iter()
+                .any(|r| r.id == id && r.cleanup_pending)
+        {
+            return Err("This worktree is already being removed.".into());
+        }
+        // Keep one worker per directory, including the automatic cleanup paths.
+        let _cleanup = if closed_only {
+            match self.cleanup_lock.try_lock() {
+                Ok(guard) => guard,
+                Err(_) => return Ok(None),
+            }
+        } else {
+            self.cleanup_lock.lock().await
+        };
+        // Retain the try-lock guard throughout background removal. Never queue
+        // a sweep behind a fetch that starts after an earlier availability check.
+        let git_guard = if closed_only {
+            match self.git_lock.try_lock() {
+                Ok(guard) => Some(guard),
+                Err(_) => return Ok(None),
+            }
+        } else {
+            None
+        };
+        let path = {
+            let mut s = self.state.lock().await;
+            let r = s
+                .reviews
+                .iter()
+                .find(|r| r.id == id)
+                .ok_or("Unknown review.")?;
+            if !storage::inactive(r) {
+                return Err(
+                    "Stop the run and wait for publication before removing its worktree.".into(),
+                );
+            }
+            if r.cleanup_pending && !resume {
+                return Err("This worktree is already being removed.".into());
+            }
+            if closed_only && s.prs.iter().any(|p| p.id == r.pr_id) {
+                return Ok(None);
+            }
+            let Some(recorded) = &r.worktree else {
+                drop(s);
+                self.release_cleanup(id, None).await;
+                return Ok(None);
+            };
+            let path = match storage::worktree_path(&self.root, id, recorded) {
+                Ok(path) => path,
+                Err(error) => {
+                    let r = s.reviews.iter_mut().find(|r| r.id == id).unwrap();
+                    r.cleanup_pending = false;
+                    r.cleanup_closed_only = None;
+                    r.cleanup_error = Some(error.clone());
+                    let note = format!("Could not remove this review's worktree: {error}");
+                    if r.messages.last().map(|m| &m.text) != Some(&note) {
+                        r.messages.push(Message::new("system", note));
+                    }
+                    self.dirty.store(true, Ordering::SeqCst);
+                    drop(s);
+                    // Flush reports persistence failures through the shared state;
+                    // preserve the actual removal error for this run.
+                    let _ = self.flush().await;
+                    return Err(error);
+                }
+            };
+            let mut next = s.clone();
+            let r = next.reviews.iter_mut().find(|r| r.id == id).unwrap();
+            r.cleanup_pending = true;
+            r.cleanup_closed_only = Some(closed_only);
+            r.cleanup_error = None;
+            // Persist the intent before waiting on Git or deleting anything.
+            if let Err(error) = self.persist(&next) {
+                let error = format!("Cleanup was not started because Orbit could not save its removal record: {error}. Free space or restore write access for Orbit’s data directory, then retry.");
+                let r = s.reviews.iter_mut().find(|r| r.id == id).unwrap();
+                r.cleanup_pending = false;
+                r.cleanup_closed_only = None;
+                r.cleanup_error = Some(error.clone());
+                self.dirty.store(true, Ordering::SeqCst);
+                (self.emit)(&s);
+                return Err(error);
+            }
+            *s = next;
+            (self.emit)(&s);
+            path
+        };
+        let removed = async {
+            let _git = match git_guard {
+                Some(guard) => guard,
+                None => self.git_lock.lock().await,
+            };
+            {
+                let s = self.state.lock().await;
+                let r = s
+                    .reviews
+                    .iter()
+                    .find(|r| r.id == id)
+                    .ok_or("Unknown review.")?;
+                if !storage::inactive(r) || !r.cleanup_pending {
+                    return Err("The review changed while cleanup was waiting.".into());
+                }
+                if closed_only && s.prs.iter().any(|p| p.id == r.pr_id) {
+                    return Ok(false);
+                }
+                storage::worktree_path(
+                    &self.root,
+                    id,
+                    r.worktree.as_deref().ok_or("Workspace changed.")?,
+                )?;
+            }
+            remove_worktree(&path).await.map(|()| true)
+        }
+        .await;
+        self.update(|s| {
+            if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
+                r.cleanup_pending = false;
+                r.cleanup_closed_only = None;
+                r.cleanup_error = removed.as_ref().err().cloned();
+                let note = match &removed {
+                    Ok(false) => return, // Reopened PR: keeping its worktree is success.
+                    Ok(true) => {
+                        r.worktree = None;
+                        if r.thread_id.is_none() && r.report.trim().is_empty() {
+                            "Removed the unfinished review workspace. Start a new review to retry.".to_string()
+                        } else if r.report.trim().is_empty() {
+                            "Removed this review's worktree. Its conversation is preserved; start a new review to continue chatting.".to_string()
+                        } else {
+                            "Removed this review's worktree. Its report and conversation are preserved; start a new review to continue chatting.".to_string()
+                        }
+                    }
+                    Err(e) => format!("Could not remove this review's worktree at {}: {e}", path.display()),
+                };
+                if r.messages.last().map(|m| &m.text) != Some(&note) { r.messages.push(Message::new("system", note)); }
+            }
+        }).await;
+        let saved = self.flush().await;
+        match removed {
+            Ok(true) => Ok(saved.err().map(|e| format!("Cleanup finished, but its completion record could not be saved: {e}. Orbit will retry saving and reconcile the recorded removal on restart."))),
+            Ok(false) => Ok(None), // The reopened PR kept its worktree.
+            Err(error) => Err(error),
+        }
+    }
+    /// Cleanup does not discard chat history or change automatic-review deduplication.
+    async fn clean_worktrees(self: &Arc<Self>) {
+        self.clean_worktrees_with(|pr| async move {
+            matches!(github::pull(&pr.repo, pr.number, "").await, Err(e) if e == github::CLOSED)
+        })
+        .await;
+    }
+    async fn clean_worktrees_with<F, Fut>(self: &Arc<Self>, is_closed: F)
+    where
+        F: Fn(PullRequest) -> Fut,
+        Fut: std::future::Future<Output = bool>,
+    {
         let candidates: Vec<(String, PullRequest, bool)> = {
             let s = self.state.lock().await;
             s.reviews
                 .iter()
-                .filter(|r| r.worktree.is_some() && !s.prs.iter().any(|p| p.id == r.pr_id))
+                .filter(|r| {
+                    r.worktree.is_some()
+                        && storage::inactive(r)
+                        && !r.cleanup_pending
+                        && !s.prs.iter().any(|p| p.id == r.pr_id)
+                })
                 .filter_map(|r| {
                     let pr = s.history_prs.iter().find(|p| p.id == r.pr_id)?;
                     let connected = s
@@ -617,56 +978,15 @@ impl Engine {
                 .collect()
         };
         for (id, pr, connected) in candidates {
-            // A PR missing from one listing may have been skipped by pagination,
-            // so in a connected repository, confirm it has closed first.
-            if connected {
-                match github::pull(&pr.repo, pr.number, "").await {
-                    Err(e) if e == github::CLOSED => {}
-                    _ => continue,
-                }
-            }
-            // A long fetch holds the lock; try again after the next sync.
-            let Ok(_git) = self.git_lock.try_lock() else {
+            // Avoid GitHub requests for an entire sweep while Git or cleanup is
+            // occupied. The removal worker still retains its own try-lock guard.
+            if self.git_lock.try_lock().is_err() || self.cleanup_lock.try_lock().is_err() {
                 return;
-            };
-            // Claimed under the state lock, so a follow-up cannot start on it.
-            let path = {
-                let mut s = self.state.lock().await;
-                let reopened = s.prs.iter().any(|p| p.id == pr.id);
-                s.reviews
-                    .iter_mut()
-                    .find(|r| r.id == id)
-                    .filter(|r| {
-                        !reopened
-                            && !active(&r.status)
-                            && r.status != "publishing"
-                            && r.before_follow_up.is_none()
-                    })
-                    .and_then(|r| r.worktree.take())
-            };
-            let Some(path) = path else { continue };
-            let removed = if Path::new(&path).starts_with(self.root.join("worktrees")) {
-                remove_worktree(Path::new(&path)).await
-            } else {
-                Err("it is outside Orbit's worktree directory".into())
-            };
-            self.update(|s| {
-                let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) else {
-                    return;
-                };
-                let note = match removed {
-                    Ok(()) => "Removed this review's worktree because its pull request is no longer open in a connected repository.".to_string(),
-                    Err(e) => {
-                        r.worktree = Some(path.clone());
-                        format!("Could not remove this review's worktree at {path}: {e}")
-                    }
-                };
-                // A removal that keeps failing is retried quietly.
-                if r.messages.last().map(|m| &m.text) != Some(&note) {
-                    r.messages.push(Message::new("system", note));
-                }
-            })
-            .await;
+            }
+            if connected && !is_closed(pr).await {
+                continue;
+            }
+            let _ = self.remove_review_worktree(&id, false, true).await;
         }
     }
     async fn live(&self, id: &str) -> Result<(), String> {
@@ -968,7 +1288,7 @@ impl Engine {
                 .iter_mut()
                 .find(|r| r.id == id)
                 .ok_or("Unknown review")?;
-            if r.status != "ready" || r.before_follow_up.is_some() {
+            if r.status != "ready" || r.before_follow_up.is_some() || r.cleanup_pending {
                 return Err(
                     "Only a completed review of the current head and base can be published.".into(),
                 );
@@ -1124,11 +1444,16 @@ impl Engine {
             if r.status == "publishing" {
                 return Err("Wait for publication to finish.".into());
             }
+            if r.cleanup_pending {
+                return Err(
+                    "This worktree is being removed. Your saved chat will stay readable.".into(),
+                );
+            }
             if r.thread_id.is_none() {
                 return Err("Start a review first to create its Codex chat.".into());
             }
             if !r.worktree.as_deref().is_some_and(|w| Path::new(w).is_dir()) {
-                return Err("This review's worktree was removed because its pull request is no longer open in a connected repository. Start a new review to continue.".into());
+                return Err("This review's worktree is unavailable. Start a new review of an open pull request to continue.".into());
             }
             let old = r.clone();
             r.before_follow_up = Some(Outcome {
@@ -1601,6 +1926,65 @@ fn automatic_hold(
     }
     None
 }
+async fn checkout_io<T: Send + 'static>(
+    operation: impl FnOnce() -> Result<T, String> + Send + 'static,
+    timeout: Duration,
+) -> Result<T, String> {
+    // A timed-out filesystem syscall cannot be cancelled, but it must not hold
+    // a Tokio worker or keep the repository dialog waiting indefinitely.
+    tokio::time::timeout(timeout, tokio::task::spawn_blocking(operation))
+        .await
+        .map_err(|_| {
+            "Checkout filesystem check timed out. Check the mount and try again.".to_string()
+        })?
+        .map_err(|e| format!("Checkout filesystem check failed: {e}"))?
+}
+pub async fn validate_checkout(repo: &str, path: &str) -> Result<String, String> {
+    validate_repo(repo)?;
+    if !Path::new(path).is_absolute() {
+        return Err("Use an absolute checkout path.".into());
+    }
+    let path = path.to_string();
+    let cwd = checkout_io(
+        move || {
+            let cwd =
+                std::fs::canonicalize(path).map_err(|e| format!("Cannot access checkout: {e}"))?;
+            if !cwd.is_dir() {
+                return Err("Checkout must be a directory.".into());
+            }
+            Ok(cwd)
+        },
+        Duration::from_secs(10),
+    )
+    .await?;
+    let read = |args: Vec<String>| {
+        let cwd = cwd.clone();
+        async move {
+            github::run_with_timeout("git", &args, Some(&cwd), None, Duration::from_secs(10)).await
+        }
+    };
+    let root = read(vec!["rev-parse".into(), "--show-toplevel".into()])
+        .await
+        .map_err(|_| {
+            "Choose an existing Git working tree, not a bare repository or ordinary directory."
+                .to_string()
+        })?;
+    let origin = read(vec!["remote".into(), "get-url".into(), "origin".into()]).await?;
+    if !matches_origin(origin.trim(), repo) {
+        return Err(format!(
+            "Checkout origin does not match {repo}. Choose its matching clone."
+        ));
+    }
+    checkout_io(
+        move || {
+            std::fs::canonicalize(root.trim())
+                .map(|p| p.to_string_lossy().into_owned())
+                .map_err(|e| e.to_string())
+        },
+        Duration::from_secs(10),
+    )
+    .await
+}
 fn matches_origin(origin: &str, repo: &str) -> bool {
     let origin = origin
         .trim_end_matches('/')
@@ -1979,7 +2363,7 @@ mod tests {
         // Still recorded, so exiting now leaves the removal for a later cleanup.
         assert!(r.worktree.is_some());
         let error = e.message(&id, "What went wrong?").await.unwrap_err();
-        assert!(error.contains("Start a review first"), "{error}");
+        assert!(error.contains("being removed"), "{error}");
         drop(fetch);
         abandon.await.unwrap();
         assert!(!path.exists());
@@ -2164,7 +2548,7 @@ mod tests {
         assert!(!worktree.exists());
         assert_eq!(worktree_count(&repo).await, 1);
         let error = e.message(&id, "One more question").await.unwrap_err();
-        assert!(error.contains("worktree was removed"), "{error}");
+        assert!(error.contains("worktree is unavailable"), "{error}");
     }
     #[test]
     fn reuses_size_statistics_only_for_unchanged_prs() {
@@ -2262,5 +2646,596 @@ mod tests {
             std::fs::read_to_string(d.path().join("state.json")).unwrap(),
             "broken"
         );
+    }
+    #[tokio::test]
+    async fn validates_checkout_origin_and_canonical_root_without_setup() {
+        let (_d, repo) = git_repo().await;
+        git(
+            &repo,
+            &["remote", "add", "origin", "git@github.com:a/b.git"],
+        )
+        .await
+        .unwrap();
+        let child = repo.join("nested");
+        std::fs::create_dir(&child).unwrap();
+        let canonical = validate_checkout("A/B", child.to_str().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(canonical, repo.canonicalize().unwrap().to_string_lossy());
+        assert!(validate_checkout("a/c", repo.to_str().unwrap())
+            .await
+            .is_err());
+        assert!(validate_checkout("a/b", "relative").await.is_err());
+        let plain = tempfile::tempdir().unwrap();
+        assert!(validate_checkout("a/b", plain.path().to_str().unwrap())
+            .await
+            .is_err());
+        git(
+            &repo,
+            &["remote", "set-url", "origin", "https://example.com/a/b.git"],
+        )
+        .await
+        .unwrap();
+        assert!(validate_checkout("a/b", repo.to_str().unwrap())
+            .await
+            .is_err());
+    }
+    #[tokio::test]
+    async fn partial_settings_are_atomic_and_unavailable_checkouts_do_not_block_edits() {
+        let (d, e, _) = running_engine().await;
+        e.update(|s| {
+            s.settings.automatic = true;
+            s.settings.repositories.push(Repository {
+                name: "a/b".into(),
+                path: "/missing/checkout".into(),
+                automatic: true,
+                setup_command: String::new(),
+                network_access: false,
+            });
+        })
+        .await;
+        let (a, b) = tokio::join!(
+            e.update_settings(SettingsPatch {
+                automatic: Some(false),
+                ..Default::default()
+            }),
+            e.update_settings(SettingsPatch {
+                poll_seconds: Some(60),
+                ..Default::default()
+            })
+        );
+        a.unwrap();
+        b.unwrap();
+        let settings = e.snapshot().await.settings;
+        assert!(!settings.automatic);
+        assert_eq!(settings.poll_seconds, 60);
+        e.set_repository_automatic("a/b", false).await.unwrap();
+        e.disconnect_repository("a/b").await.unwrap();
+        // A failed rename leaves both the active and saved settings unchanged.
+        std::fs::remove_file(d.path().join("state.json")).unwrap();
+        std::fs::create_dir(d.path().join("state.json")).unwrap();
+        let error = e
+            .update_settings(SettingsPatch {
+                automatic: Some(true),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert!(error.contains("not saved"));
+        assert!(!e.snapshot().await.settings.automatic);
+        assert!(e
+            .update_settings(SettingsPatch {
+                concurrency: Some(99),
+                ..Default::default()
+            })
+            .await
+            .is_err());
+    }
+    #[tokio::test]
+    async fn repository_save_validates_and_keeps_other_settings() {
+        let (_d, e, _) = running_engine().await;
+        let (_repo_dir, repo) = git_repo().await;
+        git(
+            &repo,
+            &["remote", "add", "origin", "https://github.com/a/b.git"],
+        )
+        .await
+        .unwrap();
+        let child = repo.join("subdir");
+        std::fs::create_dir(&child).unwrap();
+        let config = Repository {
+            name: "a/b".into(),
+            path: child.to_string_lossy().into(),
+            automatic: false,
+            setup_command: "exit 1 # must not execute".into(),
+            network_access: false,
+        };
+        e.save_repository(config.clone(), None).await.unwrap();
+        assert_eq!(
+            e.snapshot().await.settings.repositories[0].path,
+            repo.canonicalize().unwrap().to_string_lossy()
+        );
+        let mut invalid = config;
+        invalid.name = "wrong/repo".into();
+        assert!(e
+            .save_repository(invalid, Some("a/b".into()))
+            .await
+            .is_err());
+        assert_eq!(e.snapshot().await.settings.repositories[0].name, "a/b");
+    }
+    #[tokio::test]
+    async fn cleanup_claims_before_git_wait_and_rejects_competing_actions() {
+        let (d, e, id) = running_engine().await;
+        let path = d.path().join("worktrees").join(&id);
+        std::fs::create_dir_all(&path).unwrap();
+        e.update(|s| {
+            s.reviews[0].status = "ready".into();
+            s.reviews[0].worktree = Some(path.to_string_lossy().into());
+        })
+        .await;
+        let git = e.git_lock.lock().await;
+        let cleanup = tokio::spawn({
+            let e = e.clone();
+            let id = id.clone();
+            async move { e.remove_worktrees(vec![id]).await }
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !e.snapshot().await.reviews[0].cleanup_pending {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let disk: Snapshot =
+            serde_json::from_slice(&std::fs::read(d.path().join("state.json")).unwrap()).unwrap();
+        assert!(disk.reviews[0].cleanup_pending);
+        assert!(disk.reviews[0].worktree.is_some());
+        assert!(e
+            .message(&id, "follow up")
+            .await
+            .unwrap_err()
+            .contains("being removed"));
+        assert!(e.publish(&id, false, false).await.is_err());
+        assert!(e.remove_worktrees(vec![id]).await[0]
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("already"));
+        drop(git);
+        assert!(cleanup.await.unwrap()[0].error.is_none());
+        assert!(!path.exists());
+    }
+    #[tokio::test]
+    async fn cleanup_partial_results_and_restart_preserve_reports_and_deduplication() {
+        let (d, e, id) = running_engine().await;
+        let path = d.path().join("worktrees").join(&id);
+        let mut blocked = e.snapshot().await.reviews[0].clone();
+        blocked.id = uuid::Uuid::new_v4().to_string();
+        blocked.status = "publishing".into();
+        let blocked_id = blocked.id.clone();
+        e.update(|s| {
+            s.reviews[0].status = "posted".into();
+            s.reviews[0].automatic = true;
+            s.reviews[0].report = "Saved report".into();
+            s.reviews[0].comment_url = Some("https://github.com/a/b/pull/1#issuecomment-1".into());
+            s.reviews[0]
+                .messages
+                .push(Message::new("user", "Saved chat"));
+            s.reviews[0].worktree = Some(path.to_string_lossy().into());
+            s.reviews[0].cleanup_pending = true;
+            s.reviews[0].cleanup_closed_only = Some(false);
+            s.reviews.push(blocked);
+        })
+        .await;
+        e.flush().await.unwrap();
+        drop(e);
+        let e = Engine::new(d.path().into(), |_| {}).unwrap();
+        // Recover intent even when the directory already disappeared before exit.
+        e.resume_cleanup().await;
+        let r = e.snapshot().await.reviews[0].clone();
+        assert!(!r.cleanup_pending && r.worktree.is_none());
+        assert_eq!(r.report, "Saved report");
+        assert_eq!(r.status, "posted");
+        assert!(r.automatic && r.comment_url.is_some());
+        assert_eq!(r.messages[0].text, "Saved chat");
+        assert_eq!(r.id, id);
+        e.update(|s| s.reviews[1].status = "publishing".into())
+            .await;
+        let results = e
+            .remove_worktrees(vec![blocked_id, "unknown".into(), id.clone()])
+            .await;
+        assert!(
+            results[0].error.is_some() && results[1].error.is_some() && results[2].error.is_none()
+        );
+        assert!(e
+            .snapshot()
+            .await
+            .reviews
+            .iter()
+            .any(|r| r.id == id && r.automatic));
+    }
+    #[tokio::test]
+    async fn cleanup_rechecks_after_git_wait_and_never_removes_outside_registered_root() {
+        let (d, e, id) = running_engine().await;
+        let path = d.path().join("worktrees").join(&id);
+        std::fs::create_dir_all(&path).unwrap();
+        e.update(|s| {
+            s.reviews[0].status = "ready".into();
+            s.reviews[0].worktree = Some(path.to_string_lossy().into());
+        })
+        .await;
+        let lock = e.git_lock.lock().await;
+        let cleanup = tokio::spawn({
+            let e = e.clone();
+            let id = id.clone();
+            async move { e.remove_worktrees(vec![id]).await }
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !e.snapshot().await.reviews[0].cleanup_pending {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        e.update(|s| s.reviews[0].status = "publishing".into())
+            .await;
+        drop(lock);
+        assert!(cleanup.await.unwrap()[0].error.is_some());
+        assert!(path.exists());
+        assert!(!e.snapshot().await.reviews[0].cleanup_pending);
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("keep"), "original clone").unwrap();
+        e.update(|s| {
+            s.reviews[0].status = "ready".into();
+            s.reviews[0].worktree = Some(outside.path().to_string_lossy().into());
+        })
+        .await;
+        assert!(e.remove_worktrees(vec![id]).await[0].error.is_some());
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("keep")).unwrap(),
+            "original clone"
+        );
+        assert!(e.snapshot().await.reviews[0].cleanup_error.is_some());
+    }
+    #[tokio::test]
+    async fn recovered_cleanup_removes_real_worktree_and_still_deduplicates_automation() {
+        let (_repo_dir, repo) = git_repo().await;
+        let (d, e, id) = running_engine().await;
+        let path = d.path().join("worktrees").join(&id);
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                path.to_str().unwrap(),
+                "HEAD",
+            ],
+        )
+        .await
+        .unwrap();
+        e.update(|s| {
+            let p = &mut s.prs[0];
+            p.head_repo = p.repo.clone();
+            p.author_association = "OWNER".into();
+            s.settings.repositories.push(Repository {
+                name: p.repo.clone(),
+                path: repo.to_string_lossy().into(),
+                automatic: true,
+                setup_command: String::new(),
+                network_access: false,
+            });
+            let r = &mut s.reviews[0];
+            r.status = "ready".into();
+            r.automatic = true;
+            r.report = "keep report".into();
+            r.cleanup_pending = true;
+            r.cleanup_closed_only = Some(false);
+            r.worktree = Some(path.to_string_lossy().into());
+        })
+        .await;
+        e.flush().await.unwrap();
+        drop(e);
+        let e = Engine::new(d.path().into(), |_| {}).unwrap();
+        e.resume_cleanup().await;
+        assert!(!path.exists());
+        assert_eq!(worktree_count(&repo).await, 1);
+        let s = e.snapshot().await;
+        assert_eq!(s.reviews[0].report, "keep report");
+        assert!(!eligible(&s.prs[0], &s));
+        let mut without_record = s.clone();
+        without_record.reviews.clear();
+        assert!(eligible(&s.prs[0], &without_record));
+    }
+    #[tokio::test]
+    async fn recovery_rechecks_automatic_cleanup_but_honors_confirmed_manual_removal() {
+        for kind in [Some(true), Some(false), None] {
+            let (d, e, id) = running_engine().await;
+            let path = d.path().join("worktrees").join(&id);
+            std::fs::create_dir_all(&path).unwrap();
+            e.update(|s| {
+                s.settings.repositories.push(Repository {
+                    name: "a/b".into(),
+                    path: "/tmp/source".into(),
+                    automatic: false,
+                    setup_command: String::new(),
+                    network_access: false,
+                });
+                let r = &mut s.reviews[0];
+                r.status = "ready".into();
+                r.report = "retained".into();
+                r.cleanup_pending = true;
+                r.cleanup_closed_only = kind;
+                r.worktree = Some(path.to_string_lossy().into());
+                s.history_prs = std::mem::take(&mut s.prs);
+            })
+            .await;
+            e.flush().await.unwrap();
+            drop(e);
+            let e = Engine::new(d.path().into(), |_| {}).unwrap();
+            let checks = std::sync::atomic::AtomicUsize::new(0);
+            // GitHub says it reopened while Orbit was closed; cached metadata is stale.
+            e.resume_cleanup_with(|_| {
+                checks.fetch_add(1, Ordering::SeqCst);
+                async { Ok(false) }
+            })
+            .await;
+            let r = e.snapshot().await.reviews[0].clone();
+            assert!(!r.cleanup_pending);
+            assert!(r.cleanup_error.is_none());
+            assert_eq!(r.report, "retained");
+            assert!(!r
+                .messages
+                .iter()
+                .any(|m| m.text.starts_with("Could not remove")));
+            assert_eq!(path.exists(), kind != Some(false));
+            assert_eq!(
+                checks.load(Ordering::SeqCst),
+                usize::from(kind != Some(false))
+            );
+        }
+    }
+    #[tokio::test]
+    async fn automatic_cleanup_skips_busy_git_without_leaving_a_pending_claim() {
+        let (d, e, id) = running_engine().await;
+        let path = d.path().join("worktrees").join(&id);
+        std::fs::create_dir_all(&path).unwrap();
+        e.update(|s| {
+            s.reviews[0].status = "ready".into();
+            s.reviews[0].worktree = Some(path.to_string_lossy().into());
+            s.history_prs = std::mem::take(&mut s.prs);
+        })
+        .await;
+        let fetch = e.git_lock.lock().await;
+        tokio::time::timeout(Duration::from_secs(1), e.clean_worktrees())
+            .await
+            .unwrap();
+        assert!(!e.snapshot().await.reviews[0].cleanup_pending);
+        assert!(path.exists());
+        // An interrupted automatic cleanup also releases its old claim when Git is busy.
+        e.update(|s| {
+            s.reviews[0].cleanup_pending = true;
+            s.reviews[0].cleanup_closed_only = Some(true);
+        })
+        .await;
+        tokio::time::timeout(Duration::from_secs(1), e.resume_cleanup())
+            .await
+            .unwrap();
+        assert!(!e.snapshot().await.reviews[0].cleanup_pending);
+        drop(fetch);
+        e.clean_worktrees().await;
+        assert!(!path.exists());
+    }
+    #[tokio::test]
+    async fn aborting_preparation_cannot_abort_its_claimed_cleanup() {
+        let (d, e, id) = running_engine().await;
+        let path = d.path().join("worktrees").join(&id);
+        std::fs::create_dir_all(&path).unwrap();
+        e.update(|s| {
+            s.reviews[0].status = "preparing".into();
+            s.reviews[0].thread_id = None;
+            s.reviews[0].worktree = Some(path.to_string_lossy().into());
+        })
+        .await;
+        let fetch = e.git_lock.lock().await;
+        let caller = tokio::spawn({
+            let e = e.clone();
+            let id = id.clone();
+            async move {
+                e.abandon_preparation(&id, Some("setup failed".into()))
+                    .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !e.snapshot().await.reviews[0].cleanup_pending {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        drop(fetch);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while e.snapshot().await.reviews[0].cleanup_pending {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!path.exists());
+        assert!(e.snapshot().await.reviews[0].worktree.is_none());
+    }
+    #[tokio::test]
+    async fn failed_cleanup_intent_is_visible_and_retryable_without_deleting_files() {
+        let (d, e, id) = running_engine().await;
+        let path = d.path().join("worktrees").join(&id);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("keep"), "contents").unwrap();
+        e.update(|s| {
+            s.reviews[0].status = "ready".into();
+            s.reviews[0].worktree = Some(path.to_string_lossy().into());
+        })
+        .await;
+        // Deterministic write failure exercises the same path as a full state volume.
+        std::fs::create_dir(d.path().join("state.json.tmp")).unwrap();
+        let results = e.remove_worktrees(vec![id.clone()]).await;
+        let error = results[0].error.as_ref().unwrap();
+        assert!(error.contains("not started") && error.contains("Free space"));
+        let r = e.snapshot().await.reviews[0].clone();
+        assert!(!r.cleanup_pending && r.cleanup_error.is_some());
+        assert_eq!(
+            std::fs::read_to_string(path.join("keep")).unwrap(),
+            "contents"
+        );
+        std::fs::remove_dir(d.path().join("state.json.tmp")).unwrap();
+        assert!(e.remove_worktrees(vec![id]).await[0].error.is_none());
+        assert!(!path.exists());
+    }
+    #[tokio::test]
+    async fn removed_worktree_reports_completion_write_failure_separately_and_recovers() {
+        let (d, e, id) = running_engine().await;
+        let path = d.path().join("worktrees").join(&id);
+        std::fs::create_dir_all(&path).unwrap();
+        e.update(|s| {
+            let r = &mut s.reviews[0];
+            r.status = "ready".into();
+            r.report = "preserve report".into();
+            r.worktree = Some(path.to_string_lossy().into());
+        })
+        .await;
+        let git = e.git_lock.lock().await;
+        let worker = tokio::spawn({
+            let e = e.clone();
+            let id = id.clone();
+            async move { e.remove_worktrees(vec![id]).await }
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !e.snapshot().await.reviews[0].cleanup_pending {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        // Intent is durable; fail only the write after deletion.
+        std::fs::create_dir(d.path().join("state.json.tmp")).unwrap();
+        drop(git);
+        let result = worker.await.unwrap().remove(0);
+        assert!(result.error.is_none());
+        assert!(result
+            .warning
+            .unwrap()
+            .contains("completion record could not be saved"));
+        assert!(!path.exists());
+        let s = e.snapshot().await;
+        assert!(s.reviews[0].worktree.is_none());
+        assert!(s.reviews[0].cleanup_error.is_none());
+        assert!(s.codex_error.unwrap().contains("automation paused"));
+        drop(e);
+        std::fs::remove_dir(d.path().join("state.json.tmp")).unwrap();
+        let e = Engine::new(d.path().into(), |_| {}).unwrap();
+        assert!(e.snapshot().await.reviews[0].cleanup_pending);
+        e.resume_cleanup().await;
+        let r = &e.snapshot().await.reviews[0];
+        assert!(r.worktree.is_none() && !r.cleanup_pending);
+        assert_eq!(r.report, "preserve report");
+    }
+    #[tokio::test]
+    async fn path_error_is_not_masked_by_a_failed_flush() {
+        let (d, e, id) = running_engine().await;
+        e.update(|s| {
+            s.reviews[0].status = "ready".into();
+            s.reviews[0].worktree = Some("/outside/orbit".into());
+        })
+        .await;
+        std::fs::create_dir(d.path().join("state.json.tmp")).unwrap();
+        let result = e.remove_worktrees(vec![id]).await.remove(0);
+        assert!(result
+            .error
+            .unwrap()
+            .contains("outside its registered Orbit location"));
+        assert!(e
+            .snapshot()
+            .await
+            .codex_error
+            .unwrap()
+            .contains("automation paused"));
+    }
+    #[tokio::test]
+    async fn abandoned_preparations_do_not_claim_to_have_a_saved_report() {
+        for error in [None, Some("setup failed".to_string())] {
+            let (d, e, id) = running_engine().await;
+            let path = d.path().join("worktrees").join(&id);
+            std::fs::create_dir_all(&path).unwrap();
+            e.update(|s| {
+                s.reviews[0].status = if error.is_some() {
+                    "preparing"
+                } else {
+                    "cancelled"
+                }
+                .into();
+                s.reviews[0].thread_id = None;
+            })
+            .await;
+            e.abandon_preparation(&id, error).await;
+            let s = e.snapshot().await;
+            assert_eq!(
+                s.reviews[0].messages.last().unwrap().text,
+                "Removed the unfinished review workspace. Start a new review to retry."
+            );
+        }
+    }
+    #[tokio::test]
+    async fn busy_sweeps_make_no_github_requests_and_recheck_open_prs_before_deletion() {
+        let (d, e, id) = running_engine().await;
+        let path = d.path().join("worktrees").join(&id);
+        std::fs::create_dir_all(&path).unwrap();
+        e.update(|s| {
+            s.settings.repositories.push(Repository {
+                name: "a/b".into(),
+                path: "/tmp/source".into(),
+                automatic: false,
+                setup_command: String::new(),
+                network_access: false,
+            });
+            s.reviews[0].status = "ready".into();
+            s.reviews[0].worktree = Some(path.to_string_lossy().into());
+            let mut second = s.reviews[0].clone();
+            second.id = uuid::Uuid::new_v4().to_string();
+            s.reviews.push(second);
+            s.history_prs = std::mem::take(&mut s.prs);
+        })
+        .await;
+        let requests = std::sync::atomic::AtomicUsize::new(0);
+        let git = e.git_lock.lock().await;
+        e.clean_worktrees_with(|_| {
+            requests.fetch_add(1, Ordering::SeqCst);
+            async { true }
+        })
+        .await;
+        assert_eq!(requests.load(Ordering::SeqCst), 0);
+        drop(git);
+        // The PR reopened during the network check; the worker must retain it.
+        e.clean_worktrees_with(|pr| async {
+            e.update(|s| s.prs.push(pr)).await;
+            true
+        })
+        .await;
+        assert!(path.exists());
+        assert!(e.snapshot().await.reviews[0].cleanup_error.is_none());
+    }
+    #[tokio::test]
+    async fn slow_checkout_filesystem_work_does_not_block_the_runtime_or_wait_forever() {
+        let (release, blocked) = std::sync::mpsc::channel();
+        let result = checkout_io(
+            move || {
+                blocked.recv().unwrap();
+                Ok(())
+            },
+            Duration::from_millis(20),
+        )
+        .await;
+        release.send(()).unwrap();
+        assert!(result.unwrap_err().contains("filesystem check timed out"));
     }
 }
