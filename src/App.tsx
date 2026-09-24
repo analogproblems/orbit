@@ -2094,7 +2094,7 @@ function SettingsPage() {
                 value={draft.effort}
                 disabled={
                   saves.effort?.state === "saving" ||
-                  saves.model?.state === "saving"
+                  (!!saves.model && saves.model.state !== "saved")
                 }
                 onChange={(e) =>
                   void updateSettings({ effort: e.target.value })
@@ -2108,7 +2108,11 @@ function SettingsPage() {
                   </option>
                 ))}
               </select>
-              <small>More effort gives the agent more time to reason.</small>
+              <small>
+                {saves.model?.state === "error"
+                  ? "Retry the failed model change or choose a model again before changing effort."
+                  : "More effort gives the agent more time to reason."}
+              </small>
             </label>
           </div>
         </section>

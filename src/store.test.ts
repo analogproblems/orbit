@@ -126,3 +126,33 @@ describe("review interactions", () => {
     expect(canPublish(r, { ...p, baseSha: "f".repeat(40) })).toBe(false);
   });
 });
+
+describe("older demo storage", () => {
+  it("backfills simulated chat metadata without restoring deliberately removed worktrees", async () => {
+    const old = structuredClone(useOrbit.getState().snapshot);
+    const seeded = old.reviews[0];
+    delete seeded.threadId;
+    const legacyRun = { ...seeded, id: "legacy-run", worktree: undefined };
+    const removed = {
+      ...seeded,
+      id: "removed-run",
+      threadId: "known-thread",
+      worktree: undefined,
+    };
+    old.reviews.push(legacyRun, removed);
+    localStorage.setItem("orbit-demo-v3", JSON.stringify(old));
+    await useOrbit.getState().init();
+    const s = useOrbit.getState().snapshot;
+    expect(s.reviews[0].threadId).toBeTruthy();
+    expect(s.reviews[1].worktree).toBeTruthy();
+    expect(s.reviews[2].worktree).toBeUndefined();
+    expect(s.reviews[0].report).toBe(seeded.report);
+    expect(s.reviews[0].messages).toEqual(seeded.messages);
+    const sent = await useOrbit
+      .getState()
+      .action("send_message", { reviewId: legacyRun.id, text: "Follow-up" });
+    expect(sent.ok).toBe(true);
+    await useOrbit.getState().init();
+    expect(useOrbit.getState().snapshot.reviews[2].worktree).toBeUndefined();
+  });
+});

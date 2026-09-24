@@ -15,6 +15,7 @@ import {
   type SettingsPatch,
   type Repository,
   type StorageUsage,
+  type CleanupResult,
   followUpUnavailable,
   canExport,
 } from "./types";
@@ -39,6 +40,8 @@ interface Store {
   loaded: boolean;
   error: string | null;
   saves: Record<string, SaveState>;
+  cleanup: { running: boolean; results: CleanupResult[]; error?: string };
+  removeWorktrees: (ids: string[]) => Promise<ActionResult<CleanupResult[]>>;
   trustedInput: string;
   setTrustedInput: (text: string) => void;
   chatDrafts: Record<string, string>;
@@ -62,7 +65,9 @@ interface Store {
   clearError: () => void;
 }
 let demo: Snapshot;
-let mutationTail: Promise<unknown> = Promise.resolve();
+// Repository validation can wait on a slow filesystem. Keep its ordered lane
+// independent from the global settings lane, so disabling Autopilot stays fast.
+const mutationTails = new Map<string, Promise<unknown>>();
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 function commit() {
   localStorage.setItem("orbit-demo-v3", JSON.stringify(demo));
@@ -382,6 +387,23 @@ export const useOrbit = create<Store>((set, get) => ({
   loaded: false,
   error: null,
   saves: {},
+  cleanup: { running: false, results: [] },
+  removeWorktrees: async (ids) => {
+    if (get().cleanup.running)
+      return { ok: false, error: "Worktree removal is already running." };
+    set({ cleanup: { running: true, results: [] } });
+    const result = await get().action<CleanupResult[]>(
+      "remove_worktrees",
+      { reviewIds: ids },
+      { quiet: true },
+    );
+    set({
+      cleanup: result.ok
+        ? { running: false, results: result.data }
+        : { running: false, results: [], error: result.error },
+    });
+    return result;
+  },
   trustedInput: "",
   setTrustedInput: (trustedInput) => set({ trustedInput }),
   chatDrafts: {},
@@ -390,28 +412,34 @@ export const useOrbit = create<Store>((set, get) => ({
   mutate: (command, args, key) => {
     const pending: SaveState = { state: "saving", command, args };
     set((s) => ({ saves: { ...s.saves, [key]: pending } }));
-    const task = mutationTail.then(async () => {
-      const result = await get().action<Settings>(command, args, {
-        quiet: true,
-      });
-      set((s) =>
-        s.saves[key] === pending
-          ? {
-              saves: {
-                ...s.saves,
-                [key]: {
-                  state: result.ok ? "saved" : "error",
-                  error: result.ok ? undefined : result.error,
-                  command,
-                  args,
+    const lane = command === "update_settings" ? "settings" : "repositories";
+    const task = (mutationTails.get(lane) ?? Promise.resolve()).then(
+      async () => {
+        const result = await get().action<Settings>(command, args, {
+          quiet: true,
+        });
+        set((s) =>
+          s.saves[key] === pending
+            ? {
+                saves: {
+                  ...s.saves,
+                  [key]: {
+                    state: result.ok ? "saved" : "error",
+                    error: result.ok ? undefined : result.error,
+                    command,
+                    args,
+                  },
                 },
-              },
-            }
-          : {},
-      );
-      return result;
-    });
-    mutationTail = task.catch(() => {});
+              }
+            : {},
+        );
+        return result;
+      },
+    );
+    mutationTails.set(
+      lane,
+      task.catch(() => {}),
+    );
     return task;
   },
   updateSettings: (patch, key = Object.keys(patch)[0]) =>
@@ -428,6 +456,13 @@ export const useOrbit = create<Store>((set, get) => ({
           JSON.parse(localStorage.getItem("orbit-demo-v3") || "null") ||
           freshDemo();
         demo.reviews.forEach((r) => {
+          // Older demos did not record a simulated Codex thread. Backfill those
+          // runs without reviving worktrees explicitly removed by current builds
+          // (which already have threadId).
+          if (!r.threadId) {
+            r.threadId = `demo-thread-${r.id}`;
+            r.worktree ??= `demo-worktree-${r.id}`;
+          }
           if (activeStatuses.includes(r.status) && !timers.has(r.id)) {
             r.status = "cancelled";
             r.error = "Demo was restarted.";

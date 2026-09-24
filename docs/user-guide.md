@@ -204,9 +204,9 @@ Trust only accounts whose PRs you intend to review automatically. Anyone able to
 | Poll interval                          | 2 minutes     | 30 seconds; 1, 2, 5, 10, 30, or 60 minutes.                                                                       |
 | Trusted accounts                       | Empty         | Up to 50 account logins.                                                                                          |
 
-Settings switches and selections save immediately. Changing the model also resets effort to **Model default** in the same update. **Saving…**, **Saved**, or an error with **Retry saving** shows the result. A failed write leaves the active configuration unchanged; the requested value, typed account input, and error remain available across page navigation. Retry after resolving the failure.
+Settings switches and selections save immediately. Changing the model also resets effort to **Model default** in the same update. **Saving…**, **Saved**, or an error with **Retry saving** shows the result. A failed write leaves the active configuration unchanged; the requested value, typed account input, and error remain available across page navigation. Retry after resolving the failure. If a model change fails, effort stays disabled until you retry successfully or choose a model again; this prevents a later retry from resetting a newly selected effort.
 
-The header Autopilot switch, repository-card automation switches, and PR **Trust** button also save immediately. Updates are serialized and change only their intended fields. Repository dialogs retain **Save repository** because their fields form one configuration that must be validated together.
+The header Autopilot switch, repository-card automation switches, and PR **Trust** button also save immediately. Updates change only their intended fields. Global Settings changes are ordered separately from repository changes, so slow checkout validation does not delay turning Autopilot off. Repository dialogs retain **Save repository** because their fields form one configuration that must be validated together.
 
 Choosing a different nondefault model or effort requires a model list from a connected Codex service. Connection trouble does not prevent switching automation off.
 
@@ -224,9 +224,9 @@ After a restart:
 - An interrupted follow-up restores the prior review outcome and notes that its answer may be incomplete.
 - An interrupted publication returns to **Ready to publish** so retrying can reconcile its comment.
 - Pending approvals are cleared and service connections are re-established.
-- Confirmed worktree removals recorded as pending resume. A failed cleanup keeps the path and exposes its error for retry.
+- Confirmed manual worktree removals recorded as pending resume, including for open PRs. Interrupted automatic cleanup first rechecks whether the PR is closed or its repository is disconnected; a reopened PR keeps its worktree. Older pending records without a removal type also receive this conservative check. A failed cleanup keeps the path and exposes its error for retry. Recovery runs separately from initial inbox sync.
 
-Finished worktrees are cleaned up after startup or scheduled syncs when the PR is confirmed closed/merged, or its repository has been disconnected. Cleanup can wait for other Git work and skips active runs. Preparation failures or cancellations also trigger cleanup. Chats remain readable, but a removed worktree cannot support further follow-ups; a new run requires an open PR in a connected repository.
+Finished worktrees are cleaned up after startup or scheduled syncs when the PR is confirmed closed/merged, or its repository has been disconnected. Automatic sweeps skip active runs and busy Git operations, trying again on a later sweep. Manual removal can wait for other Git work. Preparation failures or cancellations also trigger cleanup; stopping preparation does not interrupt cleanup already dispatched. Chats remain readable, but a removed worktree cannot support further follow-ups; a new run requires an open PR in a connected repository.
 
 Completed runs for PRs that remain open retain their worktrees, including older runs, until you remove them manually. History and worktrees can therefore grow with use. Do not store independent work in review worktrees: cleanup can remove their contents.
 
@@ -236,7 +236,9 @@ Open **Settings → Storage → Inspect storage**. The scan runs asynchronously 
 
 Select inactive runs and choose **Remove worktrees**. The confirmation lists the runs and estimated space. Removing a worktree deletes all its files, including dependencies and local changes, and ends follow-up capability for that run. It keeps the report, chat, publication details, and automatic-review deduplication records. Active, publishing, and already-removing runs cannot be selected. Rust rechecks eligibility and the registered Orbit-owned location before deletion.
 
-Removal is recorded before files are touched. You can continue reading reports while cleanup waits for other Git work. Failures are shown per run; correct the cause, refresh storage, and select the failed run again to retry. Confirmed pending removals resume after restart, including when the directory was already removed before exit. No report or history deletion is part of this action.
+Removal is recorded before files are touched. The confirmation closes as removal starts, and you can navigate freely while cleanup waits for other Git work. Progress and results remain available when you return to Settings; open **Inspect storage** to see per-run results. Failures are shown per run; correct the cause, refresh storage, and select the failed run again to retry. Confirmed pending manual removals resume after restart, including when the directory was already removed before exit. No report or history deletion is part of this action.
+
+If the disk is full or Orbit cannot write its data directory, cleanup cannot save its removal record and leaves the files intact. The run shows a retryable error. Free some space outside Orbit or restore write access to the data directory, then retry removal. Orbit always requires a saved removal record before deleting a worktree.
 
 ### Export a report
 

@@ -64,6 +64,7 @@ beforeEach(() => {
     loaded: false,
     error: null,
     saves: {},
+    cleanup: { running: false, results: [] },
     trustedInput: "",
     chatDrafts: {},
   });
@@ -405,5 +406,116 @@ describe("storage and export", () => {
       { patch: { pollSeconds: 60 } },
       { patch: { pollSeconds: 300 } },
     ]);
+  });
+});
+
+describe("review regression cases", () => {
+  it("disables Autopilot while repository validation is still pending", async () => {
+    const validation = deferred<void>();
+    snapshot.settings.automatic = true;
+    invoke.mockImplementation(async (cmd, args) => {
+      if (cmd === "save_repository") {
+        await validation.promise;
+        return snapshot.settings;
+      }
+      return backend(cmd, args);
+    });
+    const repository = useOrbit
+      .getState()
+      .mutate(
+        "save_repository",
+        { repository: snapshot.settings.repositories[0] },
+        "repository:acme/orbit",
+      );
+    await Promise.resolve();
+    const disabled = await useOrbit
+      .getState()
+      .updateSettings({ automatic: false });
+    expect(disabled.ok).toBe(true);
+    expect(snapshot.settings.automatic).toBe(false);
+    expect(useOrbit.getState().saves["repository:acme/orbit"].state).toBe(
+      "saving",
+    );
+    validation.resolve();
+    await repository;
+    expect(snapshot.settings.automatic).toBe(false);
+  });
+  it("requires the failed model change to resolve before an effort can be saved", async () => {
+    let fail = true;
+    invoke.mockImplementation((cmd, args) =>
+      cmd === "update_settings" && fail
+        ? Promise.reject(Error("Model unavailable"))
+        : backend(cmd, args),
+    );
+    await mount();
+    fireEvent.keyDown(document, { key: ",", ctrlKey: true });
+    await user().selectOptions(
+      screen.getByRole("combobox", { name: /^Model/ }),
+      "codex-default",
+    );
+    await screen.findByRole("alert");
+    expect(
+      screen.getByRole("combobox", { name: /^Reasoning effort/ }),
+    ).toHaveProperty("disabled", true);
+    await user().click(screen.getByRole("button", { name: "Review activity" }));
+    fireEvent.keyDown(document, { key: ",", ctrlKey: true });
+    expect(
+      screen.getByRole("combobox", { name: /^Reasoning effort/ }),
+    ).toHaveProperty("disabled", true);
+    fail = false;
+    await user().click(screen.getByRole("button", { name: "Retry saving" }));
+    const effort = screen.getByRole("combobox", { name: /^Reasoning effort/ });
+    await waitFor(() => expect(effort).toHaveProperty("disabled", false));
+    await user().selectOptions(effort, "high");
+    expect(snapshot.settings.effort).toBe("high");
+    expect(effort).toHaveProperty("value", "high");
+  });
+  it("keeps the app navigable and cleanup progress available while removal waits", async () => {
+    const removal = deferred<unknown>();
+    invoke.mockImplementation((cmd, args) => {
+      if (cmd === "get_storage_usage")
+        return Promise.resolve({
+          stateBytes: 80,
+          worktreeBytes: 20,
+          unrecognizedBytes: 0,
+          unrecognized: [],
+          errors: [],
+          worktrees: [
+            { reviewId: snapshot.reviews[0].id, bytes: 20, removable: true },
+          ],
+        });
+      if (cmd === "remove_worktrees") return removal.promise;
+      return backend(cmd, args);
+    });
+    await mount();
+    fireEvent.keyDown(document, { key: ",", ctrlKey: true });
+    await user().click(screen.getByRole("button", { name: "Inspect storage" }));
+    await user().click(await screen.findByRole("checkbox"));
+    await user().click(
+      screen.getByRole("button", { name: "Remove worktrees (1)" }),
+    );
+    await user().click(screen.getByRole("button", { name: "Confirm removal" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByRole("status").textContent).toContain(
+      "keep using Orbit",
+    );
+    await user().click(screen.getByRole("button", { name: "Review activity" }));
+    fireEvent.keyDown(document, { key: ",", ctrlKey: true });
+    expect(screen.getByRole("status").textContent).toContain(
+      "Removing worktrees",
+    );
+    await act(async () =>
+      removal.resolve([
+        {
+          reviewId: snapshot.reviews[0].id,
+          error: "Could not remove test worktree",
+        },
+      ]),
+    );
+    await user().click(screen.getByRole("button", { name: "Inspect storage" }));
+    expect(screen.getByRole("alert").textContent).toContain(
+      "Could not remove test worktree",
+    );
+    expect(useOrbit.getState().cleanup.running).toBe(false);
   });
 });

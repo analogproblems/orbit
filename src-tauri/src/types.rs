@@ -98,6 +98,9 @@ pub struct Review {
     pub before_follow_up: Option<Outcome>,
     #[serde(default)]
     pub cleanup_pending: bool,
+    /// None in older state: conservatively recheck PR closure on recovery.
+    #[serde(default)]
+    pub cleanup_closed_only: Option<bool>,
     #[serde(default)]
     pub cleanup_error: Option<String>,
 }
@@ -137,6 +140,7 @@ impl Review {
             sensitive: vec![],
             before_follow_up: None,
             cleanup_pending: false,
+            cleanup_closed_only: None,
             cleanup_error: None,
         }
     }

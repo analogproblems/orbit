@@ -192,9 +192,12 @@ impl Engine {
         });
         let e = self.clone();
         tokio::spawn(async move {
-            e.resume_cleanup().await;
             let _ = e.poll().await;
             e.clean_worktrees().await;
+        });
+        let e = self.clone();
+        tokio::spawn(async move {
+            e.resume_cleanup().await;
         });
         let e = self.clone();
         tokio::spawn(async move {
@@ -661,7 +664,7 @@ impl Engine {
     /// same update that ends the review: a follow-up cannot start while removal
     /// waits for the git lock. The worktree stays recorded until it is gone, so a
     /// removal interrupted by exiting is retried by a later cleanup.
-    async fn abandon_preparation(&self, id: &str, error: Option<String>) {
+    async fn abandon_preparation(self: &Arc<Self>, id: &str, error: Option<String>) {
         let path = self.root.join("worktrees").join(id);
         self.update(|s| {
             if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
@@ -681,7 +684,10 @@ impl Engine {
         .await;
         let _ = self.remove_review_worktree(id, false, false).await;
     }
-    pub async fn remove_worktrees(&self, ids: Vec<String>) -> Vec<storage::CleanupResult> {
+    pub async fn remove_worktrees(
+        self: &Arc<Self>,
+        ids: Vec<String>,
+    ) -> Vec<storage::CleanupResult> {
         let mut results = vec![];
         let mut seen = HashSet::new();
         for id in ids {
@@ -695,21 +701,92 @@ impl Engine {
         }
         results
     }
-    async fn resume_cleanup(&self) {
-        let ids: Vec<String> = self
-            .state
-            .lock()
+    async fn resume_cleanup(self: &Arc<Self>) {
+        self.resume_cleanup_with(|pr| async move {
+            match github::pull(&pr.repo, pr.number, "").await {
+                Err(error) if error == github::CLOSED => Ok(true),
+                Ok(_) => Ok(false),
+                Err(error) => Err(error),
+            }
+        })
+        .await;
+    }
+    async fn resume_cleanup_with<F, Fut>(self: &Arc<Self>, is_closed: F)
+    where
+        F: Fn(PullRequest) -> Fut,
+        Fut: std::future::Future<Output = Result<bool, String>>,
+    {
+        let pending: Vec<_> = self
+            .snapshot()
             .await
             .reviews
-            .iter()
+            .into_iter()
             .filter(|r| r.cleanup_pending)
-            .map(|r| r.id.clone())
             .collect();
-        for id in ids {
-            let _ = self.remove_review_worktree(&id, true, false).await;
+        for r in pending {
+            if r.cleanup_closed_only.unwrap_or(true) {
+                let s = self.snapshot().await;
+                let pr = s.prs.iter().chain(&s.history_prs).find(|p| p.id == r.pr_id);
+                let closed = match pr {
+                    Some(pr)
+                        if s.settings
+                            .repositories
+                            .iter()
+                            .any(|c| same_repo(&c.name, &pr.repo)) =>
+                    {
+                        is_closed(pr.clone()).await
+                    }
+                    Some(_) => Ok(true), // Disconnected repository.
+                    None => Ok(false),   // Missing metadata cannot authorize automatic deletion.
+                };
+                // A skipped automatic removal is reconsidered by later sweeps.
+                // It must not leave follow-ups blocked while another Git job runs.
+                self.release_cleanup(
+                    &r.id,
+                    closed
+                        .as_ref()
+                        .err()
+                        .map(|e| format!("Could not recheck interrupted cleanup: {e}")),
+                )
+                .await;
+                if closed != Ok(true) {
+                    continue;
+                }
+                let _ = self.remove_review_worktree(&r.id, false, true).await;
+            } else {
+                let _ = self.remove_review_worktree(&r.id, true, false).await;
+            }
         }
     }
+    async fn release_cleanup(&self, id: &str, error: Option<String>) {
+        self.update(|s| {
+            if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
+                r.cleanup_pending = false;
+                r.cleanup_closed_only = None;
+                r.cleanup_error = error;
+            }
+        })
+        .await;
+        let _ = self.flush().await;
+    }
     async fn remove_review_worktree(
+        self: &Arc<Self>,
+        id: &str,
+        resume: bool,
+        closed_only: bool,
+    ) -> Result<(), String> {
+        // Stop may abort the preparing task which requested cleanup. Once
+        // dispatched, cleanup has its own lifetime and must finish its claim.
+        let e = self.clone();
+        let id = id.to_string();
+        tokio::spawn(async move {
+            e.remove_review_worktree_inner(&id, resume, closed_only)
+                .await
+        })
+        .await
+        .map_err(|error| format!("Cleanup worker failed: {error}"))?
+    }
+    async fn remove_review_worktree_inner(
         &self,
         id: &str,
         resume: bool,
@@ -727,7 +804,24 @@ impl Engine {
             return Err("This worktree is already being removed.".into());
         }
         // Keep one worker per directory, including the automatic cleanup paths.
-        let _cleanup = self.cleanup_lock.lock().await;
+        let _cleanup = if closed_only {
+            match self.cleanup_lock.try_lock() {
+                Ok(guard) => guard,
+                Err(_) => return Ok(()),
+            }
+        } else {
+            self.cleanup_lock.lock().await
+        };
+        // Retain the try-lock guard throughout background removal. Never queue
+        // a sweep behind a fetch that starts after an earlier availability check.
+        let git_guard = if closed_only {
+            match self.git_lock.try_lock() {
+                Ok(guard) => Some(guard),
+                Err(_) => return Ok(()),
+            }
+        } else {
+            None
+        };
         let path = {
             let mut s = self.state.lock().await;
             let r = s
@@ -747,6 +841,8 @@ impl Engine {
                 return Ok(());
             }
             let Some(recorded) = &r.worktree else {
+                drop(s);
+                self.release_cleanup(id, None).await;
                 return Ok(());
             };
             let path = match storage::worktree_path(&self.root, id, recorded) {
@@ -754,6 +850,7 @@ impl Engine {
                 Err(error) => {
                     let r = s.reviews.iter_mut().find(|r| r.id == id).unwrap();
                     r.cleanup_pending = false;
+                    r.cleanup_closed_only = None;
                     r.cleanup_error = Some(error.clone());
                     let note = format!("Could not remove this review's worktree: {error}");
                     if r.messages.last().map(|m| &m.text) != Some(&note) {
@@ -768,16 +865,28 @@ impl Engine {
             let mut next = s.clone();
             let r = next.reviews.iter_mut().find(|r| r.id == id).unwrap();
             r.cleanup_pending = true;
+            r.cleanup_closed_only = Some(closed_only);
             r.cleanup_error = None;
             // Persist the intent before waiting on Git or deleting anything.
-            self.persist(&next)
-                .map_err(|e| format!("Cannot record cleanup: {e}"))?;
+            if let Err(error) = self.persist(&next) {
+                let error = format!("Cleanup was not started because Orbit could not save its removal record: {error}. Free space or restore write access for Orbit’s data directory, then retry.");
+                let r = s.reviews.iter_mut().find(|r| r.id == id).unwrap();
+                r.cleanup_pending = false;
+                r.cleanup_closed_only = None;
+                r.cleanup_error = Some(error.clone());
+                self.dirty.store(true, Ordering::SeqCst);
+                (self.emit)(&s);
+                return Err(error);
+            }
             *s = next;
             (self.emit)(&s);
             path
         };
         let removed = async {
-            let _git = self.git_lock.lock().await;
+            let _git = match git_guard {
+                Some(guard) => guard,
+                None => self.git_lock.lock().await,
+            };
             {
                 let s = self.state.lock().await;
                 let r = s
@@ -789,7 +898,7 @@ impl Engine {
                     return Err("The review changed while cleanup was waiting.".into());
                 }
                 if closed_only && s.prs.iter().any(|p| p.id == r.pr_id) {
-                    return Err("Pull request is open again; its worktree was kept.".into());
+                    return Ok(false);
                 }
                 storage::worktree_path(
                     &self.root,
@@ -797,15 +906,17 @@ impl Engine {
                     r.worktree.as_deref().ok_or("Workspace changed.")?,
                 )?;
             }
-            remove_worktree(&path).await
+            remove_worktree(&path).await.map(|()| true)
         }
         .await;
         self.update(|s| {
             if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
                 r.cleanup_pending = false;
+                r.cleanup_closed_only = None;
                 r.cleanup_error = removed.as_ref().err().cloned();
                 let note = match &removed {
-                    Ok(()) => {
+                    Ok(false) => return, // Reopened PR: keeping its worktree is success.
+                    Ok(true) => {
                         r.worktree = None;
                         "Removed this review's worktree. Its report and conversation are preserved; start a new review to continue chatting.".to_string()
                     }
@@ -815,10 +926,10 @@ impl Engine {
             }
         }).await;
         self.flush().await?;
-        removed
+        removed.map(|_| ())
     }
     /// Cleanup does not discard chat history or change automatic-review deduplication.
-    async fn clean_worktrees(&self) {
+    async fn clean_worktrees(self: &Arc<Self>) {
         let candidates: Vec<(String, PullRequest, bool)> = {
             let s = self.state.lock().await;
             s.reviews
@@ -847,11 +958,6 @@ impl Engine {
                     _ => continue,
                 }
             }
-            // Do not queue background cleanup behind a long fetch.
-            let Ok(guard) = self.git_lock.try_lock() else {
-                return;
-            };
-            drop(guard);
             if self.state.lock().await.prs.iter().any(|p| p.id == pr.id) {
                 continue;
             }
@@ -2664,6 +2770,7 @@ mod tests {
                 .push(Message::new("user", "Saved chat"));
             s.reviews[0].worktree = Some(path.to_string_lossy().into());
             s.reviews[0].cleanup_pending = true;
+            s.reviews[0].cleanup_closed_only = Some(false);
             s.reviews.push(blocked);
         })
         .await;
@@ -2770,6 +2877,7 @@ mod tests {
             r.automatic = true;
             r.report = "keep report".into();
             r.cleanup_pending = true;
+            r.cleanup_closed_only = Some(false);
             r.worktree = Some(path.to_string_lossy().into());
         })
         .await;
@@ -2785,5 +2893,150 @@ mod tests {
         let mut without_record = s.clone();
         without_record.reviews.clear();
         assert!(eligible(&s.prs[0], &without_record));
+    }
+    #[tokio::test]
+    async fn recovery_rechecks_automatic_cleanup_but_honors_confirmed_manual_removal() {
+        for kind in [Some(true), Some(false), None] {
+            let (d, e, id) = running_engine().await;
+            let path = d.path().join("worktrees").join(&id);
+            std::fs::create_dir_all(&path).unwrap();
+            e.update(|s| {
+                s.settings.repositories.push(Repository {
+                    name: "a/b".into(),
+                    path: "/tmp/source".into(),
+                    automatic: false,
+                    setup_command: String::new(),
+                    network_access: false,
+                });
+                let r = &mut s.reviews[0];
+                r.status = "ready".into();
+                r.report = "retained".into();
+                r.cleanup_pending = true;
+                r.cleanup_closed_only = kind;
+                r.worktree = Some(path.to_string_lossy().into());
+                s.history_prs = std::mem::take(&mut s.prs);
+            })
+            .await;
+            e.flush().await.unwrap();
+            drop(e);
+            let e = Engine::new(d.path().into(), |_| {}).unwrap();
+            let checks = std::sync::atomic::AtomicUsize::new(0);
+            // GitHub says it reopened while Orbit was closed; cached metadata is stale.
+            e.resume_cleanup_with(|_| {
+                checks.fetch_add(1, Ordering::SeqCst);
+                async { Ok(false) }
+            })
+            .await;
+            let r = e.snapshot().await.reviews[0].clone();
+            assert!(!r.cleanup_pending);
+            assert!(r.cleanup_error.is_none());
+            assert_eq!(r.report, "retained");
+            assert!(!r
+                .messages
+                .iter()
+                .any(|m| m.text.starts_with("Could not remove")));
+            assert_eq!(path.exists(), kind != Some(false));
+            assert_eq!(
+                checks.load(Ordering::SeqCst),
+                usize::from(kind != Some(false))
+            );
+        }
+    }
+    #[tokio::test]
+    async fn automatic_cleanup_skips_busy_git_without_leaving_a_pending_claim() {
+        let (d, e, id) = running_engine().await;
+        let path = d.path().join("worktrees").join(&id);
+        std::fs::create_dir_all(&path).unwrap();
+        e.update(|s| {
+            s.reviews[0].status = "ready".into();
+            s.reviews[0].worktree = Some(path.to_string_lossy().into());
+            s.history_prs = std::mem::take(&mut s.prs);
+        })
+        .await;
+        let fetch = e.git_lock.lock().await;
+        tokio::time::timeout(Duration::from_secs(1), e.clean_worktrees())
+            .await
+            .unwrap();
+        assert!(!e.snapshot().await.reviews[0].cleanup_pending);
+        assert!(path.exists());
+        // An interrupted automatic cleanup also releases its old claim when Git is busy.
+        e.update(|s| {
+            s.reviews[0].cleanup_pending = true;
+            s.reviews[0].cleanup_closed_only = Some(true);
+        })
+        .await;
+        tokio::time::timeout(Duration::from_secs(1), e.resume_cleanup())
+            .await
+            .unwrap();
+        assert!(!e.snapshot().await.reviews[0].cleanup_pending);
+        drop(fetch);
+        e.clean_worktrees().await;
+        assert!(!path.exists());
+    }
+    #[tokio::test]
+    async fn aborting_preparation_cannot_abort_its_claimed_cleanup() {
+        let (d, e, id) = running_engine().await;
+        let path = d.path().join("worktrees").join(&id);
+        std::fs::create_dir_all(&path).unwrap();
+        e.update(|s| {
+            s.reviews[0].status = "preparing".into();
+            s.reviews[0].thread_id = None;
+            s.reviews[0].worktree = Some(path.to_string_lossy().into());
+        })
+        .await;
+        let fetch = e.git_lock.lock().await;
+        let caller = tokio::spawn({
+            let e = e.clone();
+            let id = id.clone();
+            async move {
+                e.abandon_preparation(&id, Some("setup failed".into()))
+                    .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !e.snapshot().await.reviews[0].cleanup_pending {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        drop(fetch);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while e.snapshot().await.reviews[0].cleanup_pending {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!path.exists());
+        assert!(e.snapshot().await.reviews[0].worktree.is_none());
+    }
+    #[tokio::test]
+    async fn failed_cleanup_intent_is_visible_and_retryable_without_deleting_files() {
+        let (d, e, id) = running_engine().await;
+        let path = d.path().join("worktrees").join(&id);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("keep"), "contents").unwrap();
+        e.update(|s| {
+            s.reviews[0].status = "ready".into();
+            s.reviews[0].worktree = Some(path.to_string_lossy().into());
+        })
+        .await;
+        // Deterministic write failure exercises the same path as a full state volume.
+        std::fs::create_dir(d.path().join("state.json.tmp")).unwrap();
+        let results = e.remove_worktrees(vec![id.clone()]).await;
+        let error = results[0].error.as_ref().unwrap();
+        assert!(error.contains("not started") && error.contains("Free space"));
+        let r = e.snapshot().await.reviews[0].clone();
+        assert!(!r.cleanup_pending && r.cleanup_error.is_some());
+        assert_eq!(
+            std::fs::read_to_string(path.join("keep")).unwrap(),
+            "contents"
+        );
+        std::fs::remove_dir(d.path().join("state.json.tmp")).unwrap();
+        assert!(e.remove_worktrees(vec![id]).await[0].error.is_none());
+        assert!(!path.exists());
     }
 }

@@ -1,7 +1,7 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { HardDrive, RefreshCw, Trash2 } from "lucide-react";
 import { useOrbit, desktop } from "./store";
-import { activeStatuses, type CleanupResult, type StorageUsage } from "./types";
+import { activeStatuses, type StorageUsage } from "./types";
 import { Modal } from "./Modal";
 
 export function formatBytes(bytes: number) {
@@ -16,15 +16,21 @@ export function formatBytes(bytes: number) {
   return `${value.toFixed(1)} ${units[unit]}`;
 }
 export function Storage() {
-  const { snapshot, action } = useOrbit();
+  const { snapshot, action, cleanup, removeWorktrees } = useOrbit();
+  const { running: removing, results } = cleanup;
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const [open, setOpen] = useState(false);
   const [usage, setUsage] = useState<StorageUsage | null>(null);
   const [scanning, setScanning] = useState(false);
-  const [removing, setRemoving] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
   const [confirm, setConfirm] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [results, setResults] = useState<CleanupResult[]>([]);
   const request = useRef(0);
   const refresh = async () => {
     const version = ++request.current;
@@ -35,7 +41,7 @@ export function Storage() {
       {},
       { quiet: true },
     );
-    if (version !== request.current) return;
+    if (!mounted.current || version !== request.current) return;
     setScanning(false);
     if (result.ok) {
       setUsage(result.data);
@@ -97,6 +103,16 @@ export function Storage() {
         Remove inactive review worktrees to free space. Reports and
         conversations stay available.
       </p>
+      {removing && (
+        <p role="status">
+          Removing worktrees… You can keep using Orbit while cleanup finishes.
+        </p>
+      )}
+      {cleanup.error && (
+        <p role="alert" className="inline-error">
+          {cleanup.error}
+        </p>
+      )}
       {open && (
         <>
           {!desktop && (
@@ -224,9 +240,7 @@ export function Storage() {
       {confirm && (
         <Modal
           title="Remove selected worktrees"
-          onClose={() => {
-            if (!removing) setConfirm(false);
-          }}
+          onClose={() => setConfirm(false)}
           error={error}
         >
           <p>
@@ -253,22 +267,17 @@ export function Storage() {
               className="button primary"
               disabled={removing || !chosen.length}
               onClick={async () => {
-                setRemoving(true);
+                const ids = chosen.map((w) => w.reviewId);
+                setConfirm(false);
                 setError(null);
-                const result = await action<CleanupResult[]>(
-                  "remove_worktrees",
-                  { reviewIds: chosen.map((w) => w.reviewId) },
-                  { quiet: true },
-                );
-                setRemoving(false);
+                const result = await removeWorktrees(ids);
+                if (!mounted.current) return;
                 if (result.ok) {
-                  setResults(result.data);
-                  setConfirm(false);
                   setSelected(
                     result.data.filter((r) => r.error).map((r) => r.reviewId),
                   );
                   await refresh();
-                } else setError(result.error);
+                }
               }}
             >
               {removing ? "Removing…" : "Confirm removal"}
