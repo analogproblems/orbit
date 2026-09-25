@@ -544,7 +544,7 @@ describe("review regression cases", () => {
     fireEvent.keyDown(document, { key: ",", ctrlKey: true });
     await user().selectOptions(
       screen.getByRole("combobox", { name: /^Model/ }),
-      "codex-default",
+      "demo-review-model",
     );
     await screen.findByRole("alert");
     expect(
@@ -610,5 +610,166 @@ describe("review regression cases", () => {
       "Could not remove test worktree",
     );
     expect(useOrbit.getState().cleanup.running).toBe(false);
+  });
+});
+
+describe("deterministic model controls", () => {
+  it("shows unresolved placeholders, blocks new reviews, and saves model plus supported default atomically", async () => {
+    snapshot.settings.model = "";
+    snapshot.settings.effort = "";
+    snapshot.modelConfigurationError = "Choose a model and effort in Settings.";
+    snapshot.models.push({
+      ...snapshot.models[0],
+      id: "display-id",
+      model: "second-model",
+      displayName: "Second model",
+      defaultReasoningEffort: "high",
+      isDefault: false,
+    });
+    await mount();
+    expect(screen.queryByRole("button", { name: "Review again" })).toBeNull();
+    fireEvent.keyDown(document, { key: ",", ctrlKey: true });
+    const model = screen.getByRole("combobox", { name: /^Model/ });
+    const effort = screen.getByRole("combobox", { name: /^Reasoning effort/ });
+    expect(model).toHaveProperty("value", "");
+    expect(effort).toHaveProperty("value", "");
+    expect(
+      screen.getByRole("option", { name: "Choose a model" }),
+    ).toHaveProperty("disabled", true);
+    expect(screen.queryByRole("option", { name: "Codex default" })).toBeNull();
+    expect(screen.queryByRole("option", { name: "Model default" })).toBeNull();
+    await user().selectOptions(model, "second-model");
+    expect(invoke).toHaveBeenCalledWith("update_settings", {
+      patch: { model: "second-model", effort: "high" },
+    });
+    expect(effort).toHaveProperty("value", "high");
+  });
+  it("preserves an unavailable explicit selection and permits disabling automation during discovery failure", async () => {
+    snapshot.settings.model = "missing-model";
+    snapshot.settings.effort = "unsupported";
+    snapshot.settings.automatic = true;
+    snapshot.modelCatalogReady = false;
+    snapshot.modelConfigurationError =
+      "Model discovery failed. Reconnect in Settings.";
+    await mount();
+    fireEvent.keyDown(document, { key: ",", ctrlKey: true });
+    expect(screen.getByRole("combobox", { name: /^Model/ })).toHaveProperty(
+      "value",
+      "missing-model",
+    );
+    expect(
+      screen.getByRole("option", { name: "missing-model (unavailable)" }),
+    ).toHaveProperty("disabled", true);
+    expect(
+      screen.getByText(/Reviews are blocked: Model discovery failed/),
+    ).toBeTruthy();
+    const toggle = screen.getByRole("switch", {
+      name: "Automatically review new pull requests",
+    });
+    await user().click(toggle);
+    expect(invoke).toHaveBeenCalledWith("update_settings", {
+      patch: { automatic: false },
+    });
+    expect(snapshot.settings.model).toBe("missing-model");
+  });
+  it("cancels the legacy selector without mutation and retries a failed selection without losing the report or draft", async () => {
+    snapshot.reviews[0].model = "";
+    snapshot.reviews[0].confirmedReviewSelection = undefined;
+    const original = structuredClone(snapshot.reviews[0]);
+    let fail = true;
+    invoke.mockImplementation(async (cmd, args) => {
+      if (cmd !== "set_legacy_chat_model") return backend(cmd, args);
+      if (fail) throw Error("Chat model was not saved: disk full");
+      snapshot.reviews[0].legacyChatSelection = {
+        model: args.model,
+        effort: args.effort,
+      };
+      emit();
+    });
+    await mount();
+    await user().click(screen.getByRole("tab", { name: /Review chat/ }));
+    const composer = screen.getByRole("textbox", { name: "Message Codex" });
+    await user().type(composer, "Keep this question");
+    fireEvent.keyDown(composer, { key: "Enter" });
+    expect(invoke.mock.calls.some(([cmd]) => cmd === "send_message")).toBe(
+      false,
+    );
+    await user().click(
+      screen.getByRole("button", { name: "Choose chat model" }),
+    );
+    let dialog = screen.getByRole("dialog", { name: "Choose chat model" });
+    expect(
+      within(dialog).getByRole("combobox", { name: "Chat model" }),
+    ).toHaveProperty("value", snapshot.settings.model);
+    await user().click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(
+      invoke.mock.calls.some(([cmd]) => cmd === "set_legacy_chat_model"),
+    ).toBe(false);
+    await user().click(
+      screen.getByRole("button", { name: "Choose chat model" }),
+    );
+    dialog = screen.getByRole("dialog", { name: "Choose chat model" });
+    await user().selectOptions(
+      within(dialog).getByRole("combobox", { name: "Chat reasoning effort" }),
+      "low",
+    );
+    await user().click(
+      within(dialog).getByRole("button", { name: "Save chat model" }),
+    );
+    expect((await within(dialog).findByRole("alert")).textContent).toContain(
+      "disk full",
+    );
+    expect(composer).toHaveProperty("value", "Keep this question");
+    fail = false;
+    await user().click(
+      within(dialog).getByRole("button", { name: "Save chat model" }),
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(snapshot.reviews[0].model).toBe(original.model);
+    expect(snapshot.reviews[0].effort).toBe(original.effort);
+    expect(snapshot.reviews[0].report).toBe(original.report);
+    expect(snapshot.reviews[0].confirmedReviewSelection).toBeUndefined();
+    expect(snapshot.reviews[0].legacyChatSelection?.effort).toBe("low");
+    expect(
+      screen.getByText(/Report selection: Model: not recorded/),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Choose chat model" }),
+    ).toBeNull();
+    expect(screen.getByRole("button", { name: "Send message" })).toHaveProperty(
+      "disabled",
+      false,
+    );
+    expect(invoke.mock.calls.some(([cmd]) => cmd === "send_message")).toBe(
+      false,
+    );
+  });
+  it("keeps composed text and published report when resume verification fails", async () => {
+    snapshot.reviews[0].status = "posted";
+    snapshot.reviews[0].commentUrl =
+      "https://github.com/acme/orbit/pull/148#issuecomment-7";
+    invoke.mockImplementation((cmd, args) =>
+      cmd === "send_message"
+        ? Promise.reject(
+            Error(
+              "Codex did not confirm the requested model. No inference was started.",
+            ),
+          )
+        : backend(cmd, args),
+    );
+    await mount();
+    await user().click(screen.getByRole("tab", { name: /Review chat/ }));
+    const composer = screen.getByRole("textbox", { name: "Message Codex" });
+    await user().type(composer, "Explain this finding");
+    await user().click(screen.getByRole("button", { name: "Send message" }));
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "did not confirm",
+    );
+    expect(composer).toHaveProperty("value", "Explain this finding");
+    expect(snapshot.reviews[0].status).toBe("posted");
+    expect(snapshot.reviews[0].report).not.toBe("");
+    expect(
+      screen.getAllByRole("button", { name: /View comment on GitHub/ }).length,
+    ).toBeGreaterThan(0);
   });
 });

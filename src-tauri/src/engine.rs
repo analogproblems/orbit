@@ -1,4 +1,4 @@
-use crate::{github, rpc::Rpc, storage, types::*};
+use crate::{github, models, rpc::Rpc, storage, types::*};
 use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},
@@ -17,6 +17,10 @@ const REVIEWER_INSTRUCTIONS: &str = "You are a pull request reviewer. \
     Do not edit tracked source files. \
     Report concrete actionable defects with file/line references and severity; be explicit about tests you could not run. \
     Orbit owns all GitHub publication.";
+
+#[cfg(test)]
+#[path = "engine_model_tests.rs"]
+mod model_tests;
 
 pub struct Engine {
     pub state: Mutex<Snapshot>,
@@ -108,6 +112,8 @@ impl Engine {
         state.approvals.clear();
         state.polling = false;
         state.codex_ready = false;
+        state.model_catalog_ready = false;
+        state.model_configuration_error = None;
         state.models.clear();
         Ok(Arc::new(Self {
             state: Mutex::new(state),
@@ -228,62 +234,135 @@ impl Engine {
     }
     pub async fn connect(self: &Arc<Self>) -> Result<(), String> {
         let _guard = self.connect_lock.lock().await;
-        if self
+        self.retire_dead_connection().await;
+        let existing = self
             .rpc
             .lock()
             .await
-            .as_ref()
-            .is_some_and(|r| r.alive.load(Ordering::SeqCst))
-        {
-            return Ok(());
-        }
-        self.retire_dead_connection().await;
-        let (tx, rx) = mpsc::channel(2048);
-        let rpc = match Rpc::start(tx).await {
-            Ok(r) => r,
-            Err(err) => {
-                self.update(|s| {
-                    s.codex_error = Some(err.clone());
-                    s.codex_ready = false;
-                })
-                .await;
-                return Err(err);
-            }
+            .clone()
+            .filter(|r| r.alive.load(Ordering::SeqCst));
+        let rpc = if let Some(rpc) = existing {
+            rpc
+        } else {
+            let (tx, rx) = mpsc::channel(2048);
+            let rpc = match Rpc::start(tx).await {
+                Ok(rpc) => rpc,
+                Err(err) => {
+                    self.update(|s| {
+                        s.codex_error = Some(err.clone());
+                        s.codex_ready = false;
+                    })
+                    .await;
+                    return Err(err);
+                }
+            };
+            *self.rpc.lock().await = Some(rpc.clone());
+            tokio::spawn(self.clone().pump(rpc.clone(), rx));
+            rpc
         };
-        *self.rpc.lock().await = Some(rpc.clone());
-        tokio::spawn(self.clone().pump(rpc.clone(), rx));
-        let result = async {
-            let account = rpc
-                .request("account/read", json!({"refreshToken":false}))
-                .await?;
-            if account["account"].is_null() && account["requiresOpenaiAuth"] == true {
-                return Err("Codex is not signed in. Run codex login, then reconnect.".to_string());
+        let account = rpc
+            .request("account/read", json!({"refreshToken":false}))
+            .await;
+        let account_error = match account {
+            Err(error) => Some(error),
+            Ok(account)
+                if account["account"].is_null() && account["requiresOpenaiAuth"] == true =>
+            {
+                Some("Codex is not signed in. Run codex login, then reconnect.".to_string())
             }
+            _ => None,
+        };
+        if let Some(error) = account_error {
+            self.update(|s| {
+                s.codex_ready = false;
+                s.model_catalog_ready = false;
+                s.codex_error = Some(error.clone());
+            })
+            .await;
+            return Err(error);
+        }
+        self.update(|s| {
+            s.codex_ready = true;
+            s.codex_error = None;
+            s.model_catalog_ready = false;
+            s.model_configuration_error = Some("Refreshing available models…".into());
+        })
+        .await;
+        let _ = self.flush().await;
+        let discovery = async {
             let mut models = vec![];
             let mut cursor = Value::Null;
+            let mut cursors = HashSet::new();
             loop {
                 let page = rpc
                     .request("model/list", json!({"limit":100,"cursor":cursor}))
                     .await?;
-                models.extend(page["data"].as_array().cloned().unwrap_or_default());
+                models.extend(
+                    page["data"]
+                        .as_array()
+                        .ok_or("Codex returned an invalid model catalog.")?
+                        .clone(),
+                );
                 cursor = page["nextCursor"].clone();
                 if cursor.is_null() {
                     break;
                 }
+                if !cursors.insert(cursor.to_string()) {
+                    return Err("Codex repeated a model catalog page.".into());
+                }
             }
-            self.update(|s| {
-                s.models = models;
-                s.codex_ready = true;
-                s.codex_error = None;
-            })
-            .await;
-            Ok(())
+            models::validate_catalog(&models)?;
+            Ok::<_, String>(models)
         }
         .await;
-        if let Err(err) = &result {
-            self.update(|s| s.codex_error = Some(err.clone())).await;
-            rpc.shutdown().await;
+        let models = match discovery {
+            Ok(models) => models,
+            Err(error) => {
+                let error =
+                    format!("Model discovery failed: {error} Reconnect in Settings to retry.");
+                self.update(|s| {
+                    s.models.clear();
+                    s.model_configuration_error = Some(error.clone());
+                })
+                .await;
+                let _ = self.flush().await;
+                return Err(error);
+            }
+        };
+        let config = if self.state.lock().await.settings.model.is_empty() {
+            rpc.request("config/read", json!({"includeLayers":false}))
+                .await
+        } else {
+            Ok(Value::Null)
+        };
+        self.apply_model_discovery(models, config).await
+    }
+    async fn apply_model_discovery(
+        &self,
+        models: Vec<Value>,
+        config: Result<Value, String>,
+    ) -> Result<(), String> {
+        let mut s = self.state.lock().await;
+        s.models = models;
+        s.model_catalog_ready = true;
+        let result: Result<(), String> = (|| {
+            let selection = models::resolve(&s.settings, &s.models, &config)?;
+            let mut next = s.clone();
+            next.model_configuration_error = None;
+            if selection != ModelSelection::workspace(&s.settings) {
+                next.settings.model = selection.model.clone();
+                next.settings.effort = selection.effort.clone();
+                next.model_selection_notice = Some(format!("Resolved review selection to {} · {}. This explicit selection is saved for new reviews.", selection.model, selection.effort));
+                self.persist(&next).map_err(|e| format!("Resolved model selection was not saved: {e}. Reconnect to retry or choose a selection in Settings."))?;
+            }
+            *s = next;
+            Ok(())
+        })();
+        if let Err(error) = &result {
+            s.model_configuration_error = Some(error.clone());
         }
+        self.changed.store(true, Ordering::SeqCst);
+        (self.emit)(&s);
         result
     }
     /// Delivers one connection's events. Events from a connection that has been
@@ -344,33 +423,22 @@ impl Engine {
     }
     fn commit_settings(&self, s: &mut Snapshot, settings: Settings) -> Result<(), String> {
         settings.validate()?;
-        {
-            let changed =
-                settings.model != s.settings.model || settings.effort != s.settings.effort;
-            // Connection trouble must never prevent turning automation off.
-            if changed && (!settings.model.is_empty() || !settings.effort.is_empty()) {
-                let model = s
-                    .models
-                    .iter()
-                    .find(|m| {
-                        if settings.model.is_empty() {
-                            m["isDefault"] == true
-                        } else {
-                            m["model"] == settings.model
-                        }
-                    })
-                    .ok_or("Reconnect Codex before choosing a different model or effort.")?;
-                if !settings.effort.is_empty()
-                    && !model["supportedReasoningEfforts"]
-                        .as_array()
-                        .is_some_and(|a| a.iter().any(|e| e["reasoningEffort"] == settings.effort))
-                {
-                    return Err("This model does not support the selected effort.".into());
-                }
-            }
+        let changed = settings.model != s.settings.model || settings.effort != s.settings.effort;
+        // Unrelated edits, including disabling automation, remain available.
+        if changed {
+            ModelSelection::workspace(&settings).validate_execution(s)?;
         }
         let mut next = s.clone();
         next.settings = settings;
+        if ModelSelection::workspace(&next.settings)
+            .validate_execution(&next)
+            .is_ok()
+        {
+            next.model_configuration_error = None;
+        }
+        if changed {
+            next.model_selection_notice = None;
+        }
         self.persist(&next)
             .map_err(|e| format!("Settings were not saved: {e}"))?;
         *s = next;
@@ -546,6 +614,10 @@ impl Engine {
         if !s.codex_ready {
             return Err("Connect Codex in Settings before starting a review.".into());
         }
+        ModelSelection::workspace(&s.settings).validate_execution(&s)?;
+        if let Some(error) = &s.model_configuration_error {
+            return Err(error.clone());
+        }
         if s.reviews
             .iter()
             .any(|r| r.pr_id == pr_id && active(&r.status))
@@ -568,17 +640,24 @@ impl Engine {
         }
         let r = Review::new(&pr, &s.settings, automatic);
         let id = r.id.clone();
-        s.reviews.insert(0, r);
-        self.dirty.store(true, Ordering::SeqCst);
-        drop(s);
-        self.flush().await?;
+        let mut next = s.clone();
+        next.reviews.insert(0, r);
+        self.persist(&next)
+            .map_err(|e| format!("Review was not queued: {e}"))?;
+        *s = next;
+        (self.emit)(&s);
         Ok(id)
     }
     async fn schedule(self: &Arc<Self>) {
         let candidates: Vec<String> = {
             let s = self.state.lock().await;
             let synced = self.synced_repos.lock().await;
-            if s.settings.automatic {
+            if s.settings.automatic
+                && s.model_configuration_error.is_none()
+                && ModelSelection::workspace(&s.settings)
+                    .validate_execution(&s)
+                    .is_ok()
+            {
                 s.prs
                     .iter()
                     .filter(|p| synced.contains(&p.repo.to_ascii_lowercase()) && eligible(p, &s))
@@ -1011,6 +1090,7 @@ impl Engine {
             .find(|r| r.id == id)
             .ok_or("Unknown review")?
             .clone();
+        ModelSelection::requested(&r).validate_execution(&s)?;
         let pr = s
             .prs
             .iter()
@@ -1145,58 +1225,74 @@ impl Engine {
             }
         }
         self.live(id).await?;
-        let mut config = json!({
-            "sandbox_workspace_write": {
-                "network_access": repo.network_access,
-                "exclude_tmpdir_env_var": true,
-                "exclude_slash_tmp": true,
-            },
-        });
-        if !r.effort.is_empty() {
-            config["model_reasoning_effort"] = json!(r.effort)
-        }
-        if !r.model.is_empty() {
-            config["review_model"] = json!(r.model)
-        }
-        let mut params = json!({
+        self.start_review_inference(id, &rpc, &worktree, repo.network_access)
+            .await
+    }
+    async fn start_review_inference(
+        &self,
+        id: &str,
+        rpc: &Rpc,
+        worktree: &Path,
+        network_access: bool,
+    ) -> Result<(), String> {
+        let s = self.snapshot().await;
+        let r = s
+            .reviews
+            .iter()
+            .find(|r| r.id == id)
+            .ok_or("Unknown review")?;
+        let selection = ModelSelection::requested(r);
+        selection.validate_execution(&s)?;
+        self.live(id).await?;
+        let params = json!({
             "cwd": worktree,
             "approvalPolicy": "on-request",
             "approvalsReviewer": "user",
             "sandbox": "workspace-write",
-            "config": config,
+            "model": selection.model,
+            "config": {
+                "review_model": selection.model,
+                "model_reasoning_effort": selection.effort,
+                "sandbox_workspace_write": {
+                    "network_access": network_access,
+                    "exclude_tmpdir_env_var": true,
+                    "exclude_slash_tmp": true,
+                },
+            },
             "developerInstructions": REVIEWER_INSTRUCTIONS,
         });
-        if !r.model.is_empty() {
-            params["model"] = json!(r.model)
-        }
         let thread = rpc.request("thread/start", params).await?;
+        selection.verify_response(&thread)?;
         let thread_id = thread["thread"]["id"]
             .as_str()
             .ok_or("Codex did not create a thread")?
             .to_string();
-        self.update(|s| {
-            if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
-                r.thread_id = Some(thread_id.clone());
-            }
-        })
-        .await;
-        self.flush().await?;
-        self.live(id).await?;
-        self.update(|s| {
-            if let Some(r) = s
+        // Persist confirmation before asking Codex to infer anything.
+        {
+            let mut state = self.state.lock().await;
+            let mut next = state.clone();
+            let run = next
                 .reviews
                 .iter_mut()
                 .find(|r| r.id == id && r.status == "preparing")
-            {
-                r.status = "reviewing".into();
-            }
-        })
-        .await;
-        let target = json!({"type": "baseBranch", "branch": r.base_sha});
+                .ok_or("Review was stopped.")?;
+            run.thread_id = Some(thread_id.clone());
+            run.confirmed_review_selection = Some(selection);
+            run.status = "reviewing".into();
+            self.persist(&next).map_err(|e| {
+                format!("Could not save confirmed review settings; no review was started: {e}")
+            })?;
+            *state = next;
+            self.changed.store(true, Ordering::SeqCst);
+        }
+        self.live(id).await?;
         let result = rpc
             .request(
                 "review/start",
-                json!({"threadId": thread_id, "delivery": "inline", "target": target}),
+                json!({
+                    "threadId": thread_id, "delivery": "inline",
+                    "target": {"type":"baseBranch", "branch":r.base_sha},
+                }),
             )
             .await?;
         self.update(|s| {
@@ -1419,12 +1515,74 @@ impl Engine {
             }
         }
     }
+    fn chat_available(r: &Review) -> Result<(), String> {
+        if active(&r.status) {
+            return Err("Wait for the current turn to finish, or stop it first.".into());
+        }
+        if r.status == "publishing" {
+            return Err("Wait for publication to finish.".into());
+        }
+        if r.cleanup_pending {
+            return Err(
+                "This worktree is being removed. Your saved chat will stay readable.".into(),
+            );
+        }
+        if r.thread_id.is_none() {
+            return Err("Start a review first to create its Codex chat.".into());
+        }
+        if !r.worktree.as_deref().is_some_and(|w| Path::new(w).is_dir()) {
+            return Err("This review's worktree is unavailable. Start a new review of an open pull request to continue.".into());
+        }
+        Ok(())
+    }
+    pub async fn set_legacy_chat_model(
+        &self,
+        id: &str,
+        model: String,
+        effort: String,
+    ) -> Result<(), String> {
+        let selection = ModelSelection { model, effort };
+        let mut s = self.state.lock().await;
+        let r = s
+            .reviews
+            .iter()
+            .find(|r| r.id == id)
+            .ok_or("Unknown review")?;
+        Self::chat_available(r)?;
+        selection.validate_execution(&s)?;
+        if ModelSelection::requested(r).complete() {
+            return Err("This chat already has its original model and effort pinned.".into());
+        }
+        if let Some(pinned) = &r.legacy_chat_selection {
+            return if pinned == &selection {
+                Ok(())
+            } else {
+                Err("This chat's model and effort have already been pinned. Start a new review to use another selection.".into())
+            };
+        }
+        let mut next = s.clone();
+        let r = next.reviews.iter_mut().find(|r| r.id == id).unwrap();
+        r.legacy_chat_selection = Some(selection);
+        self.persist(&next)
+            .map_err(|e| format!("Chat model was not saved: {e}"))?;
+        *s = next;
+        (self.emit)(&s);
+        Ok(())
+    }
     pub async fn message(&self, id: &str, text: &str) -> Result<(), String> {
         if text.trim().is_empty() || text.chars().count() > 32000 {
             return Err("Enter a message between 1 and 32,000 characters.".into());
         }
-        let r = {
+        let (r, selection) = {
             let mut s = self.state.lock().await;
+            let r = s
+                .reviews
+                .iter()
+                .find(|r| r.id == id)
+                .ok_or("Unknown review")?;
+            Self::chat_available(r)?;
+            let selection = ModelSelection::chat(r)?;
+            selection.validate_execution(&s)?;
             if s.reviews
                 .iter()
                 .filter(|r| active(&r.status) && r.status != "queued")
@@ -1433,28 +1591,7 @@ impl Engine {
             {
                 return Err("All review slots are in use. Wait for a review to finish before sending a follow-up.".into());
             }
-            let r = s
-                .reviews
-                .iter_mut()
-                .find(|r| r.id == id)
-                .ok_or("Unknown review")?;
-            if active(&r.status) {
-                return Err("Wait for the current turn to finish, or stop it first.".into());
-            }
-            if r.status == "publishing" {
-                return Err("Wait for publication to finish.".into());
-            }
-            if r.cleanup_pending {
-                return Err(
-                    "This worktree is being removed. Your saved chat will stay readable.".into(),
-                );
-            }
-            if r.thread_id.is_none() {
-                return Err("Start a review first to create its Codex chat.".into());
-            }
-            if !r.worktree.as_deref().is_some_and(|w| Path::new(w).is_dir()) {
-                return Err("This review's worktree is unavailable. Start a new review of an open pull request to continue.".into());
-            }
+            let r = s.reviews.iter_mut().find(|r| r.id == id).unwrap();
             let old = r.clone();
             r.before_follow_up = Some(Outcome {
                 status: std::mem::replace(&mut r.status, "reviewing".into()),
@@ -1462,46 +1599,62 @@ impl Engine {
             });
             r.turn_id = None;
             r.is_review = false;
-            r.messages.push(Message::new("user", text));
-            old
+            (old, selection)
         };
         self.dirty.store(true, Ordering::SeqCst);
         let result = async {
             let rpc = self.client().await?;
             let thread = r.thread_id.as_ref().unwrap();
+            // v0.156.1 can only apply changed overrides to an idle loaded thread
+            // after its subscribers detach. This changes chat settings, not the
+            // historical report. A refusal/mismatch still stops before turn/start.
+            if r.legacy_chat_selection.is_some() && !r.messages.iter().any(|m| m.role == "user" && m.confirmed_selection.is_some()) {
+                rpc.request("thread/unsubscribe", json!({"threadId":thread})).await?;
+            }
+            self.live(id).await?;
             let resume = json!({
                 "threadId": thread,
                 "cwd": r.worktree,
                 "approvalPolicy": "on-request",
                 "approvalsReviewer": "user",
                 "sandbox": "workspace-write",
+                "model": selection.model,
+                "config": {"review_model":selection.model, "model_reasoning_effort":selection.effort},
             });
-            rpc.request("thread/resume", resume).await?;
+            let response = rpc.request("thread/resume", resume).await?;
+            selection.verify_response(&response)?;
+            {
+                let mut state = self.state.lock().await;
+                let mut next = state.clone();
+                let run = next.reviews.iter_mut().find(|r| r.id == id && r.before_follow_up.is_some() && active(&r.status)).ok_or("Follow-up was stopped.")?;
+                let mut message = Message::new("user", text);
+                message.confirmed_selection = Some(selection.clone());
+                run.messages.push(message);
+                self.persist(&next).map_err(|e| format!("Could not save confirmed chat settings; no message was sent: {e}"))?;
+                *state = next;
+                self.changed.store(true, Ordering::SeqCst);
+            }
             self.live(id).await?;
-            let turn = rpc
-                .request(
-                    "turn/start",
-                    json!({"threadId":thread,"input":[{"type":"text","text":text}]}),
-                )
-                .await?;
+            let turn = rpc.request("turn/start", json!({
+                "threadId":thread, "model":selection.model, "effort":selection.effort,
+                "input":[{"type":"text","text":text}],
+            })).await?;
             self.update(|s| {
                 if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
                     r.turn_id = turn["turn"]["id"].as_str().map(str::to_owned);
                 }
-            })
-            .await;
+            }).await;
             if self.live(id).await.is_err() {
                 if let Some(turn_id) = turn["turn"]["id"].as_str() {
-                    let interrupt = json!({"threadId": thread, "turnId": turn_id});
-                    let _ = rpc.request("turn/interrupt", interrupt).await;
+                    let _ = rpc.request("turn/interrupt", json!({"threadId": thread, "turnId": turn_id})).await;
                 }
             }
             Ok::<(), String>(())
-        }
-        .await;
+        }.await;
         if let Err(e) = &result {
-            self.fail(id, e.clone()).await
+            self.fail(id, e.clone()).await;
         }
+        let _ = self.flush().await;
         result
     }
     pub async fn decide(&self, id: Value, accept: bool) -> Result<(), String> {
@@ -1738,6 +1891,7 @@ fn apply_notification(s: &mut Snapshot, id: &str, method: &str, p: &Value) -> bo
                 m.text.push_str(delta)
             } else {
                 r.messages.push(Message {
+                    confirmed_selection: None,
                     id: item.into(),
                     role: "agent".into(),
                     text: delta.into(),
@@ -1766,6 +1920,7 @@ fn apply_notification(s: &mut Snapshot, id: &str, method: &str, p: &Value) -> bo
                         m.text = text.into()
                     } else {
                         r.messages.push(Message {
+                            confirmed_selection: None,
                             id: item_id.into(),
                             role: "agent".into(),
                             text: text.into(),
@@ -2213,16 +2368,16 @@ mod tests {
             s.reviews[0].worktree = Some(d.path().to_string_lossy().into());
         })
         .await;
-        // Codex is not connected, so the follow-up fails as soon as it starts.
-        assert!(e.message(&id, "Why?").await.is_err());
+        // Missing historical model information is rejected before claiming a turn.
+        assert!(e
+            .message(&id, "Why?")
+            .await
+            .unwrap_err()
+            .contains("Choose a chat model"));
         let s = e.snapshot().await;
         let r = &s.reviews[0];
         assert_eq!(r.status, "ready");
-        assert!(r
-            .error
-            .as_deref()
-            .unwrap()
-            .starts_with("The follow-up failed"));
+        assert!(r.error.is_none());
         assert!(publishable(r, &s.prs[0]));
     }
     #[tokio::test]
@@ -2570,6 +2725,10 @@ mod tests {
         let checkout = d.path().to_string_lossy().into_owned();
         e.update(|s| {
             s.codex_ready = true;
+            s.model_catalog_ready = true;
+            s.models = crate::models::tests::catalog();
+            s.settings.model = "model-a".into();
+            s.settings.effort = "medium".into();
             s.settings.automatic = true;
             s.settings.repositories.push(Repository {
                 name: pr.repo.clone(),

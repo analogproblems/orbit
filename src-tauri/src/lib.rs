@@ -1,5 +1,6 @@
 pub mod engine;
 pub mod github;
+pub mod models;
 pub mod rpc;
 pub mod storage;
 pub mod types;
@@ -115,6 +116,17 @@ mod desktop {
         engine.publish(&review_id, false, allow_sensitive).await
     }
     #[tauri::command]
+    async fn set_legacy_chat_model(
+        engine: State<'_, AppState>,
+        review_id: String,
+        model: String,
+        effort: String,
+    ) -> Result<(), String> {
+        engine
+            .set_legacy_chat_model(&review_id, model, effort)
+            .await
+    }
+    #[tauri::command]
     async fn send_message(
         engine: State<'_, AppState>,
         review_id: String,
@@ -190,6 +202,7 @@ mod desktop {
                 cancel_review,
                 publish_review,
                 send_message,
+                set_legacy_chat_model,
                 answer_approval,
                 get_files,
                 list_repositories,

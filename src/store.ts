@@ -4,6 +4,12 @@ import { listen } from "@tauri-apps/api/event";
 import { freshDemo, demoReport, demoRepositories } from "./demo";
 import {
   defaults,
+  selectionError,
+  workspaceSelectionUnavailable,
+  chatSelection,
+  chatModelUnavailable,
+  reportSelectionLabel,
+  type ModelSelection,
   canPublish,
   activeStatuses,
   sameRepo,
@@ -28,6 +34,7 @@ const empty: Snapshot = {
   approvals: [],
   polling: false,
   codexReady: false,
+  modelCatalogReady: false,
 };
 export interface SaveState {
   state: "saving" | "saved" | "error";
@@ -70,7 +77,12 @@ let demo: Snapshot;
 const mutationTails = new Map<string, Promise<unknown>>();
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 function commit() {
-  localStorage.setItem("orbit-demo-v3", JSON.stringify(demo));
+  try {
+    localStorage.setItem("orbit-demo-v3", JSON.stringify(demo));
+  } catch (error) {
+    demo = structuredClone(useOrbit.getState().snapshot);
+    throw error;
+  }
   useOrbit.setState({ snapshot: structuredClone(demo) });
 }
 function demoSchedule() {
@@ -96,6 +108,16 @@ function demoSchedule() {
     timers.set(
       r.id,
       setTimeout(() => {
+        const error = selectionError(demo.models, r);
+        if (error) {
+          r.status = "failed";
+          r.error = error;
+          timers.delete(r.id);
+          commit();
+          demoSchedule();
+          return;
+        }
+        r.confirmedReviewSelection = { model: r.model, effort: r.effort };
         r.status = "reviewing";
         r.messages.push({
           id: crypto.randomUUID(),
@@ -139,6 +161,8 @@ function demoSchedule() {
   commit();
 }
 function demoRun(prId: string, automatic = false) {
+  const unavailable = workspaceSelectionUnavailable(demo);
+  if (unavailable) throw Error(unavailable);
   const pr = demo.prs.find((p) => p.id === prId);
   if (!pr) throw Error("Unknown pull request.");
   if (
@@ -157,8 +181,8 @@ function demoRun(prId: string, automatic = false) {
     status: "queued",
     threadId: crypto.randomUUID(),
     worktree: "demo-worktree",
-    model: demo.settings.model || "codex-default",
-    effort: demo.settings.effort || "medium",
+    model: demo.settings.model,
+    effort: demo.settings.effort,
     createdAt: now,
     updatedAt: now,
     messages: [
@@ -210,6 +234,10 @@ async function demoAction(
       )
         throw Error("Unknown settings field.");
       Object.assign(next, patch);
+      if (patch.model !== undefined || patch.effort !== undefined) {
+        const error = selectionError(demo.models, next);
+        if (error) throw Error(error);
+      }
     }
     if (command === "save_repository") {
       const repo = args.repository as Repository;
@@ -239,8 +267,15 @@ async function demoAction(
     )
       throw Error("Enter a valid GitHub account name (at most 50 accounts).");
     demo.settings = next;
+    demo.modelConfigurationError = selectionError(demo.models, next);
+    if (
+      command === "update_settings" &&
+      ("model" in (args.patch as SettingsPatch) ||
+        "effort" in (args.patch as SettingsPatch))
+    )
+      demo.modelSelectionNotice = undefined;
     commit();
-    if (demo.settings.automatic)
+    if (demo.settings.automatic && !workspaceSelectionUnavailable(demo))
       for (const p of demo.prs.filter(
         (p) =>
           !p.draft &&
@@ -315,7 +350,7 @@ async function demoAction(
     const pr = demo.prs.find((p) => p.id === r?.prId);
     if (!r || !pr || !canExport(r))
       throw Error("Export requires an inactive review with a report.");
-    const content = `# Orbit review: ${pr.title}\n\nPR: ${pr.id} (${pr.url})\n\nCreated: ${r.createdAt}\n\nHead: ${r.headSha}\n\nBase: ${r.baseSha}\n\nModel: ${r.model || "Codex default"} · Effort: ${r.effort || "Model default"}\n\n${r.commentUrl ? `Published comment: ${r.commentUrl}\n\n` : ""}${r.report}\n`;
+    const content = `# Orbit review: ${pr.title}\n\nPR: ${pr.id} (${pr.url})\n\nCreated: ${r.createdAt}\n\nHead: ${r.headSha}\n\nBase: ${r.baseSha}\n\nReport selection: ${reportSelectionLabel(r)}\n\n${r.commentUrl ? `Published comment: ${r.commentUrl}\n\n` : ""}${r.report}\n`;
     const name = `orbit-${pr.repo.replaceAll("/", "-")}-pr-${pr.number}-${r.headSha.slice(0, 7)}.md`;
     const url = URL.createObjectURL(
       new Blob([content], { type: "text/markdown;charset=utf-8" }),
@@ -327,6 +362,28 @@ async function demoAction(
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     return name;
   }
+  if (command === "set_legacy_chat_model") {
+    const r = demo.reviews.find((r) => r.id === args.reviewId);
+    if (!r) throw Error("Unknown review");
+    const selection = {
+      model: args.model as string,
+      effort: args.effort as string,
+    };
+    const error =
+      chatModelUnavailable(demo, r) || selectionError(demo.models, selection);
+    if (error) throw Error(error);
+    if (r.model && r.effort)
+      throw Error("This chat already has its original selection pinned.");
+    if (
+      r.legacyChatSelection &&
+      (r.legacyChatSelection.model !== selection.model ||
+        r.legacyChatSelection.effort !== selection.effort)
+    )
+      throw Error("This chat's selection is already pinned.");
+    r.legacyChatSelection = selection;
+    commit();
+    return;
+  }
   if (command === "send_message") {
     const r = demo.reviews.find((r) => r.id === args.reviewId)!;
     const reason = followUpUnavailable(demo, r);
@@ -336,6 +393,7 @@ async function demoAction(
         id: crypto.randomUUID(),
         role: "user",
         text: args.text as string,
+        confirmedSelection: chatSelection(r),
         createdAt: new Date().toISOString(),
       },
       {
@@ -377,10 +435,34 @@ async function demoAction(
     ] satisfies ChangedFile[];
   if (command === "list_repositories") return demoRepositories;
   if (command === "connect_services") {
+    resolveDemoSelection();
     commit();
     return;
   }
   throw Error("This action is available in the desktop app.");
+}
+function resolveDemoSelection() {
+  demo.codexReady = true;
+  demo.modelCatalogReady = true;
+  demo.models = freshDemo().models;
+  const selection: ModelSelection = {
+    model: demo.settings.model,
+    effort: demo.settings.effort,
+  };
+  if (!selection.model) selection.model = demo.models[0].model;
+  if (!selection.effort)
+    selection.effort =
+      demo.models.find((m) => m.model === selection.model)
+        ?.defaultReasoningEffort ?? "";
+  demo.modelConfigurationError = selectionError(demo.models, selection);
+  if (!demo.modelConfigurationError) {
+    if (
+      selection.model !== demo.settings.model ||
+      selection.effort !== demo.settings.effort
+    )
+      demo.modelSelectionNotice = `Resolved review selection to ${selection.model} · ${selection.effort}. This explicit selection is saved for new reviews.`;
+    Object.assign(demo.settings, selection);
+  }
 }
 export const useOrbit = create<Store>((set, get) => ({
   snapshot: empty,
@@ -483,7 +565,9 @@ export const useOrbit = create<Store>((set, get) => ({
       } catch {
         demo = freshDemo();
       }
-      set({ snapshot: demo, loaded: true });
+      resolveDemoSelection();
+      commit();
+      set({ snapshot: structuredClone(demo), loaded: true });
       return () => {};
     }
     const unlisten = await listen<Snapshot>("orbit-state", (event) =>

@@ -226,16 +226,7 @@ pub fn report(snapshot: &Snapshot, review_id: &str) -> Result<(String, String), 
         pr.number,
         r.head_sha.chars().take(7).collect::<String>()
     );
-    let model = if r.model.is_empty() {
-        "Codex default"
-    } else {
-        &r.model
-    };
-    let effort = if r.effort.is_empty() {
-        "Model default"
-    } else {
-        &r.effort
-    };
+    let (model, effort) = crate::models::report_labels(r);
     let mut body = format!("# Orbit review: {}\n\nPR: {} ({})\n\nCreated: {}\n\nHead: `{}`\n\nBase: `{}`\n\nModel: {} · Effort: {}\n\n",
         pr.title, r.pr_id, pr.url, r.created_at, r.head_sha, r.base_sha, model, effort);
     if let Some(url) = &r.comment_url {
@@ -309,7 +300,7 @@ mod tests {
         ] {
             assert!(body.contains(value), "Missing {value}");
         }
-        assert!(body.contains("Codex default") && body.contains("Model default"));
+        assert!(body.contains("Model: not recorded · Effort: not recorded"));
         assert!(!body.contains("PRIVATE EXECUTION LOG"));
         let mut invalid = s.clone();
         invalid.reviews[0].report = "  ".into();
@@ -318,6 +309,20 @@ mod tests {
         invalid.reviews[0].status = "publishing".into();
         assert!(report(&invalid, &r.id).is_err());
         assert!(report(&s, "missing").is_err());
+        let mut verified = s.clone();
+        verified.reviews[0].legacy_chat_selection = Some(crate::types::ModelSelection {
+            model: "chat-only".into(),
+            effort: "low".into(),
+        });
+        assert!(!report(&verified, &r.id).unwrap().1.contains("chat-only"));
+        verified.reviews[0].confirmed_review_selection = Some(crate::types::ModelSelection {
+            model: "confirmed-report".into(),
+            effort: "high".into(),
+        });
+        assert!(report(&verified, &r.id)
+            .unwrap()
+            .1
+            .contains("Model: confirmed-report (confirmed) · Effort: high (confirmed)"));
     }
     #[test]
     fn export_cancellation_and_write_failures_are_explicit() {

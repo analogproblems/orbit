@@ -27,7 +27,7 @@ impl Rpc {
         cmd.args(["app-server", "--listen", "stdio://"]);
         Self::from_command(cmd, events).await
     }
-    async fn from_command(
+    pub(crate) async fn from_command(
         mut cmd: Command,
         events: mpsc::Sender<Value>,
     ) -> Result<Arc<Self>, String> {

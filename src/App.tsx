@@ -1,3 +1,4 @@
+import { LegacyChatModel } from "./LegacyChatModel";
 import { Modal } from "./Modal";
 import {
   memo,
@@ -52,6 +53,11 @@ import { ReviewActions } from "./ReviewActions";
 import { parseDiff } from "./diff";
 import { useOrbit, desktop } from "./store";
 import {
+  chatSelection,
+  chatModelUnavailable,
+  workspaceSelectionUnavailable,
+  defaultEffort,
+  reportSelectionLabel,
   activeStatuses,
   statusLabels,
   displayStatusLabels,
@@ -727,7 +733,7 @@ export default function App() {
                       </h3>
                       <p>
                         {review
-                          ? `${review.model || "Codex default"} · ${review.effort || "Default"} effort · ${relative(review.updatedAt)}`
+                          ? `${reportSelectionLabel(review)} · ${relative(review.updatedAt)}`
                           : "Let Codex trace the changes and find what matters."}
                       </p>
                     </div>
@@ -756,6 +762,18 @@ export default function App() {
                       </button>
                     ) : null}
                   </div>
+                  {(tab !== "chat" || !review) &&
+                    workspaceSelectionUnavailable(s) && (
+                      <div className="action-notice" role="status">
+                        {workspaceSelectionUnavailable(s)}{" "}
+                        <button
+                          className="text-button"
+                          onClick={() => setPage("settings")}
+                        >
+                          Open Settings
+                        </button>
+                      </div>
+                    )}
                   {s.settings.automatic &&
                     !pr.draft &&
                     !trustedSource(pr, s.settings.trustedAuthors) &&
@@ -852,7 +870,7 @@ export default function App() {
                         </div>
                       )}
                       <div className="section-heading environment-heading">
-                        <h3>Review environment</h3>
+                        <h3>New review environment</h3>
                         <button
                           className="text-button"
                           onClick={() => setPage("repositories")}
@@ -880,7 +898,9 @@ export default function App() {
                             <strong>
                               {s.models.find(
                                 (m) => m.model === s.settings.model,
-                              )?.displayName || "Codex default"}
+                              )?.displayName ||
+                                s.settings.model ||
+                                "Choose a model"}
                             </strong>
                           </span>
                         </div>
@@ -889,7 +909,7 @@ export default function App() {
                           <span>
                             Reasoning
                             <strong className="capitalize">
-                              {s.settings.effort || "Model default"}
+                              {s.settings.effort || "Choose an effort"}
                             </strong>
                           </span>
                         </div>
@@ -1002,7 +1022,7 @@ export default function App() {
                     <button disabled={!p} onClick={() => p && choose(p, r)}>
                       <strong>{p?.title ?? r.prId}</strong>
                       <span>
-                        {r.prId} · {r.model || "Codex default"} ·{" "}
+                        {r.prId} · {reportSelectionLabel(r)} ·{" "}
                         {r.automatic ? "Automatic" : "Manual"}
                       </span>
                     </button>
@@ -1231,6 +1251,7 @@ function Chat({
   };
   const [messageError, setMessageError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const [chooseModel, setChooseModel] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
   const end = useRef<HTMLDivElement>(null);
   const running = !!review && activeStatuses.includes(review.status);
@@ -1328,6 +1349,9 @@ function Chat({
           New commits are available. Start a new review before publishing.
         </div>
       )}
+      <div className="action-notice">
+        Report selection: {reportSelectionLabel(review)}
+      </div>
       <div className="messages">
         {review.messages
           .filter((m) => showLogs || m.role !== "system")
@@ -1353,6 +1377,12 @@ function Chat({
                   <strong>{m.role === "agent" ? "Codex" : "You"}</strong>
                   {m.role === "agent" && (
                     <span className="agent-label">REVIEW AGENT</span>
+                  )}
+                  {m.confirmedSelection && (
+                    <span className="agent-label">
+                      {m.confirmedSelection.model} ·{" "}
+                      {m.confirmedSelection.effort} (confirmed)
+                    </span>
                   )}
                   <time>{relative(m.createdAt)}</time>
                 </div>
@@ -1400,6 +1430,23 @@ function Chat({
           {messageError}
         </div>
       )}
+      {!chatSelection(review) && (
+        <div className="action-notice">
+          <button
+            className="button secondary small-button"
+            disabled={!!chatModelUnavailable(s, review)}
+            onClick={() => setChooseModel(true)}
+          >
+            Choose chat model
+          </button>
+        </div>
+      )}
+      {chooseModel && (
+        <LegacyChatModel
+          review={review}
+          onClose={() => setChooseModel(false)}
+        />
+      )}
       <form className="composer" onSubmit={(e) => void submit(e)}>
         <textarea
           aria-label="Message Codex"
@@ -1423,9 +1470,10 @@ function Chat({
         <div>
           <span>
             <Box size={12} />
-            {review.model || "Codex default"}
+            Chat: {chatSelection(review)?.model || "Choose a model"}
             <span>·</span>
-            {review.effort || "Default"} effort
+            {chatSelection(review)?.effort || "Choose an effort"}
+            {chatSelection(review) && " (pinned)"}
           </span>
           <button
             className="send-button"
@@ -1976,9 +2024,7 @@ function SettingsPage() {
     if (result.ok && useOrbit.getState().trustedInput === newLogin)
       setNewLogin("");
   };
-  const model =
-    s.models.find((m) => m.model === draft.model) ||
-    s.models.find((m) => m.isDefault);
+  const model = s.models.find((m) => m.model === draft.model);
   return (
     <div className="content-page settings-page">
       <div className="page-intro">
@@ -2065,23 +2111,52 @@ function SettingsPage() {
             <h3>Review agent</h3>
             <Sparkles size={15} />
           </div>
+          {workspaceSelectionUnavailable(s) && (
+            <div className="inline-error" role="status">
+              Reviews are blocked: {workspaceSelectionUnavailable(s)}
+            </div>
+          )}
+          {s.modelSelectionNotice && (
+            <p className="action-notice" role="status">
+              {s.modelSelectionNotice}
+            </p>
+          )}
           <div className="form-grid">
             <label>
               Model
               <select
                 value={draft.model}
-                disabled={saves.model?.state === "saving"}
+                disabled={
+                  saves.model?.state === "saving" || !s.modelCatalogReady
+                }
                 onChange={(e) =>
                   void updateSettings(
-                    { model: e.target.value, effort: "" },
+                    {
+                      model: e.target.value,
+                      effort: defaultEffort(
+                        s.models.find((m) => m.model === e.target.value)!,
+                      )!,
+                    },
                     "model",
                   )
                 }
               >
-                <option value="">Codex default</option>
+                <option value="" disabled>
+                  Choose a model
+                </option>
+                {draft.model && !model && (
+                  <option value={draft.model} disabled>
+                    {draft.model} (unavailable)
+                  </option>
+                )}
                 {s.models.map((m) => (
-                  <option key={m.id} value={m.model}>
+                  <option
+                    key={m.model}
+                    value={m.model}
+                    disabled={!defaultEffort(m)}
+                  >
                     {m.displayName}
+                    {!defaultEffort(m) ? " (no supported default effort)" : ""}
                   </option>
                 ))}
               </select>
@@ -2094,6 +2169,8 @@ function SettingsPage() {
               <select
                 value={draft.effort}
                 disabled={
+                  !s.modelCatalogReady ||
+                  !model ||
                   saves.effort?.state === "saving" ||
                   (!!saves.model && saves.model.state !== "saved")
                 }
@@ -2101,7 +2178,17 @@ function SettingsPage() {
                   void updateSettings({ effort: e.target.value })
                 }
               >
-                <option value="">Model default</option>
+                <option value="" disabled>
+                  Choose an effort
+                </option>
+                {draft.effort &&
+                  !model?.supportedReasoningEfforts.some(
+                    (e) => e.reasoningEffort === draft.effort,
+                  ) && (
+                    <option value={draft.effort} disabled>
+                      {draft.effort} (unsupported)
+                    </option>
+                  )}
                 {model?.supportedReasoningEfforts.map((e) => (
                   <option key={e.reasoningEffort} value={e.reasoningEffort}>
                     {e.reasoningEffort[0].toUpperCase() +
@@ -2285,7 +2372,7 @@ function SaveFeedback({ saveKey }: { saveKey?: string }) {
                 value ||
                 "Codex default"
               : key === "effort"
-                ? value || "Model default"
+                ? value || "Unresolved effort"
                 : key === "pollSeconds"
                   ? `${value} seconds`
                   : Array.isArray(value)

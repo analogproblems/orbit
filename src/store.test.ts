@@ -185,3 +185,135 @@ describe("save feedback", () => {
     });
   });
 });
+
+describe("explicit demo model selections", () => {
+  it("pins a queued review and every follow-up independently of later workspace edits", async () => {
+    const store = useOrbit.getState();
+    await store.updateSettings({ effort: "low" });
+    await store.action("start_review", { prId: store.snapshot.prs[1].id });
+    const id = useOrbit.getState().snapshot.reviews[0].id;
+    await store.updateSettings({ effort: "high" });
+    await vi.advanceTimersByTimeAsync(6000);
+    let r = useOrbit.getState().snapshot.reviews.find((r) => r.id === id)!;
+    expect(r.effort).toBe("low");
+    expect(r.confirmedReviewSelection).toEqual({
+      model: "demo-review-model",
+      effort: "low",
+    });
+    await store.action("send_message", { reviewId: id, text: "Explain" });
+    r = useOrbit.getState().snapshot.reviews.find((r) => r.id === id)!;
+    expect(
+      r.messages.find((m) => m.role === "user")?.confirmedSelection,
+    ).toEqual(r.confirmedReviewSelection);
+    const bad = await store.updateSettings({
+      model: "missing-model",
+      effort: "high",
+    });
+    expect(bad.ok).toBe(false);
+    expect(useOrbit.getState().snapshot.settings.model).toBe(
+      "demo-review-model",
+    );
+  });
+  it("resolves only empty workspace values and saves one legacy chat choice without rewriting history", async () => {
+    const old = structuredClone(useOrbit.getState().snapshot);
+    old.settings.model = "";
+    old.settings.effort = "";
+    old.reviews[0].model = "codex-default";
+    old.reviews[0].effort = "";
+    old.reviews[0].confirmedReviewSelection = undefined;
+    localStorage.setItem("orbit-demo-v3", JSON.stringify(old));
+    await useOrbit.getState().init();
+    const store = useOrbit.getState();
+    expect(store.snapshot.settings.effort).toBe("medium");
+    expect(store.snapshot.modelSelectionNotice).toContain("demo-review-model");
+    const r = store.snapshot.reviews[0];
+    expect(
+      (await store.action("send_message", { reviewId: r.id, text: "Explain" }))
+        .ok,
+    ).toBe(false);
+    const selection = {
+      reviewId: r.id,
+      model: "demo-review-model",
+      effort: "low",
+    };
+    expect((await store.action("set_legacy_chat_model", selection)).ok).toBe(
+      true,
+    );
+    expect((await store.action("set_legacy_chat_model", selection)).ok).toBe(
+      true,
+    );
+    expect(
+      (
+        await store.action("set_legacy_chat_model", {
+          ...selection,
+          effort: "high",
+        })
+      ).ok,
+    ).toBe(false);
+    expect(
+      (await store.action("send_message", { reviewId: r.id, text: "Explain" }))
+        .ok,
+    ).toBe(true);
+    const updated = useOrbit.getState().snapshot.reviews[0];
+    expect(updated.confirmedReviewSelection).toBeUndefined();
+    expect(updated.model).toBe("codex-default");
+    expect(updated.report).toBe(r.report);
+    expect(
+      updated.messages.find((m) => m.role === "user")?.confirmedSelection,
+    ).toEqual({ model: selection.model, effort: "low" });
+  });
+});
+
+it("preserves unavailable explicit demo settings and permits unrelated edits", async () => {
+  const old = structuredClone(useOrbit.getState().snapshot);
+  old.settings.model = "no-longer-available";
+  old.settings.automatic = true;
+  localStorage.setItem("orbit-demo-v3", JSON.stringify(old));
+  await useOrbit.getState().init();
+  const store = useOrbit.getState();
+  expect(store.snapshot.settings.model).toBe("no-longer-available");
+  expect(store.snapshot.modelConfigurationError).toContain("unavailable");
+  expect((await store.action("start_review", { prId: old.prs[1].id })).ok).toBe(
+    false,
+  );
+  expect((await store.updateSettings({ automatic: false })).ok).toBe(true);
+});
+
+it("does not activate a model pair or legacy choice after a simulated save failure", async () => {
+  const old = structuredClone(useOrbit.getState().snapshot);
+  old.reviews[0].model = "";
+  localStorage.setItem("orbit-demo-v3", JSON.stringify(old));
+  await useOrbit.getState().init();
+  const save = vi.spyOn(localStorage, "setItem").mockImplementationOnce(() => {
+    throw Error("quota exceeded");
+  });
+  const store = useOrbit.getState();
+  expect(
+    (await store.updateSettings({ model: "demo-review-model", effort: "low" }))
+      .ok,
+  ).toBe(false);
+  expect(useOrbit.getState().snapshot.settings.effort).toBe("medium");
+  save.mockImplementationOnce(() => {
+    throw Error("quota exceeded");
+  });
+  expect(
+    (
+      await store.action("set_legacy_chat_model", {
+        reviewId: old.reviews[0].id,
+        model: "demo-review-model",
+        effort: "low",
+      })
+    ).ok,
+  ).toBe(false);
+  expect(
+    useOrbit.getState().snapshot.reviews[0].legacyChatSelection,
+  ).toBeUndefined();
+  expect(
+    (
+      await store.action("send_message", {
+        reviewId: old.reviews[0].id,
+        text: "Explain",
+      })
+    ).ok,
+  ).toBe(false);
+});

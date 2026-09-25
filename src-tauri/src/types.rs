@@ -1,3 +1,4 @@
+pub use crate::models::ModelSelection;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -58,6 +59,8 @@ pub struct Message {
     pub role: String,
     pub text: String,
     pub created_at: String,
+    #[serde(default)]
+    pub confirmed_selection: Option<ModelSelection>,
 }
 impl Message {
     pub fn new(role: &str, text: impl Into<String>) -> Self {
@@ -66,6 +69,7 @@ impl Message {
             role: role.into(),
             text: text.into(),
             created_at: now(),
+            confirmed_selection: None,
         }
     }
 }
@@ -79,6 +83,10 @@ pub struct Review {
     pub status: String,
     pub model: String,
     pub effort: String,
+    #[serde(default)]
+    pub confirmed_review_selection: Option<ModelSelection>,
+    #[serde(default)]
+    pub legacy_chat_selection: Option<ModelSelection>,
     pub thread_id: Option<String>,
     pub turn_id: Option<String>,
     pub worktree: Option<String>,
@@ -126,6 +134,8 @@ impl Review {
             status: "queued".into(),
             model: settings.model.clone(),
             effort: settings.effort.clone(),
+            confirmed_review_selection: None,
+            legacy_chat_selection: None,
             thread_id: None,
             turn_id: None,
             worktree: None,
@@ -325,6 +335,9 @@ pub struct Snapshot {
     pub last_poll: Option<String>,
     pub polling: bool,
     pub codex_ready: bool,
+    pub model_catalog_ready: bool,
+    pub model_configuration_error: Option<String>,
+    pub model_selection_notice: Option<String>,
 }
 pub fn eligible(pr: &PullRequest, s: &Snapshot) -> bool {
     !pr.draft

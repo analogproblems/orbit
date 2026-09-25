@@ -129,8 +129,9 @@ export function freshDemo(): Snapshot {
     headSha: prs[0].headSha,
     baseSha: prs[0].baseSha,
     status: "ready",
-    model: "codex-default",
+    model: "demo-review-model",
     effort: "high",
+    confirmedReviewSelection: { model: "demo-review-model", effort: "high" },
     createdAt: ago(9),
     updatedAt: ago(6),
     worktree: "~/Library/Application Support/Orbit/worktrees/pr-148",
@@ -158,6 +159,8 @@ export function freshDemo(): Snapshot {
     reviews: [review],
     settings: {
       ...defaults,
+      model: "demo-review-model",
+      effort: "medium",
       repositories: ["orbit", "api", "dashboard"].map((n) => ({
         name: `acme/${n}`,
         path: `~/Projects/${n}`,
@@ -168,8 +171,8 @@ export function freshDemo(): Snapshot {
     },
     models: [
       {
-        id: "codex-default",
-        model: "codex-default",
+        id: "demo-review-model",
+        model: "demo-review-model",
         displayName: "Codex · demo",
         defaultReasoningEffort: "medium",
         supportedReasoningEfforts: ["low", "medium", "high"].map(
@@ -181,6 +184,7 @@ export function freshDemo(): Snapshot {
     approvals: [],
     githubUser: "you",
     codexReady: true,
+    modelCatalogReady: true,
     polling: false,
     lastPoll: ago(0),
   };
