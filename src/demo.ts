@@ -1,10 +1,83 @@
 import {
   defaults,
+  selectionError,
+  type Model,
+  type ModelSelection,
   type Snapshot,
   type PullRequest,
   type Review,
   type RepositorySummary,
 } from "./types";
+
+// Simulated config/read values, independent of the demo workspace's settings.
+export const demoCodexConfig = {
+  model: "demo-review-model",
+  model_reasoning_effort: "high",
+};
+export function resolveDemoModelSelection(
+  settings: ModelSelection,
+  models: Model[],
+  config:
+    | { model?: string | null; model_reasoning_effort?: string | null }
+    | Error = demoCodexConfig,
+) {
+  const selection = { model: settings.model, effort: settings.effort };
+  let modelSource = "your saved Orbit selection";
+  let effortSource = "your saved Orbit selection";
+  if (!selection.model) {
+    if (config instanceof Error)
+      throw Error(
+        `Could not read effective Codex settings: ${config.message}. Reconnect or select a model in Settings.`,
+      );
+    if (config.model && models.some((m) => m.model === config.model)) {
+      selection.model = config.model;
+      modelSource = "your Codex configuration";
+    } else {
+      const defaults = models.filter((m) => m.isDefault);
+      if (defaults.length !== 1)
+        throw Error(
+          "Codex has no unique default model. Choose a model and effort in Settings.",
+        );
+      selection.model = defaults[0].model;
+      modelSource = config.model
+        ? `catalog default (your configured model '${config.model}' is unavailable)`
+        : "catalog default (no configured model)";
+    }
+  }
+  if (!selection.effort) {
+    const model = models.find((m) => m.model === selection.model);
+    const configured =
+      config instanceof Error ? undefined : config.model_reasoning_effort;
+    if (
+      configured &&
+      model?.supportedReasoningEfforts.some(
+        (e) => e.reasoningEffort === configured,
+      )
+    ) {
+      selection.effort = configured;
+      effortSource = "your Codex configuration";
+    } else {
+      selection.effort = model?.defaultReasoningEffort ?? "";
+      if (!selection.effort)
+        throw Error(
+          "The selected model or its default effort is unavailable. Choose a model and effort in Settings.",
+        );
+      effortSource = configured
+        ? `model default (your configured effort '${configured}' isn't supported by this model)`
+        : config instanceof Error
+          ? "model default (Codex configuration could not be read)"
+          : "model default (no configured effort)";
+    }
+  }
+  const error = selectionError(models, selection);
+  if (error) throw Error(error);
+  const notice =
+    selection.model !== settings.model || selection.effort !== settings.effort
+      ? `Resolved review selection to ${selection.model} · ${selection.effort}. Model: ${modelSource}. Effort: ${effortSource}. This explicit selection is saved for new reviews.`
+      : undefined;
+  return { selection, notice };
+}
+
 const ago = (minutes: number) =>
   new Date(Date.now() - minutes * 60000).toISOString();
 const data = [

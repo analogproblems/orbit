@@ -333,7 +333,8 @@ impl Engine {
                 return Err(error);
             }
         };
-        let config = if self.state.lock().await.settings.model.is_empty() {
+        let needs_config = !ModelSelection::workspace(&self.state.lock().await.settings).complete();
+        let config = if needs_config {
             rpc.request("config/read", json!({"includeLayers":false}))
                 .await
         } else {
@@ -350,15 +351,15 @@ impl Engine {
         s.models = models;
         s.model_catalog_ready = true;
         let result: Result<(), String> = (|| {
-            let selection = models::resolve(&s.settings, &s.models, &config)?;
+            let resolution = models::resolve(&s.settings, &s.models, &config)?;
+            let selection = resolution.selection;
             let mut next = s.clone();
             next.model_configuration_error = None;
-            next.model_selection_notice = None;
+            next.model_selection_notice = resolution.notice;
             let selection_changed = selection != ModelSelection::workspace(&s.settings);
             if selection_changed {
                 next.settings.model = selection.model.clone();
                 next.settings.effort = selection.effort.clone();
-                next.model_selection_notice = Some(format!("Resolved review selection to {} · {}. This explicit selection is saved for new reviews.", selection.model, selection.effort));
             }
             if selection_changed || next.model_selection_notice != s.model_selection_notice {
                 self.persist(&next).map_err(|e| format!("Resolved model selection was not saved: {e}. Reconnect to retry or choose a selection in Settings."))?;

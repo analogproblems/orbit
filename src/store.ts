@@ -1,7 +1,12 @@
 import { create } from "zustand";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { freshDemo, demoReport, demoRepositories } from "./demo";
+import {
+  freshDemo,
+  demoReport,
+  demoRepositories,
+  resolveDemoModelSelection,
+} from "./demo";
 import {
   defaults,
   selectionError,
@@ -9,7 +14,6 @@ import {
   chatSelection,
   chatModelUnavailable,
   reportSelectionLabel,
-  type ModelSelection,
   canPublish,
   activeStatuses,
   sameRepo,
@@ -446,24 +450,17 @@ function resolveDemoSelection() {
   demo.codexReady = true;
   demo.modelCatalogReady = true;
   demo.models = freshDemo().models;
-  const selection: ModelSelection = {
-    model: demo.settings.model,
-    effort: demo.settings.effort,
-  };
-  if (!selection.model) selection.model = demo.models[0].model;
-  if (!selection.effort)
-    selection.effort =
-      demo.models.find((m) => m.model === selection.model)
-        ?.defaultReasoningEffort ?? "";
-  demo.modelConfigurationError = selectionError(demo.models, selection);
-  if (!demo.modelConfigurationError) {
-    if (
-      selection.model !== demo.settings.model ||
-      selection.effort !== demo.settings.effort
-    )
-      demo.modelSelectionNotice = `Resolved review selection to ${selection.model} · ${selection.effort}. This explicit selection is saved for new reviews.`;
-    else demo.modelSelectionNotice = undefined;
+  try {
+    const { selection, notice } = resolveDemoModelSelection(
+      demo.settings,
+      demo.models,
+    );
+    demo.modelConfigurationError = null;
+    demo.modelSelectionNotice = notice;
     Object.assign(demo.settings, selection);
+  } catch (error) {
+    demo.modelConfigurationError =
+      error instanceof Error ? error.message : String(error);
   }
 }
 export const useOrbit = create<Store>((set, get) => ({

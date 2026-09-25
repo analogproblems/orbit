@@ -850,3 +850,135 @@ async fn resolution_notice_is_cleared_and_persisted_after_next_successful_connec
     assert!(saved.model_selection_notice.is_none());
     rpc.shutdown().await;
 }
+
+#[tokio::test]
+async fn connection_resolves_only_missing_values_from_config_and_persists_their_sources() {
+    for (
+        model,
+        effort,
+        effective_model,
+        effective_effort,
+        fail_config,
+        expected_model,
+        expected_effort,
+        reason,
+    ) in [
+        (
+            "",
+            "",
+            "model-a",
+            "high",
+            false,
+            "model-a",
+            "high",
+            "Effort: your Codex configuration.",
+        ),
+        (
+            "",
+            "",
+            "model-b",
+            "low",
+            false,
+            "model-b",
+            "high",
+            "your configured effort 'low' isn't supported",
+        ),
+        (
+            "model-a",
+            "",
+            "model-b",
+            "low",
+            false,
+            "model-a",
+            "low",
+            "Model: your saved Orbit selection.",
+        ),
+        (
+            "model-a",
+            "",
+            "model-b",
+            "high",
+            true,
+            "model-a",
+            "medium",
+            "Codex configuration could not be read",
+        ),
+        (
+            "",
+            "low",
+            "model-a",
+            "high",
+            false,
+            "model-a",
+            "low",
+            "Effort: your saved Orbit selection.",
+        ),
+        (
+            "model-a", "low", "model-b", "high", false, "model-a", "low", "",
+        ),
+    ] {
+        let (d, e, rpc, _) = fixture().await;
+        e.update(|s| {
+            s.settings.model = model.into();
+            s.settings.effort = effort.into();
+        })
+        .await;
+        configure(&rpc, json!({"catalog":catalog(), "effectiveModel":effective_model, "effectiveEffort":effective_effort,
+            "failMethod":if fail_config { "config/read" } else { "" }})).await;
+        e.connect().await.unwrap();
+        let s = e.snapshot().await;
+        assert_eq!(s.settings.model, expected_model);
+        assert_eq!(s.settings.effort, expected_effort);
+        assert!(s.model_configuration_error.is_none());
+        assert_eq!(
+            requests(&rpc)
+                .await
+                .iter()
+                .any(|r| r["method"] == "config/read"),
+            model.is_empty() || effort.is_empty()
+        );
+        if reason.is_empty() {
+            assert!(s.model_selection_notice.is_none());
+        } else {
+            assert!(s.model_selection_notice.as_ref().unwrap().contains(reason));
+            let saved: Snapshot =
+                serde_json::from_slice(&std::fs::read(d.path().join("state.json")).unwrap())
+                    .unwrap();
+            assert_eq!(saved.settings.model, expected_model);
+            assert_eq!(saved.settings.effort, expected_effort);
+            assert_eq!(saved.model_selection_notice, s.model_selection_notice);
+        }
+        // Migrating workspace settings cannot rewrite an existing run.
+        assert_eq!(s.reviews[0].model, "model-a");
+        assert_eq!(s.reviews[0].effort, "high");
+        assert_no_inference(&requests(&rpc).await);
+        rpc.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn effort_migration_cannot_replace_a_concurrent_explicit_selection() {
+    let (_d, e, rpc, _) = fixture().await;
+    e.update(|s| s.settings.effort.clear()).await;
+    configure(
+        &rpc,
+        json!({"catalog":catalog(), "effectiveEffort":"high", "holdMethod":"config/read"}),
+    )
+    .await;
+    let clone = e.clone();
+    let connecting = tokio::spawn(async move { clone.connect().await });
+    wait_for_request(&rpc, "config/read").await;
+    e.update_settings(SettingsPatch {
+        model: Some("model-a".into()),
+        effort: Some("low".into()),
+        ..SettingsPatch::default()
+    })
+    .await
+    .unwrap();
+    release(&rpc).await;
+    connecting.await.unwrap().unwrap();
+    let s = e.snapshot().await;
+    assert_eq!(s.settings.effort, "low");
+    assert!(s.model_selection_notice.is_none());
+    rpc.shutdown().await;
+}

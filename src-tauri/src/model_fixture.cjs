@@ -38,7 +38,10 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
         return send(m.id, { data: options.catalog ?? [], nextCursor: null });
       case "config/read":
         return send(m.id, {
-          config: { model: options.effectiveModel ?? null },
+          config: {
+            model: options.effectiveModel ?? null,
+            model_reasoning_effort: options.effectiveEffort ?? null,
+          },
         });
       case "thread/unsubscribe":
         subscribed = !!options.otherSubscriber;

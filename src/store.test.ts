@@ -224,8 +224,14 @@ describe("explicit demo model selections", () => {
     localStorage.setItem("orbit-demo-v3", JSON.stringify(old));
     await useOrbit.getState().init();
     const store = useOrbit.getState();
-    expect(store.snapshot.settings.effort).toBe("medium");
+    expect(store.snapshot.settings.effort).toBe("high");
     expect(store.snapshot.modelSelectionNotice).toContain("demo-review-model");
+    expect(store.snapshot.modelSelectionNotice).toContain(
+      "Effort: your Codex configuration.",
+    );
+    expect(
+      JSON.parse(localStorage.getItem("orbit-demo-v3")!).settings.effort,
+    ).toBe("high");
     const r = store.snapshot.reviews[0];
     expect(
       (await store.action("send_message", { reviewId: r.id, text: "Explain" }))

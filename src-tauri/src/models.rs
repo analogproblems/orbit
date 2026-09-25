@@ -115,20 +115,29 @@ impl ModelSelection {
     }
 }
 
+#[derive(Debug)]
+pub struct Resolution {
+    pub selection: ModelSelection,
+    pub notice: Option<String>,
+}
+
 /// Only empty values are resolved. Call with the current state under its lock,
 /// after discovery, so intervening explicit Settings edits always win.
 pub fn resolve(
     settings: &Settings,
     catalog: &[Value],
     config: &Result<Value, String>,
-) -> Result<ModelSelection, String> {
+) -> Result<Resolution, String> {
     let mut selection = ModelSelection::workspace(settings);
+    let mut model_source = "your saved Orbit selection".to_string();
+    let mut effort_source = "your saved Orbit selection".to_string();
     if selection.model.is_empty() {
         let config = config.as_ref().map_err(|e| format!("Could not read effective Codex settings: {e}. Reconnect or select a model in Settings."))?;
         let effective = config["config"]["model"].as_str().filter(|m| !m.is_empty());
         if let Some(model) = effective.filter(|m| catalog.iter().any(|entry| entry["model"] == *m))
         {
             selection.model = model.into();
+            model_source = "your Codex configuration".into();
         } else {
             let defaults: Vec<_> = catalog.iter().filter(|m| m["isDefault"] == true).collect();
             if defaults.len() != 1 {
@@ -142,15 +151,44 @@ pub fn resolve(
                 .filter(|m| !m.is_empty())
                 .ok_or("Codex returned an invalid default model. Reconnect in Settings.")?
                 .into();
+            model_source = match effective {
+                Some(model) => {
+                    format!("catalog default (your configured model '{model}' is unavailable)")
+                }
+                None => "catalog default (no configured model)".into(),
+            };
         }
     }
     if selection.effort.is_empty() {
-        selection.effort = catalog.iter().find(|m| m["model"] == selection.model)
-            .and_then(|m| m["defaultReasoningEffort"].as_str()).filter(|e| !e.is_empty())
-            .ok_or("The selected model or its default effort is unavailable. Choose a model and effort in Settings.")?.into();
+        let model = catalog.iter().find(|m| m["model"] == selection.model);
+        let configured = config
+            .as_ref()
+            .ok()
+            .and_then(|c| c["config"]["model_reasoning_effort"].as_str())
+            .filter(|e| !e.is_empty());
+        if let Some(effort) = configured.filter(|effort| {
+            model
+                .and_then(|m| m["supportedReasoningEfforts"].as_array())
+                .is_some_and(|efforts| efforts.iter().any(|e| e["reasoningEffort"] == *effort))
+        }) {
+            selection.effort = effort.into();
+            effort_source = "your Codex configuration".into();
+        } else {
+            selection.effort = model.and_then(|m| m["defaultReasoningEffort"].as_str())
+                .filter(|e| !e.is_empty())
+                .ok_or("The selected model or its default effort is unavailable. Choose a model and effort in Settings.")?.into();
+            effort_source = match configured {
+                Some(effort) => format!("model default (your configured effort '{effort}' isn't supported by this model)"),
+                None if config.is_err() => "model default (Codex configuration could not be read)".into(),
+                None => "model default (no configured effort)".into(),
+            };
+        }
     }
     selection.validate(catalog)?;
-    Ok(selection)
+    let notice = (selection != ModelSelection::workspace(settings)).then(|| format!(
+        "Resolved review selection to {} · {}. Model: {model_source}. Effort: {effort_source}. This explicit selection is saved for new reviews.",
+        selection.model, selection.effort));
+    Ok(Resolution { selection, notice })
 }
 
 /// Historical metadata must never be inferred from workspace or chat settings.
@@ -205,25 +243,102 @@ pub(crate) mod tests {
         ]
     }
     #[test]
-    fn resolves_effective_model_then_unique_default_using_model_slugs_and_supported_defaults() {
+    fn resolves_effective_model_then_unique_default_using_model_slugs_and_configured_effort() {
         let s = Settings::default();
         let effective = resolve(
             &s,
             &catalog(),
-            &Ok(json!({"config":{"model":"model-b","model_reasoning_effort":"low"}})),
+            &Ok(json!({"config":{"model":"model-a","model_reasoning_effort":"low"}})),
         )
         .unwrap();
         assert_eq!(
-            effective,
+            effective.selection,
             ModelSelection {
-                model: "model-b".into(),
-                effort: "high".into()
+                model: "model-a".into(),
+                effort: "low".into()
             }
         );
+        let notice = effective.notice.unwrap();
+        assert!(notice.contains("Model: your Codex configuration."));
+        assert!(notice.contains("Effort: your Codex configuration."));
         for model in [Value::Null, json!("unlisted"), json!("ui-b")] {
             let selected = resolve(&s, &catalog(), &Ok(json!({"config":{"model":model}}))).unwrap();
-            assert_eq!(selected.model, "model-a");
-            assert_eq!(selected.effort, "medium");
+            assert_eq!(selected.selection.model, "model-a");
+            assert_eq!(selected.selection.effort, "medium");
+            assert!(selected.notice.unwrap().contains("Model: catalog default"));
+        }
+    }
+    #[test]
+    fn empty_effort_uses_supported_config_for_an_explicit_model_and_explains_fallbacks() {
+        let settings = Settings {
+            model: "model-a".into(),
+            ..Settings::default()
+        };
+        for (config, effort, reason) in [
+            // Config effort applies even though its model differs from Orbit's.
+            (
+                Ok(json!({"config":{"model":"model-b", "model_reasoning_effort":"high"}})),
+                "high",
+                "your Codex configuration",
+            ),
+            (
+                Ok(json!({"config":{"model_reasoning_effort":"xhigh"}})),
+                "medium",
+                "model default (your configured effort 'xhigh' isn't supported by this model)",
+            ),
+            (
+                Ok(json!({"config":{"model_reasoning_effort":null}})),
+                "medium",
+                "model default (no configured effort)",
+            ),
+            (
+                Ok(json!({"config":{"model_reasoning_effort":""}})),
+                "medium",
+                "model default (no configured effort)",
+            ),
+            (
+                Ok(json!({"config":{"reasoningEffort":"high"}})),
+                "medium",
+                "model default (no configured effort)",
+            ),
+            (
+                Err("offline".into()),
+                "medium",
+                "model default (Codex configuration could not be read)",
+            ),
+        ] {
+            let resolved = resolve(&settings, &catalog(), &config).unwrap();
+            assert_eq!(resolved.selection.model, "model-a");
+            assert_eq!(resolved.selection.effort, effort);
+            let notice = resolved.notice.unwrap();
+            assert!(notice.contains("Model: your saved Orbit selection."));
+            assert!(notice.contains(&format!("Effort: {reason}.")), "{notice}");
+        }
+    }
+    #[test]
+    fn unsupported_config_falls_back_but_an_unusable_default_still_blocks() {
+        let settings = Settings::default();
+        let configured = Ok(json!({"config":{"model":"model-b", "model_reasoning_effort":"low"}}));
+        let resolved = resolve(&settings, &catalog(), &configured).unwrap();
+        assert_eq!(resolved.selection.effort, "high");
+        assert!(resolved
+            .notice
+            .unwrap()
+            .contains("your configured effort 'low' isn't supported"));
+        for invalid_default in [Value::Null, json!(""), json!("unsupported")] {
+            let mut models = catalog();
+            models[1]["defaultReasoningEffort"] = invalid_default;
+            assert!(resolve(&settings, &models, &configured).is_err());
+            // A supported configured effort takes precedence even over a bad default.
+            let supported =
+                Ok(json!({"config":{"model":"model-b", "model_reasoning_effort":"high"}}));
+            assert_eq!(
+                resolve(&settings, &models, &supported)
+                    .unwrap()
+                    .selection
+                    .effort,
+                "high"
+            );
         }
     }
     #[test]
@@ -233,9 +348,18 @@ pub(crate) mod tests {
             effort: "low".into(),
             ..Settings::default()
         };
+        let resolved = resolve(
+            &s,
+            &catalog(),
+            &Ok(json!({"config":{"model":"model-b", "model_reasoning_effort":"high"}})),
+        )
+        .unwrap();
+        assert_eq!(resolved.selection, ModelSelection::workspace(&s));
+        assert!(resolved.notice.is_none());
         assert_eq!(
             resolve(&s, &catalog(), &Err("offline".into()))
                 .unwrap()
+                .selection
                 .effort,
             "low"
         );
@@ -245,7 +369,10 @@ pub(crate) mod tests {
         assert!(resolve(&s, &catalog(), &Ok(Value::Null)).is_err());
         s.effort.clear();
         assert_eq!(
-            resolve(&s, &catalog(), &Ok(Value::Null)).unwrap().effort,
+            resolve(&s, &catalog(), &Ok(Value::Null))
+                .unwrap()
+                .selection
+                .effort,
             "high"
         );
         let mut models = catalog();
@@ -266,9 +393,23 @@ pub(crate) mod tests {
             effort: "low".into(),
             ..Settings::default()
         };
+        let resolved = resolve(
+            &s,
+            &catalog(),
+            &Ok(json!({"config":{"model":"model-a", "model_reasoning_effort":"high"}})),
+        )
+        .unwrap();
+        assert_eq!(resolved.selection.effort, "low");
+        assert!(resolved
+            .notice
+            .unwrap()
+            .contains("Effort: your saved Orbit selection."));
         assert!(resolve(&s, &catalog(), &Ok(json!({"config":{"model":"model-b"}}))).is_err());
         assert_eq!(
-            resolve(&s, &catalog(), &Ok(Value::Null)).unwrap().effort,
+            resolve(&s, &catalog(), &Ok(Value::Null))
+                .unwrap()
+                .selection
+                .effort,
             "low"
         );
     }
