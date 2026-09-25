@@ -39,6 +39,9 @@ body {
   flex: 1;
   min-height: 0;
 }
+.review-chat-composer {
+  background-color: var(--color-background-surface);
+}
 .diff-added {
   color: var(--color-text-green);
 }
