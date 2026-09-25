@@ -9,7 +9,7 @@ Orbit connects open GitHub pull requests to local Codex review runs. Each run ha
 1. Launch the desktop app and open **Settings**. Check that **Codex CLI** and **GitHub CLI** show **Connected** and that GitHub shows the account you intend to use.
 2. Open **Repositories → Add repository**. Choose a GitHub repository and enter the absolute path to its existing local clone. Leave automatic reviews off for a manual first run, then click **Save repository**.
 3. Open **Pull requests**. Saving the repository starts a sync; the refresh button also syncs on demand.
-4. Select an open PR and click **Start review**. Open **Review chat** to follow its progress. Use the terminal icon to reveal execution logs.
+4. Select an open PR and click **Start review**. Open **Review chat** to follow its progress. Expand **Execution log** entries to inspect command and setup output.
 5. If a banner says approval is needed, open **Review request**, inspect the requested action, and choose **Approve once** or **Deny**.
 6. When the status becomes **Ready to publish**, read the report. You can ask a follow-up before publishing.
 7. Choose **Publish findings** in the chat or **Publish review** in the footer. Inspect the preview, then click **Publish comment** to post using your connected GitHub account.
@@ -48,7 +48,11 @@ For development, run these commands from the Orbit checkout:
 
 Source builds require installed npm dependencies, Rust/Cargo, and the native dependencies needed by Tauri. Stop an existing `npm run dev` server before using `npm run desktop`: the development server requires port 1420 to be available. The compiled executable does not need that server.
 
-If you see **INTERACTIVE DEMO**, you are using simulated data. **Connect your workspace** opens instructions; it does not turn a browser session into the desktop app. **Reset sample workspace** resets only the demo.
+If you see **Interactive demo**, you are using simulated data. **Connect your workspace** opens instructions; it does not turn a browser session into the desktop app. **Reset sample workspace** resets only the demo.
+
+## Appearance
+
+Orbit uses Astryx’s neutral dark theme and system fonts, including in dropdown menus and dialogs. No font download is needed. The sidebar collapses to an icon rail in narrower windows; its expand button restores the labels. PR titles wrap in the inbox. Branch details and change counts are available in **Overview**, leaving more room for the conversation in **Review chat**.
 
 ## Connect and configure repositories
 
@@ -68,7 +72,7 @@ Click **Save repository**. Saving a new repository or changing its name/path ver
 
 Filesystem validation runs outside the async workers, with a ten-second wait limit per filesystem check. If a mount stalls, validation reports a timeout and leaves the configuration unchanged. The operating system may finish the underlying filesystem request later; its late result does not save the repository.
 
-The picker loads up to 1,000 accessible repository entries and omits archived repositories. It displays the first 50 search matches at a time; narrow the search or enter `owner/name` directly. Repository names are treated case-insensitively and cannot be connected twice.
+The picker loads up to 1,000 accessible repository entries and omits archived repositories. It displays up to 50 unconnected search matches at a time; narrow the search or enter `owner/name` directly. Repository names are treated case-insensitively and cannot be connected twice.
 
 The clone's `origin` must match the configured GitHub repository. Accepted forms include `https://github.com/owner/name`, `git@github.com:owner/name`, and `ssh://git@github.com/owner/name`, with an optional `.git` suffix. Custom SSH host aliases do not match these forms.
 
@@ -110,7 +114,7 @@ Select a PR to see its description, branches, change counts, and labels. Use the
 
 **Files changed** shows the PR file list and patches fetched from GitHub, with collapsible files. The implementation requests at most 3,000 files. Some files have no patch preview. This is the PR's current GitHub diff when loaded, not a frozen diff belonging to whichever historical review you selected. A failed load shows **Retry**; retrying displays a loading state and any new failure. Changing PR, head, or base reloads the files and ignores responses from the earlier selection.
 
-**Ctrl+K** (Windows/Linux) or **Cmd+K** (macOS) opens the inbox and focuses search from any page. **Ctrl+,** or **Cmd+,** opens Settings. Navigation shortcuts leave an open dialog in place. The displayed hints use the platform’s modifier key.
+**Ctrl+K** (Windows/Linux) or **Cmd+K** (macOS) opens the inbox and focuses search from any page. **Ctrl+,** or **Cmd+,** opens Settings. These navigation shortcuts pause while a dialog is open, including the Storage removal confirmation. Dialogs keep background controls inactive and return focus to the opener when dismissed. Publishing disables dismissal until the request finishes. The displayed hints use the platform’s modifier key; arrow keys navigate tabs, filters, and selector choices.
 
 ## Run and manage reviews
 
@@ -136,7 +140,7 @@ Use **Stop** in the PR detail or Review activity to cancel queued work or interr
 
 **Review activity** lists runs, including those whose PR has left the inbox. **In progress** includes queued runs as well as executing runs. Open a row to read its chat. When a PR has multiple runs, the **Review history** dropdown in its chat selects one. The sidebar shows up to five recent runs. **Ready to publish** counts use the same rules as the badges and publication buttons. Derived labels do not overwrite stored review outcomes; a published report retains **Published** even when the PR changes.
 
-The **Execution logs** terminal button reveals system messages, setup output, worktree details, and recorded command output. Some output is capped, so these logs are not a complete terminal transcript.
+The chat shows short status notes inline. Expand **Execution log** entries for multiline setup output and recorded command output. Some output is capped, so these logs are not a complete terminal transcript. The composer stays docked at the bottom; a **Scroll to bottom** button appears when you scroll away from the latest messages.
 
 ### Approvals and follow-ups
 
@@ -146,7 +150,7 @@ After a turn finishes, type into **Message Codex**. **Enter** sends; **Shift+Ent
 
 A normal follow-up adds chat messages; publishing still uses the stored review report, not the newest chat answer. Stopping or failing a follow-up preserves the prior review outcome, including an existing publication. Use **Review again** to get a new review of changed commits.
 
-The **New review environment** panel shows current workspace settings for future runs. The run header and **Report selection** line describe the original report. The composer shows the chat's pinned selection; each new follow-up's user message records its confirmed selection. Exports and newly published comments use confirmed report metadata when available. Historical values are labeled **requested, unverified** or **not recorded**. Orbit never infers an old report's settings from current Settings or a later chat.
+The **New review environment** panel shows current workspace settings for future runs. The overview’s **Review report** and the chat’s **Report selection** line describe the original report. The composer shows the chat's pinned selection; each new follow-up's user message records its confirmed selection. Exports and newly published comments use confirmed report metadata when available. Historical values are labeled **requested, unverified** or **not recorded**. Orbit never infers an old report's settings from current Settings or a later chat.
 
 Every follow-up explicitly resumes the chat with its pinned model and effort. Orbit verifies Codex's response, saves the confirmation, and starts the turn with the same explicit pair. Your question appears immediately with **Sending…** while the chat resumes. Confirmation is attached to that same message after verification. A mismatch or failed save prevents sending; the question stays in the chat as **Send failed**, and the typed text remains in the composer for retry. Stopping before the send is confirmed marks the question **Sending interrupted**. An unavailable pinned selection requires reconnecting to restore access or starting a new review with a different selection.
 
@@ -216,9 +220,9 @@ Trust only accounts whose PRs you intend to review automatically. Anyone able to
 | Poll interval                          | 2 minutes                          | 30 seconds; 1, 2, 5, 10, 30, or 60 minutes.                                                                       |
 | Trusted accounts                       | Empty                              | Up to 50 account logins.                                                                                          |
 
-Settings switches and selections save immediately. Changing the model saves that model and its explicit supported default effort in the same update. **Choose a model** and **Choose an effort** are disabled placeholders, not executable default choices. **Saving…**, **Saved**, or an error with **Retry saving** shows the result. **Saved** clears after 2.5 seconds; errors remain until resolved. After a failed write, controls return to the active values. The unapplied request is listed beside its error and **Retry saving**, and survives page navigation along with typed account input. Retry after resolving the failure. If a model change fails, effort stays disabled until you retry successfully or choose a model again; this prevents a later retry from resetting a newly selected effort.
+Settings switches and selections save immediately. Changing the model saves that model and its explicit supported default effort in the same update. **Choose a model** and **Choose an effort** are placeholders, not executable default choices. **Saving…**, **Saved**, or an error with **Retry saving** shows the result. **Saved** clears after 2.5 seconds; errors remain until resolved. After a failed write, controls return to the active values. The unapplied request is listed beside its error and **Retry saving**, and survives page navigation along with typed account input. Retry after resolving the failure. If a model change fails, effort stays disabled until you retry successfully or choose a model again; this prevents a later retry from resetting a newly selected effort.
 
-The header Autopilot switch, repository-card automation switches, and PR **Trust** button also save immediately. Updates change only their intended fields. Global Settings changes are ordered separately from repository changes, so slow checkout validation does not delay turning Autopilot off. Repository dialogs retain **Save repository** because their fields form one configuration that must be validated together.
+The header Autopilot switch, repository-row automation switches, and PR **Trust** button also save immediately. Updates change only their intended fields. Global Settings changes are ordered separately from repository changes, so slow checkout validation does not delay turning Autopilot off. Repository dialogs retain **Save repository** because their fields form one configuration that must be validated together.
 
 On connection, Orbit reads your effective Codex configuration when either workspace value is empty. An empty model resolves to the configured model if it appears in the catalog, otherwise to the catalog's unique default model. An empty effort uses your configured `model_reasoning_effort` when the selected model supports it, otherwise that model's supported default effort. This also applies when you already have an explicit model and only effort is missing. If only effort is missing and Codex's configuration cannot be read, Orbit uses the supported model default. If the model is also missing, a failed config read blocks resolution. Missing or unsupported fallback defaults block resolution too.
 
@@ -270,7 +274,7 @@ The Markdown contains the stored report, PR identity/link, reviewed head and bas
 
 | What you see                                         | What to check or do                                                                                                                                                     |
 | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Sample PRs or **INTERACTIVE DEMO**                   | Launch the native executable or `npm run desktop`. The browser session has no real workspace connection.                                                                |
+| Sample PRs or **Interactive demo**                   | Launch the native executable or `npm run desktop`. The browser session has no real workspace connection.                                                                |
 | Empty inbox                                          | Connect a repository, clear the visible filters, confirm it has open PRs, then refresh. Check Settings for a GitHub sync error.                                         |
 | Repository missing from the picker                   | Refresh the picker, narrow the search, or type its `owner/name`. Confirm the connected account can access it.                                                           |
 | **Cannot start gh/git/codex**                        | Make the named program available in the app's launch environment. Launch from a terminal where it works.                                                                |
@@ -299,17 +303,19 @@ The behaviors above were traced from UI controls through the native command hand
 
 The links below point to the implementation in this checkout, including the usability/storage changes.
 
-| Area                                                                     | Code inspected                                                                                                                                                    |
-| ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Navigation, review controls, autosave, repository dialogs, changed files | [App.tsx](../src/App.tsx), [Modal.tsx](../src/Modal.tsx)                                                                                                          |
-| Derived statuses, publication/send eligibility                           | [types.ts](../src/types.ts)                                                                                                                                       |
-| Request-specific action results, mutation queue, demo workflows          | [store.ts](../src/store.ts)                                                                                                                                       |
-| Storage inspection/confirmation and report actions                       | [Storage.tsx](../src/Storage.tsx), [ReviewActions.tsx](../src/ReviewActions.tsx)                                                                                  |
-| Native command allowlist, Save As dialog, app lifecycle                  | [lib.rs](../src-tauri/src/lib.rs)                                                                                                                                 |
-| Settings/repository updates, queue, cleanup, persistence, publication    | [engine.rs](../src-tauri/src/engine.rs)                                                                                                                           |
-| Storage measurements, ownership checks, Markdown export                  | [storage.rs](../src-tauri/src/storage.rs)                                                                                                                         |
-| Defaults, validation, automatic eligibility, trust, credential patterns  | [types.rs](../src-tauri/src/types.rs)                                                                                                                             |
-| GitHub requests and Codex protocol                                       | [github.rs](../src-tauri/src/github.rs), [rpc.rs](../src-tauri/src/rpc.rs)                                                                                        |
-| Launch/build modes and diagnostic                                        | [package.json](../package.json), [Vite config](../vite.config.ts), [Tauri config](../src-tauri/tauri.conf.json), [diagnose.rs](../src-tauri/examples/diagnose.rs) |
+| Area                                                                    | Code inspected                                                                                                                                                    |
+| ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Navigation and PR details                                               | [App.tsx](../src/App.tsx), [Inbox.tsx](../src/Inbox.tsx), [Detail.tsx](../src/Detail.tsx), [Activity.tsx](../src/Activity.tsx)                                    |
+| Chat, Markdown, and changed files                                       | [Chat.tsx](../src/Chat.tsx), [LegacyChatModel.tsx](../src/LegacyChatModel.tsx), [SafeMarkdown.tsx](../src/SafeMarkdown.tsx), [Files.tsx](../src/Files.tsx)        |
+| Settings autosave and repository dialogs                                | [Settings.tsx](../src/Settings.tsx), [SaveFeedback.tsx](../src/SaveFeedback.tsx), [Repositories.tsx](../src/Repositories.tsx)                                     |
+| Derived statuses, publication/send eligibility                          | [types.ts](../src/types.ts)                                                                                                                                       |
+| Request-specific action results, mutation queue, demo workflows         | [store.ts](../src/store.ts)                                                                                                                                       |
+| Storage inspection/confirmation and report actions                      | [Storage.tsx](../src/Storage.tsx), [ReviewActions.tsx](../src/ReviewActions.tsx)                                                                                  |
+| Native command allowlist, Save As dialog, app lifecycle                 | [lib.rs](../src-tauri/src/lib.rs)                                                                                                                                 |
+| Settings/repository updates, queue, cleanup, persistence, publication   | [engine.rs](../src-tauri/src/engine.rs)                                                                                                                           |
+| Storage measurements, ownership checks, Markdown export                 | [storage.rs](../src-tauri/src/storage.rs)                                                                                                                         |
+| Defaults, validation, automatic eligibility, trust, credential patterns | [types.rs](../src-tauri/src/types.rs)                                                                                                                             |
+| GitHub requests and Codex protocol                                      | [github.rs](../src-tauri/src/github.rs), [rpc.rs](../src-tauri/src/rpc.rs)                                                                                        |
+| Launch/build modes and diagnostic                                       | [package.json](../package.json), [Vite config](../vite.config.ts), [Tauri config](../src-tauri/tauri.conf.json), [diagnose.rs](../src-tauri/examples/diagnose.rs) |
 
 The Linux data-directory location was additionally checked in the locally installed Tauri 2.11.6 `PathResolver::app_data_dir` implementation and its `dirs` 6.0.0 dependency. Regression tests cover component failure/retry and navigation behavior, status/send eligibility, atomic updates, temporary-repository validation, worktree cleanup/recovery, and export metadata, cancellation, and write errors. Export and cleanup tests use disposable data and do not post to GitHub. The native Save As dialog still needs an interactive desktop smoke check; automated checks exercise the export logic and compile the desktop integration.

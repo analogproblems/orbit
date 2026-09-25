@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Banner, Button, HStack, Text, VStack } from "@astryxdesign/core";
 import { ArrowUpRight, Download } from "lucide-react";
 import { useOrbit, desktop } from "./store";
 import { canExport, type Review } from "./types";
@@ -15,46 +16,51 @@ export function ReviewActions({
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   return (
-    <div className="review-actions">
-      {review.status === "posted" && review.commentUrl && (
-        <button
-          className="text-button"
-          onClick={() => {
-            if (desktop) void action("open_github", { url: review.commentUrl });
-            else
-              window.open(review.commentUrl, "_blank", "noopener,noreferrer");
-          }}
-        >
-          View comment on GitHub <ArrowUpRight size={13} />
-        </button>
-      )}
-      {review.status === "posted" && !review.commentUrl && (
-        <span>Comment published</span>
-      )}
-      {exportable && canExport(review) && (
-        <button
-          className="text-button"
-          disabled={exporting}
-          onClick={async () => {
-            setExporting(true);
-            setNotice(null);
-            setError(null);
-            const result = await action<string | null>(
-              "export_report",
-              { reviewId: review.id },
-              { quiet: true },
-            );
-            setExporting(false);
-            if (!result.ok) setError(result.error);
-            else if (result.data) setNotice(`Report exported: ${result.data}`);
-          }}
-        >
-          <Download size={13} />
-          {exporting ? "Exporting…" : "Export report"}
-        </button>
-      )}
-      {notice && <span role="status">{notice}</span>}
-      {error && <span role="alert">{error}</span>}
-    </div>
+    <VStack gap={2}>
+      <HStack gap={2} wrap="wrap">
+        {review.status === "posted" && review.commentUrl && (
+          <Button
+            label="View comment on GitHub"
+            variant="ghost"
+            size="sm"
+            icon={<ArrowUpRight />}
+            onClick={() => {
+              if (desktop)
+                void action("open_github", { url: review.commentUrl });
+              else
+                window.open(review.commentUrl, "_blank", "noopener,noreferrer");
+            }}
+          />
+        )}
+        {review.status === "posted" && !review.commentUrl && (
+          <Text>Comment published</Text>
+        )}
+        {exportable && canExport(review) && (
+          <Button
+            label={exporting ? "Exporting…" : "Export report"}
+            variant="ghost"
+            size="sm"
+            icon={<Download />}
+            isLoading={exporting}
+            onClick={async () => {
+              setExporting(true);
+              setNotice(null);
+              setError(null);
+              const result = await action<string | null>(
+                "export_report",
+                { reviewId: review.id },
+                { quiet: true },
+              );
+              setExporting(false);
+              if (!result.ok) setError(result.error);
+              else if (result.data)
+                setNotice(`Report exported: ${result.data}`);
+            }}
+          />
+        )}
+      </HStack>
+      {notice && <Text role="status">{notice}</Text>}
+      {error && <Banner status="error" title={error} />}
+    </VStack>
   );
 }

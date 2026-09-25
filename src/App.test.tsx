@@ -10,6 +10,9 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import "./test-setup";
+import { Theme } from "@astryxdesign/core/theme";
+import { neutralTheme } from "@astryxdesign/theme-neutral/built";
 import App from "./App";
 import { freshDemo } from "./demo";
 import { useOrbit } from "./store";
@@ -22,11 +25,19 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 let snapshot: Snapshot;
 const user = () => userEvent.setup();
+async function chooseOption(control: HTMLElement, label: string) {
+  await user().click(control);
+  await user().click(await screen.findByRole("option", { name: label }));
+}
 function emit() {
   useOrbit.setState({ snapshot: structuredClone(snapshot) });
 }
 async function mount() {
-  render(<App />);
+  render(
+    <Theme theme={neutralTheme} mode="dark">
+      <App />
+    </Theme>,
+  );
   await screen.findByPlaceholderText("Search pull requests…");
 }
 function deferred<T>() {
@@ -193,7 +204,7 @@ describe("autosave and follow-ups", () => {
     await mount();
     fireEvent.keyDown(document, { key: ",", ctrlKey: true });
     const select = screen.getByRole("combobox", { name: "Poll interval" });
-    await user().selectOptions(select, "60");
+    await chooseOption(select, "1 minute");
     expect(await screen.findByRole("alert")).toHaveProperty(
       "textContent",
       expect.stringContaining("Disk is full"),
@@ -207,7 +218,7 @@ describe("autosave and follow-ups", () => {
     fireEvent.keyDown(document, { key: ",", ctrlKey: true });
     expect(
       screen.getByRole("combobox", { name: "Poll interval" }),
-    ).toHaveProperty("value", "120");
+    ).toHaveProperty("textContent", "2 minutes");
     expect(screen.getByRole("alert").textContent).toContain(
       "Not applied — Poll interval: 60 seconds",
     );
@@ -233,7 +244,7 @@ describe("autosave and follow-ups", () => {
       emit();
     });
     expect(screen.getByText(/Codex is disconnected. Reconnect/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Send message" })).toHaveProperty(
+    expect(screen.getByRole("button", { name: "Send" })).toHaveProperty(
       "disabled",
       true,
     );
@@ -247,7 +258,7 @@ describe("autosave and follow-ups", () => {
     );
     expect(
       screen.getByRole("textbox", { name: "Message Codex" }),
-    ).toHaveProperty("value", "Keep this question");
+    ).toHaveProperty("textContent", "Keep this question");
   });
 });
 
@@ -257,7 +268,11 @@ describe("initial loading and repository errors", () => {
     invoke.mockImplementation((cmd) =>
       cmd === "get_snapshot" ? loading.promise : Promise.resolve(),
     );
-    render(<App />);
+    render(
+      <Theme theme={neutralTheme} mode="dark">
+        <App />
+      </Theme>,
+    );
     fireEvent.keyDown(document, { key: "k", ctrlKey: true });
     await act(async () => loading.resolve(snapshot));
     expect(document.activeElement).toBe(
@@ -331,7 +346,7 @@ describe("storage and export", () => {
     await user().click(
       screen.getByRole("button", { name: "Remove worktrees (1)" }),
     );
-    const dialog = screen.getByRole("dialog", {
+    const dialog = screen.getByRole("alertdialog", {
       name: "Remove selected worktrees",
     });
     expect(dialog.textContent).toContain("2.0 KiB");
@@ -375,10 +390,9 @@ describe("storage and export", () => {
       expect.stringContaining("Export disk full"),
     );
     await user().click(exportButton);
-    expect(await screen.findByRole("status")).toHaveProperty(
-      "textContent",
-      "Report exported: /chosen/report.md",
-    );
+    expect(
+      await screen.findByText("Report exported: /chosen/report.md"),
+    ).toHaveProperty("role", "status");
     expect(invoke).toHaveBeenCalledWith("export_report", {
       reviewId: snapshot.reviews[0].id,
     });
@@ -435,16 +449,18 @@ describe("review regression cases", () => {
       "Automatically review new pull requests",
     ]) {
       expect(
-        screen.getByRole("switch", { name }).getAttribute("aria-checked"),
-      ).toBe("false");
+        (screen.getByRole("switch", { name }) as HTMLInputElement).checked,
+      ).toBe(false);
     }
     await user().click(screen.getByRole("button", { name: "Review activity" }));
     fireEvent.keyDown(document, { key: ",", ctrlKey: true });
     expect(
-      screen
-        .getByRole("switch", { name: "Automatically review new pull requests" })
-        .getAttribute("aria-checked"),
-    ).toBe("false");
+      (
+        screen.getByRole("switch", {
+          name: "Automatically review new pull requests",
+        }) as HTMLInputElement
+      ).checked,
+    ).toBe(false);
     expect(screen.getByRole("alert").textContent).toContain(
       "Automatic reviews: On",
     );
@@ -455,8 +471,8 @@ describe("review regression cases", () => {
       "Automatically review new pull requests",
     ]) {
       expect(
-        screen.getByRole("switch", { name }).getAttribute("aria-checked"),
-      ).toBe("true");
+        (screen.getByRole("switch", { name }) as HTMLInputElement).checked,
+      ).toBe(true);
     }
   });
   it("reports removed worktrees with a persistence warning without offering removal again", async () => {
@@ -542,9 +558,9 @@ describe("review regression cases", () => {
     );
     await mount();
     fireEvent.keyDown(document, { key: ",", ctrlKey: true });
-    await user().selectOptions(
+    await chooseOption(
       screen.getByRole("combobox", { name: /^Model/ }),
-      "demo-review-model",
+      "Codex · demo",
     );
     await screen.findByRole("alert");
     expect(
@@ -559,9 +575,9 @@ describe("review regression cases", () => {
     await user().click(screen.getByRole("button", { name: "Retry saving" }));
     const effort = screen.getByRole("combobox", { name: /^Reasoning effort/ });
     await waitFor(() => expect(effort).toHaveProperty("disabled", false));
-    await user().selectOptions(effort, "high");
+    await chooseOption(effort, "High");
     expect(snapshot.settings.effort).toBe("high");
-    expect(effort).toHaveProperty("value", "high");
+    expect(effort).toHaveProperty("textContent", "High");
   });
   it("keeps the app navigable and cleanup progress available while removal waits", async () => {
     const removal = deferred<unknown>();
@@ -589,13 +605,13 @@ describe("review regression cases", () => {
     );
     await user().click(screen.getByRole("button", { name: "Confirm removal" }));
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(screen.getByRole("status").textContent).toContain(
-      "keep using Orbit",
+    expect(screen.getByText(/keep using Orbit/).getAttribute("role")).toBe(
+      "status",
     );
     await user().click(screen.getByRole("button", { name: "Review activity" }));
     fireEvent.keyDown(document, { key: ",", ctrlKey: true });
-    expect(screen.getByRole("status").textContent).toContain(
-      "Removing worktrees",
+    expect(screen.getByText(/Removing worktrees…/).getAttribute("role")).toBe(
+      "status",
     );
     await act(async () =>
       removal.resolve([
@@ -636,12 +652,14 @@ describe("deterministic model controls", () => {
       screen.getByRole("textbox", { name: "Message Codex" }),
       "Question during cold resume",
     );
-    await user().click(screen.getByRole("button", { name: "Send message" }));
+    await user().click(screen.getByRole("button", { name: "Send" }));
     expect(screen.getByText("Sending…")).toBeTruthy();
     expect(
-      screen.getByText("Question during cold resume", { selector: "p" }),
+      within(screen.getByRole("article", { name: "You" })).getByText(
+        "Question during cold resume",
+      ),
     ).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Send message" })).toHaveProperty(
+    expect(screen.getByRole("button", { name: "Send" })).toHaveProperty(
       "disabled",
       true,
     );
@@ -654,14 +672,14 @@ describe("deterministic model controls", () => {
     expect(screen.getByText("Send failed")).toBeTruthy();
     expect(
       screen.getByRole("textbox", { name: "Message Codex" }),
-    ).toHaveProperty("value", "Question during cold resume");
+    ).toHaveProperty("textContent", "Question during cold resume");
     fireEvent.keyDown(document, { key: ",", ctrlKey: true });
     fireEvent.keyDown(document, { key: "k", ctrlKey: true });
     await user().click(screen.getByRole("tab", { name: /Review chat/ }));
     expect(screen.getByText("Send failed")).toBeTruthy();
     expect(
       screen.getByRole("textbox", { name: "Message Codex" }),
-    ).toHaveProperty("value", "Question during cold resume");
+    ).toHaveProperty("textContent", "Question during cold resume");
   });
   it("shows unresolved placeholders, blocks new reviews, and saves model plus supported default atomically", async () => {
     snapshot.settings.model = "";
@@ -680,18 +698,18 @@ describe("deterministic model controls", () => {
     fireEvent.keyDown(document, { key: ",", ctrlKey: true });
     const model = screen.getByRole("combobox", { name: /^Model/ });
     const effort = screen.getByRole("combobox", { name: /^Reasoning effort/ });
-    expect(model).toHaveProperty("value", "");
-    expect(effort).toHaveProperty("value", "");
-    expect(
-      screen.getByRole("option", { name: "Choose a model" }),
-    ).toHaveProperty("disabled", true);
+    expect(model).toHaveProperty("textContent", "Choose a model");
+    expect(effort).toHaveProperty("textContent", "Choose an effort");
+    await user().click(model);
+    expect(screen.queryByRole("option", { name: "Choose a model" })).toBeNull();
     expect(screen.queryByRole("option", { name: "Codex default" })).toBeNull();
     expect(screen.queryByRole("option", { name: "Model default" })).toBeNull();
-    await user().selectOptions(model, "second-model");
+    await user().keyboard("{Escape}");
+    await chooseOption(model, "Second model");
     expect(invoke).toHaveBeenCalledWith("update_settings", {
       patch: { model: "second-model", effort: "high" },
     });
-    expect(effort).toHaveProperty("value", "high");
+    expect(effort).toHaveProperty("textContent", "High");
   });
   it("preserves an unavailable explicit selection and permits disabling automation during discovery failure", async () => {
     snapshot.settings.model = "missing-model";
@@ -703,12 +721,13 @@ describe("deterministic model controls", () => {
     await mount();
     fireEvent.keyDown(document, { key: ",", ctrlKey: true });
     expect(screen.getByRole("combobox", { name: /^Model/ })).toHaveProperty(
-      "value",
-      "missing-model",
+      "textContent",
+      "missing-model (unavailable)",
     );
-    expect(
-      screen.getByRole("option", { name: "missing-model (unavailable)" }),
-    ).toHaveProperty("disabled", true);
+    expect(screen.getByRole("combobox", { name: /^Model/ })).toHaveProperty(
+      "disabled",
+      true,
+    );
     expect(
       screen.getByText(/Reviews are blocked: Model discovery failed/),
     ).toBeTruthy();
@@ -749,16 +768,27 @@ describe("deterministic model controls", () => {
     let dialog = screen.getByRole("dialog", { name: "Choose chat model" });
     expect(
       within(dialog).getByRole("combobox", { name: "Chat model" }),
-    ).toHaveProperty("value", snapshot.settings.model);
+    ).toHaveProperty("textContent", snapshot.models[0].displayName);
+    await chooseOption(
+      within(dialog).getByRole("combobox", { name: "Chat reasoning effort" }),
+      "low",
+    );
     await user().click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(
       invoke.mock.calls.some(([cmd]) => cmd === "set_legacy_chat_model"),
     ).toBe(false);
+    act(() => {
+      snapshot.settings.effort = "high";
+      emit();
+    });
     await user().click(
       screen.getByRole("button", { name: "Choose chat model" }),
     );
     dialog = screen.getByRole("dialog", { name: "Choose chat model" });
-    await user().selectOptions(
+    expect(
+      within(dialog).getByRole("combobox", { name: "Chat reasoning effort" }),
+    ).toHaveProperty("textContent", "high");
+    await chooseOption(
       within(dialog).getByRole("combobox", { name: "Chat reasoning effort" }),
       "low",
     );
@@ -768,7 +798,7 @@ describe("deterministic model controls", () => {
     expect((await within(dialog).findByRole("alert")).textContent).toContain(
       "disk full",
     );
-    expect(composer).toHaveProperty("value", "Keep this question");
+    expect(composer).toHaveProperty("textContent", "Keep this question");
     fail = false;
     await user().click(
       within(dialog).getByRole("button", { name: "Save chat model" }),
@@ -785,7 +815,7 @@ describe("deterministic model controls", () => {
     expect(
       screen.queryByRole("button", { name: "Choose chat model" }),
     ).toBeNull();
-    expect(screen.getByRole("button", { name: "Send message" })).toHaveProperty(
+    expect(screen.getByRole("button", { name: "Send" })).toHaveProperty(
       "disabled",
       false,
     );
@@ -810,15 +840,116 @@ describe("deterministic model controls", () => {
     await user().click(screen.getByRole("tab", { name: /Review chat/ }));
     const composer = screen.getByRole("textbox", { name: "Message Codex" });
     await user().type(composer, "Explain this finding");
-    await user().click(screen.getByRole("button", { name: "Send message" }));
+    await user().click(screen.getByRole("button", { name: "Send" }));
     expect((await screen.findByRole("alert")).textContent).toContain(
       "did not confirm",
     );
-    expect(composer).toHaveProperty("value", "Explain this finding");
+    expect(composer).toHaveProperty("textContent", "Explain this finding");
     expect(snapshot.reviews[0].status).toBe("posted");
     expect(snapshot.reviews[0].report).not.toBe("");
     expect(
       screen.getAllByRole("button", { name: /View comment on GitHub/ }).length,
     ).toBeGreaterThan(0);
+  });
+});
+
+describe("Astryx dialog and composer integration", () => {
+  it("returns focus to the publication opener after cancellation", async () => {
+    await mount();
+    const trigger = screen.getByRole("button", { name: "Publish review" });
+    await user().click(trigger);
+    await user().click(
+      within(
+        screen.getByRole("dialog", { name: "Publish review to GitHub" }),
+      ).getByRole("button", { name: "Cancel" }),
+    );
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("keeps publication non-dismissable until the request settles", async () => {
+    const publishing = deferred<void>();
+    invoke.mockImplementation((cmd, args) =>
+      cmd === "publish_review" ? publishing.promise : backend(cmd, args),
+    );
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Publish review" }));
+    await user().click(screen.getByRole("button", { name: "Publish comment" }));
+    const dialog = screen.getByRole("alertdialog", {
+      name: "Publish review to GitHub",
+    });
+    expect(
+      within(dialog).getByRole("button", { name: "Cancel" }),
+    ).toHaveProperty("disabled", true);
+    expect(within(dialog).queryByRole("button", { name: /Close/ })).toBeNull();
+    fireEvent(
+      dialog,
+      new Event("cancel", { bubbles: false, cancelable: true }),
+    );
+    fireEvent.keyDown(document, { key: ",", ctrlKey: true });
+    fireEvent.keyDown(document, { key: "k", ctrlKey: true });
+    expect(screen.getByRole("alertdialog")).toBe(dialog);
+    expect(screen.queryByText("A review flow that fits.")).toBeNull();
+    await act(async () => publishing.reject(Error("Try again later")));
+    expect(await screen.findByRole("dialog")).toBe(dialog);
+    expect(
+      within(dialog).getByRole("button", { name: "Retry publication" }),
+    ).toBeTruthy();
+  });
+  it("ignores navigation shortcuts in the Storage alert dialog and resumes after closing", async () => {
+    invoke.mockImplementation((cmd, args) =>
+      cmd === "get_storage_usage"
+        ? Promise.resolve({
+            stateBytes: 10,
+            worktreeBytes: 20,
+            unrecognizedBytes: 0,
+            unrecognized: [],
+            errors: [],
+            worktrees: [
+              { reviewId: snapshot.reviews[0].id, bytes: 20, removable: true },
+            ],
+          })
+        : backend(cmd, args),
+    );
+    await mount();
+    fireEvent.keyDown(document, { key: ",", ctrlKey: true });
+    await user().click(screen.getByRole("button", { name: "Inspect storage" }));
+    await user().click(await screen.findByRole("checkbox"));
+    await user().click(
+      screen.getByRole("button", { name: "Remove worktrees (1)" }),
+    );
+    const dialog = screen.getByRole("alertdialog", {
+      name: "Remove selected worktrees",
+    });
+    fireEvent.keyDown(document, { key: "k", metaKey: true });
+    expect(screen.getByRole("alertdialog")).toBe(dialog);
+    expect(screen.queryByPlaceholderText("Search pull requests…")).toBeNull();
+    await user().click(within(dialog).getByRole("button", { name: "Cancel" }));
+    fireEvent.keyDown(document, { key: "k", metaKey: true });
+    expect(document.activeElement).toBe(
+      screen.getByPlaceholderText("Search pull requests…"),
+    );
+  });
+  it("retains Enter-submitted drafts on failure and clears only after acceptance", async () => {
+    let fail = true;
+    invoke.mockImplementation((cmd, args) =>
+      cmd === "send_message" && fail
+        ? Promise.reject(Error("Cannot resume chat"))
+        : backend(cmd, args),
+    );
+    await mount();
+    await user().click(screen.getByRole("tab", { name: /Review chat/ }));
+    const composer = screen.getByRole("textbox", { name: "Message Codex" });
+    await user().type(composer, "Keep on failure");
+    fireEvent.keyDown(composer, { key: "Enter" });
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Cannot resume chat",
+    );
+    expect(composer.textContent).toBe("Keep on failure");
+    fail = false;
+    fireEvent.keyDown(composer, { key: "Enter" });
+    await waitFor(() => expect(composer.textContent).toBe(""));
+    expect(
+      invoke.mock.calls.filter(([cmd]) => cmd === "send_message"),
+    ).toHaveLength(2);
   });
 });

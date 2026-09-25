@@ -2,7 +2,21 @@ import { useEffect, useRef, useState } from "react";
 import { HardDrive, RefreshCw, Trash2 } from "lucide-react";
 import { useOrbit, desktop } from "./store";
 import { activeStatuses, type StorageUsage } from "./types";
-import { Modal } from "./Modal";
+import {
+  AlertDialog,
+  Banner,
+  Button,
+  Card,
+  CheckboxList,
+  CheckboxListItem,
+  Grid,
+  Heading,
+  HStack,
+  List,
+  ListItem,
+  Text,
+  VStack,
+} from "@astryxdesign/core";
 
 export function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -73,219 +87,193 @@ export function Storage() {
       : id;
   };
   return (
-    <section className="settings-section storage-section">
-      <div className="section-heading">
-        <h3>
-          <HardDrive size={16} /> Storage
-        </h3>
-        {open ? (
-          <button
-            className="text-button"
-            disabled={scanning || removing}
-            onClick={() => void refresh()}
-          >
-            <RefreshCw size={14} />
-            {scanning ? "Scanning…" : "Refresh storage"}
-          </button>
-        ) : (
-          <button
-            className="text-button"
+    <Card>
+      <VStack gap={4}>
+        <HStack hAlign="between" vAlign="center">
+          <HStack gap={2} vAlign="center">
+            <HardDrive aria-hidden />
+            <Heading level={3}>Storage</Heading>
+          </HStack>
+          <Button
+            label={
+              open
+                ? scanning
+                  ? "Scanning…"
+                  : "Refresh storage"
+                : "Inspect storage"
+            }
+            variant="ghost"
+            icon={<RefreshCw />}
+            isLoading={scanning}
+            isDisabled={scanning || removing}
             onClick={() => {
               setOpen(true);
               void refresh();
             }}
-          >
-            Inspect storage
-          </button>
+          />
+        </HStack>
+        <Text color="secondary">
+          Remove inactive review worktrees to free space. Reports and
+          conversations stay available.
+        </Text>
+        {removing && (
+          <Text role="status">
+            Removing worktrees… You can keep using Orbit while cleanup finishes.
+          </Text>
         )}
-      </div>
-      <p className="muted">
-        Remove inactive review worktrees to free space. Reports and
-        conversations stay available.
-      </p>
-      {removing && (
-        <p role="status">
-          Removing worktrees… You can keep using Orbit while cleanup finishes.
-        </p>
-      )}
-      {cleanup.error && (
-        <p role="alert" className="inline-error">
-          {cleanup.error}
-        </p>
-      )}
-      {open && (
-        <>
-          {!desktop && (
-            <p className="action-notice">
-              Demo storage sizes and cleanup are simulated.
-            </p>
-          )}
-          {error && (
-            <div role="alert" className="inline-error">
-              {error}{" "}
-              <button className="text-button" onClick={() => void refresh()}>
-                Retry scan
-              </button>
-            </div>
-          )}
-          {usage && (
-            <>
-              <div className="storage-totals">
-                <span>
-                  Saved state <strong>{formatBytes(usage.stateBytes)}</strong>
-                </span>
-                <span>
-                  Review worktrees{" "}
-                  <strong>{formatBytes(usage.worktreeBytes)}</strong>
-                </span>
-                <span>
-                  Unrecognized entries{" "}
-                  <strong>{formatBytes(usage.unrecognizedBytes)}</strong>
-                </span>
-              </div>
-              <small>
-                Estimated file sizes; symlinks are not followed. Source clones
-                and Codex’s own data are excluded. Unrecognized entries cannot
-                be removed here.
-              </small>
-              {usage.errors.map((e, i) => (
-                <p className="inline-error" role="alert" key={i}>
-                  Incomplete scan: {e}
-                </p>
-              ))}
-              <div className="storage-list">
-                {usage.worktrees.map((w) => {
-                  const r = snapshot.reviews.find((r) => r.id === w.reviewId);
-                  return (
-                    <label className="storage-row" key={w.reviewId}>
-                      <input
-                        type="checkbox"
-                        checked={
-                          selected.includes(w.reviewId) && allowed(w.reviewId)
-                        }
-                        disabled={
-                          scanning ||
-                          removing ||
-                          !w.removable ||
-                          !allowed(w.reviewId)
-                        }
-                        onChange={(e) =>
-                          setSelected((ids) =>
-                            e.target.checked
-                              ? [...ids, w.reviewId]
-                              : ids.filter((id) => id !== w.reviewId),
-                          )
-                        }
-                      />
-                      <span>
-                        {describe(w.reviewId)}
-                        <small>
-                          {w.error
+        {cleanup.error && <Banner status="error" title={cleanup.error} />}
+        {open && (
+          <>
+            {!desktop && (
+              <Text color="secondary">
+                Demo storage sizes and cleanup are simulated.
+              </Text>
+            )}
+            {error && (
+              <Banner
+                status="error"
+                title={error}
+                endContent={
+                  <Button label="Retry scan" onClick={() => void refresh()} />
+                }
+              />
+            )}
+            {usage && (
+              <>
+                <Grid columns={{ minWidth: 160 }} gap={4}>
+                  {[
+                    ["Saved state", usage.stateBytes],
+                    ["Review worktrees", usage.worktreeBytes],
+                    ["Unrecognized entries", usage.unrecognizedBytes],
+                  ].map(([label, bytes]) => (
+                    <VStack gap={1} key={label}>
+                      <Text color="secondary">{label}</Text>
+                      <Text type="large" weight="semibold">
+                        {formatBytes(Number(bytes))}
+                      </Text>
+                    </VStack>
+                  ))}
+                </Grid>
+                <Text type="supporting" color="secondary">
+                  Estimated file sizes; symlinks are not followed. Source clones
+                  and Codex’s own data are excluded. Unrecognized entries cannot
+                  be removed here.
+                </Text>
+                {usage.errors.map((e, i) => (
+                  <Banner
+                    key={i}
+                    status="error"
+                    title={`Incomplete scan: ${e}`}
+                  />
+                ))}
+                <CheckboxList
+                  label="Review worktrees"
+                  isLabelHidden
+                  hasDividers
+                  value={selected.filter(allowed)}
+                  onChange={setSelected}
+                  isDisabled={scanning || removing}
+                >
+                  {usage.worktrees.map((w) => {
+                    const r = snapshot.reviews.find((r) => r.id === w.reviewId);
+                    return (
+                      <CheckboxListItem
+                        key={w.reviewId}
+                        value={w.reviewId}
+                        label={describe(w.reviewId)}
+                        isDisabled={!w.removable || !allowed(w.reviewId)}
+                        description={
+                          (w.error
                             ? `Incomplete scan: ${w.error}`
                             : r?.cleanupPending
                               ? "Removing worktree…"
                               : !allowed(w.reviewId)
                                 ? "Run is active or its workspace is unavailable"
-                                : "Removing this worktree ends follow-ups for this run."}
-                          {r?.cleanupError &&
-                            ` Last cleanup failed: ${r.cleanupError}`}
-                        </small>
-                      </span>
-                      <strong>{formatBytes(w.bytes)}</strong>
-                    </label>
-                  );
-                })}
-                {!usage.worktrees.length && <p>No saved review worktrees.</p>}
-              </div>
-              {usage.unrecognized.length > 0 && (
-                <details className="unrecognized-storage">
-                  <summary>Unrecognized entries (kept)</summary>
-                  <ul>
+                                : "Removing this worktree ends follow-ups for this run.") +
+                          (r?.cleanupError
+                            ? ` Last cleanup failed: ${r.cleanupError}`
+                            : "")
+                        }
+                        endContent={
+                          <Text weight="semibold">{formatBytes(w.bytes)}</Text>
+                        }
+                      />
+                    );
+                  })}
+                </CheckboxList>
+                {!usage.worktrees.length && (
+                  <Text>No saved review worktrees.</Text>
+                )}
+                {usage.unrecognized.length > 0 && (
+                  <List
+                    header={
+                      <Heading level={4}>Unrecognized entries (kept)</Heading>
+                    }
+                  >
                     {usage.unrecognized.map((entry) => (
-                      <li key={entry.name}>
-                        {entry.name} · {formatBytes(entry.bytes)}
-                        {entry.error && (
-                          <span role="alert">
-                            {" "}
-                            Incomplete scan: {entry.error}
-                          </span>
-                        )}
-                      </li>
+                      <ListItem
+                        key={entry.name}
+                        label={entry.name}
+                        endContent={<Text>{formatBytes(entry.bytes)}</Text>}
+                        description={
+                          entry.error ? (
+                            <Text role="alert">
+                              Incomplete scan: {entry.error}
+                            </Text>
+                          ) : undefined
+                        }
+                      />
                     ))}
-                  </ul>
-                </details>
-              )}
-              <button
-                className="button secondary"
-                disabled={!chosen.length || scanning || removing}
-                onClick={() => setConfirm(true)}
-              >
-                <Trash2 size={14} />
-                Remove worktrees ({chosen.length})
-              </button>
-            </>
-          )}
-          {results.length > 0 && (
-            <div aria-live="polite" className="cleanup-results">
-              {results.map((r) => (
-                <p key={r.reviewId} role={r.error ? "alert" : undefined}>
-                  {describe(r.reviewId)}:{" "}
-                  {r.error || "Worktree removed; report and chat retained."}
-                  {r.warning && <span role="alert"> {r.warning}</span>}
-                </p>
-              ))}
-            </div>
-          )}
-        </>
-      )}
-      {confirm && (
-        <Modal
+                  </List>
+                )}
+                <HStack>
+                  <Button
+                    label={`Remove worktrees (${chosen.length})`}
+                    icon={<Trash2 />}
+                    isDisabled={!chosen.length || scanning || removing}
+                    onClick={() => setConfirm(true)}
+                  />
+                </HStack>
+              </>
+            )}
+            {!!results.length && (
+              <VStack gap={2} aria-live="polite">
+                {results.map((r) => (
+                  <VStack gap={1} key={r.reviewId}>
+                    <Text role={r.error ? "alert" : undefined}>
+                      {describe(r.reviewId)}:{" "}
+                      {r.error || "Worktree removed; report and chat retained."}
+                    </Text>
+                    {r.warning && <Text role="alert">{r.warning}</Text>}
+                  </VStack>
+                ))}
+              </VStack>
+            )}
+          </>
+        )}
+        <AlertDialog
+          isOpen={confirm}
+          onOpenChange={setConfirm}
           title="Remove selected worktrees"
-          onClose={() => setConfirm(false)}
-          error={error}
-        >
-          <p>
-            Remove {chosen.length} worktree{chosen.length === 1 ? "" : "s"},
-            approximately {formatBytes(estimate)}? All files inside them,
-            including dependencies and local changes, will be removed. Reports
-            and chats stay readable, but these runs will no longer support
-            follow-ups.
-          </p>
-          <ul>
-            {chosen.map((w) => (
-              <li key={w.reviewId}>{describe(w.reviewId)}</li>
-            ))}
-          </ul>
-          <div className="modal-actions">
-            <button
-              className="button secondary"
-              disabled={removing}
-              onClick={() => setConfirm(false)}
-            >
-              Cancel
-            </button>
-            <button
-              className="button primary"
-              disabled={removing || !chosen.length}
-              onClick={async () => {
-                const ids = chosen.map((w) => w.reviewId);
-                setConfirm(false);
-                setError(null);
-                const result = await removeWorktrees(ids);
-                if (!mounted.current) return;
-                if (result.ok) {
-                  setSelected(
-                    result.data.filter((r) => r.error).map((r) => r.reviewId),
-                  );
-                  await refresh();
-                }
-              }}
-            >
-              {removing ? "Removing…" : "Confirm removal"}
-            </button>
-          </div>
-        </Modal>
-      )}
-    </section>
+          width={580}
+          description={`Remove ${chosen.length} worktree${chosen.length === 1 ? "" : "s"}, approximately ${formatBytes(estimate)}? All files inside them, including dependencies and local changes, will be removed. Reports and chats stay readable, but these runs will no longer support follow-ups. Selected runs: ${chosen.map((w) => describe(w.reviewId)).join("; ") || "None (selection is no longer eligible)."}`}
+          actionLabel="Confirm removal"
+          onAction={async () => {
+            if (removing || !chosen.length) return;
+            const ids = chosen.map((w) => w.reviewId);
+            setConfirm(false);
+            setError(null);
+            const result = await removeWorktrees(ids);
+            if (!mounted.current) return;
+            if (result.ok) {
+              setSelected(
+                result.data.filter((r) => r.error).map((r) => r.reviewId),
+              );
+              await refresh();
+            }
+          }}
+        />
+      </VStack>
+    </Card>
   );
 }
