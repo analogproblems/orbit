@@ -301,19 +301,10 @@ pub async fn existing_comment(pr: &PullRequest, r: &Review) -> Result<Option<Str
 /// The PR comment for a review, including the marker used to reconcile retries.
 fn comment_body(r: &Review) -> String {
     let marker = format!("<!-- orbit-review:{} -->", r.id);
-    let model = if r.model.is_empty() {
-        "Codex default"
-    } else {
-        &r.model
-    };
-    let effort = if r.effort.is_empty() {
-        "default"
-    } else {
-        &r.effort
-    };
+    let selection = crate::models::report_selection_label(r);
     format!(
         "{marker}\n## Orbit · Codex review\n\n\
-         Reviewed head `{}` against base `{}`.\n\n{}\n\n---\nModel: {model} · Effort: {effort}",
+         Reviewed head `{}` against base `{}`.\n\n{}\n\n---\n{selection}",
         r.head_sha, r.base_sha, r.report
     )
 }
@@ -383,14 +374,27 @@ mod tests {
         r.id = "rid".into();
         r.report = "No findings.".into();
         let expected = format!(
-            "<!-- orbit-review:rid -->\n## Orbit · Codex review\n\nReviewed head `{}` against base `{}`.\n\nNo findings.\n\n---\nModel: Codex default · Effort: default",
+            "<!-- orbit-review:rid -->\n## Orbit · Codex review\n\nReviewed head `{}` against base `{}`.\n\nNo findings.\n\n---\nModel: not recorded · Effort: not recorded",
             "a".repeat(40),
             "b".repeat(40)
         );
         assert_eq!(comment_body(&r), expected);
         r.model = "gpt-x".into();
         r.effort = "high".into();
-        assert!(comment_body(&r).ends_with("Model: gpt-x · Effort: high"));
+        assert!(comment_body(&r).ends_with(
+            "Model: gpt-x (requested, unverified) · Effort: high (requested, unverified)"
+        ));
+        r.legacy_chat_selection = Some(ModelSelection {
+            model: "chat-only".into(),
+            effort: "low".into(),
+        });
+        assert!(!comment_body(&r).contains("chat-only"));
+        r.confirmed_review_selection = Some(ModelSelection {
+            model: "confirmed-report".into(),
+            effort: "medium".into(),
+        });
+        assert!(comment_body(&r)
+            .ends_with("Model: confirmed-report (confirmed) · Effort: medium (confirmed)"));
     }
     #[tokio::test]
     async fn lists_up_to_exactly_a_thousand_items() {

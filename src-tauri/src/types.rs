@@ -1,3 +1,4 @@
+pub use crate::models::ModelSelection;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -51,6 +52,14 @@ pub struct RepositorySummary {
     pub description: String,
     pub pushed_at: String,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MessageDelivery {
+    Pending,
+    Sent,
+    Failed,
+    Interrupted,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Message {
@@ -58,6 +67,10 @@ pub struct Message {
     pub role: String,
     pub text: String,
     pub created_at: String,
+    #[serde(default)]
+    pub confirmed_selection: Option<ModelSelection>,
+    #[serde(default)]
+    pub delivery: Option<MessageDelivery>,
 }
 impl Message {
     pub fn new(role: &str, text: impl Into<String>) -> Self {
@@ -66,6 +79,8 @@ impl Message {
             role: role.into(),
             text: text.into(),
             created_at: now(),
+            confirmed_selection: None,
+            delivery: None,
         }
     }
 }
@@ -79,6 +94,10 @@ pub struct Review {
     pub status: String,
     pub model: String,
     pub effort: String,
+    #[serde(default)]
+    pub confirmed_review_selection: Option<ModelSelection>,
+    #[serde(default)]
+    pub legacy_chat_selection: Option<ModelSelection>,
     pub thread_id: Option<String>,
     pub turn_id: Option<String>,
     pub worktree: Option<String>,
@@ -126,6 +145,8 @@ impl Review {
             status: "queued".into(),
             model: settings.model.clone(),
             effort: settings.effort.clone(),
+            confirmed_review_selection: None,
+            legacy_chat_selection: None,
             thread_id: None,
             turn_id: None,
             worktree: None,
@@ -151,6 +172,15 @@ impl Review {
         let Some(before) = self.before_follow_up.take() else {
             return false;
         };
+        for message in &mut self.messages {
+            if matches!(message.delivery, Some(MessageDelivery::Pending)) {
+                message.delivery = Some(if error.is_some() {
+                    MessageDelivery::Failed
+                } else {
+                    MessageDelivery::Interrupted
+                });
+            }
+        }
         self.status = before.status;
         self.error = error.or(before.error);
         self.updated_at = now();
@@ -325,6 +355,9 @@ pub struct Snapshot {
     pub last_poll: Option<String>,
     pub polling: bool,
     pub codex_ready: bool,
+    pub model_catalog_ready: bool,
+    pub model_configuration_error: Option<String>,
+    pub model_selection_notice: Option<String>,
 }
 pub fn eligible(pr: &PullRequest, s: &Snapshot) -> bool {
     !pr.draft

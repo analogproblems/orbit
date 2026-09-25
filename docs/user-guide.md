@@ -116,7 +116,7 @@ Select a PR to see its description, branches, change counts, and labels. Use the
 
 **Start review** creates a run with its own chat and worktree. **Review again** creates another run; it does not replace the previous one. Only one queued or active review is allowed for a PR at a time. Manual reviews can include drafts and PRs that Autopilot would skip.
 
-Each run captures the selected model, effort, head commit, and base commit when queued. Preparation fetches and verifies the head and reviews against the captured base. Changing model or effort settings does not update an existing queued run.
+Each run captures an explicit model, effort, head commit, and base commit when queued. Orbit validates the model/effort against the connected catalog before queueing and again before preparation. Preparation fetches and verifies the head and reviews against the captured base. Codex must report the exact requested model and effort, and Orbit must save that confirmation, before review inference starts. Missing, null, or mismatched confirmation stops preparation with an error. Changing model or effort settings does not update an existing queued run.
 
 | Status                | Meaning and next action                                                                                                              |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
@@ -142,11 +142,21 @@ The **Execution logs** terminal button reveals system messages, setup output, wo
 
 The approval dialog shows the reason, working directory, and request details. **Approve once** accepts that request; **Deny** declines it. Closing the dialog leaves the request pending. A run awaiting approval still occupies a concurrency slot. Unsupported interactive request types are declined or rejected rather than automatically granted.
 
-After a turn finishes, type into **Message Codex**. **Enter** sends; **Shift+Enter** inserts a new line. Follow-ups use the same chat and worktree, require a free concurrency slot, and are limited to 32,000 characters. They cannot run during publication or while the worktree is being removed or has been removed. The chat explains when sending is blocked by a running turn, publication, missing chat/worktree, disconnected Codex, or occupied slots. Composed text survives page navigation while you wait. Enter and the send button enforce the same rules. **Review again** appears when the open PR can accept a new run.
+After a turn finishes, type into **Message Codex**. **Enter** sends; **Shift+Enter** inserts a new line. Follow-ups use the same chat and worktree, require a free concurrency slot, and are limited to 32,000 characters. They cannot run during publication or while the worktree is being removed or has been removed. The chat explains when sending is blocked by a running turn, publication, missing chat/worktree, disconnected Codex, unresolved or unavailable model settings, or occupied slots. Composed text survives page navigation while you wait. Enter and the send button enforce the same rules. **Review again** appears when the open PR can accept a new run.
 
 A normal follow-up adds chat messages; publishing still uses the stored review report, not the newest chat answer. Stopping or failing a follow-up preserves the prior review outcome, including an existing publication. Use **Review again** to get a new review of changed commits.
 
-The **Review environment** panel shows current workspace model/effort preferences. The run header and chat footer show the choices captured for that run. **Codex default** and **Model default** mean Orbit delegates the choice; they do not identify a resolved model or effort in the saved report metadata.
+The **New review environment** panel shows current workspace settings for future runs. The run header and **Report selection** line describe the original report. The composer shows the chat's pinned selection; each new follow-up's user message records its confirmed selection. Exports and newly published comments use confirmed report metadata when available. Historical values are labeled **requested, unverified** or **not recorded**. Orbit never infers an old report's settings from current Settings or a later chat.
+
+Every follow-up explicitly resumes the chat with its pinned model and effort. Orbit verifies Codex's response, saves the confirmation, and starts the turn with the same explicit pair. Your question appears immediately with **Sending…** while the chat resumes. Confirmation is attached to that same message after verification. A mismatch or failed save prevents sending; the question stays in the chat as **Send failed**, and the typed text remains in the composer for retry. Stopping before the send is confirmed marks the question **Sending interrupted**. An unavailable pinned selection requires reconnecting to restore access or starting a new review with a different selection.
+
+### Older chats: one-time model selection
+
+A chat with both original model and effort recorded reuses them for follow-ups and verifies them on resume. Its original report stays unverified.
+
+If either value is missing, **Choose chat model** appears beside the composer. Select a catalog model and supported effort; valid workspace settings are preselected when available. **Cancel** leaves the chat unchanged. **Save chat model** persists the choice without sending your question, and a save error stays in the dialog for retry. After saving, the choice is pinned for that chat. It does not fill in or change the original report's metadata.
+
+Before the first follow-up with that choice, Orbit unsubscribes its idle thread so Codex can apply the overrides to a loaded chat. If another subscriber prevents the change, Orbit rejects the mismatched response before sending. Reconnect and retry once the other subscriber is no longer holding the thread. Model selection is unavailable while the run is active, publishing, or its worktree is unavailable or being removed.
 
 ## Publish findings
 
@@ -196,21 +206,27 @@ Trust only accounts whose PRs you intend to review automatically. Anyone able to
 
 ## Settings and when changes take effect
 
-| Setting                                | Initial value | Available choices                                                                                                 |
-| -------------------------------------- | ------------- | ----------------------------------------------------------------------------------------------------------------- |
-| Model                                  | Codex default | Models returned by the connected Codex app-server.                                                                |
-| Reasoning effort                       | Model default | Efforts supported by the selected/default model. Changing the model resets this selection to default.             |
-| Automatically review new pull requests | Off           | On/off; also controlled by the header.                                                                            |
-| Automatically publish findings         | Off           | On/off; applies to automatic runs.                                                                                |
-| Concurrent reviews                     | 2             | 1–4 slots, shared by preparation, reviewing, approvals, and follow-ups. Lowering it does not cancel running work. |
-| Poll interval                          | 2 minutes     | 30 seconds; 1, 2, 5, 10, 30, or 60 minutes.                                                                       |
-| Trusted accounts                       | Empty         | Up to 50 account logins.                                                                                          |
+| Setting                                | Initial value                      | Available choices                                                                                                 |
+| -------------------------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Model                                  | Resolved on connection             | Models returned by the connected Codex app-server.                                                                |
+| Reasoning effort                       | Selected model’s supported default | Explicit efforts supported by the selected model. Changing the model saves its supported default effort.          |
+| Automatically review new pull requests | Off                                | On/off; also controlled by the header.                                                                            |
+| Automatically publish findings         | Off                                | On/off; applies to automatic runs.                                                                                |
+| Concurrent reviews                     | 2                                  | 1–4 slots, shared by preparation, reviewing, approvals, and follow-ups. Lowering it does not cancel running work. |
+| Poll interval                          | 2 minutes                          | 30 seconds; 1, 2, 5, 10, 30, or 60 minutes.                                                                       |
+| Trusted accounts                       | Empty                              | Up to 50 account logins.                                                                                          |
 
-Settings switches and selections save immediately. Changing the model also resets effort to **Model default** in the same update. **Saving…**, **Saved**, or an error with **Retry saving** shows the result. **Saved** clears after 2.5 seconds; errors remain until resolved. After a failed write, controls return to the active values. The unapplied request is listed beside its error and **Retry saving**, and survives page navigation along with typed account input. Retry after resolving the failure. If a model change fails, effort stays disabled until you retry successfully or choose a model again; this prevents a later retry from resetting a newly selected effort.
+Settings switches and selections save immediately. Changing the model saves that model and its explicit supported default effort in the same update. **Choose a model** and **Choose an effort** are disabled placeholders, not executable default choices. **Saving…**, **Saved**, or an error with **Retry saving** shows the result. **Saved** clears after 2.5 seconds; errors remain until resolved. After a failed write, controls return to the active values. The unapplied request is listed beside its error and **Retry saving**, and survives page navigation along with typed account input. Retry after resolving the failure. If a model change fails, effort stays disabled until you retry successfully or choose a model again; this prevents a later retry from resetting a newly selected effort.
 
 The header Autopilot switch, repository-card automation switches, and PR **Trust** button also save immediately. Updates change only their intended fields. Global Settings changes are ordered separately from repository changes, so slow checkout validation does not delay turning Autopilot off. Repository dialogs retain **Save repository** because their fields form one configuration that must be validated together.
 
-Choosing a different nondefault model or effort requires a model list from a connected Codex service. Connection trouble does not prevent switching automation off.
+On connection, Orbit reads your effective Codex configuration when either workspace value is empty. An empty model resolves to the configured model if it appears in the catalog, otherwise to the catalog's unique default model. An empty effort uses your configured `model_reasoning_effort` when the selected model supports it, otherwise that model's supported default effort. This also applies when you already have an explicit model and only effort is missing. If only effort is missing and Codex's configuration cannot be read, Orbit uses the supported model default. If the model is also missing, a failed config read blocks resolution. Missing or unsupported fallback defaults block resolution too.
+
+Orbit saves both values atomically and displays a notice identifying where each value came from: your saved Orbit selection, your Codex configuration, or a model/catalog default. The notice explains fallbacks, including an unsupported configured effort or unreadable configuration, and clears after the next successful connection. There is no hard-coded latest model. The browser demo mirrors this with a simulated Codex configuration.
+
+Orbit never replaces a nonempty explicit selection automatically. A missing model, unsupported effort, ambiguous catalog default, discovery failure, or failed save blocks new reviews with an explanation under **Review agent**. Codex can show **Connected** while review settings still need attention. **Reconnect** refreshes the model catalog and retries resolution even if the app-server is already connected. The last verified catalog remains usable during the refresh; an actual discovery failure blocks execution until a successful refresh. Choose valid settings to correct an unavailable selection. Unrelated settings, repository controls, and switching automation off remain available.
+
+Orbit requests explicit settings and rejects mismatched responses instead of asking for provider model fallback. It does not edit your Codex configuration. The integration is based on Codex CLI **0.156.1** and the [official app-server documentation](https://developers.openai.com/codex/app-server). The browser demo uses a simulated explicit model and the same pinning and legacy-selector workflow; it does not discover your account's models.
 
 ## Restart, retained data, and cleanup
 
@@ -228,7 +244,7 @@ After a restart:
 - Pending approvals are cleared and service connections are re-established.
 - Confirmed manual worktree removals recorded as pending resume, including for open PRs. Interrupted automatic cleanup first rechecks whether the PR is closed or its repository is disconnected; a reopened PR keeps its worktree. Older pending records without a removal type also receive this conservative check. A failed cleanup keeps the path and exposes its error for retry. Recovery runs separately from initial inbox sync.
 
-Finished worktrees are cleaned up after startup or scheduled syncs when the PR is confirmed closed/merged, or its repository has been disconnected. Automatic sweeps skip active runs and busy Git operations, trying again on a later sweep. Manual removal can wait for other Git work. Preparation failures or cancellations also trigger cleanup; stopping preparation does not interrupt cleanup already dispatched. Chats remain readable, but a removed worktree cannot support further follow-ups; a new run requires an open PR in a connected repository.
+Finished worktrees are cleaned up after startup or scheduled syncs when the PR is confirmed closed/merged, or its repository has been disconnected. Automatic sweeps skip active runs and busy Git operations, trying again on a later sweep. Manual removal can wait for other Git work. Preparation failures or cancellations also trigger cleanup; stopping preparation does not interrupt cleanup already dispatched. If Codex creates a thread before preparation is stopped or its model confirmation is rejected, Orbit archives the unused thread. If archiving fails, Orbit tries to unsubscribe and records the thread ID in the chat. Chats remain readable, but a removed worktree cannot support further follow-ups; a new run requires an open PR in a connected repository.
 
 Completed runs for PRs that remain open retain their worktrees, including older runs, until you remove them manually. History and worktrees can therefore grow with use. Do not store independent work in review worktrees: cleanup can remove their contents.
 

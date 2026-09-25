@@ -1,11 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { freshDemo } from "./demo";
+import reportLabelCases from "../test-fixtures/report-selection-labels.json";
 import {
   reviewDisplayStatus,
   followUpUnavailable,
   canStartReview,
   canPublish,
   publishTarget,
+  reportSelectionLabel,
 } from "./types";
 
 describe("derived review eligibility", () => {
@@ -92,3 +94,58 @@ describe("derived review eligibility", () => {
     ).toBe(false);
   });
 });
+
+describe("model eligibility and truthful metadata", () => {
+  it("blocks unresolved workspace settings while leaving a valid historical chat independent", () => {
+    const s = freshDemo(),
+      r = s.reviews[0];
+    s.settings.model = "missing";
+    expect(canStartReview(s, r.prId)).toBe(false);
+    expect(followUpUnavailable(s, r)).toBeNull();
+    expect(followUpUnavailable(s, { ...r, model: "missing" })).toContain(
+      "pinned",
+    );
+    expect(followUpUnavailable(s, { ...r, effort: "unsupported" })).toContain(
+      "does not support",
+    );
+    expect(followUpUnavailable(s, { ...r, model: "" })).toContain(
+      "Choose a chat model",
+    );
+    expect(followUpUnavailable(s, { ...r, effort: "" })).toContain(
+      "Choose a chat model",
+    );
+    s.modelCatalogReady = false;
+    expect(followUpUnavailable(s, r)).toContain("Model discovery");
+    expect(canStartReview(s, r.prId)).toBe(false);
+  });
+});
+
+it("labels reports using only original requested or confirmed report metadata", () => {
+  const r = freshDemo().reviews[0];
+  r.confirmedReviewSelection = undefined;
+  r.legacyChatSelection = { model: "later-chat", effort: "low" };
+  expect(reportSelectionLabel(r)).toContain("requested, unverified");
+  expect(reportSelectionLabel(r)).not.toContain("later-chat");
+  r.model = "";
+  r.effort = "";
+  expect(reportSelectionLabel(r)).toBe(
+    "Model: not recorded · Effort: not recorded",
+  );
+  r.confirmedReviewSelection = { model: "report-model", effort: "high" };
+  expect(reportSelectionLabel(r)).toBe(
+    "Model: report-model (confirmed) · Effort: high (confirmed)",
+  );
+});
+
+it.each(reportLabelCases)(
+  "uses the shared UI and export format: $label",
+  (testCase) => {
+    expect(
+      reportSelectionLabel({
+        ...freshDemo().reviews[0],
+        ...testCase,
+        legacyChatSelection: { model: "later-chat", effort: "high" },
+      }),
+    ).toBe(testCase.label);
+  },
+);
