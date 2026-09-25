@@ -394,6 +394,7 @@ async function demoAction(
         role: "user",
         text: args.text as string,
         confirmedSelection: chatSelection(r),
+        delivery: "sent",
         createdAt: new Date().toISOString(),
       },
       {
@@ -461,6 +462,7 @@ function resolveDemoSelection() {
       selection.effort !== demo.settings.effort
     )
       demo.modelSelectionNotice = `Resolved review selection to ${selection.model} · ${selection.effort}. This explicit selection is saved for new reviews.`;
+    else demo.modelSelectionNotice = undefined;
     Object.assign(demo.settings, selection);
   }
 }

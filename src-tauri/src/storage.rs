@@ -226,9 +226,9 @@ pub fn report(snapshot: &Snapshot, review_id: &str) -> Result<(String, String), 
         pr.number,
         r.head_sha.chars().take(7).collect::<String>()
     );
-    let (model, effort) = crate::models::report_labels(r);
-    let mut body = format!("# Orbit review: {}\n\nPR: {} ({})\n\nCreated: {}\n\nHead: `{}`\n\nBase: `{}`\n\nModel: {} · Effort: {}\n\n",
-        pr.title, r.pr_id, pr.url, r.created_at, r.head_sha, r.base_sha, model, effort);
+    let selection = crate::models::report_selection_label(r);
+    let mut body = format!("# Orbit review: {}\n\nPR: {} ({})\n\nCreated: {}\n\nHead: `{}`\n\nBase: `{}`\n\n{selection}\n\n",
+        pr.title, r.pr_id, pr.url, r.created_at, r.head_sha, r.base_sha);
     if let Some(url) = &r.comment_url {
         body.push_str(&format!("Published comment: {url}\n\n"));
     }

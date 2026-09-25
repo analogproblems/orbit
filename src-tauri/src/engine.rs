@@ -284,8 +284,11 @@ impl Engine {
         self.update(|s| {
             s.codex_ready = true;
             s.codex_error = None;
-            s.model_catalog_ready = false;
-            s.model_configuration_error = Some("Refreshing available models…".into());
+            // A refresh must not invalidate the last verified catalog while
+            // preparations and follow-ups are using it.
+            if !s.model_catalog_ready {
+                s.model_configuration_error = Some("Refreshing available models…".into());
+            }
         })
         .await;
         let _ = self.flush().await;
@@ -321,6 +324,7 @@ impl Engine {
                 let error =
                     format!("Model discovery failed: {error} Reconnect in Settings to retry.");
                 self.update(|s| {
+                    s.model_catalog_ready = false;
                     s.models.clear();
                     s.model_configuration_error = Some(error.clone());
                 })
@@ -349,10 +353,14 @@ impl Engine {
             let selection = models::resolve(&s.settings, &s.models, &config)?;
             let mut next = s.clone();
             next.model_configuration_error = None;
-            if selection != ModelSelection::workspace(&s.settings) {
+            next.model_selection_notice = None;
+            let selection_changed = selection != ModelSelection::workspace(&s.settings);
+            if selection_changed {
                 next.settings.model = selection.model.clone();
                 next.settings.effort = selection.effort.clone();
                 next.model_selection_notice = Some(format!("Resolved review selection to {} · {}. This explicit selection is saved for new reviews.", selection.model, selection.effort));
+            }
+            if selection_changed || next.model_selection_notice != s.model_selection_notice {
                 self.persist(&next).map_err(|e| format!("Resolved model selection was not saved: {e}. Reconnect to retry or choose a selection in Settings."))?;
             }
             *s = next;
@@ -722,22 +730,6 @@ impl Engine {
             }
         }
     }
-    async fn fail(&self, id: &str, error: String) {
-        self.update(|s| {
-            if let Some(r) = s
-                .reviews
-                .iter_mut()
-                .find(|r| r.id == id && active(&r.status))
-            {
-                if !r.end_follow_up(Some(format!("The follow-up failed: {error}"))) {
-                    r.status = "failed".into();
-                    r.error = Some(error);
-                    r.updated_at = now();
-                }
-            }
-        })
-        .await;
-    }
     /// Ends a review whose preparation failed (`error`) or was stopped, and removes
     /// its worktree. Its thread never reviewed anything, so it is detached in the
     /// same update that ends the review: a follow-up cannot start while removal
@@ -1082,7 +1074,7 @@ impl Engine {
             Err("Review was stopped.".into())
         }
     }
-    async fn prepare(&self, id: &str) -> Result<(), String> {
+    async fn prepare(self: &Arc<Self>, id: &str) -> Result<(), String> {
         let s = self.snapshot().await;
         let r = s
             .reviews
@@ -1229,6 +1221,53 @@ impl Engine {
             .await
     }
     async fn start_review_inference(
+        self: &Arc<Self>,
+        id: &str,
+        rpc: &Arc<Rpc>,
+        worktree: &Path,
+        network_access: bool,
+    ) -> Result<(), String> {
+        // Stop may abort the preparation while thread/start is in flight. Keep
+        // ownership of its eventual response so an unused thread is released.
+        let engine = self.clone();
+        let id = id.to_string();
+        let rpc = rpc.clone();
+        let worktree = worktree.to_path_buf();
+        tokio::spawn(async move {
+            engine
+                .start_review_inference_claimed(&id, &rpc, &worktree, network_access)
+                .await
+        })
+        .await
+        .map_err(|e| format!("Review startup failed: {e}"))?
+    }
+    async fn release_unused_thread(&self, id: &str, rpc: &Rpc, thread_id: &str) {
+        if let Err(error) = rpc
+            .request_timeout("thread/archive", json!({"threadId":thread_id}), 10)
+            .await
+        {
+            let detached = rpc
+                .request_timeout("thread/unsubscribe", json!({"threadId":thread_id}), 10)
+                .await;
+            self.update(|s| {
+                if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
+                    r.messages.push(Message::new(
+                        "system",
+                        format!(
+                            "Unused Codex thread {thread_id} could not be archived: {error}. {}",
+                            if detached.is_ok() {
+                                "Orbit unsubscribed from it."
+                            } else {
+                                "Orbit could not unsubscribe from it either."
+                            }
+                        ),
+                    ));
+                }
+            })
+            .await;
+        }
+    }
+    async fn start_review_inference_claimed(
         &self,
         id: &str,
         rpc: &Rpc,
@@ -1262,30 +1301,37 @@ impl Engine {
             "developerInstructions": REVIEWER_INSTRUCTIONS,
         });
         let thread = rpc.request("thread/start", params).await?;
-        selection.verify_response(&thread)?;
         let thread_id = thread["thread"]["id"]
             .as_str()
             .ok_or("Codex did not create a thread")?
             .to_string();
-        // Persist confirmation before asking Codex to infer anything.
-        {
-            let mut state = self.state.lock().await;
-            let mut next = state.clone();
-            let run = next
-                .reviews
-                .iter_mut()
-                .find(|r| r.id == id && r.status == "preparing")
-                .ok_or("Review was stopped.")?;
-            run.thread_id = Some(thread_id.clone());
-            run.confirmed_review_selection = Some(selection);
-            run.status = "reviewing".into();
-            self.persist(&next).map_err(|e| {
-                format!("Could not save confirmed review settings; no review was started: {e}")
-            })?;
-            *state = next;
-            self.changed.store(true, Ordering::SeqCst);
+        let confirmed = async {
+            selection.verify_response(&thread)?;
+            // Persist confirmation before asking Codex to infer anything.
+            {
+                let mut state = self.state.lock().await;
+                let mut next = state.clone();
+                let run = next
+                    .reviews
+                    .iter_mut()
+                    .find(|r| r.id == id && r.status == "preparing")
+                    .ok_or("Review was stopped.")?;
+                run.thread_id = Some(thread_id.clone());
+                run.confirmed_review_selection = Some(selection);
+                run.status = "reviewing".into();
+                self.persist(&next).map_err(|e| {
+                    format!("Could not save confirmed review settings; no review was started: {e}")
+                })?;
+                *state = next;
+                self.changed.store(true, Ordering::SeqCst);
+            }
+            self.live(id).await
         }
-        self.live(id).await?;
+        .await;
+        if let Err(error) = confirmed {
+            self.release_unused_thread(id, rpc, &thread_id).await;
+            return Err(error);
+        }
         let result = rpc
             .request(
                 "review/start",
@@ -1569,11 +1615,26 @@ impl Engine {
         (self.emit)(&s);
         Ok(())
     }
+    async fn pending_message(&self, id: &str, message_id: &str) -> Result<(), String> {
+        let state = self.state.lock().await;
+        if state.reviews.iter().any(|r| {
+            r.id == id
+                && active(&r.status)
+                && r.before_follow_up.is_some()
+                && r.messages
+                    .iter()
+                    .any(|m| m.id == message_id && m.delivery == Some(MessageDelivery::Pending))
+        }) {
+            Ok(())
+        } else {
+            Err("Follow-up was stopped.".into())
+        }
+    }
     pub async fn message(&self, id: &str, text: &str) -> Result<(), String> {
         if text.trim().is_empty() || text.chars().count() > 32000 {
             return Err("Enter a message between 1 and 32,000 characters.".into());
         }
-        let (r, selection) = {
+        let (r, selection, message_id) = {
             let mut s = self.state.lock().await;
             let r = s
                 .reviews
@@ -1599,19 +1660,24 @@ impl Engine {
             });
             r.turn_id = None;
             r.is_review = false;
-            (old, selection)
+            let mut message = Message::new("user", text);
+            message.delivery = Some(MessageDelivery::Pending);
+            let message_id = message.id.clone();
+            r.messages.push(message);
+            self.dirty.store(true, Ordering::SeqCst);
+            (self.emit)(&s);
+            (old, selection, message_id)
         };
-        self.dirty.store(true, Ordering::SeqCst);
         let result = async {
+            self.flush().await.map_err(|e| format!("Could not save the pending question; no message was sent: {e}"))?;
             let rpc = self.client().await?;
             let thread = r.thread_id.as_ref().unwrap();
-            // v0.156.1 can only apply changed overrides to an idle loaded thread
-            // after its subscribers detach. This changes chat settings, not the
-            // historical report. A refusal/mismatch still stops before turn/start.
+            // v0.156.1 applies changed overrides to an idle loaded thread only
+            // after its subscribers detach. Still verify the response exactly.
             if r.legacy_chat_selection.is_some() && !r.messages.iter().any(|m| m.role == "user" && m.confirmed_selection.is_some()) {
                 rpc.request("thread/unsubscribe", json!({"threadId":thread})).await?;
             }
-            self.live(id).await?;
+            self.pending_message(id, &message_id).await?;
             let resume = json!({
                 "threadId": thread,
                 "cwd": r.worktree,
@@ -1627,32 +1693,49 @@ impl Engine {
                 let mut state = self.state.lock().await;
                 let mut next = state.clone();
                 let run = next.reviews.iter_mut().find(|r| r.id == id && r.before_follow_up.is_some() && active(&r.status)).ok_or("Follow-up was stopped.")?;
-                let mut message = Message::new("user", text);
+                let message = run.messages.iter_mut().find(|m| m.id == message_id && m.delivery == Some(MessageDelivery::Pending)).ok_or("Follow-up was stopped.")?;
                 message.confirmed_selection = Some(selection.clone());
-                run.messages.push(message);
                 self.persist(&next).map_err(|e| format!("Could not save confirmed chat settings; no message was sent: {e}"))?;
                 *state = next;
                 self.changed.store(true, Ordering::SeqCst);
             }
-            self.live(id).await?;
+            self.pending_message(id, &message_id).await?;
             let turn = rpc.request("turn/start", json!({
                 "threadId":thread, "model":selection.model, "effort":selection.effort,
                 "input":[{"type":"text","text":text}],
             })).await?;
+            let mut accepted = false;
             self.update(|s| {
-                if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
-                    r.turn_id = turn["turn"]["id"].as_str().map(str::to_owned);
+                if let Some(run) = s.reviews.iter_mut().find(|r| r.id == id) {
+                    if let Some(message) = run.messages.iter_mut().find(|m| m.id == message_id) {
+                        accepted = message.delivery == Some(MessageDelivery::Pending) && active(&run.status) && run.before_follow_up.is_some();
+                        message.delivery = Some(MessageDelivery::Sent);
+                        if accepted { run.turn_id = turn["turn"]["id"].as_str().map(str::to_owned); }
+                    }
                 }
             }).await;
-            if self.live(id).await.is_err() {
+            if !accepted {
                 if let Some(turn_id) = turn["turn"]["id"].as_str() {
                     let _ = rpc.request("turn/interrupt", json!({"threadId": thread, "turnId": turn_id})).await;
                 }
             }
             Ok::<(), String>(())
         }.await;
-        if let Err(e) = &result {
-            self.fail(id, e.clone()).await;
+        if let Err(error) = &result {
+            self.update(|s| {
+                if let Some(run) = s.reviews.iter_mut().find(|r| r.id == id) {
+                    // A late response from a cancelled attempt cannot end a
+                    // newer follow-up or attach confirmation to its question.
+                    if run
+                        .messages
+                        .iter()
+                        .any(|m| m.id == message_id && m.delivery == Some(MessageDelivery::Pending))
+                    {
+                        run.end_follow_up(Some(format!("The follow-up failed: {error}")));
+                    }
+                }
+            })
+            .await;
         }
         let _ = self.flush().await;
         result
@@ -1892,6 +1975,7 @@ fn apply_notification(s: &mut Snapshot, id: &str, method: &str, p: &Value) -> bo
             } else {
                 r.messages.push(Message {
                     confirmed_selection: None,
+                    delivery: None,
                     id: item.into(),
                     role: "agent".into(),
                     text: delta.into(),
@@ -1921,6 +2005,7 @@ fn apply_notification(s: &mut Snapshot, id: &str, method: &str, p: &Value) -> bo
                     } else {
                         r.messages.push(Message {
                             confirmed_selection: None,
+                            delivery: None,
                             id: item_id.into(),
                             role: "agent".into(),
                             text: text.into(),

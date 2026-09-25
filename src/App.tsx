@@ -1378,6 +1378,15 @@ function Chat({
                   {m.role === "agent" && (
                     <span className="agent-label">REVIEW AGENT</span>
                   )}
+                  {m.delivery && m.delivery !== "sent" && (
+                    <span className="agent-label" role="status">
+                      {m.delivery === "pending"
+                        ? "Sending…"
+                        : m.delivery === "failed"
+                          ? "Send failed"
+                          : "Sending interrupted"}
+                    </span>
+                  )}
                   {m.confirmedSelection && (
                     <span className="agent-label">
                       {m.confirmedSelection.model} ·{" "}

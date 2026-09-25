@@ -52,6 +52,14 @@ pub struct RepositorySummary {
     pub description: String,
     pub pushed_at: String,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MessageDelivery {
+    Pending,
+    Sent,
+    Failed,
+    Interrupted,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Message {
@@ -61,6 +69,8 @@ pub struct Message {
     pub created_at: String,
     #[serde(default)]
     pub confirmed_selection: Option<ModelSelection>,
+    #[serde(default)]
+    pub delivery: Option<MessageDelivery>,
 }
 impl Message {
     pub fn new(role: &str, text: impl Into<String>) -> Self {
@@ -70,6 +80,7 @@ impl Message {
             text: text.into(),
             created_at: now(),
             confirmed_selection: None,
+            delivery: None,
         }
     }
 }
@@ -161,6 +172,15 @@ impl Review {
         let Some(before) = self.before_follow_up.take() else {
             return false;
         };
+        for message in &mut self.messages {
+            if matches!(message.delivery, Some(MessageDelivery::Pending)) {
+                message.delivery = Some(if error.is_some() {
+                    MessageDelivery::Failed
+                } else {
+                    MessageDelivery::Interrupted
+                });
+            }
+        }
         self.status = before.status;
         self.error = error.or(before.error);
         self.updated_at = now();

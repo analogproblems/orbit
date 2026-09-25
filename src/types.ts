@@ -39,6 +39,7 @@ export interface Message {
   id: string;
   role: "user" | "agent" | "system";
   confirmedSelection?: ModelSelection | null;
+  delivery?: "pending" | "sent" | "failed" | "interrupted" | null;
   text: string;
   createdAt: string;
 }
@@ -270,7 +271,7 @@ export function chatSelection(r: Review): ModelSelection | undefined {
 }
 export function reportSelectionLabel(r: Review): string {
   if (r.confirmedReviewSelection)
-    return `${r.confirmedReviewSelection.model} · ${r.confirmedReviewSelection.effort} (confirmed)`;
+    return `Model: ${r.confirmedReviewSelection.model} (confirmed) · Effort: ${r.confirmedReviewSelection.effort} (confirmed)`;
   const label = (value: string) =>
     value ? `${value} (requested, unverified)` : "not recorded";
   return `Model: ${label(r.model)} · Effort: ${label(r.effort)}`;

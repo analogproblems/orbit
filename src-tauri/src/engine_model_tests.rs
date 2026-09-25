@@ -45,6 +45,21 @@ async fn requests(rpc: &Rpc) -> Vec<Value> {
         .unwrap()
         .clone()
 }
+async fn wait_for_request(rpc: &Rpc, method: &str) {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if requests(rpc).await.iter().any(|r| r["method"] == method) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("Timed out waiting for {method}"));
+}
+async fn release(rpc: &Rpc) {
+    rpc.request("fixture/release", json!({})).await.unwrap();
+}
 fn assert_no_inference(requests: &[Value]) {
     assert!(
         !requests
@@ -89,6 +104,11 @@ async fn review_requires_exact_response_fields_before_inference() {
         assert!(error.contains("did not confirm"), "{error}");
         let calls = requests(&rpc).await;
         assert_no_inference(&calls);
+        assert_eq!(calls.last().unwrap()["method"], "thread/archive");
+        assert_eq!(
+            calls.last().unwrap()["params"]["threadId"],
+            "fixture-thread"
+        );
         let p = &calls[0]["params"];
         assert_eq!(p["model"], "model-a");
         assert_eq!(p["config"]["review_model"], "model-a");
@@ -171,18 +191,28 @@ async fn persistence_failure_stops_both_review_and_follow_up() {
         .unwrap_err()
         .contains("Could not save confirmed"));
     assert_no_inference(&requests(&rpc).await);
+    assert_eq!(
+        requests(&rpc).await.last().unwrap()["method"],
+        "thread/archive"
+    );
     completed(&e, false).await;
     configure(&rpc, json!({})).await;
     assert!(e
         .message(&id, "Keep my question")
         .await
         .unwrap_err()
-        .contains("Could not save confirmed"));
+        .contains("Could not save the pending question"));
     let s = e.snapshot().await;
     assert_eq!(s.reviews[0].status, "posted");
     assert_eq!(s.reviews[0].report, "Original report");
     assert!(s.reviews[0].comment_url.is_some());
-    assert!(s.reviews[0].messages.is_empty());
+    assert_eq!(s.reviews[0].messages[0].text, "Keep my question");
+    assert_eq!(
+        s.reviews[0].messages[0].delivery,
+        Some(MessageDelivery::Failed)
+    );
+    assert!(s.reviews[0].messages[0].confirmed_selection.is_none());
+    assert!(requests(&rpc).await.is_empty());
     assert_no_inference(&requests(&rpc).await);
     rpc.shutdown().await;
 }
@@ -209,7 +239,9 @@ async fn follow_up_requires_exact_response_and_preserves_published_outcome_on_fa
         assert_eq!(r.status, "posted");
         assert_eq!(r.report, "Original report");
         assert!(r.comment_url.is_some() && r.before_follow_up.is_none());
-        assert!(r.messages.is_empty());
+        assert!(r.messages.iter().all(
+            |m| m.delivery == Some(MessageDelivery::Failed) && m.confirmed_selection.is_none()
+        ));
         assert_no_inference(&requests(&rpc).await);
     }
     rpc.shutdown().await;
@@ -571,5 +603,250 @@ async fn malformed_or_duplicate_catalogs_block_without_disconnecting_codex() {
         assert!(s.models.is_empty());
         assert_eq!(s.settings.model, "model-a");
     }
+    rpc.shutdown().await;
+}
+
+#[tokio::test]
+async fn reconnect_keeps_verified_catalog_available_for_review_and_follow_up_until_refresh_finishes(
+) {
+    for follow_up in [false, true] {
+        let (d, e, rpc, id) = fixture().await;
+        if follow_up {
+            completed(&e, false).await;
+        }
+        configure(
+            &rpc,
+            json!({"holdMethod":"model/list", "catalog":catalog()}),
+        )
+        .await;
+        let clone = e.clone();
+        let connecting = tokio::spawn(async move { clone.connect().await });
+        wait_for_request(&rpc, "model/list").await;
+        let s = e.snapshot().await;
+        assert!(s.model_catalog_ready && s.model_configuration_error.is_none());
+        if follow_up {
+            e.message(&id, "During refresh").await.unwrap();
+        } else {
+            e.start_review_inference(&id, &rpc, d.path(), false)
+                .await
+                .unwrap();
+        }
+        release(&rpc).await;
+        connecting.await.unwrap().unwrap();
+        assert_eq!(e.snapshot().await.reviews[0].status, "reviewing");
+        rpc.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn pending_question_is_visible_and_durable_before_resume_then_confirmed_on_same_message() {
+    let (d, e, rpc, id) = fixture().await;
+    completed(&e, false).await;
+    configure(
+        &rpc,
+        json!({"holdMethod":"thread/resume", "statePath":d.path().join("state.json")}),
+    )
+    .await;
+    let clone = e.clone();
+    let sending = tokio::spawn(async move { clone.message(&id, "Slow resume").await });
+    wait_for_request(&rpc, "thread/resume").await;
+    let r = e.snapshot().await.reviews.remove(0);
+    assert_eq!(r.messages.len(), 1);
+    let message_id = r.messages[0].id.clone();
+    assert_eq!(r.messages[0].text, "Slow resume");
+    assert_eq!(r.messages[0].delivery, Some(MessageDelivery::Pending));
+    assert!(r.messages[0].confirmed_selection.is_none());
+    let saved: Snapshot =
+        serde_json::from_slice(&std::fs::read(d.path().join("state.json")).unwrap()).unwrap();
+    assert_eq!(
+        saved.reviews[0].messages[0].delivery,
+        Some(MessageDelivery::Pending)
+    );
+    assert_no_inference(&requests(&rpc).await);
+    release(&rpc).await;
+    sending.await.unwrap().unwrap();
+    let r = e.snapshot().await.reviews.remove(0);
+    assert_eq!(r.messages.len(), 1);
+    assert_eq!(r.messages[0].id, message_id);
+    assert_eq!(r.messages[0].delivery, Some(MessageDelivery::Sent));
+    assert_eq!(
+        r.messages[0].confirmed_selection.as_ref().unwrap().model,
+        "model-a"
+    );
+    rpc.shutdown().await;
+}
+
+#[tokio::test]
+async fn confirmation_save_failure_keeps_question_without_starting_turn() {
+    let (d, e, rpc, id) = fixture().await;
+    completed(&e, false).await;
+    configure(&rpc, json!({"holdMethod":"thread/resume"})).await;
+    let clone = e.clone();
+    let sending = tokio::spawn(async move { clone.message(&id, "Keep after save failure").await });
+    wait_for_request(&rpc, "thread/resume").await;
+    std::fs::create_dir(d.path().join("state.json.tmp")).unwrap();
+    release(&rpc).await;
+    assert!(sending
+        .await
+        .unwrap()
+        .unwrap_err()
+        .contains("Could not save confirmed chat"));
+    let r = e.snapshot().await.reviews.remove(0);
+    assert_eq!(r.status, "posted");
+    assert_eq!(r.messages[0].delivery, Some(MessageDelivery::Failed));
+    assert!(r.messages[0].confirmed_selection.is_none());
+    assert_eq!(r.report, "Original report");
+    assert!(r.comment_url.is_some());
+    assert_no_inference(&requests(&rpc).await);
+    rpc.shutdown().await;
+}
+
+#[tokio::test]
+async fn stopped_resume_cannot_confirm_or_end_a_later_question() {
+    let (_d, e, rpc, id) = fixture().await;
+    completed(&e, false).await;
+    configure(&rpc, json!({"holdMethod":"thread/resume", "resumeResponse":{"model":"model-a", "reasoningEffort":"high"}})).await;
+    let clone = e.clone();
+    let first_id = id.clone();
+    let first = tokio::spawn(async move { clone.message(&first_id, "Stopped question").await });
+    wait_for_request(&rpc, "thread/resume").await;
+    e.cancel(&id).await.unwrap();
+    let clone = e.clone();
+    let second = tokio::spawn(async move { clone.message(&id, "Current question").await });
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while requests(&rpc)
+            .await
+            .iter()
+            .filter(|r| r["method"] == "thread/resume")
+            .count()
+            < 2
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    release(&rpc).await;
+    assert!(first.await.unwrap().unwrap_err().contains("stopped"));
+    second.await.unwrap().unwrap();
+    let r = e.snapshot().await.reviews.remove(0);
+    assert_eq!(r.status, "reviewing");
+    assert_eq!(r.messages[0].delivery, Some(MessageDelivery::Interrupted));
+    assert!(r.messages[0].confirmed_selection.is_none());
+    assert_eq!(r.messages[1].delivery, Some(MessageDelivery::Sent));
+    assert!(r.messages[1].confirmed_selection.is_some());
+    assert_eq!(
+        requests(&rpc)
+            .await
+            .iter()
+            .filter(|r| r["method"] == "turn/start")
+            .count(),
+        1
+    );
+    rpc.shutdown().await;
+}
+
+#[tokio::test]
+async fn pending_questions_recover_as_failed_after_restart() {
+    let (d, e, rpc, id) = fixture().await;
+    completed(&e, false).await;
+    configure(&rpc, json!({"holdMethod":"thread/resume"})).await;
+    let clone = e.clone();
+    let sending = tokio::spawn(async move { clone.message(&id, "Interrupted by restart").await });
+    wait_for_request(&rpc, "thread/resume").await;
+    // Copy the state as it was on disk at the instant the process exited.
+    let recovered_dir = tempfile::tempdir().unwrap();
+    std::fs::copy(
+        d.path().join("state.json"),
+        recovered_dir.path().join("state.json"),
+    )
+    .unwrap();
+    let recovered = Engine::new(recovered_dir.path().into(), |_| {}).unwrap();
+    let r = recovered.snapshot().await.reviews.remove(0);
+    assert_eq!(r.messages[0].delivery, Some(MessageDelivery::Failed));
+    assert!(r.messages[0].confirmed_selection.is_none());
+    assert_eq!(r.status, "posted");
+    assert_eq!(r.report, "Original report");
+    assert!(r.comment_url.is_some());
+    sending.abort();
+    rpc.shutdown().await;
+}
+
+#[tokio::test]
+async fn stopping_preparation_still_archives_a_late_created_thread() {
+    let (d, e, rpc, id) = fixture().await;
+    e.update(|s| {
+        s.reviews[0].thread_id = None;
+        s.reviews[0].worktree = None;
+    })
+    .await;
+    configure(&rpc, json!({"holdMethod":"thread/start"})).await;
+    let clone = e.clone();
+    let task_id = id.clone();
+    let client = rpc.clone();
+    let path = d.path().to_path_buf();
+    let preparing = tokio::spawn(async move {
+        clone
+            .start_review_inference(&task_id, &client, &path, false)
+            .await
+    });
+    e.preparing
+        .lock()
+        .unwrap()
+        .insert(id.clone(), preparing.abort_handle());
+    wait_for_request(&rpc, "thread/start").await;
+    e.cancel(&id).await.unwrap();
+    assert!(preparing.await.unwrap_err().is_cancelled());
+    release(&rpc).await;
+    wait_for_request(&rpc, "thread/archive").await;
+    assert_no_inference(&requests(&rpc).await);
+    assert_eq!(e.snapshot().await.reviews[0].status, "cancelled");
+    rpc.shutdown().await;
+}
+
+#[tokio::test]
+async fn archive_failure_unsubscribes_and_records_unused_thread_identity() {
+    let (d, e, rpc, id) = fixture().await;
+    configure(
+        &rpc,
+        json!({"startResponse":{}, "failMethod":"thread/archive"}),
+    )
+    .await;
+    assert!(e
+        .start_review_inference(&id, &rpc, d.path(), false)
+        .await
+        .unwrap_err()
+        .contains("did not confirm"));
+    let calls = requests(&rpc).await;
+    assert_eq!(calls[1]["method"], "thread/archive");
+    assert_eq!(calls[2]["method"], "thread/unsubscribe");
+    assert_no_inference(&calls);
+    assert!(e.snapshot().await.reviews[0].messages[0]
+        .text
+        .contains("Unused Codex thread fixture-thread"));
+    rpc.shutdown().await;
+}
+
+#[tokio::test]
+async fn resolution_notice_is_cleared_and_persisted_after_next_successful_connection() {
+    let (d, e, rpc, _) = fixture().await;
+    e.update(|s| {
+        s.settings.model.clear();
+        s.settings.effort.clear();
+    })
+    .await;
+    configure(&rpc, json!({"catalog":catalog()})).await;
+    e.connect().await.unwrap();
+    let notice = e.snapshot().await.model_selection_notice;
+    assert!(notice.is_some());
+    configure(&rpc, json!({"failMethod":"model/list"})).await;
+    assert!(e.connect().await.is_err());
+    assert_eq!(e.snapshot().await.model_selection_notice, notice);
+    configure(&rpc, json!({"catalog":catalog()})).await;
+    e.connect().await.unwrap();
+    assert!(e.snapshot().await.model_selection_notice.is_none());
+    let saved: Snapshot =
+        serde_json::from_slice(&std::fs::read(d.path().join("state.json")).unwrap()).unwrap();
+    assert!(saved.model_selection_notice.is_none());
     rpc.shutdown().await;
 }

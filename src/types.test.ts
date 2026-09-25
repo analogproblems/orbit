@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { freshDemo } from "./demo";
+import reportLabelCases from "../test-fixtures/report-selection-labels.json";
 import {
   reviewDisplayStatus,
   followUpUnavailable,
@@ -131,5 +132,20 @@ it("labels reports using only original requested or confirmed report metadata", 
     "Model: not recorded · Effort: not recorded",
   );
   r.confirmedReviewSelection = { model: "report-model", effort: "high" };
-  expect(reportSelectionLabel(r)).toBe("report-model · high (confirmed)");
+  expect(reportSelectionLabel(r)).toBe(
+    "Model: report-model (confirmed) · Effort: high (confirmed)",
+  );
 });
+
+it.each(reportLabelCases)(
+  "uses the shared UI and export format: $label",
+  (testCase) => {
+    expect(
+      reportSelectionLabel({
+        ...freshDemo().reviews[0],
+        ...testCase,
+        legacyChatSelection: { model: "later-chat", effort: "high" },
+      }),
+    ).toBe(testCase.label);
+  },
+);

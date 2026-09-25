@@ -4,6 +4,7 @@ const fs = require("node:fs");
 let options = {};
 let requests = [];
 let subscribed = false;
+let held = [];
 const send = (id, result) =>
   process.stdout.write(JSON.stringify({ id, result }) + "\n");
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
@@ -16,6 +17,12 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     return send(m.id, {});
   }
   if (m.method === "fixture/requests") return send(m.id, requests);
+  if (m.method === "fixture/release") {
+    const replies = held;
+    held = [];
+    replies.forEach((reply) => reply());
+    return send(m.id, {});
+  }
   requests.push(m);
   if (m.method === options.failMethod) {
     return process.stdout.write(
@@ -78,6 +85,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
         return send(m.id, {});
     }
   };
-  if (m.method === options.delayMethod) setTimeout(handle, 50);
+  if (m.method === options.holdMethod) held.push(handle);
+  else if (m.method === options.delayMethod) setTimeout(handle, 50);
   else handle();
 });

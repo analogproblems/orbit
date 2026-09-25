@@ -1,0 +1,26 @@
+[
+  {
+    "model": "",
+    "effort": "",
+    "confirmedReviewSelection": null,
+    "label": "Model: not recorded · Effort: not recorded"
+  },
+  {
+    "model": "requested-model",
+    "effort": "high",
+    "confirmedReviewSelection": null,
+    "label": "Model: requested-model (requested, unverified) · Effort: high (requested, unverified)"
+  },
+  {
+    "model": "requested-model",
+    "effort": "",
+    "confirmedReviewSelection": null,
+    "label": "Model: requested-model (requested, unverified) · Effort: not recorded"
+  },
+  {
+    "model": "requested-model",
+    "effort": "high",
+    "confirmedReviewSelection": { "model": "confirmed-model", "effort": "low" },
+    "label": "Model: confirmed-model (confirmed) · Effort: low (confirmed)"
+  }
+]

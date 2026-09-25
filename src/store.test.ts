@@ -279,6 +279,22 @@ it("preserves unavailable explicit demo settings and permits unrelated edits", a
   expect((await store.updateSettings({ automatic: false })).ok).toBe(true);
 });
 
+it("clears the resolution notice on the next successful demo connection", async () => {
+  const old = structuredClone(useOrbit.getState().snapshot);
+  old.settings.model = "";
+  old.settings.effort = "";
+  localStorage.setItem("orbit-demo-v3", JSON.stringify(old));
+  await useOrbit.getState().init();
+  expect(useOrbit.getState().snapshot.modelSelectionNotice).toContain(
+    "Resolved review selection",
+  );
+  await useOrbit.getState().action("connect_services");
+  expect(useOrbit.getState().snapshot.modelSelectionNotice).toBeUndefined();
+  expect(
+    JSON.parse(localStorage.getItem("orbit-demo-v3")!).modelSelectionNotice,
+  ).toBeUndefined();
+});
+
 it("does not activate a model pair or legacy choice after a simulated save failure", async () => {
   const old = structuredClone(useOrbit.getState().snapshot);
   old.reviews[0].model = "";

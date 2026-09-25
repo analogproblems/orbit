@@ -614,6 +614,55 @@ describe("review regression cases", () => {
 });
 
 describe("deterministic model controls", () => {
+  it("shows pending questions immediately and keeps failed questions and their draft across navigation", async () => {
+    const sending = deferred<void>();
+    const run = snapshot.reviews[0];
+    invoke.mockImplementation((cmd, args) => {
+      if (cmd !== "send_message") return backend(cmd, args);
+      run.status = "reviewing";
+      run.messages.push({
+        id: "pending-question",
+        role: "user",
+        text: args.text,
+        createdAt: new Date().toISOString(),
+        delivery: "pending",
+      });
+      emit();
+      return sending.promise;
+    });
+    await mount();
+    await user().click(screen.getByRole("tab", { name: /Review chat/ }));
+    await user().type(
+      screen.getByRole("textbox", { name: "Message Codex" }),
+      "Question during cold resume",
+    );
+    await user().click(screen.getByRole("button", { name: "Send message" }));
+    expect(screen.getByText("Sending…")).toBeTruthy();
+    expect(
+      screen.getByText("Question during cold resume", { selector: "p" }),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Send message" })).toHaveProperty(
+      "disabled",
+      true,
+    );
+    await act(async () => {
+      run.status = "ready";
+      run.messages.at(-1)!.delivery = "failed";
+      emit();
+      sending.reject(Error("Resume verification failed"));
+    });
+    expect(screen.getByText("Send failed")).toBeTruthy();
+    expect(
+      screen.getByRole("textbox", { name: "Message Codex" }),
+    ).toHaveProperty("value", "Question during cold resume");
+    fireEvent.keyDown(document, { key: ",", ctrlKey: true });
+    fireEvent.keyDown(document, { key: "k", ctrlKey: true });
+    await user().click(screen.getByRole("tab", { name: /Review chat/ }));
+    expect(screen.getByText("Send failed")).toBeTruthy();
+    expect(
+      screen.getByRole("textbox", { name: "Message Codex" }),
+    ).toHaveProperty("value", "Question during cold resume");
+  });
   it("shows unresolved placeholders, blocks new reviews, and saves model plus supported default atomically", async () => {
     snapshot.settings.model = "";
     snapshot.settings.effort = "";

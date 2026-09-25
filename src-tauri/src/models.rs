@@ -170,11 +170,34 @@ pub fn report_labels(review: &Review) -> (String, String) {
     };
     (label(&review.model), label(&review.effort))
 }
+pub fn report_selection_label(review: &Review) -> String {
+    let (model, effort) = report_labels(review);
+    format!("Model: {model} · Effort: {effort}")
+}
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn report_selection_format_matches_shared_ui_and_export_cases() {
+        let cases: Vec<Value> = serde_json::from_str(include_str!(
+            "../../test-fixtures/report-selection-labels.json"
+        ))
+        .unwrap();
+        for case in cases {
+            let mut r = Review::new(&crate::types::tests::pr(), &Settings::default(), false);
+            r.model = case["model"].as_str().unwrap().into();
+            r.effort = case["effort"].as_str().unwrap().into();
+            r.confirmed_review_selection =
+                serde_json::from_value(case["confirmedReviewSelection"].clone()).unwrap();
+            r.legacy_chat_selection = Some(ModelSelection {
+                model: "later-chat".into(),
+                effort: "high".into(),
+            });
+            assert_eq!(report_selection_label(&r), case["label"].as_str().unwrap());
+        }
+    }
     pub fn catalog() -> Vec<Value> {
         vec![
             json!({"id":"ui-a","model":"model-a","displayName":"Model A","isDefault":true,"defaultReasoningEffort":"medium","supportedReasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"medium"},{"reasoningEffort":"high"}]}),

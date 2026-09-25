@@ -301,10 +301,10 @@ pub async fn existing_comment(pr: &PullRequest, r: &Review) -> Result<Option<Str
 /// The PR comment for a review, including the marker used to reconcile retries.
 fn comment_body(r: &Review) -> String {
     let marker = format!("<!-- orbit-review:{} -->", r.id);
-    let (model, effort) = crate::models::report_labels(r);
+    let selection = crate::models::report_selection_label(r);
     format!(
         "{marker}\n## Orbit · Codex review\n\n\
-         Reviewed head `{}` against base `{}`.\n\n{}\n\n---\nModel: {model} · Effort: {effort}",
+         Reviewed head `{}` against base `{}`.\n\n{}\n\n---\n{selection}",
         r.head_sha, r.base_sha, r.report
     )
 }
