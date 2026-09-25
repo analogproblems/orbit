@@ -1,6 +1,6 @@
 # Orbit
 
-A local desktop workspace for routing GitHub pull requests to Codex review agents. Built with Tauri 2, Rust, React 19, TypeScript, and Zustand.
+A local desktop workspace for routing GitHub pull requests to Codex review agents. Built with Tauri 2, Rust, React 19, TypeScript, Zustand, and the Astryx design system.
 
 For operating instructions checked against the implementation, see the [user guide](docs/user-guide.md).
 
@@ -98,22 +98,25 @@ npm run tauri -- build --no-bundle  # Produce a native executable
 
 The diagnostic uses a temporary state directory. `src-tauri/target/release/orbit` is the Linux executable after building. Native prerequisites vary by OS; macOS/Windows installers, signing, auto-update distribution, and container-backed environments are not included in this initial version.
 
-Controllable app-server fixtures verify model migration, reconnect recovery, immutable queued selections, exact response checks, persistence before inference, and legacy chat pinning without live inference or GitHub publication. Component tests cover explicit Settings choices and the legacy selector. Tests also exercise queue limits, cancellation, publication retry/link rendering, stale file responses, navigation shortcuts, autosave failures/serialization, status/send eligibility, repository validation, worktree cleanup contention/containment/recovery, Markdown export, streamed reports, RPC failures, persistence, and the instance lock. Rust filesystem tests use disposable repositories and state; native dialog presentation requires an interactive desktop check. Browser checks cover search, review/chat actions, publication previews, changed files, repository configuration, and responsive navigation. Real authentication/model discovery were verified; live inference and posting are not part of the read-only diagnostic.
+Controllable app-server fixtures verify model migration, reconnect recovery, immutable queued selections, exact response checks, persistence before inference, and legacy chat pinning without live inference or GitHub publication. Component tests cover explicit Settings choices, the legacy selector, Astryx dialog lifecycle and shortcut isolation, guarded composer submission, and Markdown safety (images dropped, links rendered as text, no HTML execution or autolinking). Tests also exercise queue limits, cancellation, publication retry/link rendering, stale file responses, navigation shortcuts, autosave failures/serialization, status/send eligibility, repository validation, worktree cleanup contention/containment/recovery, Markdown export, streamed reports, RPC failures, persistence, and the instance lock. Rust filesystem tests use disposable repositories and state; native dialog presentation requires an interactive desktop check. Browser checks cover search, review/chat actions, publication previews, changed files, repository configuration, and responsive navigation. Real authentication/model discovery were verified; live inference and posting are not part of the read-only diagnostic.
 
 ## Architecture
 
-| Area                                                    | Implementation                                       |
-| ------------------------------------------------------- | ---------------------------------------------------- |
-| UI and navigation                                       | `src/App.tsx`, `src/styles.css`                      |
-| Typed application state and native bridge               | `src/types.ts`, `src/store.ts`                       |
-| Separate interactive demo                               | `src/demo.ts` and the demo adapter in `src/store.ts` |
-| Queue, worktrees, orchestration, persistence            | `src-tauri/src/engine.rs`                            |
-| GitHub discovery, PR details, files, comments           | `src-tauri/src/github.rs`                            |
-| Codex process and bidirectional RPC                     | `src-tauri/src/rpc.rs`                               |
-| Storage inspection, ownership checks, report generation | `src-tauri/src/storage.rs`                           |
-| Storage and report actions                              | `src/Storage.tsx`, `src/ReviewActions.tsx`           |
-| Native command allowlist and lifecycle                  | `src-tauri/src/lib.rs`                               |
+| Area                                                    | Implementation                                                                                                                     |
+| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| UI shell and theme                                      | `src/App.tsx`, `src/main.tsx`, `src/styles.css`                                                                                    |
+| Workflow UI                                             | `src/Inbox.tsx`, `src/Detail.tsx`, `src/Chat.tsx`, `src/Files.tsx`, `src/Repositories.tsx`, `src/Settings.tsx`, `src/Activity.tsx` |
+| Typed application state and native bridge               | `src/types.ts`, `src/store.ts`                                                                                                     |
+| Separate interactive demo                               | `src/demo.ts` and the demo adapter in `src/store.ts`                                                                               |
+| Queue, worktrees, orchestration, persistence            | `src-tauri/src/engine.rs`                                                                                                          |
+| GitHub discovery, PR details, files, comments           | `src-tauri/src/github.rs`                                                                                                          |
+| Codex process and bidirectional RPC                     | `src-tauri/src/rpc.rs`                                                                                                             |
+| Storage inspection, ownership checks, report generation | `src-tauri/src/storage.rs`                                                                                                         |
+| Storage and report actions                              | `src/Storage.tsx`, `src/ReviewActions.tsx`                                                                                         |
+| Native command allowlist and lifecycle                  | `src-tauri/src/lib.rs`                                                                                                             |
 
-The supplied architecture document was used as a recommendation. This implementation corrects the protocol lifecycle and event names, uses existing installed CLIs instead of bundling a Codex binary, and uses a small custom design system instead of an unverified component library.
+The supplied architecture document was used as a recommendation. This implementation corrects the protocol lifecycle and event names, uses existing installed CLIs instead of bundling a Codex binary, and uses Astryx 0.6.3 with its neutral theme. Astryx core, theme, CLI, and the StyleX peer are pinned; the compiled theme is imported after the core reset and component CSS. The UI is dark-only, uses local system fonts, and makes no font or asset requests to external hosts. CSP remains unchanged.
 
 Protocol references: [Codex app-server](https://developers.openai.com/codex/app-server), [Tauri Rust commands](https://v2.tauri.app/develop/calling-rust/), [GitHub pull requests](https://docs.github.com/en/rest/pulls/pulls), [GitHub issue/PR comments](https://docs.github.com/en/rest/issues/comments). The integration was checked against the locally installed Codex CLI 0.155.1 schema.
+
+Astryx component guidance is generated in `AGENTS.md`. Before changing UI, use `npx astryx component <Name>` for the installed API. Settings, repositories, activity, and chat load on demand. Pages use Astryx shell, layout, controls, dialogs, chat, and Markdown; only the line-numbered diff remains custom. `src/styles.css` contains viewport framing, system-font tokens, compact chat docking, and diff styling. The backend, command allowlist, store behavior, and browser demo adapter are independent of the component layer.

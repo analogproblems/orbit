@@ -18,14 +18,17 @@
     "diagnose": "cargo run --manifest-path src-tauri/Cargo.toml --no-default-features --example diagnose"
   },
   "dependencies": {
+    "@astryxdesign/core": "0.6.3",
+    "@astryxdesign/theme-neutral": "0.6.3",
+    "@stylexjs/stylex": "0.19.1",
     "@tauri-apps/api": "^2.8.0",
     "lucide-react": "^0.468.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
-    "react-markdown": "^10.1.0",
     "zustand": "^5.0.8"
   },
   "devDependencies": {
+    "@astryxdesign/cli": "0.6.3",
     "@eslint/js": "^10.0.1",
     "@tauri-apps/cli": "^2.8.4",
     "@testing-library/react": "^16.3.3",
