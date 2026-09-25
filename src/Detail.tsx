@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import {
   Badge,
   Banner,
@@ -12,6 +13,7 @@ import {
   LayoutContent,
   LayoutFooter,
   LayoutHeader,
+  Spinner,
   Tab,
   TabList,
   Text,
@@ -35,11 +37,11 @@ import {
   type PullRequest,
   type Review,
 } from "./types";
-import { Chat } from "./Chat";
 import { Files } from "./Files";
 import { SafeMarkdown } from "./SafeMarkdown";
 import { ReviewActions } from "./ReviewActions";
 import { ReviewStatus } from "./ReviewStatus";
+const Chat = lazy(() => import("./Chat").then((m) => ({ default: m.Chat })));
 export type DetailTab = "overview" | "chat" | "files";
 export function Detail({
   pr,
@@ -166,9 +168,15 @@ export function Detail({
               onChange={(value) => setTab(value as DetailTab)}
               layout="fill"
             >
-              <Tab value="overview" label="Overview" panelId="pr-overview" />
+              <Tab
+                id="pr-tab-overview"
+                value="overview"
+                label="Overview"
+                panelId="pr-overview"
+              />
               <Tab
                 value="chat"
+                id="pr-tab-chat"
                 label="Review chat"
                 panelId="pr-chat"
                 endContent={
@@ -184,6 +192,7 @@ export function Detail({
               />
               <Tab
                 value="files"
+                id="pr-tab-files"
                 label="Files changed"
                 panelId="pr-files"
                 endContent={<Badge label={pr.changedFiles} />}
@@ -192,139 +201,147 @@ export function Detail({
           </VStack>
         </LayoutHeader>
       }
-      content={
+      content={(["overview", "chat", "files"] as const).map((panel) => (
         <LayoutContent
+          key={panel}
           padding={0}
           isScrollable={tab !== "chat"}
           role="tabpanel"
-          id={`pr-${tab}`}
-          aria-label={
-            tab === "overview"
-              ? "Overview"
-              : tab === "chat"
-                ? "Review chat"
-                : "Files changed"
-          }
+          id={`pr-${panel}`}
+          aria-labelledby={`pr-tab-${panel}`}
+          hidden={panel !== tab}
+          style={panel !== tab ? { display: "none" } : undefined}
         >
-          {(tab !== "chat" || !review) && workspaceSelectionUnavailable(s) && (
-            <Banner
-              status="warning"
-              title={workspaceSelectionUnavailable(s)}
-              endContent={<Button label="Open Settings" onClick={onSettings} />}
-            />
-          )}
-          {autoSkipped && (
-            <Banner
-              status="warning"
-              title={
-                pr.author && sameRepository(pr)
-                  ? `Autopilot skips pull requests from ${pr.author} because it isn’t an owner, member, or collaborator of this repository. Trust it if it opens pull requests for you, like a coding agent’s bot.`
-                  : "Autopilot skips this pull request because it comes from a fork. You can still review it manually."
-              }
-              endContent={
-                pr.author && sameRepository(pr) ? (
-                  <Button
-                    label={`Trust ${pr.author}`}
-                    onClick={() =>
-                      void updateSettings({
-                        trustedAuthors: [
-                          ...s.settings.trustedAuthors,
-                          pr.author,
-                        ],
-                      })
+          {panel === tab && (
+            <>
+              {(tab !== "chat" || !review) &&
+                workspaceSelectionUnavailable(s) && (
+                  <Banner
+                    status="warning"
+                    title={workspaceSelectionUnavailable(s)}
+                    endContent={
+                      <Button label="Open Settings" onClick={onSettings} />
                     }
                   />
-                ) : undefined
-              }
-            />
-          )}
-          {tab === "overview" ? (
-            <VStack gap={6} padding={5}>
-              <VStack gap={3}>
-                <Heading level={3}>Description</Heading>
-                <SafeMarkdown>
-                  {pr.body || "No description was provided."}
-                </SafeMarkdown>
-              </VStack>
-              {review?.report && (
-                <Card>
-                  <VStack gap={3}>
-                    <HStack hAlign="between" gap={3}>
-                      <Heading level={3}>Review report</Heading>
-                      <ReviewStatus status={reviewDisplayStatus(s, review)} />
-                    </HStack>
-                    <Text color="secondary">
-                      {reviewDisplayStatus(s, review) === "outdated"
-                        ? "The pull request changed after this report. Read the saved findings, then review the current commits before publishing."
-                        : "The report is saved with this run. Open its chat to read the findings and available actions."}
-                    </Text>
-                    <Text type="supporting" color="secondary">
-                      {reportSelectionLabel(review)}
-                    </Text>
-                    <HStack>
+                )}
+              {autoSkipped && (
+                <Banner
+                  status="warning"
+                  title={
+                    pr.author && sameRepository(pr)
+                      ? `Autopilot skips pull requests from ${pr.author} because it isn’t an owner, member, or collaborator of this repository. Trust it if it opens pull requests for you, like a coding agent’s bot.`
+                      : "Autopilot skips this pull request because it comes from a fork. You can still review it manually."
+                  }
+                  endContent={
+                    pr.author && sameRepository(pr) ? (
                       <Button
-                        label="Read the review"
+                        label={`Trust ${pr.author}`}
+                        onClick={() =>
+                          void updateSettings({
+                            trustedAuthors: [
+                              ...s.settings.trustedAuthors,
+                              pr.author,
+                            ],
+                          })
+                        }
+                      />
+                    ) : undefined
+                  }
+                />
+              )}
+              {tab === "overview" ? (
+                <VStack gap={6} padding={5}>
+                  <VStack gap={3}>
+                    <Heading level={3}>Description</Heading>
+                    <SafeMarkdown>
+                      {pr.body || "No description was provided."}
+                    </SafeMarkdown>
+                  </VStack>
+                  {review?.report && (
+                    <Card>
+                      <VStack gap={3}>
+                        <HStack hAlign="between" gap={3}>
+                          <Heading level={3}>Review report</Heading>
+                          <ReviewStatus
+                            status={reviewDisplayStatus(s, review)}
+                          />
+                        </HStack>
+                        <Text color="secondary">
+                          {reviewDisplayStatus(s, review) === "outdated"
+                            ? "The pull request changed after this report. Read the saved findings, then review the current commits before publishing."
+                            : "The report is saved with this run. Open its chat to read the findings and available actions."}
+                        </Text>
+                        <Text type="supporting" color="secondary">
+                          {reportSelectionLabel(review)}
+                        </Text>
+                        <HStack>
+                          <Button
+                            label="Read the review"
+                            variant="ghost"
+                            onClick={() => setTab("chat")}
+                          />
+                        </HStack>
+                      </VStack>
+                    </Card>
+                  )}
+                  <VStack gap={3}>
+                    <HStack hAlign="between" vAlign="center">
+                      <Heading level={3}>New review environment</Heading>
+                      <Button
+                        label="Configure"
                         variant="ghost"
-                        onClick={() => setTab("chat")}
+                        size="sm"
+                        onClick={onRepositories}
                       />
                     </HStack>
+                    <Grid columns={{ minWidth: 170 }} gap={4}>
+                      {[
+                        ["Workspace", "Isolated worktree"],
+                        ["Execution", "Codex sandbox"],
+                        [
+                          "Model",
+                          s.models.find((m) => m.model === s.settings.model)
+                            ?.displayName ||
+                            s.settings.model ||
+                            "Choose a model",
+                        ],
+                        ["Reasoning", s.settings.effort || "Choose an effort"],
+                      ].map(([label, value]) => (
+                        <VStack gap={1} key={label}>
+                          <Text type="supporting" color="secondary">
+                            {label}
+                          </Text>
+                          <Text weight="medium">{value}</Text>
+                        </VStack>
+                      ))}
+                    </Grid>
                   </VStack>
-                </Card>
-              )}
-              <VStack gap={3}>
-                <HStack hAlign="between" vAlign="center">
-                  <Heading level={3}>New review environment</Heading>
-                  <Button
-                    label="Configure"
-                    variant="ghost"
-                    size="sm"
-                    onClick={onRepositories}
+                  {!!pr.labels.length && (
+                    <HStack gap={2} wrap="wrap">
+                      {pr.labels.map((label) => (
+                        <Token key={label} label={label} />
+                      ))}
+                    </HStack>
+                  )}
+                </VStack>
+              ) : tab === "chat" ? (
+                <Suspense fallback={<Spinner label="Loading chat…" />}>
+                  <Chat
+                    key={review?.id ?? pr.id}
+                    pr={pr}
+                    review={review}
+                    onStart={onStart}
+                    onPublish={onPublish}
+                    onHistory={onHistory}
                   />
-                </HStack>
-                <Grid columns={{ minWidth: 170 }} gap={4}>
-                  {[
-                    ["Workspace", "Isolated worktree"],
-                    ["Execution", "Codex sandbox"],
-                    [
-                      "Model",
-                      s.models.find((m) => m.model === s.settings.model)
-                        ?.displayName ||
-                        s.settings.model ||
-                        "Choose a model",
-                    ],
-                    ["Reasoning", s.settings.effort || "Choose an effort"],
-                  ].map(([label, value]) => (
-                    <VStack gap={1} key={label}>
-                      <Text type="supporting" color="secondary">
-                        {label}
-                      </Text>
-                      <Text weight="medium">{value}</Text>
-                    </VStack>
-                  ))}
-                </Grid>
-              </VStack>
-              {!!pr.labels.length && (
-                <HStack gap={2} wrap="wrap">
-                  {pr.labels.map((label) => (
-                    <Token key={label} label={label} />
-                  ))}
-                </HStack>
+                </Suspense>
+              ) : (
+                <Files key={`${pr.id}:${pr.headSha}:${pr.baseSha}`} pr={pr} />
               )}
-            </VStack>
-          ) : tab === "chat" ? (
-            <Chat
-              key={review?.id ?? pr.id}
-              pr={pr}
-              review={review}
-              onStart={onStart}
-              onPublish={onPublish}
-              onHistory={onHistory}
-            />
-          ) : (
-            <Files key={`${pr.id}:${pr.headSha}:${pr.baseSha}`} pr={pr} />
+            </>
           )}
         </LayoutContent>
-      }
+      ))}
       footer={
         <LayoutFooter padding={3} hasDivider>
           <HStack hAlign="between" gap={2} vAlign="center">

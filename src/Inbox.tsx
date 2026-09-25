@@ -27,6 +27,7 @@ import { Inbox as InboxIcon, Plus, RefreshCw, Search } from "lucide-react";
 import { useOrbit } from "./store";
 import { latestReview, reviewDisplayStatus, type PullRequest } from "./types";
 import { ReviewStatus } from "./ReviewStatus";
+import { recentTimestamp } from "./timestamps";
 
 export function Inbox({
   selected,
@@ -130,7 +131,7 @@ export function Inbox({
       content={
         <LayoutContent padding={2}>
           <List density="spacious" hasDividers>
-            {visible.map((p) => {
+            {visible.map((p, index) => {
               const r = latestReview(s.reviews, p.id);
               return (
                 <ListItem
@@ -150,8 +151,7 @@ export function Inbox({
                         </Text>
                         <Timestamp
                           value={p.updatedAt}
-                          format="relative_short"
-                          isLive
+                          {...recentTimestamp(index)}
                         />
                       </HStack>
                       <HStack>

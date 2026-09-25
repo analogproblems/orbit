@@ -42,6 +42,7 @@ import {
 import { LegacyChatModel } from "./LegacyChatModel";
 import { ReviewActions } from "./ReviewActions";
 import { SafeMarkdown } from "./SafeMarkdown";
+import { recentTimestamp } from "./timestamps";
 
 export function Chat({
   pr,
@@ -256,7 +257,7 @@ export function Chat({
             />
           }
         >
-          {review.messages.map((m) =>
+          {review.messages.map((m, index) =>
             m.role === "system" ? (
               m.text.includes("\n") ? (
                 <ChatToolCalls
@@ -300,8 +301,7 @@ export function Chat({
                     )}
                     <Timestamp
                       value={m.createdAt}
-                      format="relative_short"
-                      isLive
+                      {...recentTimestamp(review.messages.length - index - 1)}
                     />
                   </HStack>
                 }

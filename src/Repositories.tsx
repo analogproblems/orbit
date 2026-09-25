@@ -55,6 +55,7 @@ function RepoPicker({
   const [repos, setRepos] = useState(repositoryCache);
   const [refreshing, setRefreshing] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [query, setQuery] = useState("");
   const fetchRepos = useCallback(
     () =>
       action<RepositorySummary[]>(
@@ -111,6 +112,7 @@ function RepoPicker({
   const selected = repos?.find(
     (r) => r.name.toLowerCase() === value.toLowerCase(),
   );
+  const matchCount = source.search(query).length;
   return (
     <VStack gap={2}>
       {value ? (
@@ -124,7 +126,10 @@ function RepoPicker({
               label="Change"
               variant="ghost"
               isDisabled={isDisabled}
-              onClick={() => onChange("")}
+              onClick={() => {
+                setQuery("");
+                onChange("");
+              }}
             />
           </HStack>
           {selected && !selected.private && (
@@ -142,6 +147,7 @@ function RepoPicker({
             width="100%"
             searchSource={source}
             value={null}
+            onChangeQuery={setQuery}
             onChange={(item) => {
               if (item) onChange(item.id);
             }}
@@ -179,6 +185,11 @@ function RepoPicker({
             }}
           />
         </HStack>
+      )}
+      {!value && matchCount > 50 && (
+        <Text role="status" type="supporting" color="secondary">
+          Showing 50 of {matchCount} matches. Keep typing to narrow the results.
+        </Text>
       )}
       {repos === null && <Spinner label="Loading your repositories…" />}
       {failed && (

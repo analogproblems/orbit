@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import {
   AppShell,
   Badge,
@@ -48,11 +48,18 @@ import {
 } from "./types";
 import { Inbox } from "./Inbox";
 import { Detail, type DetailTab } from "./Detail";
-import { Activity } from "./Activity";
-import { SettingsPage } from "./Settings";
-import { Repositories } from "./Repositories";
 import { SaveFeedback } from "./SaveFeedback";
 import { SafeMarkdown } from "./SafeMarkdown";
+
+const Activity = lazy(() =>
+  import("./Activity").then((m) => ({ default: m.Activity })),
+);
+const SettingsPage = lazy(() =>
+  import("./Settings").then((m) => ({ default: m.SettingsPage })),
+);
+const Repositories = lazy(() =>
+  import("./Repositories").then((m) => ({ default: m.Repositories })),
+);
 
 type Page = "inbox" | "activity" | "repositories" | "settings";
 export default function App() {
@@ -80,6 +87,11 @@ export default function App() {
   const [focusSearch, setFocusSearch] = useState(0);
   const [busy, setBusy] = useState(false);
   const [approvalOpen, setApprovalOpen] = useState(false);
+  const [answeringApproval, setAnsweringApproval] = useState(false);
+  const [approvalError, setApprovalError] = useState<{
+    id: string | number;
+    error: string;
+  } | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     let off: (() => void) | undefined;
@@ -348,7 +360,10 @@ export default function App() {
                     endContent={
                       <Button
                         label="Review request"
-                        onClick={() => setApprovalOpen(true)}
+                        onClick={() => {
+                          setApprovalError(null);
+                          setApprovalOpen(true);
+                        }}
                       />
                     }
                   />
@@ -414,13 +429,15 @@ export default function App() {
               />
             ) : (
               <LayoutContent padding={0}>
-                {page === "activity" ? (
-                  <Activity onChoose={choose} />
-                ) : page === "repositories" ? (
-                  <Repositories />
-                ) : (
-                  <SettingsPage />
-                )}
+                <Suspense fallback={<Spinner label="Loading page…" />}>
+                  {page === "activity" ? (
+                    <Activity onChoose={choose} />
+                  ) : page === "repositories" ? (
+                    <Repositories />
+                  ) : (
+                    <SettingsPage />
+                  )}
+                </Suspense>
               </LayoutContent>
             )
           }
@@ -525,6 +542,9 @@ export default function App() {
         {approval && (
           <>
             <VStack gap={4}>
+              {approvalError?.id === approval.id && (
+                <Banner status="error" title={approvalError.error} />
+              )}
               <Text>
                 {String(
                   approval.params.reason ??
@@ -556,12 +576,26 @@ export default function App() {
                     key={String(accept)}
                     label={String(label)}
                     variant={accept ? "primary" : "secondary"}
+                    isDisabled={answeringApproval}
                     onClick={async () => {
-                      const result = await action("answer_approval", {
-                        id: approval.id,
-                        accept,
-                      });
+                      if (answeringApproval) return;
+                      setAnsweringApproval(true);
+                      setApprovalError(null);
+                      const result = await action(
+                        "answer_approval",
+                        {
+                          id: approval.id,
+                          accept,
+                        },
+                        { quiet: true },
+                      );
+                      setAnsweringApproval(false);
                       if (result.ok) setApprovalOpen(false);
+                      else
+                        setApprovalError({
+                          id: approval.id,
+                          error: result.error,
+                        });
                     }}
                   />
                 ))}

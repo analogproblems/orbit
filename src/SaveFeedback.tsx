@@ -25,7 +25,7 @@ export function SaveFeedback({ saveKey }: { saveKey?: string }) {
             : key === "model"
               ? snapshot.models.find((m) => m.model === value)?.displayName ||
                 value ||
-                "Codex default"
+                "Unresolved model"
               : key === "effort"
                 ? value || "Unresolved effort"
                 : key === "pollSeconds"

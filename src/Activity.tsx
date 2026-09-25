@@ -22,6 +22,7 @@ import {
 } from "./types";
 import { ReviewActions } from "./ReviewActions";
 import { ReviewStatus } from "./ReviewStatus";
+import { recentTimestamp } from "./timestamps";
 export function Activity({
   onChoose,
 }: {
@@ -69,7 +70,7 @@ export function Activity({
         density="spacious"
         header={<Heading level={3}>Review history</Heading>}
       >
-        {s.reviews.map((r) => {
+        {s.reviews.map((r, index) => {
           const p = knownPrs.find((p) => p.id === r.prId);
           return (
             <ListItem
@@ -79,8 +80,7 @@ export function Activity({
                   {p?.title ?? r.prId}
                 </Text>
               }
-              isDisabled={!p}
-              onClick={() => p && onChoose(p, r)}
+              onClick={p ? () => onChoose(p, r) : undefined}
               startContent={<GitPullRequest />}
               endContent={
                 <VStack gap={2}>
@@ -107,8 +107,7 @@ export function Activity({
                     <ReviewStatus status={reviewDisplayStatus(s, r)} />
                     <Timestamp
                       value={r.updatedAt}
-                      format="relative_short"
-                      isLive
+                      {...recentTimestamp(index)}
                     />
                   </HStack>
                 </VStack>

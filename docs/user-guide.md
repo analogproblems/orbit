@@ -72,7 +72,7 @@ Click **Save repository**. Saving a new repository or changing its name/path ver
 
 Filesystem validation runs outside the async workers, with a ten-second wait limit per filesystem check. If a mount stalls, validation reports a timeout and leaves the configuration unchanged. The operating system may finish the underlying filesystem request later; its late result does not save the repository.
 
-The picker loads up to 1,000 accessible repository entries and omits archived repositories. It displays up to 50 unconnected search matches at a time; narrow the search or enter `owner/name` directly. Repository names are treated case-insensitively and cannot be connected twice.
+The picker loads up to 1,000 accessible repository entries and omits archived repositories. It displays up to 50 unconnected search matches at a time and shows the total when more matches exist; narrow the search or enter `owner/name` directly. Repository names are treated case-insensitively and cannot be connected twice.
 
 The clone's `origin` must match the configured GitHub repository. Accepted forms include `https://github.com/owner/name`, `git@github.com:owner/name`, and `ssh://git@github.com/owner/name`, with an optional `.git` suffix. Custom SSH host aliases do not match these forms.
 
@@ -142,9 +142,13 @@ Use **Stop** in the PR detail or Review activity to cancel queued work or interr
 
 The chat shows short status notes inline. Expand **Execution log** entries for multiline setup output and recorded command output. Some output is capped, so these logs are not a complete terminal transcript. The composer stays docked at the bottom; a **Scroll to bottom** button appears when you scroll away from the latest messages.
 
+In long inbox and activity lists, the first ten visible entries use live relative timestamps. The ten latest chat entries also use live relative timestamps; older entries show an absolute date and time to avoid a timer for every retained message.
+
 ### Approvals and follow-ups
 
 The approval dialog shows the reason, working directory, and request details. **Approve once** accepts that request; **Deny** declines it. Closing the dialog leaves the request pending. A run awaiting approval still occupies a concurrency slot. Unsupported interactive request types are declined or rejected rather than automatically granted.
+
+If **Approve once** or **Deny** fails, the approval dialog stays open and shows the error. Resolve the reported problem, then retry the same action. Both buttons are disabled while the response is pending.
 
 After a turn finishes, type into **Message Codex**. **Enter** sends; **Shift+Enter** inserts a new line. Follow-ups use the same chat and worktree, require a free concurrency slot, and are limited to 32,000 characters. They cannot run during publication or while the worktree is being removed or has been removed. The chat explains when sending is blocked by a running turn, publication, missing chat/worktree, disconnected Codex, unresolved or unavailable model settings, or occupied slots. Composed text survives page navigation while you wait. Enter and the send button enforce the same rules. **Review again** appears when the open PR can accept a new run.
 

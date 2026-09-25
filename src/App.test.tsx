@@ -14,6 +14,8 @@ import "./test-setup";
 import { Theme } from "@astryxdesign/core/theme";
 import { neutralTheme } from "@astryxdesign/theme-neutral/built";
 import App from "./App";
+import { Chat } from "./Chat";
+import { Inbox } from "./Inbox";
 import { freshDemo } from "./demo";
 import { useOrbit } from "./store";
 import type { Snapshot, SettingsPatch, ChangedFile } from "./types";
@@ -82,7 +84,238 @@ beforeEach(() => {
   invoke.mockReset().mockImplementation(backend);
   Element.prototype.scrollIntoView = vi.fn();
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  // Astryx's document-level announcement regions intentionally outlive roots.
+  // Remove them between fixtures; the library reattaches them on next use.
+  document.querySelectorAll("[data-astryx-live-region]").forEach((region) => {
+    region.textContent = "";
+    region.remove();
+  });
+});
+
+describe("PR review regressions", () => {
+  it.each([
+    ["Approve once", true],
+    ["Deny", false],
+  ] as const)(
+    "shows %s failures inside the approval dialog and retries",
+    async (label, accept) => {
+      snapshot.approvals = [
+        {
+          id: "approval-1",
+          reviewId: snapshot.reviews[0].id,
+          method: "item/commandExecution/requestApproval",
+          params: { reason: "Run the disposable check" },
+        },
+      ];
+      const pending = deferred<void>();
+      let attempts = 0;
+      invoke.mockImplementation(async (cmd, args) => {
+        if (cmd !== "answer_approval") return backend(cmd, args);
+        if (++attempts === 1) return pending.promise;
+        snapshot.approvals = [];
+        emit();
+      });
+      await mount();
+      await user().click(
+        screen.getByRole("button", { name: "Review request" }),
+      );
+      const dialog = screen.getByRole("dialog", {
+        name: "Codex needs your approval",
+      });
+      await user().click(within(dialog).getByRole("button", { name: label }));
+      expect(
+        within(dialog).getByRole("button", { name: "Approve once" }),
+      ).toHaveProperty("disabled", true);
+      expect(
+        within(dialog).getByRole("button", { name: "Deny" }),
+      ).toHaveProperty("disabled", true);
+      await act(async () =>
+        pending.reject(Error("Codex disconnected; reconnect and retry.")),
+      );
+      expect((await within(dialog).findByRole("alert")).textContent).toContain(
+        "Codex disconnected",
+      );
+      expect(useOrbit.getState().error).toBeNull();
+      await user().click(within(dialog).getByRole("button", { name: label }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(
+        invoke.mock.calls
+          .filter(([cmd]) => cmd === "answer_approval")
+          .map(([, args]) => args),
+      ).toEqual([
+        { id: "approval-1", accept },
+        { id: "approval-1", accept },
+      ]);
+    },
+  );
+
+  it("keeps export, publication links, and stop usable without PR metadata", async () => {
+    snapshot.prs = [];
+    snapshot.historyPrs = [];
+    const saved = snapshot.reviews[0];
+    saved.status = "posted";
+    saved.commentUrl = "https://github.com/acme/orbit/pull/148#issuecomment-7";
+    const running = {
+      ...structuredClone(saved),
+      id: "orphan-active",
+      prId: "acme/missing#12",
+      status: "reviewing" as const,
+      report: "",
+      commentUrl: undefined,
+    };
+    snapshot.reviews.push(running);
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Review activity" }));
+    const exportButton = await screen.findByRole("button", {
+      name: "Export report",
+    });
+    expect(exportButton.closest('[aria-disabled="true"]')).toBeNull();
+    await user().click(exportButton);
+    await user().click(
+      screen.getByRole("button", { name: "View comment on GitHub" }),
+    );
+    const stop = screen.getByRole("button", {
+      name: "Stop review acme/missing#12",
+    });
+    expect(stop.closest('[aria-disabled="true"]')).toBeNull();
+    await user().click(stop);
+    expect(invoke).toHaveBeenCalledWith("export_report", {
+      reviewId: saved.id,
+    });
+    expect(invoke).toHaveBeenCalledWith("open_github", {
+      url: saved.commentUrl,
+    });
+    expect(invoke).toHaveBeenCalledWith("cancel_review", {
+      reviewId: running.id,
+    });
+    expect(screen.getByText("Good reviews, in motion.")).toBeTruthy();
+  });
+
+  it("labels every tab panel while mounting only the active tab contents", async () => {
+    await mount();
+    for (const name of [/Review chat/, /Files changed/, /Overview/]) {
+      await user().click(screen.getByRole("tab", { name }));
+      const tabs = screen.getAllByRole("tab");
+      for (const tab of tabs) {
+        const panel = document.getElementById(
+          tab.getAttribute("aria-controls")!,
+        );
+        expect(panel).not.toBeNull();
+        expect(panel?.getAttribute("aria-labelledby")).toBe(tab.id);
+        expect(panel?.hidden).toBe(
+          tab.getAttribute("aria-selected") !== "true",
+        );
+      }
+      expect(screen.getAllByRole("tabpanel")).toHaveLength(1);
+      expect(screen.getAllByRole("tabpanel", { hidden: true })).toHaveLength(3);
+    }
+    expect(
+      invoke.mock.calls.filter(([cmd]) => cmd === "get_files"),
+    ).toHaveLength(1);
+  });
+
+  it("reports repository result truncation and narrows to matches past the initial limit", async () => {
+    const repos = Array.from({ length: 61 }, (_, i) => ({
+      name: `acme/repository-${String(i).padStart(2, "0")}`,
+      description: "Example repository",
+      private: true,
+    }));
+    snapshot.settings.repositories = [
+      { ...snapshot.settings.repositories[0], name: repos[0].name },
+    ];
+    invoke.mockImplementation((cmd, args) =>
+      cmd === "list_repositories" ? Promise.resolve(repos) : backend(cmd, args),
+    );
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Repositories" }));
+    await user().click(
+      await screen.findByRole("button", { name: "Add repository" }),
+    );
+    const dialog = screen.getByRole("dialog", { name: "Connect a repository" });
+    await user().click(
+      within(dialog).getByRole("button", { name: "Refresh repositories" }),
+    );
+    const input = within(dialog).getByRole("combobox", {
+      name: "Search your repositories",
+    });
+    await user().click(input);
+    expect(
+      await within(dialog).findByText(
+        "Showing 50 of 60 matches. Keep typing to narrow the results.",
+      ),
+    ).toBeTruthy();
+    expect(await screen.findAllByRole("option")).toHaveLength(50);
+    expect(
+      screen.queryByRole("option", { name: /acme\/repository-00/ }),
+    ).toBeNull();
+    await user().type(input, "repository-60");
+    await user().click(
+      await screen.findByRole("option", { name: /acme\/repository-60/ }),
+    );
+    expect(within(dialog).queryByText(/Showing 50/)).toBeNull();
+    expect(within(dialog).getByText("acme/repository-60")).toBeTruthy();
+    await user().click(within(dialog).getByRole("button", { name: "Change" }));
+    expect(
+      within(dialog).getByText(
+        "Showing 50 of 60 matches. Keep typing to narrow the results.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("bounds live timestamp timers for a long inbox and conversation", () => {
+    vi.useFakeTimers();
+    try {
+      const pr = snapshot.prs[0];
+      snapshot.prs = Array.from({ length: 120 }, (_, index) => ({
+        ...pr,
+        id: `acme/orbit#${index}`,
+        number: index,
+      }));
+      const review = snapshot.reviews[0];
+      const message = review.messages.find((m) => m.role === "agent")!;
+      review.messages = Array.from({ length: 120 }, (_, index) => ({
+        ...message,
+        id: `message-${index}`,
+        text: `Review note ${index}`,
+      }));
+      emit();
+      const view = render(
+        <Theme theme={neutralTheme} mode="dark">
+          <Inbox
+            search=""
+            setSearch={() => {}}
+            filter="all"
+            setFilter={() => {}}
+            repoFilter="all"
+            setRepoFilter={() => {}}
+            searchRef={{ current: null }}
+            onChoose={() => {}}
+            onRepositories={() => {}}
+          />
+          <Chat
+            pr={pr}
+            review={review}
+            onStart={() => {}}
+            onPublish={() => {}}
+            onHistory={() => {}}
+          />
+        </Theme>,
+      );
+      // Library timestamps previously created 240+ intervals for this fixture.
+      expect(vi.getTimerCount()).toBeLessThan(40);
+      expect(
+        view.container.querySelectorAll('[data-format="date_time"]').length,
+      ).toBeGreaterThan(200);
+      view.unmount();
+      act(() => vi.runOnlyPendingTimers());
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe("publication", () => {
   it("keeps a failed preview open, retries, and shows the confirmed comment link", async () => {
@@ -114,14 +347,14 @@ describe("publication", () => {
     );
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     await user().click(
-      screen.getByRole("button", { name: /View comment on GitHub/ }),
+      await screen.findByRole("button", { name: /View comment on GitHub/ }),
     );
     expect(invoke).toHaveBeenCalledWith("open_github", {
       url: snapshot.reviews[0].commentUrl,
     });
     await user().click(screen.getByRole("button", { name: "Review activity" }));
     expect(
-      screen.getByRole("button", { name: /View comment on GitHub/ }),
+      await screen.findByRole("button", { name: /View comment on GitHub/ }),
     ).toBeTruthy();
   });
 });
@@ -179,7 +412,7 @@ describe("files and navigation", () => {
   it("opens Settings and focuses inbox search across pages, leaving modal shortcuts alone", async () => {
     await mount();
     fireEvent.keyDown(document, { key: ",", ctrlKey: true });
-    expect(screen.getByText("A review flow that fits.")).toBeTruthy();
+    expect(await screen.findByText("A review flow that fits.")).toBeTruthy();
     fireEvent.keyDown(document, { key: "k", metaKey: true });
     expect(document.activeElement).toBe(
       screen.getByPlaceholderText("Search pull requests…"),
@@ -203,7 +436,9 @@ describe("autosave and follow-ups", () => {
     );
     await mount();
     fireEvent.keyDown(document, { key: ",", ctrlKey: true });
-    const select = screen.getByRole("combobox", { name: "Poll interval" });
+    const select = await screen.findByRole("combobox", {
+      name: "Poll interval",
+    });
     await chooseOption(select, "1 minute");
     expect(await screen.findByRole("alert")).toHaveProperty(
       "textContent",
@@ -217,7 +452,7 @@ describe("autosave and follow-ups", () => {
     await user().click(screen.getByRole("button", { name: "Review activity" }));
     fireEvent.keyDown(document, { key: ",", ctrlKey: true });
     expect(
-      screen.getByRole("combobox", { name: "Poll interval" }),
+      await screen.findByRole("combobox", { name: "Poll interval" }),
     ).toHaveProperty("textContent", "2 minutes");
     expect(screen.getByRole("alert").textContent).toContain(
       "Not applied — Poll interval: 60 seconds",
@@ -237,7 +472,9 @@ describe("autosave and follow-ups", () => {
   it("blocks Enter and clicks for an unavailable follow-up without losing composed text", async () => {
     await mount();
     await user().click(screen.getByRole("tab", { name: /Review chat/ }));
-    const composer = screen.getByRole("textbox", { name: "Message Codex" });
+    const composer = await screen.findByRole("textbox", {
+      name: "Message Codex",
+    });
     await user().type(composer, "Keep this question");
     await act(async () => {
       snapshot.codexReady = false;
@@ -257,7 +494,7 @@ describe("autosave and follow-ups", () => {
       })[0],
     );
     expect(
-      screen.getByRole("textbox", { name: "Message Codex" }),
+      await screen.findByRole("textbox", { name: "Message Codex" }),
     ).toHaveProperty("textContent", "Keep this question");
   });
 });
@@ -288,7 +525,7 @@ describe("initial loading and repository errors", () => {
     await mount();
     await user().click(screen.getByRole("button", { name: "Repositories" }));
     await user().click(
-      screen.getByRole("button", { name: "Configure acme/orbit" }),
+      await screen.findByRole("button", { name: "Configure acme/orbit" }),
     );
     const dialog = screen.getByRole("dialog");
     await user().click(
@@ -649,7 +886,7 @@ describe("deterministic model controls", () => {
     await mount();
     await user().click(screen.getByRole("tab", { name: /Review chat/ }));
     await user().type(
-      screen.getByRole("textbox", { name: "Message Codex" }),
+      await screen.findByRole("textbox", { name: "Message Codex" }),
       "Question during cold resume",
     );
     await user().click(screen.getByRole("button", { name: "Send" }));
@@ -671,14 +908,14 @@ describe("deterministic model controls", () => {
     });
     expect(screen.getByText("Send failed")).toBeTruthy();
     expect(
-      screen.getByRole("textbox", { name: "Message Codex" }),
+      await screen.findByRole("textbox", { name: "Message Codex" }),
     ).toHaveProperty("textContent", "Question during cold resume");
     fireEvent.keyDown(document, { key: ",", ctrlKey: true });
     fireEvent.keyDown(document, { key: "k", ctrlKey: true });
     await user().click(screen.getByRole("tab", { name: /Review chat/ }));
     expect(screen.getByText("Send failed")).toBeTruthy();
     expect(
-      screen.getByRole("textbox", { name: "Message Codex" }),
+      await screen.findByRole("textbox", { name: "Message Codex" }),
     ).toHaveProperty("textContent", "Question during cold resume");
   });
   it("shows unresolved placeholders, blocks new reviews, and saves model plus supported default atomically", async () => {
@@ -756,7 +993,9 @@ describe("deterministic model controls", () => {
     });
     await mount();
     await user().click(screen.getByRole("tab", { name: /Review chat/ }));
-    const composer = screen.getByRole("textbox", { name: "Message Codex" });
+    const composer = await screen.findByRole("textbox", {
+      name: "Message Codex",
+    });
     await user().type(composer, "Keep this question");
     fireEvent.keyDown(composer, { key: "Enter" });
     expect(invoke.mock.calls.some(([cmd]) => cmd === "send_message")).toBe(
@@ -838,7 +1077,9 @@ describe("deterministic model controls", () => {
     );
     await mount();
     await user().click(screen.getByRole("tab", { name: /Review chat/ }));
-    const composer = screen.getByRole("textbox", { name: "Message Codex" });
+    const composer = await screen.findByRole("textbox", {
+      name: "Message Codex",
+    });
     await user().type(composer, "Explain this finding");
     await user().click(screen.getByRole("button", { name: "Send" }));
     expect((await screen.findByRole("alert")).textContent).toContain(
@@ -938,7 +1179,9 @@ describe("Astryx dialog and composer integration", () => {
     );
     await mount();
     await user().click(screen.getByRole("tab", { name: /Review chat/ }));
-    const composer = screen.getByRole("textbox", { name: "Message Codex" });
+    const composer = await screen.findByRole("textbox", {
+      name: "Message Codex",
+    });
     await user().type(composer, "Keep on failure");
     fireEvent.keyDown(composer, { key: "Enter" });
     expect((await screen.findByRole("alert")).textContent).toContain(
