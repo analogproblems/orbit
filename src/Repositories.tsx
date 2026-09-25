@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useState,
   type FormEvent,
@@ -16,6 +17,9 @@ import {
   Heading,
   HStack,
   IconButton,
+  Layout,
+  LayoutContent,
+  LayoutFooter,
   List,
   ListItem,
   Spinner,
@@ -202,6 +206,7 @@ function RepoPicker({
   );
 }
 export function Repositories() {
+  const formId = useId();
   const { snapshot: s, action, mutate, saves } = useOrbit();
   const [repoError, setRepoError] = useState<string | null>(null);
   const [editing, setEditing] = useState<Repository | null>(null);
@@ -332,95 +337,113 @@ export function Repositories() {
         purpose={busy ? "required" : "form"}
         width={620}
       >
-        <DialogHeader
-          title={original ? "Repository settings" : "Connect a repository"}
-          onOpenChange={busy ? undefined : close}
-        />
-        {editing && (
-          <>
-            <VStack as="form" gap={4} onSubmit={(e) => void save(e)}>
-              {repoError && <Banner status="error" title={repoError} />}
-              <RepoPicker
-                value={editing.name}
-                onChange={(name) => setEditing({ ...editing, name })}
-                connected={s.settings.repositories
-                  .map((r) => r.name)
-                  .filter((name) => name !== original)}
-                isDisabled={busy}
-              />
-              <FormLayout>
-                <TextInput
-                  label="Local checkout path"
-                  isRequired
-                  placeholder="/Users/you/Projects/repository"
-                  description="Use an absolute path to an existing clone with a matching origin."
-                  value={editing.path}
-                  isDisabled={busy}
-                  onChange={(path) => setEditing({ ...editing, path })}
-                />
-                <TextArea
-                  label="Environment setup"
-                  isOptional
-                  placeholder="e.g. npm ci --ignore-scripts"
-                  value={editing.setupCommand}
-                  isDisabled={busy}
-                  onChange={(setupCommand) =>
-                    setEditing({ ...editing, setupCommand })
-                  }
-                  description="Runs in the new worktree, inside the Codex sandbox. Uses /bin/sh on Unix or PowerShell on Windows. Five-minute timeout. Setup can run code from the pull request, such as package install scripts; prefer options like --ignore-scripts."
-                />
-                <Switch
-                  label="Allow sandbox network access"
-                  value={editing.networkAccess}
-                  isDisabled={busy}
-                  onChange={(networkAccess) =>
-                    setEditing({ ...editing, networkAccess })
-                  }
-                  description="Enable when setup needs to download dependencies. Setup and the review agent can then reach the network, including code from the pull request."
-                />
-                <Switch
-                  label="Include repository in automatic reviews"
-                  value={editing.automatic}
-                  isDisabled={busy}
-                  onChange={(automatic) =>
-                    setEditing({ ...editing, automatic })
-                  }
-                  description="Runs when workspace autopilot is enabled."
-                />
-              </FormLayout>
-              <HStack hAlign="end" gap={2}>
-                {original && (
-                  <Button
-                    label="Disconnect"
-                    variant="destructive"
-                    icon={<Trash2 />}
+        <Layout
+          header={
+            <DialogHeader
+              title={original ? "Repository settings" : "Connect a repository"}
+              onOpenChange={busy ? undefined : close}
+            />
+          }
+          content={
+            editing && (
+              <LayoutContent>
+                <VStack
+                  as="form"
+                  id={formId}
+                  gap={4}
+                  onSubmit={(e) => void save(e)}
+                >
+                  {repoError && <Banner status="error" title={repoError} />}
+                  <RepoPicker
+                    value={editing.name}
+                    onChange={(name) => setEditing({ ...editing, name })}
+                    connected={s.settings.repositories
+                      .map((r) => r.name)
+                      .filter((name) => name !== original)}
                     isDisabled={busy}
-                    onClick={async () => {
-                      setBusy(true);
-                      const result = await mutate(
-                        "disconnect_repository",
-                        { name: original },
-                        `repository:${original}`,
-                      );
-                      setBusy(false);
-                      if (result.ok) {
-                        setEditing(null);
-                        void action("poll_now");
-                      } else setRepoError(result.error);
-                    }}
                   />
-                )}
-                <Button
-                  label="Save repository"
-                  variant="primary"
-                  isLoading={busy}
-                  isDisabled={busy || !editing.name}
-                  type="submit"
-                />
-              </HStack>
-            </VStack>
-          </>
-        )}
+                  <FormLayout>
+                    <TextInput
+                      label="Local checkout path"
+                      isRequired
+                      placeholder="/Users/you/Projects/repository"
+                      description="Use an absolute path to an existing clone with a matching origin."
+                      value={editing.path}
+                      isDisabled={busy}
+                      onChange={(path) => setEditing({ ...editing, path })}
+                    />
+                    <TextArea
+                      label="Environment setup"
+                      isOptional
+                      placeholder="e.g. npm ci --ignore-scripts"
+                      value={editing.setupCommand}
+                      isDisabled={busy}
+                      onChange={(setupCommand) =>
+                        setEditing({ ...editing, setupCommand })
+                      }
+                      description="Runs in the new worktree, inside the Codex sandbox. Uses /bin/sh on Unix or PowerShell on Windows. Five-minute timeout. Setup can run code from the pull request, such as package install scripts; prefer options like --ignore-scripts."
+                    />
+                    <Switch
+                      label="Allow sandbox network access"
+                      value={editing.networkAccess}
+                      isDisabled={busy}
+                      onChange={(networkAccess) =>
+                        setEditing({ ...editing, networkAccess })
+                      }
+                      description="Enable when setup needs to download dependencies. Setup and the review agent can then reach the network, including code from the pull request."
+                    />
+                    <Switch
+                      label="Include repository in automatic reviews"
+                      value={editing.automatic}
+                      isDisabled={busy}
+                      onChange={(automatic) =>
+                        setEditing({ ...editing, automatic })
+                      }
+                      description="Runs when workspace autopilot is enabled."
+                    />
+                  </FormLayout>
+                </VStack>
+              </LayoutContent>
+            )
+          }
+          footer={
+            editing && (
+              <LayoutFooter>
+                <HStack hAlign="end" gap={2} wrap="wrap">
+                  {original && (
+                    <Button
+                      label="Disconnect"
+                      variant="destructive"
+                      icon={<Trash2 />}
+                      isDisabled={busy}
+                      onClick={async () => {
+                        setBusy(true);
+                        const result = await mutate(
+                          "disconnect_repository",
+                          { name: original },
+                          `repository:${original}`,
+                        );
+                        setBusy(false);
+                        if (result.ok) {
+                          setEditing(null);
+                          void action("poll_now");
+                        } else setRepoError(result.error);
+                      }}
+                    />
+                  )}
+                  <Button
+                    label="Save repository"
+                    variant="primary"
+                    isLoading={busy}
+                    isDisabled={busy || !editing.name}
+                    type="submit"
+                    form={formId}
+                  />
+                </HStack>
+              </LayoutFooter>
+            )
+          }
+        />
       </Dialog>
     </VStack>
   );

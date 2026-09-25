@@ -125,7 +125,10 @@ export function Chat({
     <VStack className="review-chat" height="100%">
       <ChatLayout
         composer={
-          <VStack gap={2}>
+          <VStack
+            gap={2}
+            style={{ backgroundColor: "var(--color-background-surface)" }}
+          >
             {unavailable && (
               <Text role="status" type="supporting" color="secondary">
                 {unavailable}

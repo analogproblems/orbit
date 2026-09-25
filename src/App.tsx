@@ -15,6 +15,7 @@ import {
   Kbd,
   Layout,
   LayoutContent,
+  LayoutFooter,
   LayoutHeader,
   LayoutPanel,
   SideNav,
@@ -449,85 +450,99 @@ export default function App() {
         purpose={busy ? "required" : "info"}
         width={740}
       >
-        <DialogHeader
-          title={
-            desktop
-              ? "Publish review to GitHub"
-              : "Simulate publishing a review"
+        <Layout
+          header={
+            <DialogHeader
+              title={
+                desktop
+                  ? "Publish review to GitHub"
+                  : "Simulate publishing a review"
+              }
+              onOpenChange={busy ? undefined : changePublishOpen}
+            />
           }
-          onOpenChange={busy ? undefined : changePublishOpen}
-        />
-        {publish && (
-          <>
-            <VStack gap={4}>
-              <Text>
-                {desktop
-                  ? "This comment will be posted using your connected GitHub account."
-                  : "This is a demo. No comment will be sent to GitHub."}
-              </Text>
-              <HStack gap={2}>
-                <Text>{publish.prId}</Text>
-                <Code>{publish.headSha.slice(0, 7)}</Code>
-              </HStack>
-              {publishError && <Banner status="error" title={publishError} />}
-              {!!publish.sensitive?.length && (
-                <>
-                  <Banner
-                    status="warning"
-                    title={`This report contains text that looks like credentials (${publish.sensitive.join(", ")}). Codex can read files outside the review worktree, so make sure nothing private is quoted before publishing.`}
-                  />
-                  <Switch
-                    label="I checked the report"
-                    description="Publish it even though it matches a credential format."
-                    value={confirmSensitive}
-                    onChange={setConfirmSensitive}
+          content={
+            publish && (
+              <LayoutContent>
+                <VStack gap={4}>
+                  <Text>
+                    {desktop
+                      ? "This comment will be posted using your connected GitHub account."
+                      : "This is a demo. No comment will be sent to GitHub."}
+                  </Text>
+                  <HStack gap={2}>
+                    <Text>{publish.prId}</Text>
+                    <Code>{publish.headSha.slice(0, 7)}</Code>
+                  </HStack>
+                  {publishError && (
+                    <Banner status="error" title={publishError} />
+                  )}
+                  {!!publish.sensitive?.length && (
+                    <>
+                      <Banner
+                        status="warning"
+                        title={`This report contains text that looks like credentials (${publish.sensitive.join(", ")}). Codex can read files outside the review worktree, so make sure nothing private is quoted before publishing.`}
+                      />
+                      <Switch
+                        label="I checked the report"
+                        description="Publish it even though it matches a credential format."
+                        value={confirmSensitive}
+                        onChange={setConfirmSensitive}
+                        isDisabled={busy}
+                      />
+                    </>
+                  )}
+                  <SafeMarkdown>{publish.report}</SafeMarkdown>
+                </VStack>
+              </LayoutContent>
+            )
+          }
+          footer={
+            publish && (
+              <LayoutFooter>
+                <HStack hAlign="end" gap={2} wrap="wrap">
+                  <Button
+                    label="Cancel"
                     isDisabled={busy}
+                    onClick={closePublish}
                   />
-                </>
-              )}
-              <SafeMarkdown>{publish.report}</SafeMarkdown>
-              <HStack hAlign="end" gap={2}>
-                <Button
-                  label="Cancel"
-                  isDisabled={busy}
-                  onClick={closePublish}
-                />
-                <Button
-                  label={
-                    publishError
-                      ? "Retry publication"
-                      : desktop
-                        ? "Publish comment"
-                        : "Simulate publish"
-                  }
-                  variant="primary"
-                  icon={<Send />}
-                  isLoading={busy}
-                  isDisabled={
-                    busy ||
-                    !publishEligible ||
-                    (!!publish.sensitive?.length && !confirmSensitive)
-                  }
-                  onClick={async () => {
-                    setBusy(true);
-                    setPublishError(null);
-                    const result = await action(
-                      "publish_review",
-                      {
-                        reviewId: publish.id,
-                        allowSensitive: confirmSensitive,
-                      },
-                      { quiet: true },
-                    );
-                    setBusy(false);
-                    if (result.ok) closePublish();
-                    else setPublishError(result.error);
-                  }}
-                />
-              </HStack>
-            </VStack>
-          </>
-        )}
+                  <Button
+                    label={
+                      publishError
+                        ? "Retry publication"
+                        : desktop
+                          ? "Publish comment"
+                          : "Simulate publish"
+                    }
+                    variant="primary"
+                    icon={<Send />}
+                    isLoading={busy}
+                    isDisabled={
+                      busy ||
+                      !publishEligible ||
+                      (!!publish.sensitive?.length && !confirmSensitive)
+                    }
+                    onClick={async () => {
+                      setBusy(true);
+                      setPublishError(null);
+                      const result = await action(
+                        "publish_review",
+                        {
+                          reviewId: publish.id,
+                          allowSensitive: confirmSensitive,
+                        },
+                        { quiet: true },
+                      );
+                      setBusy(false);
+                      if (result.ok) closePublish();
+                      else setPublishError(result.error);
+                    }}
+                  />
+                </HStack>
+              </LayoutFooter>
+            )
+          }
+        />
       </Dialog>
       <Dialog
         isOpen={!!approval && approvalOpen}
@@ -535,74 +550,86 @@ export default function App() {
         purpose="info"
         width={740}
       >
-        <DialogHeader
-          title="Codex needs your approval"
-          onOpenChange={setApprovalOpen}
-        />
-        {approval && (
-          <>
-            <VStack gap={4}>
-              {approvalError?.id === approval.id && (
-                <Banner status="error" title={approvalError.error} />
-              )}
-              <Text>
-                {String(
-                  approval.params.reason ??
-                    "Review this action before allowing the agent to continue.",
-                )}
-              </Text>
-              <Text weight="semibold">Working directory</Text>
-              <Code>
-                {String(
-                  approval.params.cwd ??
-                    approval.params.grantRoot ??
-                    s.reviews.find((r) => r.id === approval.reviewId)
-                      ?.worktree ??
-                    "Not provided",
-                )}
-              </Code>
-              <CodeBlock
-                code={JSON.stringify(approval.params, null, 2)}
-                language="json"
-                isWrapped
-                width="100%"
-              />
-              <HStack hAlign="end" gap={2}>
-                {[
-                  [false, "Deny"],
-                  [true, "Approve once"],
-                ].map(([accept, label]) => (
-                  <Button
-                    key={String(accept)}
-                    label={String(label)}
-                    variant={accept ? "primary" : "secondary"}
-                    isDisabled={answeringApproval}
-                    onClick={async () => {
-                      if (answeringApproval) return;
-                      setAnsweringApproval(true);
-                      setApprovalError(null);
-                      const result = await action(
-                        "answer_approval",
-                        {
-                          id: approval.id,
-                          accept,
-                        },
-                        { quiet: true },
-                      );
-                      setAnsweringApproval(false);
-                      if (result.ok) setApprovalOpen(false);
-                      else
-                        setApprovalError({
-                          id: approval.id,
-                          error: result.error,
-                        });
-                    }}
+        <Layout
+          header={
+            <DialogHeader
+              title="Codex needs your approval"
+              onOpenChange={setApprovalOpen}
+            />
+          }
+          content={
+            approval && (
+              <LayoutContent>
+                <VStack gap={4}>
+                  {approvalError?.id === approval.id && (
+                    <Banner status="error" title={approvalError.error} />
+                  )}
+                  <Text>
+                    {String(
+                      approval.params.reason ??
+                        "Review this action before allowing the agent to continue.",
+                    )}
+                  </Text>
+                  <Text weight="semibold">Working directory</Text>
+                  <Code>
+                    {String(
+                      approval.params.cwd ??
+                        approval.params.grantRoot ??
+                        s.reviews.find((r) => r.id === approval.reviewId)
+                          ?.worktree ??
+                        "Not provided",
+                    )}
+                  </Code>
+                  <CodeBlock
+                    code={JSON.stringify(approval.params, null, 2)}
+                    language="json"
+                    isWrapped
+                    width="100%"
                   />
-                ))}
-              </HStack>
-            </VStack>
-          </>
-        )}
+                </VStack>
+              </LayoutContent>
+            )
+          }
+          footer={
+            approval && (
+              <LayoutFooter>
+                <HStack hAlign="end" gap={2} wrap="wrap">
+                  {[
+                    [false, "Deny"],
+                    [true, "Approve once"],
+                  ].map(([accept, label]) => (
+                    <Button
+                      key={String(accept)}
+                      label={String(label)}
+                      variant={accept ? "primary" : "secondary"}
+                      isDisabled={answeringApproval}
+                      onClick={async () => {
+                        if (answeringApproval) return;
+                        setAnsweringApproval(true);
+                        setApprovalError(null);
+                        const result = await action(
+                          "answer_approval",
+                          {
+                            id: approval.id,
+                            accept,
+                          },
+                          { quiet: true },
+                        );
+                        setAnsweringApproval(false);
+                        if (result.ok) setApprovalOpen(false);
+                        else
+                          setApprovalError({
+                            id: approval.id,
+                            error: result.error,
+                          });
+                      }}
+                    />
+                  ))}
+                </HStack>
+              </LayoutFooter>
+            )
+          }
+        />
       </Dialog>
     </>
   );

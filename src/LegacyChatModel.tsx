@@ -6,6 +6,8 @@ import {
   DialogHeader,
   FormLayout,
   HStack,
+  Layout,
+  LayoutContent,
   Selector,
   Text,
   VStack,
@@ -38,18 +40,26 @@ export function LegacyChatModel({
       purpose={saving ? "required" : "form"}
       width={520}
     >
-      <DialogHeader
-        title="Choose chat model"
-        onOpenChange={saving ? undefined : close}
+      <Layout
+        header={
+          <DialogHeader
+            title="Choose chat model"
+            onOpenChange={saving ? undefined : close}
+          />
+        }
+        content={
+          <LayoutContent>
+            {isOpen && (
+              <ChatModelForm
+                review={review}
+                saving={saving}
+                setSaving={setSaving}
+                onClose={onClose}
+              />
+            )}
+          </LayoutContent>
+        }
       />
-      {isOpen && (
-        <ChatModelForm
-          review={review}
-          saving={saving}
-          setSaving={setSaving}
-          onClose={onClose}
-        />
-      )}
     </Dialog>
   );
 }
