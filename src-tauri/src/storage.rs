@@ -280,6 +280,23 @@ fn findings_section(r: &Review) -> String {
     if !r.tests_not_run.is_empty() {
         out.push_str(&format!("Not run: {}\n\n", r.tests_not_run.join("; ")));
     }
+    if let Some(round) = &r.previous_round {
+        out.push_str(&format!(
+            "Since the last round (head `{}`):\n\n| Status | Earlier finding | Note |\n| --- | --- | --- |\n",
+            &round.head_sha[..round.head_sha.len().min(7)]
+        ));
+        for f in &round.findings {
+            let prior = r.prior_findings.iter().find(|p| p.id == f.id);
+            out.push_str(&format!(
+                "| {} | P{} {} | {} |\n",
+                prior.map_or("not reported", |p| p.status.label()),
+                f.priority,
+                cell(&f.title),
+                prior.map_or(String::new(), |p| cell(&p.note))
+            ));
+        }
+        out.push('\n');
+    }
     out.push_str("## Report\n\n");
     out
 }
@@ -410,6 +427,36 @@ mod tests {
         );
         assert!(body.contains("| P1 | (outside the repository) |"), "{body}");
         assert!(body.contains("Not run: cargo test"));
+        assert!(!body.contains("Since the last round"));
+        let r = &mut s.reviews[0];
+        let mut earlier = r.findings.clone().unwrap();
+        earlier[1].id = "r0-1".into();
+        r.previous_round = Some(crate::types::PreviousRound {
+            review_id: "r0".into(),
+            head_sha: "c".repeat(40),
+            verdict: Some(Verdict::ChangesRequested),
+            findings: earlier.clone(),
+            decisions: vec![],
+            comments_included: 0,
+            comments_omitted: 0,
+        });
+        r.prior_findings = vec![crate::types::PriorFinding {
+            id: earlier[0].id.clone(),
+            status: crate::types::PriorStatus::DeclinedAccepted,
+            note: "Intended | by design.".into(),
+        }];
+        let body = report(&s, &s.reviews[0].id).unwrap().1;
+        assert!(
+            body.contains("Since the last round (head `ccccccc`):"),
+            "{body}"
+        );
+        assert!(
+            body.contains(
+                "| declined (accepted) | P1 Escape \\| pipes and lines | Intended \\| by design. |"
+            ),
+            "{body}"
+        );
+        assert!(body.contains("| not reported | P1 "), "{body}");
         assert!(body.find("## Report").unwrap() < body.find("A useful report.").unwrap());
     }
     #[test]

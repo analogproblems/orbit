@@ -138,6 +138,35 @@ function demoSchedule() {
             r.report = demoReport;
             r.findings = demoFindings(r.id);
             r.verdict = "changes_requested";
+            const earlier = demo.reviews.find(
+              (p) => p.id !== r.id && p.prId === r.prId && p.findings?.length,
+            );
+            if (earlier?.findings) {
+              r.previousRound = {
+                reviewId: earlier.id,
+                headSha: earlier.headSha,
+                verdict: earlier.verdict ?? null,
+                findings: earlier.findings,
+                decisions: earlier.priorFindings ?? [],
+                commentsIncluded: 1,
+                commentsOmitted: 0,
+              };
+              r.priorFindings = [
+                {
+                  id: earlier.findings[0].id,
+                  status: "fixed",
+                  note: "Defaults now merge with the existing repository entries.",
+                },
+                {
+                  id: earlier.findings[1].id,
+                  status: "declined_accepted",
+                  note: "The author explained that the queue already checks the workspace.",
+                },
+              ];
+              // The earlier findings are settled, so this round finds nothing new.
+              r.findings = [];
+              r.verdict = "clean";
+            }
             const pr = demo.prs.find((p) => p.id === r.prId);
             if (
               r.automatic &&

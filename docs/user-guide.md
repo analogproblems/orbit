@@ -18,6 +18,8 @@ Starting a review manually does not publish its report automatically, even when 
 
 After the report arrives, the chat shows **Extracting findings…** while Codex restates its findings as a list, on the same chat and with the same pinned model and effort. The list shows each finding's severity, file and lines, with the verdict and any tests Codex could not run. If this step fails, the run is labeled **Unstructured run**: its report is kept and can still be published, and exports include the verdict and a findings table when there is one. Stopping the run during this step stops it like any other review.
 
+When you review a new head of a PR that Orbit already reviewed with a findings list, the review starts from that earlier round. Codex is given the earlier findings, the commits and the size of the changes since, and comments posted on the PR since the earlier report, but only from the PR author (when Orbit trusts the PR), your own account and your trusted accounts. Comments from anyone else are left out and counted, and the chat says how many. Codex still reviews the whole change against the base, marks each earlier finding as fixed, still open, declined (accepted) or declined (disputed), and reports only new problems as findings. The review chat and exports show this under **Since the last round**. After a rebase or force-push the earlier findings are still checked, but the commits since are not listed.
+
 ## Launch and connect
 
 On this Linux checkout, launch the compiled app with:

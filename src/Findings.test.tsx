@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import "./test-setup";
-import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { Findings } from "./Findings";
 import { demoFindings, freshDemo } from "./demo";
+import { useOrbit } from "./store";
 import type { Review } from "./types";
 afterEach(cleanup);
 const review = (changes: Partial<Review>): Review => ({
@@ -34,5 +35,52 @@ describe("structured findings", () => {
     );
     expect(screen.queryByText("Unstructured run")).toBeNull();
     expect(screen.queryByText(/Verdict/)).toBeNull();
+  });
+});
+describe("since the last round", () => {
+  const earlier = demoFindings("demo-completed");
+  const reReview = review({
+    id: "second",
+    findings: [],
+    verdict: "changes_requested",
+    previousRound: {
+      reviewId: "demo-completed",
+      headSha: "abc0000",
+      verdict: "changes_requested",
+      findings: [...earlier, { ...earlier[0], id: "gone-0", title: "Old" }],
+      decisions: [],
+      commentsIncluded: 1,
+      commentsOmitted: 2,
+    },
+    priorFindings: [
+      { id: earlier[0].id, status: "fixed", note: "Merged now." },
+      { id: earlier[1].id, status: "declined_disputed", note: "Still racy." },
+    ],
+  });
+  it("summarizes what happened to each earlier finding", () => {
+    useOrbit.setState({ snapshot: freshDemo() });
+    render(<Findings review={reReview} onOpenReview={() => {}} />);
+    expect(screen.getByText("Since the last round")).toBeTruthy();
+    expect(
+      screen.getByText("1 fixed, 1 declined (disputed), 1 not reported"),
+    ).toBeTruthy();
+    expect(screen.getByText("Merged now.")).toBeTruthy();
+    expect(screen.getByText("Still racy.")).toBeTruthy();
+    expect(screen.getByText("Not reported")).toBeTruthy();
+    // Only findings whose review still exists link back to it.
+    expect(screen.getAllByRole("button", { name: "Open review" })).toHaveLength(
+      2,
+    );
+  });
+  it("opens the review that first reported a finding", () => {
+    useOrbit.setState({ snapshot: freshDemo() });
+    const opened = vi.fn();
+    render(<Findings review={reReview} onOpenReview={opened} />);
+    fireEvent.click(screen.getAllByRole("button", { name: "Open review" })[0]);
+    expect(opened).toHaveBeenCalledWith("demo-completed");
+  });
+  it("is absent on a first review", () => {
+    render(<Findings review={review({})} />);
+    expect(screen.queryByText("Since the last round")).toBeNull();
   });
 });

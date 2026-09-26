@@ -140,6 +140,17 @@ pub struct Review {
     /// Confirmed model and effort of the extraction turn.
     #[serde(default)]
     pub extraction_selection: Option<ModelSelection>,
+    /// The earlier round this re-review started from, or None for a first
+    /// review of the PR.
+    #[serde(default)]
+    pub previous_round: Option<PreviousRound>,
+    /// Custom review instructions carrying the previous round. None reviews
+    /// against the base exactly as a first round does.
+    #[serde(default)]
+    pub review_prompt: Option<String>,
+    /// What the reviewer decided about each finding in `previous_round`.
+    #[serde(default)]
+    pub prior_findings: Vec<PriorFinding>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -162,6 +173,53 @@ pub struct Finding {
     pub end_line: u32,
     pub body: String,
     pub confidence: f64,
+}
+/// The findings a re-review was asked to check again, and what it was told.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviousRound {
+    pub review_id: String,
+    pub head_sha: String,
+    pub verdict: Option<Verdict>,
+    /// The previous round's findings, then any earlier ones it did not
+    /// report fixed. Each keeps the ID of the review that first found it.
+    pub findings: Vec<Finding>,
+    /// The latest classification of each of `findings` that has one, with
+    /// its reason, so a later round does not reopen it without cause.
+    #[serde(default)]
+    pub decisions: Vec<PriorFinding>,
+    /// Comments from trusted accounts given to the reviewer.
+    pub comments_included: usize,
+    /// Comments from other accounts, left out.
+    pub comments_omitted: usize,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PriorStatus {
+    Fixed,
+    StillOpen,
+    /// The author declined it for a reason the reviewer accepts.
+    DeclinedAccepted,
+    /// The author declined it, but the reviewer still believes it is a defect.
+    DeclinedDisputed,
+}
+impl PriorStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Fixed => "fixed",
+            Self::StillOpen => "still open",
+            Self::DeclinedAccepted => "declined (accepted)",
+            Self::DeclinedDisputed => "declined (disputed)",
+        }
+    }
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PriorFinding {
+    /// The earlier finding's ID.
+    pub id: String,
+    pub status: PriorStatus,
+    pub note: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -209,6 +267,9 @@ impl Review {
             tests_not_run: vec![],
             extracting: false,
             extraction_selection: None,
+            previous_round: None,
+            review_prompt: None,
+            prior_findings: vec![],
         }
     }
     /// Credential-like text in the report and in the structured findings.
@@ -220,15 +281,13 @@ impl Review {
                 text.push_str(part);
             }
         }
-        for part in self.summary.iter().chain(&self.tests_not_run) {
+        let notes = self.prior_findings.iter().map(|p| &p.note);
+        for part in self.summary.iter().chain(&self.tests_not_run).chain(notes) {
             text.push('\n');
             text.push_str(part);
         }
         credential_kinds(&text)
     }
-    /// Ends a follow-up by restoring the outcome it set aside, so a stopped or
-    /// failed chat never discards a report or publication. Returns false when
-    /// no follow-up is running.
     /// Ends a findings extraction. The review turn already produced a report,
     /// so the run becomes ready (or stays published) either way; without
     /// findings (`error`) it is an unstructured run. Returns false when no
@@ -248,6 +307,7 @@ impl Review {
             self.verdict = None;
             self.summary = None;
             self.tests_not_run.clear();
+            self.prior_findings.clear();
             self.error = Some(format!(
                 "Findings were not extracted, so this run is unstructured; its report is kept. {error}"
             ));
@@ -262,6 +322,9 @@ impl Review {
         self.updated_at = now();
         true
     }
+    /// Ends a follow-up by restoring the outcome it set aside, so a stopped or
+    /// failed chat never discards a report or publication. Returns false when
+    /// no follow-up is running.
     pub fn end_follow_up(&mut self, error: Option<String>) -> bool {
         let Some(before) = self.before_follow_up.take() else {
             return false;

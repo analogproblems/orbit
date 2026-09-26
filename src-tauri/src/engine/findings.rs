@@ -13,13 +13,21 @@ const EXTRACTION_PROMPT: &str = "Restate the findings from the review you just c
     Do not run commands, read files, or review the code again. \
     Include every finding you reported, including low-priority ones, with the title without its [P#] prefix, \
     priority 0-3 for P0-P3, the file path relative to the repository root, and the line range. \
-    Use verdict \"clean\" only when you reported no findings.";
+    Use verdict \"clean\" only when you reported no findings and no earlier finding is still_open or declined_disputed. \
+    If your review classified earlier findings, list each in priorFindings with its ID, status and note; otherwise use an empty list.";
+
+const PRIOR_STATUSES: [(&str, PriorStatus); 4] = [
+    ("fixed", PriorStatus::Fixed),
+    ("still_open", PriorStatus::StillOpen),
+    ("declined_accepted", PriorStatus::DeclinedAccepted),
+    ("declined_disputed", PriorStatus::DeclinedDisputed),
+];
 
 fn output_schema() -> Value {
     json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["verdict", "summary", "findings", "testsNotRun"],
+        "required": ["verdict", "summary", "findings", "testsNotRun", "priorFindings"],
         "properties": {
             "verdict": {"type": "string", "enum": ["clean", "changes_requested"]},
             "summary": {"type": "string"},
@@ -41,6 +49,19 @@ fn output_schema() -> Value {
                 },
             },
             "testsNotRun": {"type": "array", "items": {"type": "string"}},
+            "priorFindings": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["id", "status", "note"],
+                    "properties": {
+                        "id": {"type": "string"},
+                        "status": {"type": "string", "enum": PRIOR_STATUSES.map(|(name, _)| name)},
+                        "note": {"type": "string"},
+                    },
+                },
+            },
         },
     })
 }
@@ -51,6 +72,7 @@ pub(super) struct Extracted {
     pub summary: String,
     pub findings: Vec<Finding>,
     pub tests_not_run: Vec<String>,
+    pub prior_findings: Vec<PriorFinding>,
 }
 impl Extracted {
     pub(super) fn store(self, r: &mut Review) {
@@ -58,15 +80,18 @@ impl Extracted {
         r.summary = Some(self.summary);
         r.findings = Some(self.findings);
         r.tests_not_run = self.tests_not_run;
+        r.prior_findings = self.prior_findings;
     }
 }
 
 /// Validates Codex's JSON. Anything that does not match the schema is refused
-/// as a whole, leaving the run unstructured.
+/// as a whole, leaving the run unstructured. Classifications of findings the
+/// review was not given (`previous`) are ignored.
 pub(super) fn parse(
     text: &str,
     review_id: &str,
     worktree: Option<&str>,
+    previous: Option<&PreviousRound>,
 ) -> Result<Extracted, String> {
     let v: Value = serde_json::from_str(text.trim()).map_err(|e| format!("Invalid JSON: {e}"))?;
     let string = |v: &Value, key: &str| {
@@ -128,11 +153,42 @@ pub(super) fn parse(
                 .ok_or("'testsNotRun' must list strings.")
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let mut prior_findings: Vec<PriorFinding> = vec![];
+    for p in v["priorFindings"]
+        .as_array()
+        .ok_or("'priorFindings' must be a list.")?
+    {
+        let status = PRIOR_STATUSES
+            .iter()
+            .find(|(name, _)| p["status"] == *name)
+            .map(|(_, status)| *status)
+            .ok_or("'status' must be fixed, still_open, declined_accepted or declined_disputed.")?;
+        let id = string(p, "id")?;
+        let note = string(p, "note")?;
+        let known = previous.is_some_and(|round| round.findings.iter().any(|f| f.id == id));
+        if known && !prior_findings.iter().any(|p| p.id == id) {
+            prior_findings.push(PriorFinding { id, status, note });
+        }
+    }
+    // An unresolved earlier finding is kept out of `findings`, but the change
+    // is not clean while it stands.
+    let unresolved = prior_findings.iter().any(|p| {
+        matches!(
+            p.status,
+            PriorStatus::StillOpen | PriorStatus::DeclinedDisputed
+        )
+    });
+    let verdict = if unresolved {
+        Verdict::ChangesRequested
+    } else {
+        verdict
+    };
     Ok(Extracted {
         verdict,
         summary: string(&v, "summary")?,
         findings,
         tests_not_run,
+        prior_findings,
     })
 }
 

@@ -146,6 +146,8 @@ impl Engine {
         })
         .await;
         self.live(id).await?;
+        self.carry_previous_round(id, &pr, &worktree).await?;
+        self.live(id).await?;
         let policy = json!({
             "type": "workspaceWrite",
             "writableRoots": [worktree],
@@ -313,13 +315,15 @@ impl Engine {
             self.release_unused_thread(id, rpc, &thread_id).await;
             return Err(error);
         }
+        // A re-review carries the previous round in custom instructions.
+        let target = match &r.review_prompt {
+            Some(instructions) => json!({"type":"custom", "instructions":instructions}),
+            None => json!({"type":"baseBranch", "branch":r.base_sha}),
+        };
         let result = rpc
             .request(
                 "review/start",
-                json!({
-                    "threadId": thread_id, "delivery": "inline",
-                    "target": {"type":"baseBranch", "branch":r.base_sha},
-                }),
+                json!({"threadId": thread_id, "delivery": "inline", "target": target}),
             )
             .await?;
         self.update(|s| {
@@ -630,7 +634,12 @@ pub(super) fn apply_notification(s: &mut Snapshot, id: &str, method: &str, p: &V
             match item["type"].as_str().unwrap_or("") {
                 "agentMessage" if r.extracting => {
                     let text = item["text"].as_str().unwrap_or("");
-                    if let Ok(extracted) = findings::parse(text, &r.id, r.worktree.as_deref()) {
+                    if let Ok(extracted) = findings::parse(
+                        text,
+                        &r.id,
+                        r.worktree.as_deref(),
+                        r.previous_round.as_ref(),
+                    ) {
                         extracted.store(r);
                     }
                 }
