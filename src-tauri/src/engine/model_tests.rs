@@ -1,12 +1,19 @@
-use super::*;
-use crate::models::tests::catalog;
+use super::Engine;
+use crate::{
+    models::{self, tests::catalog},
+    rpc::Rpc,
+    types::*,
+};
+use serde_json::{json, Value};
+use std::{sync::Arc, time::Duration};
+use tokio::sync::mpsc;
 
 async fn fixture() -> (tempfile::TempDir, Arc<Engine>, Arc<Rpc>, String) {
     let dir = tempfile::tempdir().unwrap();
     let e = Engine::new(dir.path().into(), |_| {}).unwrap();
     let (tx, rx) = mpsc::channel(64);
     let mut cmd = tokio::process::Command::new("node");
-    cmd.args(["-e", include_str!("model_fixture.cjs")]);
+    cmd.args(["-e", include_str!("../model_fixture.cjs")]);
     let rpc = Rpc::from_command(cmd, tx).await.unwrap();
     *e.rpc.lock().await = Some(rpc.clone());
     tokio::spawn(e.clone().pump(rpc.clone(), rx));
