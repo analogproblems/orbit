@@ -13,6 +13,7 @@ use tokio::sync::Mutex;
 
 mod chat;
 mod connection;
+mod findings;
 mod publish;
 mod queue;
 mod run;
@@ -25,6 +26,8 @@ pub use settings::validate_checkout;
 mod chat_tests;
 #[cfg(test)]
 mod connection_tests;
+#[cfg(test)]
+mod findings_tests;
 #[cfg(test)]
 mod model_tests;
 #[cfg(test)]
@@ -68,7 +71,8 @@ mod worktrees_tests;
 /// `items` via `retire_dead_connection` → `disconnected`); `poll_lock` →
 /// `state` and `synced_repos` (one at a time); `publish_lock` → `state`;
 /// `cleanup_lock` → `git_lock` → `state`; `state` → `synced_repos`
-/// (`schedule`). `preparing` is only taken on its own.
+/// (`schedule`). `preparing` and `recovered_publications` (a `std` mutex, like
+/// `preparing`) are only taken on their own.
 ///
 /// Known exception: `clean_worktrees_with` briefly holds a `git_lock` try-lock
 /// guard while it try-locks `cleanup_lock`, the reverse of `cleanup_lock` →
@@ -93,6 +97,9 @@ pub struct Engine {
     /// Running preparations, so Stop can end a long fetch or checkout immediately.
     preparing: std::sync::Mutex<HashMap<String, tokio::task::AbortHandle>>,
     cleanup_lock: Mutex<()>,
+    /// Automatic reviews whose extraction a restart cut short; `launch`
+    /// publishes their reports.
+    recovered_publications: std::sync::Mutex<Vec<String>>,
     _instance_lock: std::fs::File,
 }
 impl Engine {
@@ -139,19 +146,26 @@ impl Engine {
         state.prs.retain(|p| seen.insert(p.id.clone()));
         state.history_prs.retain(|p| seen.insert(p.id.clone()));
         state.settings.validate()?;
+        let mut recovered = vec![];
         for r in &mut state.reviews {
             r.pr_id = r.pr_id.to_ascii_lowercase();
-            r.sensitive = credential_kinds(&r.report);
+            r.sensitive = r.credential_scan();
             if active(&r.status)
                 && !r.end_follow_up(Some(
                     "Orbit restarted during the follow-up, so its answer may be incomplete.".into(),
                 ))
             {
-                r.status = "cancelled".into();
-                r.error = Some(
-                    "Orbit restarted while this review was active. Start a new review to retry."
-                        .into(),
-                );
+                if r.end_extraction(Some("Orbit restarted during extraction.".into())) {
+                    if r.automatic {
+                        recovered.push(r.id.clone());
+                    }
+                } else {
+                    r.status = "cancelled".into();
+                    r.error = Some(
+                        "Orbit restarted while this review was active. Start a new review to retry."
+                            .into(),
+                    );
+                }
             } else if r.status == "publishing" {
                 r.status = "ready".into();
                 r.error = Some(
@@ -182,6 +196,7 @@ impl Engine {
             synced_repos: Mutex::new(HashSet::new()),
             preparing: std::sync::Mutex::new(HashMap::new()),
             cleanup_lock: Mutex::new(()),
+            recovered_publications: std::sync::Mutex::new(recovered),
             _instance_lock: instance_lock,
         }))
     }
@@ -242,7 +257,16 @@ impl Engine {
             .map_err(|e| e.to_string())?;
         Ok(())
     }
+    /// Publishes automatic reviews whose report survived a restart during
+    /// extraction, as a finished extraction would have.
+    fn publish_recovered(self: &Arc<Self>) {
+        let recovered = std::mem::take(&mut *self.recovered_publications.lock().unwrap());
+        for id in recovered {
+            self.autopost(&id);
+        }
+    }
     pub fn launch(self: &Arc<Self>) {
+        self.publish_recovered();
         let e = self.clone();
         tokio::spawn(async move {
             let _ = e.connect().await;

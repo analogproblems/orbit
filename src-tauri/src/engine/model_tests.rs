@@ -989,3 +989,70 @@ async fn effort_migration_cannot_replace_a_concurrent_explicit_selection() {
     assert!(s.model_selection_notice.is_none());
     rpc.shutdown().await;
 }
+async fn awaiting_extraction(e: &Engine) {
+    e.update(|s| {
+        let r = &mut s.reviews[0];
+        r.status = "reviewing".into();
+        r.report = "[P1] A finding".into();
+        r.extracting = true;
+    })
+    .await;
+    e.flush().await.unwrap();
+}
+#[tokio::test]
+async fn extraction_pins_the_review_selection_and_saves_confirmation_before_inference() {
+    let (d, e, rpc, id) = fixture().await;
+    awaiting_extraction(&e).await;
+    configure(&rpc, json!({"statePath":d.path().join("state.json")})).await;
+    e.extract_findings(&id).await;
+    let calls = requests(&rpc).await;
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert_eq!(calls[0]["method"], "thread/resume");
+    assert_eq!(calls[0]["params"]["model"], "model-a");
+    assert_eq!(
+        calls[0]["params"]["config"]["model_reasoning_effort"],
+        "high"
+    );
+    // The fixture refuses turn/start unless the confirmation is already on disk.
+    let turn = &calls[1];
+    assert_eq!(turn["method"], "turn/start");
+    assert_eq!(turn["params"]["model"], "model-a");
+    assert_eq!(turn["params"]["effort"], "high");
+    assert_eq!(turn["params"]["outputSchema"]["required"][2], "findings");
+    let r = e.snapshot().await.reviews.remove(0);
+    assert!(r.extracting && r.status == "reviewing" && r.error.is_none());
+    assert_eq!(r.turn_id.as_deref(), Some("fixture-turn"));
+    assert_eq!(r.extraction_selection.unwrap().model, "model-a");
+    let text =
+        json!({"verdict":"clean","summary":"Nothing to fix.","findings":[],"testsNotRun":[]});
+    e.event(json!({"method":"item/completed","params":{"threadId":"fixture-thread","turnId":"fixture-turn","item":{"id":"j","type":"agentMessage","text":text.to_string()}}})).await;
+    e.event(json!({"method":"turn/completed","params":{"threadId":"fixture-thread","turn":{"id":"fixture-turn","status":"completed"}}})).await;
+    let r = e.snapshot().await.reviews.remove(0);
+    assert_eq!(r.status, "ready");
+    assert_eq!(r.verdict, Some(Verdict::Clean));
+    assert_eq!(r.findings, Some(vec![]));
+    assert_eq!(r.summary.as_deref(), Some("Nothing to fix."));
+    rpc.shutdown().await;
+}
+#[tokio::test]
+async fn extraction_selection_mismatch_stops_before_inference_and_keeps_the_report() {
+    let (_d, e, rpc, id) = fixture().await;
+    awaiting_extraction(&e).await;
+    configure(
+        &rpc,
+        json!({"resumeResponse":{"model":"other","reasoningEffort":"high"}}),
+    )
+    .await;
+    e.extract_findings(&id).await;
+    assert_no_inference(&requests(&rpc).await);
+    let r = e.snapshot().await.reviews.remove(0);
+    assert_eq!(r.status, "ready");
+    assert_eq!(r.report, "[P1] A finding");
+    assert!(r.findings.is_none() && r.extraction_selection.is_none() && !r.extracting);
+    let error = r.error.unwrap();
+    assert!(
+        error.contains("unstructured") && error.contains("did not confirm"),
+        "{error}"
+    );
+    rpc.shutdown().await;
+}

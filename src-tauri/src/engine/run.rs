@@ -1,4 +1,6 @@
-use super::{settings::matches_origin, worktrees::git, worktrees::prune_orbit_refs, Engine};
+use super::{
+    findings, settings::matches_origin, worktrees::git, worktrees::prune_orbit_refs, Engine,
+};
 use crate::{rpc::Rpc, types::*};
 use serde_json::{json, Value};
 use std::{
@@ -351,6 +353,7 @@ impl Engine {
             }
             if !r.end_follow_up(None) {
                 r.status = "cancelled".into();
+                r.extracting = false;
                 r.updated_at = now();
             }
             r.clone()
@@ -536,32 +539,50 @@ impl Engine {
                 .await
                 .retain(|key, _| !key.starts_with(&prefix));
         }
-        let mut autopost = false;
-        let apply = |s: &mut Snapshot| autopost = apply_notification(s, &id, method, p);
+        let mut next = Next::Nothing;
+        let apply = |s: &mut Snapshot| next = apply_notification(s, &id, method, p);
         if durable {
             self.update(apply).await;
         } else {
             self.update_live(apply).await;
         }
-        if autopost {
-            let e = self.clone();
-            tokio::spawn(async move {
-                if let Err(error) = e.publish(&id, true, false).await {
-                    e.update(|s| {
-                        if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
-                            r.error = Some(error);
-                        }
-                    })
-                    .await;
-                }
-            });
+        match next {
+            Next::Nothing => {}
+            Next::Publish => self.autopost(&id),
+            Next::Extract => {
+                let e = self.clone();
+                tokio::spawn(async move { e.extract_findings(&id).await });
+            }
         }
     }
+    /// Publishes a finished automatic review in the background.
+    pub(super) fn autopost(self: &Arc<Self>, id: &str) {
+        let e = self.clone();
+        let id = id.to_string();
+        tokio::spawn(async move {
+            if let Err(error) = e.publish(&id, true, false).await {
+                e.update(|s| {
+                    if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
+                        r.error = Some(error);
+                    }
+                })
+                .await;
+            }
+        });
+    }
 }
-/// Applies a notification to the review it belongs to, returning whether a
-/// completed automatic review should now be published.
-pub(super) fn apply_notification(s: &mut Snapshot, id: &str, method: &str, p: &Value) -> bool {
-    let mut autopost = false;
+/// What a notification leaves for the engine to start.
+#[derive(Debug, PartialEq)]
+pub(super) enum Next {
+    Nothing,
+    /// A completed automatic review should now be published.
+    Publish,
+    /// The review turn produced a report; restate its findings as data.
+    Extract,
+}
+/// Applies a notification to the review it belongs to.
+pub(super) fn apply_notification(s: &mut Snapshot, id: &str, method: &str, p: &Value) -> Next {
+    let mut next = Next::Nothing;
     if method == "serverRequest/resolved" {
         s.approvals.retain(|a| a.id != p["requestId"]);
     }
@@ -569,11 +590,13 @@ pub(super) fn apply_notification(s: &mut Snapshot, id: &str, method: &str, p: &V
         s.approvals.retain(|a| a.review_id != id);
     }
     let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) else {
-        return false;
+        return Next::Nothing;
     };
     r.updated_at = now();
     match method {
         "turn/started" => r.turn_id = p["turn"]["id"].as_str().map(str::to_owned),
+        // The extraction turn's JSON answer is data, not chat.
+        "item/agentMessage/delta" if r.extracting => {}
         "item/agentMessage/delta" => {
             let item = p["itemId"].as_str().unwrap_or("");
             let delta = p["delta"].as_str().unwrap_or("");
@@ -605,6 +628,12 @@ pub(super) fn apply_notification(s: &mut Snapshot, id: &str, method: &str, p: &V
             let item = &p["item"];
             let item_id = item["id"].as_str().unwrap_or("");
             match item["type"].as_str().unwrap_or("") {
+                "agentMessage" if r.extracting => {
+                    let text = item["text"].as_str().unwrap_or("");
+                    if let Ok(extracted) = findings::parse(text, &r.id, r.worktree.as_deref()) {
+                        extracted.store(r);
+                    }
+                }
                 "agentMessage" => {
                     let text = item["text"].as_str().unwrap_or("");
                     if let Some(m) = r.messages.iter_mut().find(|m| m.id == item_id) {
@@ -622,7 +651,7 @@ pub(super) fn apply_notification(s: &mut Snapshot, id: &str, method: &str, p: &V
                 }
                 "exitedReviewMode" => {
                     r.report = item["review"].as_str().unwrap_or("").into();
-                    r.sensitive = credential_kinds(&r.report);
+                    r.sensitive = r.credential_scan();
                     if !r.report.is_empty() {
                         r.messages.push(Message::new("agent", r.report.clone()));
                     }
@@ -637,6 +666,23 @@ pub(super) fn apply_notification(s: &mut Snapshot, id: &str, method: &str, p: &V
                     }
                 }
                 _ => {}
+            }
+        }
+        "turn/completed" if r.extracting => {
+            let error = match p["turn"]["status"].as_str().unwrap_or("") {
+                "completed" => None,
+                "interrupted" => Some("The extraction turn was interrupted.".to_string()),
+                _ => Some(
+                    p["turn"]["error"]["message"]
+                        .as_str()
+                        .map_or("The extraction turn failed.".into(), |m| {
+                            format!("The extraction turn failed: {m}")
+                        }),
+                ),
+            };
+            r.end_extraction(error);
+            if r.automatic {
+                next = Next::Publish;
             }
         }
         "turn/completed" => {
@@ -661,6 +707,10 @@ pub(super) fn apply_notification(s: &mut Snapshot, id: &str, method: &str, p: &V
                                         "Codex completed without a review report. No comment was published."
                                             .into(),
                                     );
+                        } else if r.is_review {
+                            // Stays active until the findings are extracted.
+                            r.extracting = true;
+                            next = Next::Extract;
                         } else {
                             r.status = if r.comment_url.is_some() {
                                 "posted"
@@ -668,7 +718,6 @@ pub(super) fn apply_notification(s: &mut Snapshot, id: &str, method: &str, p: &V
                                 "ready"
                             }
                             .into();
-                            autopost = r.is_review && r.automatic;
                         }
                     }
                     "interrupted" => r.status = "cancelled".into(),
@@ -686,5 +735,5 @@ pub(super) fn apply_notification(s: &mut Snapshot, id: &str, method: &str, p: &V
         }
         _ => {}
     }
-    autopost
+    next
 }

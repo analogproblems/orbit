@@ -9,10 +9,17 @@ async fn captures_streamed_report_and_finishes_review() {
     e.event(json!({"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"m","delta":" tests"}})).await;
     e.event(json!({"method":"item/completed","params":{"threadId":"thread-1","turnId":"turn-1","item":{"id":"review","type":"exitedReviewMode","review":"No actionable defects found."}}})).await;
     e.event(json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}})).await;
-    let s = e.snapshot().await;
-    assert_eq!(s.reviews[0].messages[0].text, "Checking tests");
-    assert_eq!(s.reviews[0].report, "No actionable defects found.");
-    assert_eq!(s.reviews[0].status, "ready");
+    // The report is followed by findings extraction, which cannot start here
+    // without Codex, so the run finishes unstructured with its report kept.
+    let r = wait_for_status(&e, "ready").await;
+    assert_eq!(r.messages[0].text, "Checking tests");
+    assert_eq!(r.report, "No actionable defects found.");
+    assert!(!r.extracting && r.findings.is_none());
+    let error = r.error.unwrap();
+    assert!(
+        error.contains("unstructured") && error.contains("Codex is disconnected"),
+        "{error}"
+    );
 }
 #[tokio::test]
 async fn rejects_completion_without_a_review_report() {

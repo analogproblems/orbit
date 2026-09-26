@@ -68,6 +68,32 @@ export interface Review {
   beforeFollowUp?: { status: Status; error?: string };
   cleanupPending?: boolean;
   cleanupError?: string;
+  /** Null or absent: an unstructured run (not extracted yet, or it failed). */
+  findings?: Finding[] | null;
+  verdict?: Verdict | null;
+  summary?: string | null;
+  testsNotRun?: string[];
+  /** The findings-extraction turn is running. */
+  extracting?: boolean;
+}
+export type Verdict = "clean" | "changes_requested";
+export interface Finding extends Record<string, unknown> {
+  id: string;
+  title: string;
+  /** 0 (P0, most severe) to 3. */
+  priority: number;
+  /** Relative to the repository root; null when outside the worktree. */
+  path: string | null;
+  startLine: number;
+  endLine: number;
+  body: string;
+  confidence: number;
+}
+export function findingLocation(f: Finding) {
+  if (!f.path) return "Outside the repository";
+  return f.startLine === f.endLine
+    ? `${f.path}:${f.startLine}`
+    : `${f.path}:${f.startLine}–${f.endLine}`;
 }
 export interface Repository {
   name: string;

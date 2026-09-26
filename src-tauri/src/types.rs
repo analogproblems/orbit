@@ -122,6 +122,46 @@ pub struct Review {
     pub cleanup_closed_only: Option<bool>,
     #[serde(default)]
     pub cleanup_error: Option<String>,
+    /// The findings Codex restated as data after the review, or None when the
+    /// run is unstructured (not extracted yet, extraction failed, older state).
+    #[serde(default)]
+    pub findings: Option<Vec<Finding>>,
+    /// The verdict Codex reported with the findings.
+    #[serde(default)]
+    pub verdict: Option<Verdict>,
+    #[serde(default)]
+    pub summary: Option<String>,
+    /// Tests or checks the reviewer said it could not run.
+    #[serde(default)]
+    pub tests_not_run: Vec<String>,
+    /// The findings-extraction turn is running; its output is not chat.
+    #[serde(default)]
+    pub extracting: bool,
+    /// Confirmed model and effort of the extraction turn.
+    #[serde(default)]
+    pub extraction_selection: Option<ModelSelection>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Verdict {
+    Clean,
+    ChangesRequested,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Finding {
+    /// Stable within Orbit: the review ID and the finding's index.
+    pub id: String,
+    pub title: String,
+    /// 0 (P0, most severe) to 3 (P3).
+    pub priority: u8,
+    /// Relative to the repository root; None when Codex reported a path
+    /// outside the review's worktree.
+    pub path: Option<String>,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub body: String,
+    pub confidence: f64,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -163,11 +203,65 @@ impl Review {
             cleanup_pending: false,
             cleanup_closed_only: None,
             cleanup_error: None,
+            findings: None,
+            verdict: None,
+            summary: None,
+            tests_not_run: vec![],
+            extracting: false,
+            extraction_selection: None,
         }
+    }
+    /// Credential-like text in the report and in the structured findings.
+    pub fn credential_scan(&self) -> Vec<String> {
+        let mut text = self.report.clone();
+        for f in self.findings.iter().flatten() {
+            for part in [&f.title, &f.body, f.path.as_deref().unwrap_or("")] {
+                text.push('\n');
+                text.push_str(part);
+            }
+        }
+        for part in self.summary.iter().chain(&self.tests_not_run) {
+            text.push('\n');
+            text.push_str(part);
+        }
+        credential_kinds(&text)
     }
     /// Ends a follow-up by restoring the outcome it set aside, so a stopped or
     /// failed chat never discards a report or publication. Returns false when
     /// no follow-up is running.
+    /// Ends a findings extraction. The review turn already produced a report,
+    /// so the run becomes ready (or stays published) either way; without
+    /// findings (`error`) it is an unstructured run. Returns false when no
+    /// extraction is running.
+    pub fn end_extraction(&mut self, error: Option<String>) -> bool {
+        if !self.extracting {
+            return false;
+        }
+        self.extracting = false;
+        let error = error.or_else(|| {
+            self.findings
+                .is_none()
+                .then(|| "Codex did not restate its findings in the expected format.".into())
+        });
+        if let Some(error) = error {
+            self.findings = None;
+            self.verdict = None;
+            self.summary = None;
+            self.tests_not_run.clear();
+            self.error = Some(format!(
+                "Findings were not extracted, so this run is unstructured; its report is kept. {error}"
+            ));
+        }
+        self.sensitive = self.credential_scan();
+        self.status = if self.comment_url.is_some() {
+            "posted"
+        } else {
+            "ready"
+        }
+        .into();
+        self.updated_at = now();
+        true
+    }
     pub fn end_follow_up(&mut self, error: Option<String>) -> bool {
         let Some(before) = self.before_follow_up.take() else {
             return false;

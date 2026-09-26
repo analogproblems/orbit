@@ -11,10 +11,12 @@ Orbit connects open GitHub pull requests to local Codex review runs. Each run ha
 3. Open **Pull requests**. Saving the repository starts a sync; the refresh button also syncs on demand.
 4. Select an open PR and click **Start review**. Open **Review chat** to follow its progress. Expand **Execution log** entries to inspect command and setup output.
 5. If a banner says approval is needed, open **Review request**, inspect the requested action, and choose **Approve once** or **Deny**.
-6. When the status becomes **Ready to publish**, read the report. You can ask a follow-up before publishing.
+6. When the status becomes **Ready to publish**, read the report and the findings list under it. You can ask a follow-up before publishing.
 7. Choose **Publish findings** in the chat or **Publish review** in the footer. Inspect the preview, then click **Publish comment** to post using your connected GitHub account.
 
 Starting a review manually does not publish its report automatically, even when automatic publication is enabled.
+
+After the report arrives, the chat shows **Extracting findings…** while Codex restates its findings as a list, on the same chat and with the same pinned model and effort. The list shows each finding's severity, file and lines, with the verdict and any tests Codex could not run. If this step fails, the run is labeled **Unstructured run**: its report is kept and can still be published, and exports include the verdict and a findings table when there is one. Stopping the run during this step stops it like any other review.
 
 ## Launch and connect
 

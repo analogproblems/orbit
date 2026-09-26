@@ -39,6 +39,7 @@ import {
   type PullRequest,
   type Review,
 } from "./types";
+import { Findings } from "./Findings";
 import { LegacyChatModel } from "./LegacyChatModel";
 import { ReviewActions } from "./ReviewActions";
 import { SafeMarkdown } from "./SafeMarkdown";
@@ -322,9 +323,16 @@ export function Chat({
               </ChatMessage>
             ),
           )}
+          <Findings review={review} />
           {running && (
             <ChatSystemMessage>
-              <Spinner label={statusLabels[review.status]} />
+              <Spinner
+                label={
+                  review.extracting
+                    ? "Extracting findings…"
+                    : statusLabels[review.status]
+                }
+              />
             </ChatSystemMessage>
           )}
           {review.status === "ready" && (
