@@ -227,6 +227,201 @@ pub fn states(s: &Snapshot) -> Vec<LoopState> {
     s.prs.iter().filter_map(|pr| state(s, pr)).collect()
 }
 
+/// A review's round number within its PR's loop. None for a run that is not
+/// a round (manual, superseded or stopped).
+pub fn round_number(s: &Snapshot, r: &Review) -> Option<u32> {
+    let rounds = rounds_of(s, &r.pr_id);
+    let at = rounds.iter().position(|x| x.id == r.id)?;
+    Some((rounds.len() - at) as u32)
+}
+
+/// GitHub allows commit status descriptions of up to 140 characters.
+fn short(text: String) -> String {
+    if text.chars().count() <= 140 {
+        return text;
+    }
+    let mut cut: String = text.chars().take(139).collect();
+    cut.push('…');
+    cut
+}
+/// The status for a finished round: its verdict, or why it has none.
+fn verdict_status(r: &Review, round: Option<u32>) -> (&'static str, String) {
+    let round = round.map_or_else(|| "Review".to_string(), |n| format!("Round {n}"));
+    if r.status == "failed" {
+        return ("error", format!("{round} · the review failed"));
+    }
+    match r.orbit_verdict {
+        Some(Verdict::Clean) => ("success", format!("{round} · no blocking findings")),
+        Some(Verdict::ChangesRequested) => {
+            let n = r.blocking.unwrap_or(0);
+            let noun = if n == 1 { "finding" } else { "findings" };
+            ("failure", format!("{round} · {n} blocking {noun}"))
+        }
+        None => ("error", format!("{round} · no structured findings")),
+    }
+}
+fn status(state: &str, description: String) -> CommitStatus {
+    CommitStatus {
+        state: state.into(),
+        description: short(description),
+        error: None,
+    }
+}
+/// A status Orbit should set on a commit, for the PR whose round decides it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WantedStatus {
+    pub repo: String,
+    pub sha: String,
+    pub pr_id: String,
+    pub status: CommitStatus,
+}
+impl WantedStatus {
+    fn is(&self, c: &Option<CommitStatus>) -> bool {
+        c.as_ref().is_some_and(|c| {
+            c.state == self.status.state && c.description == self.status.description
+        })
+    }
+    /// Whether GitHub refused exactly this status last time.
+    pub fn refused_by(&self, check: &CommitCheck) -> bool {
+        self.is(&check.refused)
+    }
+    /// Whether GitHub already shows it, or already refused it.
+    pub fn settled_by(&self, check: &CommitCheck) -> bool {
+        self.is(&check.accepted) || self.refused_by(check)
+    }
+}
+pub fn same_commit(repo: &str, sha: &str, other_repo: &str, other_sha: &str) -> bool {
+    sha == other_sha && same_repo(repo, other_repo)
+}
+/// The `orbit/review` status the PR's latest round should show on the PR's
+/// current head. None when statuses are off or no round is on this head yet.
+pub fn wanted_status(s: &Snapshot, pr: &PullRequest) -> Option<CommitStatus> {
+    latest_wanted(s, pr).map(|(_, status)| status)
+}
+/// `wanted_status`, with when its round was created.
+fn latest_wanted(s: &Snapshot, pr: &PullRequest) -> Option<(String, CommitStatus)> {
+    if !(s.settings.commit_status && s.settings.auto_post) {
+        return None;
+    }
+    let rounds = rounds_of(s, &pr.id);
+    let latest = *rounds.first()?;
+    if latest.head_sha != pr.head_sha || latest.base_sha != pr.base_sha {
+        return None;
+    }
+    let loop_state = state(s, pr)?;
+    let n = rounds.len() as u32;
+    let status = match loop_state.status {
+        LoopStatus::Reviewing => status("pending", format!("Round {n} · reviewing")),
+        LoopStatus::Clean | LoopStatus::WaitingForAuthor | LoopStatus::Stopped => {
+            let (state, description) = verdict_status(latest, Some(n));
+            status(state, description)
+        }
+        LoopStatus::NeedsYou => status(
+            "error",
+            format!(
+                "Round {n} · needs you: {}",
+                loop_state
+                    .reason
+                    .unwrap_or_default()
+                    .trim_end_matches('.')
+                    .to_lowercase()
+            ),
+        ),
+    };
+    Some((latest.created_at.clone(), status))
+}
+/// The repository a review's PR belongs to.
+fn review_repo<'a>(s: &'a Snapshot, r: &'a Review) -> &'a str {
+    s.prs
+        .iter()
+        .chain(&s.history_prs)
+        .find(|p| p.id == r.pr_id)
+        .map_or_else(
+            || r.pr_id.split('#').next().unwrap_or(""),
+            |p| p.repo.as_str(),
+        )
+}
+/// The final status for a commit GitHub shows as pending that no current round
+/// owns, from the newest automatic run on that commit in any PR. None while
+/// that run is still going and has not been replaced.
+fn closing_status(s: &Snapshot, check: &CommitCheck) -> Option<(String, CommitStatus)> {
+    let r = s
+        .reviews
+        .iter()
+        .filter(|r| {
+            r.automatic && same_commit(review_repo(s, r), &r.head_sha, &check.repo, &check.sha)
+        })
+        .max_by(|a, b| a.created_at.cmp(&b.created_at));
+    let Some(r) = r else {
+        return Some((
+            check.pr_id.clone(),
+            status("error", "Review stopped".into()),
+        ));
+    };
+    let closed = |description: &str| Some((r.pr_id.clone(), status("error", description.into())));
+    if r.superseded && (active(&r.status) || r.status == "cancelled") {
+        return closed("Replaced by newer commits");
+    }
+    if r.status == "cancelled" {
+        return closed("Review stopped");
+    }
+    if active(&r.status) {
+        return None;
+    }
+    let (state, description) = verdict_status(r, round_number(s, r));
+    Some((r.pr_id.clone(), status(state, description)))
+}
+/// Every commit status Orbit should set now, one per commit. A commit that is
+/// the current head of several PRs gets the status of the newest round among
+/// them. A commit GitHub shows as pending with no current round to finish it
+/// (stopped, replaced, or finished just before a push) is closed, even if
+/// statuses were turned off since.
+pub fn wanted_commit_checks(s: &Snapshot) -> Vec<WantedStatus> {
+    let mut wanted: Vec<(String, WantedStatus)> = vec![];
+    for pr in &s.prs {
+        let Some((created, status)) = latest_wanted(s, pr) else {
+            continue;
+        };
+        let next = WantedStatus {
+            repo: pr.repo.clone(),
+            sha: pr.head_sha.clone(),
+            pr_id: pr.id.clone(),
+            status,
+        };
+        match wanted
+            .iter_mut()
+            .find(|(_, w)| same_commit(&w.repo, &w.sha, &next.repo, &next.sha))
+        {
+            Some(existing) if existing.0 >= created => {}
+            Some(existing) => *existing = (created, next),
+            None => wanted.push((created, next)),
+        }
+    }
+    let mut wanted: Vec<WantedStatus> = wanted.into_iter().map(|(_, w)| w).collect();
+    for check in &s.commit_checks {
+        let pending = check
+            .accepted
+            .as_ref()
+            .is_some_and(|c| c.state == "pending");
+        if !pending
+            || wanted
+                .iter()
+                .any(|w| same_commit(&w.repo, &w.sha, &check.repo, &check.sha))
+        {
+            continue;
+        }
+        if let Some((pr_id, status)) = closing_status(s, check) {
+            wanted.push(WantedStatus {
+                repo: check.repo.clone(),
+                sha: check.sha.clone(),
+                pr_id,
+                status,
+            });
+        }
+    }
+    wanted
+}
+
 #[cfg(test)]
 #[path = "review_loop_tests.rs"]
 mod tests;

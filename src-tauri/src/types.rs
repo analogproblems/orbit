@@ -168,6 +168,35 @@ pub struct Review {
     #[serde(default)]
     pub superseded: bool,
 }
+/// A GitHub commit status in the `orbit/review` context.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitStatus {
+    /// `pending`, `success`, `failure` or `error`.
+    pub state: String,
+    pub description: String,
+    /// Why GitHub did not accept it. It is not sent again until it changes.
+    #[serde(default)]
+    pub error: Option<String>,
+}
+/// What Orbit knows of a commit's `orbit/review` status. GitHub keeps one
+/// such status per commit, whichever PR or round set it, so it is tracked per
+/// repository and commit.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitCheck {
+    pub repo: String,
+    pub sha: String,
+    /// The PR whose round the status was last sent for.
+    pub pr_id: String,
+    /// The last status GitHub accepted, which is what it shows.
+    #[serde(default)]
+    pub accepted: Option<CommitStatus>,
+    /// The last status GitHub refused, with why; not sent again until the
+    /// wanted status changes.
+    #[serde(default)]
+    pub refused: Option<CommitStatus>,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Verdict {
@@ -395,6 +424,9 @@ pub struct Settings {
     pub blocking_priority: u8,
     /// Queue a new head automatically only once it is a poll interval old.
     pub settle_pushes: bool,
+    /// Show each automatic round's result on its commit as the `orbit/review`
+    /// status. Only while automatic publication is on.
+    pub commit_status: bool,
 }
 /// Only supplied fields change. Repository mutations have separate commands.
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -409,6 +441,7 @@ pub struct SettingsPatch {
     pub trusted_authors: Option<Vec<String>>,
     pub blocking_priority: Option<u8>,
     pub settle_pushes: Option<bool>,
+    pub commit_status: Option<bool>,
 }
 impl SettingsPatch {
     pub fn apply(self, settings: &mut Settings) {
@@ -439,6 +472,9 @@ impl SettingsPatch {
         if let Some(v) = self.settle_pushes {
             settings.settle_pushes = v;
         }
+        if let Some(v) = self.commit_status {
+            settings.commit_status = v;
+        }
     }
 }
 impl Default for Settings {
@@ -454,6 +490,7 @@ impl Default for Settings {
             trusted_authors: vec![],
             blocking_priority: 1,
             settle_pushes: true,
+            commit_status: true,
         }
     }
 }
@@ -559,6 +596,10 @@ pub struct Snapshot {
     pub model_selection_notice: Option<String>,
     /// Per-PR controls of the automatic review loop.
     pub loops: Vec<LoopControl>,
+    /// Commit statuses Orbit has set, so each is sent only when it changes
+    /// and one left pending can be closed.
+    #[serde(default)]
+    pub commit_checks: Vec<CommitCheck>,
     /// Derived for display when the snapshot is emitted; never saved.
     #[serde(skip_deserializing, skip_serializing_if = "Vec::is_empty")]
     pub loop_states: Vec<LoopState>,

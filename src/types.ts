@@ -163,6 +163,23 @@ export interface Settings {
   blockingPriority: number;
   /** Queue a new head automatically only once it is a poll interval old. */
   settlePushes: boolean;
+  /** Show each automatic round's result on its commit as `orbit/review`. */
+  commitStatus: boolean;
+}
+export interface CommitStatus {
+  state: "pending" | "success" | "failure" | "error";
+  description: string;
+  error?: string | null;
+}
+/** What Orbit knows of a commit's `orbit/review` status. */
+export interface CommitCheck {
+  repo: string;
+  sha: string;
+  prId: string;
+  /** The last status GitHub accepted. */
+  accepted?: CommitStatus | null;
+  /** The last status GitHub refused, with why. */
+  refused?: CommitStatus | null;
 }
 export type SettingsPatch = Partial<Omit<Settings, "repositories">>;
 export type ActionResult<T> =
@@ -226,6 +243,7 @@ export function loopState(s: Snapshot, prId: string) {
 export interface Snapshot {
   loops?: LoopControl[];
   /** Derived by the app for display. */
+  commitChecks?: CommitCheck[];
   loopStates?: LoopState[];
   prs: PullRequest[];
   historyPrs?: PullRequest[];
@@ -278,6 +296,7 @@ export const defaults: Settings = {
   trustedAuthors: [],
   blockingPriority: 1,
   settlePushes: true,
+  commitStatus: true,
 };
 export function latestReview(reviews: Review[], prId: string) {
   return reviews

@@ -13,6 +13,7 @@ import {
   loopStatusLabels,
   type LoopState,
   type LoopStatus,
+  type Snapshot,
 } from "./types";
 
 const loopColors: Record<
@@ -37,12 +38,23 @@ export function LoopToken({ state }: { state: LoopState }) {
   );
 }
 
+/** Why GitHub refused the status check on the PR's current head, if it did. */
+function latestStatusError(s: Snapshot, prId: string) {
+  const pr = s.prs.find((p) => p.id === prId);
+  const check = s.commitChecks?.find(
+    (c) =>
+      c.sha === pr?.headSha && c.repo.toLowerCase() === pr.repo.toLowerCase(),
+  );
+  return check?.refused?.error ?? undefined;
+}
+
 /** The loop's state, why it needs a person, and its controls. */
 export function LoopPanel({ prId }: { prId: string }) {
   const { snapshot: s, action } = useOrbit();
   const [busy, setBusy] = useState(false);
   const state = loopState(s, prId);
   if (!state) return null;
+  const statusError = latestStatusError(s, prId);
   const run = async (command: string, args: Record<string, unknown>) => {
     setBusy(true);
     try {
@@ -64,6 +76,11 @@ export function LoopPanel({ prId }: { prId: string }) {
         </Text>
       </HStack>
       {state.reason && <Text>{state.reason}</Text>}
+      {statusError && (
+        <Text type="supporting" color="secondary">
+          GitHub did not accept the status check: {statusError}
+        </Text>
+      )}
       <HStack gap={2}>
         {paused ? (
           <Button

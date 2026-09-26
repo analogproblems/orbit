@@ -225,6 +225,8 @@ The PR detail and inbox show the loop's state: **Reviewing**, **Waiting for auth
 
 When a PR gets new commits while an automatic round is queued or running for the older head, that round is marked **Superseded**: a queued one is cancelled, a running one finishes but is not published or counted. With **Wait for pushes to settle** on, Orbit starts the next round only after the head has stayed the same for one poll interval, so a burst of pushes gets one review. This also delays the first review of a newly found PR by one interval.
 
+While automatic publication is on, Orbit also shows each automatic round's result on the reviewed commit as the **orbit/review** status check: pending while the round is in progress, success when clean, failure when changes are requested, and error when the loop needs you. Its description gives the round and the blocking count, such as "Round 2 · 1 blocking finding". Published comments also carry a hidden line with the verdict for agents to read, such as `<!-- orbit-verdict: changes_requested round=2 blocking=1 -->`. Turn off **GitHub status check** in Settings to stop setting the check. If GitHub refuses a status, the PR detail says why; the review is not affected. Orbit never makes the check required: that is a branch protection choice in GitHub.
+
 ## Settings and when changes take effect
 
 | Setting                                | Initial value                      | Available choices                                                                                                 |
@@ -238,6 +240,7 @@ When a PR gets new commits while an automatic round is queued or running for the
 | Trusted accounts                       | Empty                              | Up to 50 account logins.                                                                                          |
 | Blocking findings                      | P0 to P1                           | P0 only, or P0 to P1, P2 or P3.                                                                                   |
 | Wait for pushes to settle              | On                                 | On/off.                                                                                                           |
+| GitHub status check                    | On                                 | On/off; applies while automatic publication is on.                                                                |
 
 Settings switches and selections save immediately. Changing the model saves that model and its explicit supported default effort in the same update. **Choose a model** and **Choose an effort** are placeholders, not executable default choices. **Saving…**, **Saved**, or an error with **Retry saving** shows the result. **Saved** clears after 2.5 seconds; errors remain until resolved. After a failed write, controls return to the active values. The unapplied request is listed beside its error and **Retry saving**, and survives page navigation along with typed account input. Retry after resolving the failure. If a model change fails, effort stays disabled until you retry successfully or choose a model again; this prevents a later retry from resetting a newly selected effort.
 

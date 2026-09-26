@@ -19,6 +19,7 @@ mod queue;
 mod rounds;
 mod run;
 mod settings;
+mod status;
 mod worktrees;
 
 pub use settings::validate_checkout;
@@ -74,8 +75,9 @@ mod worktrees_tests;
 /// `items` via `retire_dead_connection` → `disconnected`); `poll_lock` →
 /// `state` and `synced_repos` (one at a time); `publish_lock` → `state`;
 /// `cleanup_lock` → `git_lock` → `state`; `state` → `synced_repos`
-/// (`schedule`). `preparing` and `recovered_publications` (a `std` mutex, like
-/// `preparing`) are only taken on their own.
+/// (`schedule`). `preparing`, `recovered_publications`, `status_sender` and
+/// `sending_statuses` (`std` mutexes, like `preparing`) are only taken on
+/// their own.
 ///
 /// Known exception: `clean_worktrees_with` briefly holds a `git_lock` try-lock
 /// guard while it try-locks `cleanup_lock`, the reverse of `cleanup_lock` →
@@ -103,6 +105,10 @@ pub struct Engine {
     /// Automatic reviews whose extraction a restart cut short; `launch`
     /// publishes their reports.
     recovered_publications: std::sync::Mutex<Vec<String>>,
+    /// Sends `orbit/review` commit statuses; tests replace it.
+    status_sender: std::sync::Mutex<status::StatusSender>,
+    /// Rounds whose commit status is on its way to GitHub.
+    sending_statuses: std::sync::Mutex<HashSet<String>>,
     _instance_lock: std::fs::File,
 }
 impl Engine {
@@ -205,6 +211,8 @@ impl Engine {
             preparing: std::sync::Mutex::new(HashMap::new()),
             cleanup_lock: Mutex::new(()),
             recovered_publications: std::sync::Mutex::new(recovered),
+            status_sender: std::sync::Mutex::new(status::github_sender()),
+            sending_statuses: std::sync::Mutex::new(HashSet::new()),
             _instance_lock: instance_lock,
         }))
     }
@@ -309,11 +317,17 @@ impl Engine {
                         p.clean_worktrees().await;
                     });
                 }
-                if codex_ready {
-                    e.schedule().await;
-                }
+                e.tick(codex_ready).await;
             }
         });
+    }
+    /// Work done on every tick: scheduling needs Codex, but commit statuses
+    /// only need GitHub, so a disconnect still closes the checks it failed.
+    async fn tick(self: &Arc<Self>, codex_ready: bool) {
+        if codex_ready {
+            self.schedule().await;
+        }
+        self.sync_commit_statuses().await;
     }
     pub async fn storage_usage(&self) -> Result<storage::StorageUsage, String> {
         let snapshot = self.snapshot().await;

@@ -273,3 +273,184 @@ fn a_new_head_waits_one_poll_interval_before_its_round() {
     p.head_seen_at.clear();
     assert!(allows_new_round(&p, &s));
 }
+#[test]
+fn the_commit_status_follows_the_loop_on_the_latest_round() {
+    let (mut s, p) = snapshot();
+    let wanted = |s: &Snapshot| wanted_status(s, &p).map(|c| (c.state, c.description));
+    let pair = |state: &str, description: &str| Some((state.into(), description.into()));
+    assert_eq!(wanted(&s), None);
+
+    let mut running = round(&p, &p.head_sha, 0, vec![]);
+    running.status = "reviewing".into();
+    running.findings = None;
+    decide(&mut running, 1);
+    s.reviews.push(running);
+    assert_eq!(wanted(&s), pair("pending", "Round 1 · reviewing"));
+
+    let r = s.reviews.last_mut().unwrap();
+    r.status = "posted".into();
+    r.findings = Some(vec![finding("x-0", 1, "Bug"), finding("x-1", 0, "Worse")]);
+    decide(r, 1);
+    assert_eq!(wanted(&s), pair("failure", "Round 1 · 2 blocking findings"));
+    // Waiting to be published automatically is still in progress.
+    s.reviews.last_mut().unwrap().status = "ready".into();
+    assert_eq!(wanted(&s), pair("pending", "Round 1 · reviewing"));
+
+    let r = s.reviews.last_mut().unwrap();
+    r.status = "posted".into();
+    r.findings = Some(vec![finding("x-0", 2, "Nit")]);
+    decide(r, 1);
+    assert_eq!(
+        wanted(&s),
+        pair("success", "Round 1 · no blocking findings")
+    );
+    s.reviews.last_mut().unwrap().status = "failed".into();
+    assert_eq!(
+        wanted(&s),
+        pair("error", "Round 1 · needs you: the review failed")
+    );
+    // A stopped loop keeps the round's verdict.
+    s.reviews.last_mut().unwrap().status = "posted".into();
+    s.loops.push(LoopControl {
+        pr_id: p.id.clone(),
+        stopped: true,
+        extra_rounds: 0,
+    });
+    assert_eq!(
+        wanted(&s),
+        pair("success", "Round 1 · no blocking findings")
+    );
+
+    // Statuses need automatic publication and their own setting.
+    s.settings.auto_post = false;
+    assert_eq!(wanted(&s), None);
+    s.settings.auto_post = true;
+    s.settings.commit_status = false;
+    assert_eq!(wanted(&s), None);
+    s.settings.commit_status = true;
+    // A round for an older head already has its status.
+    s.reviews.last_mut().unwrap().head_sha = "old".into();
+    assert_eq!(wanted(&s), None);
+}
+#[test]
+fn rounds_are_numbered_from_the_first_automatic_review() {
+    let (mut s, p) = snapshot();
+    s.reviews.push(round(&p, "one", 0, vec![]));
+    let mut manual = round(&p, "two", 1, vec![]);
+    manual.automatic = false;
+    s.reviews.push(manual);
+    s.reviews.push(round(&p, &p.head_sha, 2, vec![]));
+    let numbers: Vec<_> = s.reviews.iter().map(|r| round_number(&s, r)).collect();
+    assert_eq!(numbers, [Some(1), None, Some(2)]);
+    // Descriptions stay within GitHub's limit.
+    assert_eq!(short("x".repeat(200)).chars().count(), 140);
+    assert_eq!(short("x".repeat(140)), "x".repeat(140));
+}
+fn check(p: &PullRequest, sha: &str, state: &str) -> CommitCheck {
+    CommitCheck {
+        repo: p.repo.clone(),
+        sha: sha.into(),
+        pr_id: p.id.clone(),
+        accepted: Some(CommitStatus {
+            state: state.into(),
+            description: String::new(),
+            error: None,
+        }),
+        refused: None,
+    }
+}
+fn closing(s: &Snapshot, sha: &str) -> Option<(String, String)> {
+    wanted_commit_checks(s)
+        .into_iter()
+        .find(|c| c.sha == sha)
+        .map(|c| (c.status.state, c.status.description))
+}
+#[test]
+fn pending_checks_without_a_round_to_finish_them_are_closed() {
+    let (mut s, p) = snapshot();
+    let pair = |state: &str, description: &str| Some((state.into(), description.into()));
+    // A round stopped after its pending status was sent.
+    let mut r = round(&p, &p.head_sha, 0, vec![]);
+    r.status = "cancelled".into();
+    s.reviews.push(r);
+    s.commit_checks.push(check(&p, &p.head_sha, "pending"));
+    assert_eq!(closing(&s, &p.head_sha), pair("error", "Review stopped"));
+    // Closed even after statuses are turned off.
+    s.settings.commit_status = false;
+    assert_eq!(closing(&s, &p.head_sha), pair("error", "Review stopped"));
+    s.settings.commit_status = true;
+    // A closed check is left alone, and a refused attempt does not hide that
+    // GitHub still shows it pending.
+    s.commit_checks[0].accepted.as_mut().unwrap().state = "error".into();
+    assert_eq!(closing(&s, &p.head_sha), None);
+    s.commit_checks[0] = check(&p, &p.head_sha, "pending");
+    s.commit_checks[0].refused = Some(CommitStatus {
+        state: "error".into(),
+        description: "Round 1 · needs you: an approval is pending".into(),
+        error: Some("Refused".into()),
+    });
+    assert_eq!(closing(&s, &p.head_sha), pair("error", "Review stopped"));
+
+    // A round that finished just before a push closes with its verdict.
+    let (mut s, p) = snapshot();
+    s.reviews
+        .push(round(&p, "old", 0, vec![finding("x-0", 1, "Bug")]));
+    s.commit_checks.push(check(&p, "old", "pending"));
+    assert_eq!(
+        closing(&s, "old"),
+        pair("failure", "Round 1 · 1 blocking finding")
+    );
+    // A round replaced while running closes as replaced; one still running
+    // on a current head waits.
+    let r = s.reviews.last_mut().unwrap();
+    r.status = "reviewing".into();
+    assert_eq!(closing(&s, "old"), None);
+    s.reviews.last_mut().unwrap().superseded = true;
+    assert_eq!(
+        closing(&s, "old"),
+        pair("error", "Replaced by newer commits")
+    );
+}
+#[test]
+fn a_commit_shared_by_two_prs_shows_the_newest_round() {
+    let (mut s, a) = snapshot();
+    let mut b = a.clone();
+    b.id = "a/b#2".into();
+    b.number = 2;
+    b.base_sha = "e".repeat(40);
+    s.prs.push(b.clone());
+    let mut stopped = round(&a, &a.head_sha, 0, vec![]);
+    stopped.status = "cancelled".into();
+    s.reviews.push(stopped);
+    s.commit_checks.push(check(&a, &a.head_sha, "pending"));
+    let mut clean = round(&b, &b.head_sha, 1, vec![finding("x-0", 2, "Nit")]);
+    clean.base_sha = b.base_sha.clone();
+    s.reviews.push(clean);
+    let wanted = wanted_commit_checks(&s);
+    assert_eq!(wanted.len(), 1);
+    assert_eq!(
+        (wanted[0].pr_id.as_str(), wanted[0].status.state.as_str()),
+        ("a/b#2", "success")
+    );
+    // Once GitHub shows it, PR A's stopped round does not close over it.
+    s.commit_checks[0].accepted = Some(wanted[0].status.clone());
+    assert!(wanted_commit_checks(&s)[0].settled_by(&s.commit_checks[0]));
+    // Nor when PR B moves on and only the old pending record would remain.
+    s.prs.retain(|p| p.id != b.id);
+    s.commit_checks[0].accepted.as_mut().unwrap().state = "pending".into();
+    let wanted = wanted_commit_checks(&s);
+    assert_eq!(wanted[0].status.state, "success");
+}
+#[test]
+fn the_newest_round_on_a_commit_decides_its_status() {
+    let (mut s, p) = snapshot();
+    let mut stopped = round(&p, &p.head_sha, 0, vec![]);
+    stopped.status = "cancelled".into();
+    s.reviews.push(stopped);
+    s.commit_checks.push(check(&p, &p.head_sha, "pending"));
+    s.reviews
+        .push(round(&p, &p.head_sha, 1, vec![finding("x-0", 2, "Nit")]));
+    let wanted = wanted_commit_checks(&s);
+    assert_eq!(wanted.len(), 1);
+    assert_eq!(wanted[0].status.state, "success");
+}
