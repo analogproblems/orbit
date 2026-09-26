@@ -24,57 +24,61 @@ pub(super) fn github_sender() -> StatusSender {
 }
 
 impl Engine {
-    /// Sends each PR's wanted commit status when it differs from the last one
-    /// sent for that round, and closes checks left pending by rounds that were
-    /// stopped or replaced. A status GitHub refused is recorded on the round
-    /// and not retried until the wanted status changes; the review itself is
-    /// unaffected.
+    /// Sends each wanted commit status that differs from the last one sent
+    /// for that commit. One request per commit at a time, recomputed after
+    /// each, so a slow request for an older round cannot overwrite a newer
+    /// one. A status GitHub refused is recorded and not sent again until the
+    /// wanted status changes; reviews are unaffected. Runs whether or not
+    /// Codex is connected.
     pub(super) async fn sync_commit_statuses(self: &Arc<Self>) {
-        let wanted: Vec<(String, String, String, CommitStatus)> = {
+        let wanted: Vec<CommitCheck> = {
             let s = self.state.lock().await;
-            s.prs
-                .iter()
-                .filter_map(|pr| {
-                    let (id, status) = crate::review_loop::wanted_status(&s, pr)?;
-                    let r = s.reviews.iter().find(|r| r.id == id)?;
-                    let sent = r.commit_status.as_ref().is_some_and(|c| {
-                        c.state == status.state && c.description == status.description
-                    });
-                    (!sent).then(|| (id, pr.repo.clone(), r.head_sha.clone(), status))
+            crate::review_loop::wanted_commit_checks(&s)
+                .into_iter()
+                .filter(|w| {
+                    !s.commit_checks.iter().any(|c| {
+                        c.pr_id == w.pr_id
+                            && c.sha == w.sha
+                            && c.status.state == w.status.state
+                            && c.status.description == w.status.description
+                    })
                 })
-                .chain(s.reviews.iter().filter_map(|r| {
-                    let status = crate::review_loop::closing_status(r)?;
-                    let pr = s
-                        .prs
-                        .iter()
-                        .chain(&s.history_prs)
-                        .find(|p| p.id == r.pr_id)?;
-                    Some((r.id.clone(), pr.repo.clone(), r.head_sha.clone(), status))
-                }))
                 .collect()
         };
-        for (id, repo, sha, status) in wanted {
-            if !self.sending_statuses.lock().unwrap().insert(id.clone()) {
+        for check in wanted {
+            let key = format!("{}@{}", check.repo.to_ascii_lowercase(), check.sha);
+            if !self.sending_statuses.lock().unwrap().insert(key.clone()) {
                 continue;
             }
             let send = self.status_sender.lock().unwrap().clone();
             let e = self.clone();
             tokio::spawn(async move {
-                let result = send(repo, sha, status.clone()).await;
+                let result =
+                    send(check.repo.clone(), check.sha.clone(), check.status.clone()).await;
                 e.update(|s| {
-                    if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
-                        r.commit_status = Some(CommitStatus {
+                    s.commit_checks
+                        .retain(|c| !(c.pr_id == check.pr_id && c.sha == check.sha));
+                    s.commit_checks.push(CommitCheck {
+                        status: CommitStatus {
                             error: result.err(),
-                            ..status
-                        });
-                    }
+                            ..check.status
+                        },
+                        ..check
+                    });
+                    // Only open checks and current heads are needed again.
+                    let prs = s.prs.clone();
+                    s.commit_checks.retain(|c| {
+                        c.status.state == "pending"
+                            || prs.iter().any(|p| p.id == c.pr_id && p.head_sha == c.sha)
+                    });
                 })
                 .await;
-                e.sending_statuses.lock().unwrap().remove(&id);
+                e.sending_statuses.lock().unwrap().remove(&key);
             });
         }
     }
 }
+
 #[cfg(test)]
 impl Engine {
     pub(super) fn set_status_sender(&self, sender: StatusSender) {

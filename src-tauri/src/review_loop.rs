@@ -244,10 +244,32 @@ fn short(text: String) -> String {
     cut.push('…');
     cut
 }
-/// The `orbit/review` status the PR's latest round should show on its commit,
-/// with that round's id. None when statuses are off or the latest round is for
-/// an older head, whose status was already set.
-pub fn wanted_status(s: &Snapshot, pr: &PullRequest) -> Option<(String, CommitStatus)> {
+/// The status for a finished round: its verdict, or why it has none.
+fn verdict_status(r: &Review, round: Option<u32>) -> (&'static str, String) {
+    let round = round.map_or_else(|| "Review".to_string(), |n| format!("Round {n}"));
+    if r.status == "failed" {
+        return ("error", format!("{round} · the review failed"));
+    }
+    match r.orbit_verdict {
+        Some(Verdict::Clean) => ("success", format!("{round} · no blocking findings")),
+        Some(Verdict::ChangesRequested) => {
+            let n = r.blocking.unwrap_or(0);
+            let noun = if n == 1 { "finding" } else { "findings" };
+            ("failure", format!("{round} · {n} blocking {noun}"))
+        }
+        None => ("error", format!("{round} · no structured findings")),
+    }
+}
+fn status(state: &str, description: String) -> CommitStatus {
+    CommitStatus {
+        state: state.into(),
+        description: short(description),
+        error: None,
+    }
+}
+/// The `orbit/review` status the PR's latest round should show on the PR's
+/// current head. None when statuses are off or no round is on this head yet.
+pub fn wanted_status(s: &Snapshot, pr: &PullRequest) -> Option<CommitStatus> {
     if !(s.settings.commit_status && s.settings.auto_post) {
         return None;
     }
@@ -257,25 +279,17 @@ pub fn wanted_status(s: &Snapshot, pr: &PullRequest) -> Option<(String, CommitSt
         return None;
     }
     let loop_state = state(s, pr)?;
-    let round = format!("Round {}", rounds.len());
-    let blocking = |n: u32| {
-        format!(
-            "{round} · {n} blocking {}",
-            if n == 1 { "finding" } else { "findings" }
-        )
-    };
-    let by_verdict = || match latest.orbit_verdict {
-        Some(Verdict::Clean) => ("success", format!("{round} · no blocking findings")),
-        Some(Verdict::ChangesRequested) => ("failure", blocking(latest.blocking.unwrap_or(0))),
-        None => ("error", format!("{round} · loop stopped")),
-    };
-    let (state, description) = match loop_state.status {
-        LoopStatus::Reviewing => ("pending", format!("{round} · reviewing")),
-        LoopStatus::Clean | LoopStatus::WaitingForAuthor | LoopStatus::Stopped => by_verdict(),
-        LoopStatus::NeedsYou => (
+    let n = rounds.len() as u32;
+    Some(match loop_state.status {
+        LoopStatus::Reviewing => status("pending", format!("Round {n} · reviewing")),
+        LoopStatus::Clean | LoopStatus::WaitingForAuthor | LoopStatus::Stopped => {
+            let (state, description) = verdict_status(latest, Some(n));
+            status(state, description)
+        }
+        LoopStatus::NeedsYou => status(
             "error",
             format!(
-                "{round} · needs you: {}",
+                "Round {n} · needs you: {}",
                 loop_state
                     .reason
                     .unwrap_or_default()
@@ -283,36 +297,66 @@ pub fn wanted_status(s: &Snapshot, pr: &PullRequest) -> Option<(String, CommitSt
                     .to_lowercase()
             ),
         ),
-    };
-    Some((
-        latest.id.clone(),
-        CommitStatus {
-            state: state.into(),
-            description: short(description),
-            error: None,
-        },
-    ))
+    })
 }
-
-/// A round left pending on GitHub that will not finish there: it was stopped,
-/// or replaced by a newer head. Its check is closed rather than left pending.
-pub fn closing_status(r: &Review) -> Option<CommitStatus> {
-    let sent = r.commit_status.as_ref()?;
-    if sent.state != "pending" {
+/// The final status for a commit whose check was left pending and that no
+/// current round owns, from the newest automatic run on it. None while
+/// that run is still going and has not been replaced.
+fn closing_status(s: &Snapshot, check: &CommitCheck) -> Option<CommitStatus> {
+    let r = s
+        .reviews
+        .iter()
+        .filter(|r| r.pr_id == check.pr_id && r.head_sha == check.sha && r.automatic)
+        .max_by(|a, b| a.created_at.cmp(&b.created_at));
+    let Some(r) = r else {
+        return Some(status("error", "Review stopped".into()));
+    };
+    if r.superseded && (active(&r.status) || r.status == "cancelled") {
+        return Some(status("error", "Replaced by newer commits".into()));
+    }
+    if r.status == "cancelled" {
+        return Some(status("error", "Review stopped".into()));
+    }
+    if active(&r.status) {
         return None;
     }
-    let description = if r.superseded {
-        "Replaced by newer commits"
-    } else if r.status == "cancelled" {
-        "Review stopped"
-    } else {
-        return None;
-    };
-    Some(CommitStatus {
-        state: "error".into(),
-        description: description.into(),
-        error: None,
-    })
+    let (state, description) = verdict_status(r, round_number(s, r));
+    Some(status(state, description))
+}
+/// Every commit status Orbit should set now: each PR's current head, and
+/// commits whose check Orbit left pending with no round to finish it (stopped,
+/// replaced, or finished just before a push), which are closed even if
+/// statuses were turned off since. One status per commit, so the newest round wins.
+pub fn wanted_commit_checks(s: &Snapshot) -> Vec<CommitCheck> {
+    let mut wanted: Vec<CommitCheck> = s
+        .prs
+        .iter()
+        .filter_map(|pr| {
+            Some(CommitCheck {
+                pr_id: pr.id.clone(),
+                repo: pr.repo.clone(),
+                sha: pr.head_sha.clone(),
+                status: wanted_status(s, pr)?,
+            })
+        })
+        .collect();
+    for check in &s.commit_checks {
+        let open = check.status.state == "pending" && check.status.error.is_none();
+        if !open
+            || wanted
+                .iter()
+                .any(|w| w.pr_id == check.pr_id && w.sha == check.sha)
+        {
+            continue;
+        }
+        if let Some(status) = closing_status(s, check) {
+            wanted.push(CommitCheck {
+                status,
+                ..check.clone()
+            });
+        }
+    }
+    wanted
 }
 
 #[cfg(test)]

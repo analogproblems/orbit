@@ -209,17 +209,23 @@ async fn emitted_snapshots_carry_loop_states_that_are_never_saved() {
     let saved = std::fs::read_to_string(d.path().join("state.json")).unwrap();
     assert!(!saved.contains("loopStates"));
 }
-#[tokio::test]
-async fn sends_each_commit_status_once_and_records_refusals() {
-    let (_d, e) = autopilot_engine(trusted_pr()).await;
-    e.update(|s| s.settings.auto_post = true).await;
-    let sent = Arc::new(Mutex::new(vec![]));
-    let refuse = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let (log, fail) = (sent.clone(), refuse.clone());
-    e.set_status_sender(Arc::new(move |repo, sha, status: CommitStatus| {
-        log.lock().unwrap().push((repo, sha, status.state));
-        let fail = fail.load(std::sync::atomic::Ordering::SeqCst);
+type Sent = Arc<Mutex<Vec<(String, String, String)>>>;
+/// Records each status sent; `gate`, while set, holds requests until it opens.
+fn recording_sender(
+    e: &super::Engine,
+    refuse: Arc<std::sync::atomic::AtomicBool>,
+    gate: Arc<tokio::sync::RwLock<()>>,
+) -> Sent {
+    let sent: Sent = Arc::new(Mutex::new(vec![]));
+    let log = sent.clone();
+    e.set_status_sender(Arc::new(move |_repo, sha, status: CommitStatus| {
+        log.lock()
+            .unwrap()
+            .push((sha, status.state, status.description));
+        let fail = refuse.load(std::sync::atomic::Ordering::SeqCst);
+        let gate = gate.clone();
         Box::pin(async move {
+            let _open = gate.read().await;
             if fail {
                 Err("Resource not accessible by integration".into())
             } else {
@@ -227,24 +233,36 @@ async fn sends_each_commit_status_once_and_records_refusals() {
             }
         })
     }));
+    sent
+}
+async fn sync(e: &Arc<super::Engine>) {
+    e.sync_commit_statuses().await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+}
+fn states(sent: &Sent) -> Vec<String> {
+    sent.lock()
+        .unwrap()
+        .iter()
+        .map(|(_, s, _)| s.clone())
+        .collect()
+}
+#[tokio::test]
+async fn sends_each_commit_status_once_and_records_refusals() {
+    let (_d, e) = autopilot_engine(trusted_pr()).await;
+    e.update(|s| s.settings.auto_post = true).await;
+    let refuse = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sent = recording_sender(&e, refuse.clone(), Default::default());
     let id = automatic(&e, &trusted_pr().head_sha, "reviewing").await;
-    let settle = || async {
-        e.sync_commit_statuses().await;
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    };
-    settle().await;
-    settle().await;
+    sync(&e).await;
+    sync(&e).await;
     assert_eq!(
         *sent.lock().unwrap(),
         [(
-            "a/b".to_string(),
             trusted_pr().head_sha,
-            "pending".to_string()
+            "pending".to_string(),
+            "Round 1 · reviewing".to_string()
         )]
     );
-    let r = e.snapshot().await.reviews.remove(0);
-    assert_eq!(r.commit_status.unwrap().description, "Round 1 · reviewing");
-
     // A refused status is recorded, not retried, and leaves the review as it was.
     refuse.store(true, std::sync::atomic::Ordering::SeqCst);
     e.update(|s| {
@@ -255,15 +273,95 @@ async fn sends_each_commit_status_once_and_records_refusals() {
         crate::review_loop::decide(r, 1);
     })
     .await;
-    settle().await;
-    settle().await;
-    assert_eq!(sent.lock().unwrap().len(), 2);
-    let r = e.snapshot().await.reviews.remove(0);
-    assert_eq!(r.status, "posted");
-    let status = r.commit_status.unwrap();
-    assert_eq!(status.state, "success");
+    sync(&e).await;
+    sync(&e).await;
+    assert_eq!(states(&sent), ["pending", "success"]);
+    let s = e.snapshot().await;
+    assert_eq!(s.reviews[0].status, "posted");
+    let check = &s.commit_checks[0].status;
+    assert_eq!(check.state, "success");
     assert_eq!(
-        status.error.as_deref(),
+        check.error.as_deref(),
         Some("Resource not accessible by integration")
+    );
+}
+#[tokio::test]
+async fn a_slow_status_for_a_stopped_round_cannot_overwrite_a_newer_one() {
+    let (_d, e) = autopilot_engine(trusted_pr()).await;
+    e.update(|s| s.settings.auto_post = true).await;
+    let gate: Arc<tokio::sync::RwLock<()>> = Default::default();
+    let sent = recording_sender(&e, Default::default(), gate.clone());
+    let head = trusted_pr().head_sha;
+    let stopped = automatic(&e, &head, "queued").await;
+    sync(&e).await;
+    // The round is stopped; closing its check is slow to reach GitHub.
+    let hold = gate.write().await;
+    e.update(|s| {
+        s.reviews
+            .iter_mut()
+            .find(|r| r.id == stopped)
+            .unwrap()
+            .status = "cancelled".into()
+    })
+    .await;
+    sync(&e).await;
+    // Continue loop: a newer round on the same commit finishes clean.
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    let newer = automatic(&e, &head, "posted").await;
+    e.update(|s| {
+        let r = s.reviews.iter_mut().find(|r| r.id == newer).unwrap();
+        r.findings = Some(vec![]);
+        crate::review_loop::decide(r, 1);
+    })
+    .await;
+    sync(&e).await;
+    assert_eq!(states(&sent), ["pending", "error"]);
+    drop(hold);
+    sync(&e).await;
+    sync(&e).await;
+    assert_eq!(states(&sent), ["pending", "error", "success"]);
+    assert_eq!(e.snapshot().await.commit_checks[0].status.state, "success");
+}
+#[tokio::test]
+async fn statuses_update_while_codex_is_disconnected() {
+    let (_d, e) = autopilot_engine(trusted_pr()).await;
+    e.update(|s| {
+        s.settings.auto_post = true;
+        s.codex_ready = false;
+    })
+    .await;
+    let sent = recording_sender(&e, Default::default(), Default::default());
+    automatic(&e, &trusted_pr().head_sha, "failed").await;
+    e.tick(false).await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(states(&sent), ["error"]);
+}
+#[tokio::test]
+async fn a_round_that_finishes_before_a_push_still_closes_its_check() {
+    let (_d, e) = autopilot_engine(trusted_pr()).await;
+    e.update(|s| s.settings.auto_post = true).await;
+    let sent = recording_sender(&e, Default::default(), Default::default());
+    let old = trusted_pr().head_sha;
+    let id = automatic(&e, &old, "reviewing").await;
+    sync(&e).await;
+    // It finishes, and the next poll finds a new head, before the next sync.
+    e.update(|s| {
+        let r = s.reviews.iter_mut().find(|r| r.id == id).unwrap();
+        r.status = "ready".into();
+        r.findings = Some(vec![]);
+        crate::review_loop::decide(r, 1);
+        s.prs[0].head_sha = "d".repeat(40);
+    })
+    .await;
+    sync(&e).await;
+    let sent = sent.lock().unwrap().clone();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(
+        sent[1],
+        (
+            old,
+            "success".into(),
+            "Round 1 · no blocking findings".into()
+        )
     );
 }

@@ -87,8 +87,6 @@ export interface Review {
   orbitVerdict?: Verdict | null;
   /** Replaced by a newer head; never published automatically. */
   superseded?: boolean;
-  /** The last `orbit/review` commit status sent for this round. */
-  commitStatus?: CommitStatus | null;
 }
 export type Verdict = "clean" | "changes_requested";
 export interface PreviousRound {
@@ -173,6 +171,12 @@ export interface CommitStatus {
   description: string;
   error?: string | null;
 }
+/** The last `orbit/review` status Orbit sent for a commit. */
+export interface CommitCheck extends CommitStatus {
+  prId: string;
+  repo: string;
+  sha: string;
+}
 export type SettingsPatch = Partial<Omit<Settings, "repositories">>;
 export type ActionResult<T> =
   { ok: true; data: T } | { ok: false; error: string };
@@ -235,6 +239,7 @@ export function loopState(s: Snapshot, prId: string) {
 export interface Snapshot {
   loops?: LoopControl[];
   /** Derived by the app for display. */
+  commitChecks?: CommitCheck[];
   loopStates?: LoopState[];
   prs: PullRequest[];
   historyPrs?: PullRequest[];

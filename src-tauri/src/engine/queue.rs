@@ -135,7 +135,6 @@ impl Engine {
     }
     pub(super) async fn schedule(self: &Arc<Self>) {
         self.supersede_outdated_runs().await;
-        self.sync_commit_statuses().await;
         let candidates: Vec<String> = {
             let s = self.state.lock().await;
             let synced = self.synced_repos.lock().await;

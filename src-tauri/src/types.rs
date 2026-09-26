@@ -167,10 +167,6 @@ pub struct Review {
     /// or running. It is never published automatically and is not a round.
     #[serde(default)]
     pub superseded: bool,
-    /// The last GitHub commit status Orbit sent for this round, and whether
-    /// GitHub accepted it.
-    #[serde(default)]
-    pub commit_status: Option<CommitStatus>,
 }
 /// A GitHub commit status in the `orbit/review` context.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -182,6 +178,17 @@ pub struct CommitStatus {
     /// Why GitHub did not accept it. It is not sent again until it changes.
     #[serde(default)]
     pub error: Option<String>,
+}
+/// The last `orbit/review` status Orbit sent for a commit. Every round on a
+/// commit shares its one status, so it is tracked per commit, not per round.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitCheck {
+    pub pr_id: String,
+    pub repo: String,
+    pub sha: String,
+    #[serde(flatten)]
+    pub status: CommitStatus,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -304,7 +311,6 @@ impl Review {
             blocking: None,
             orbit_verdict: None,
             superseded: false,
-            commit_status: None,
         }
     }
     /// Credential-like text in the report and in the structured findings.
@@ -583,6 +589,10 @@ pub struct Snapshot {
     pub model_selection_notice: Option<String>,
     /// Per-PR controls of the automatic review loop.
     pub loops: Vec<LoopControl>,
+    /// Commit statuses Orbit has set, so each is sent only when it changes
+    /// and one left pending can be closed.
+    #[serde(default)]
+    pub commit_checks: Vec<CommitCheck>,
     /// Derived for display when the snapshot is emitted; never saved.
     #[serde(skip_deserializing, skip_serializing_if = "Vec::is_empty")]
     pub loop_states: Vec<LoopState>,

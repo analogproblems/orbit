@@ -38,13 +38,11 @@ export function LoopToken({ state }: { state: LoopState }) {
   );
 }
 
-/** Why GitHub refused the latest round's status check, if it did. */
+/** Why GitHub refused the status check on the PR's current head, if it did. */
 function latestStatusError(s: Snapshot, prId: string) {
-  if (!s.settings.commitStatus || !s.settings.autoPost) return undefined;
-  const latest = s.reviews
-    .filter((r) => r.prId === prId && r.automatic && r.commitStatus)
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-  return latest?.commitStatus?.error ?? undefined;
+  const head = s.prs.find((p) => p.id === prId)?.headSha;
+  const check = s.commitChecks?.find((c) => c.prId === prId && c.sha === head);
+  return check?.error ?? undefined;
 }
 
 /** The loop's state, why it needs a person, and its controls. */

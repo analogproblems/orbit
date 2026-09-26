@@ -276,7 +276,7 @@ fn a_new_head_waits_one_poll_interval_before_its_round() {
 #[test]
 fn the_commit_status_follows_the_loop_on_the_latest_round() {
     let (mut s, p) = snapshot();
-    let wanted = |s: &Snapshot| wanted_status(s, &p).map(|(_, c)| (c.state, c.description));
+    let wanted = |s: &Snapshot| wanted_status(s, &p).map(|c| (c.state, c.description));
     let pair = |state: &str, description: &str| Some((state.into(), description.into()));
     assert_eq!(wanted(&s), None);
 
@@ -346,26 +346,75 @@ fn rounds_are_numbered_from_the_first_automatic_review() {
     assert_eq!(short("x".repeat(200)).chars().count(), 140);
     assert_eq!(short("x".repeat(140)), "x".repeat(140));
 }
+fn check(p: &PullRequest, sha: &str, state: &str) -> CommitCheck {
+    CommitCheck {
+        pr_id: p.id.clone(),
+        repo: p.repo.clone(),
+        sha: sha.into(),
+        status: CommitStatus {
+            state: state.into(),
+            description: String::new(),
+            error: None,
+        },
+    }
+}
+fn closing(s: &Snapshot, sha: &str) -> Option<(String, String)> {
+    wanted_commit_checks(s)
+        .into_iter()
+        .find(|c| c.sha == sha)
+        .map(|c| (c.status.state, c.status.description))
+}
 #[test]
-fn pending_checks_of_stopped_or_replaced_rounds_are_closed() {
-    let p = pr();
+fn pending_checks_without_a_round_to_finish_them_are_closed() {
+    let (mut s, p) = snapshot();
+    let pair = |state: &str, description: &str| Some((state.into(), description.into()));
+    // A round stopped after its pending status was sent.
     let mut r = round(&p, &p.head_sha, 0, vec![]);
     r.status = "cancelled".into();
-    assert_eq!(closing_status(&r), None);
-    r.commit_status = Some(CommitStatus {
-        state: "pending".into(),
-        description: "Round 1 · reviewing".into(),
-        error: None,
-    });
-    assert_eq!(closing_status(&r).unwrap().description, "Review stopped");
-    r.status = "reviewing".into();
-    assert_eq!(closing_status(&r), None);
-    r.superseded = true;
-    let closed = closing_status(&r).unwrap();
+    s.reviews.push(r);
+    s.commit_checks.push(check(&p, &p.head_sha, "pending"));
+    assert_eq!(closing(&s, &p.head_sha), pair("error", "Review stopped"));
+    // Closed even after statuses are turned off.
+    s.settings.commit_status = false;
+    assert_eq!(closing(&s, &p.head_sha), pair("error", "Review stopped"));
+    s.settings.commit_status = true;
+    // A closed or refused check is left alone.
+    s.commit_checks[0].status.state = "error".into();
+    assert_eq!(closing(&s, &p.head_sha), None);
+    s.commit_checks[0] = check(&p, &p.head_sha, "pending");
+    s.commit_checks[0].status.error = Some("Refused".into());
+    assert_eq!(closing(&s, &p.head_sha), None);
+
+    // A round that finished just before a push closes with its verdict.
+    let (mut s, p) = snapshot();
+    s.reviews
+        .push(round(&p, "old", 0, vec![finding("x-0", 1, "Bug")]));
+    s.commit_checks.push(check(&p, "old", "pending"));
     assert_eq!(
-        (closed.state.as_str(), closed.description.as_str()),
-        ("error", "Replaced by newer commits")
+        closing(&s, "old"),
+        pair("failure", "Round 1 · 1 blocking finding")
     );
-    r.commit_status = Some(closed);
-    assert_eq!(closing_status(&r), None);
+    // A round replaced while running closes as replaced; one still running
+    // on a current head waits.
+    let r = s.reviews.last_mut().unwrap();
+    r.status = "reviewing".into();
+    assert_eq!(closing(&s, "old"), None);
+    s.reviews.last_mut().unwrap().superseded = true;
+    assert_eq!(
+        closing(&s, "old"),
+        pair("error", "Replaced by newer commits")
+    );
+}
+#[test]
+fn the_newest_round_on_a_commit_decides_its_status() {
+    let (mut s, p) = snapshot();
+    let mut stopped = round(&p, &p.head_sha, 0, vec![]);
+    stopped.status = "cancelled".into();
+    s.reviews.push(stopped);
+    s.commit_checks.push(check(&p, &p.head_sha, "pending"));
+    s.reviews
+        .push(round(&p, &p.head_sha, 1, vec![finding("x-0", 2, "Nit")]));
+    let wanted = wanted_commit_checks(&s);
+    assert_eq!(wanted.len(), 1);
+    assert_eq!(wanted[0].status.state, "success");
 }

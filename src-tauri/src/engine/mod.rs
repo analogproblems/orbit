@@ -317,11 +317,17 @@ impl Engine {
                         p.clean_worktrees().await;
                     });
                 }
-                if codex_ready {
-                    e.schedule().await;
-                }
+                e.tick(codex_ready).await;
             }
         });
+    }
+    /// Work done on every tick: scheduling needs Codex, but commit statuses
+    /// only need GitHub, so a disconnect still closes the checks it failed.
+    async fn tick(self: &Arc<Self>, codex_ready: bool) {
+        if codex_ready {
+            self.schedule().await;
+        }
+        self.sync_commit_statuses().await;
     }
     pub async fn storage_usage(&self) -> Result<storage::StorageUsage, String> {
         let snapshot = self.snapshot().await;

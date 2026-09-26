@@ -41,16 +41,14 @@ describe("review loop panel", () => {
     const snapshot = freshDemo();
     snapshot.settings.autoPost = true;
     const prId = snapshot.prs[1].id;
-    snapshot.reviews = [
+    snapshot.commitChecks = [
       {
-        ...snapshot.reviews[0],
         prId,
-        automatic: true,
-        commitStatus: {
-          state: "failure",
-          description: "Round 4 · 1 blocking finding",
-          error: "Resource not accessible by integration",
-        },
+        repo: snapshot.prs[1].repo,
+        sha: snapshot.prs[1].headSha,
+        state: "failure",
+        description: "Round 4 · 1 blocking finding",
+        error: "Resource not accessible by integration",
       },
     ];
     useOrbit.setState({ snapshot });
