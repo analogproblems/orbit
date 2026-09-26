@@ -167,6 +167,20 @@ pub struct Review {
     /// or running. It is never published automatically and is not a round.
     #[serde(default)]
     pub superseded: bool,
+    /// The GitHub PR review a structured run was published as. Unstructured
+    /// runs are published as an issue comment and leave this None.
+    #[serde(default)]
+    pub review_id: Option<u64>,
+    /// The review's inline comments, one per finding placed on its lines.
+    #[serde(default)]
+    pub inline_comments: Vec<InlineComment>,
+}
+/// A finding published as an inline comment on the pull request.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InlineComment {
+    pub finding_id: String,
+    pub comment_id: u64,
 }
 /// A GitHub commit status in the `orbit/review` context.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -318,6 +332,8 @@ impl Review {
             blocking: None,
             orbit_verdict: None,
             superseded: false,
+            review_id: None,
+            inline_comments: vec![],
         }
     }
     /// Credential-like text in the report and in the structured findings.
@@ -328,6 +344,12 @@ impl Review {
                 text.push('\n');
                 text.push_str(part);
             }
+        }
+        // Earlier findings' titles are repeated in the "Since the last round" table.
+        let earlier = self.previous_round.iter().flat_map(|p| &p.findings);
+        for f in earlier {
+            text.push('\n');
+            text.push_str(&f.title);
         }
         let notes = self.prior_findings.iter().map(|p| &p.note);
         for part in self.summary.iter().chain(&self.tests_not_run).chain(notes) {

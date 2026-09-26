@@ -1,4 +1,4 @@
-use super::Engine;
+use super::{inline, Engine};
 use crate::{github, types::*};
 use std::sync::atomic::Ordering;
 
@@ -85,16 +85,8 @@ impl Engine {
         }
         // Reconcile before fresh-head and automation checks, so slow pagination
         // cannot leave a long gap between the final checks and the POST.
-        if let Some(url) = github::existing_comment(cached, r).await? {
-            self.update(|s| {
-                if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
-                    r.status = "posted".into();
-                    r.comment_url = Some(url);
-                    r.error = None;
-                }
-            })
-            .await;
-            return self.flush().await;
+        if let Some((url, review_id)) = github::existing_publication(cached, r).await? {
+            return self.record_publication(cached, id, url, review_id).await;
         }
         let fresh = github::pull(
             &cached.repo,
@@ -125,19 +117,15 @@ impl Engine {
         let _ = self.flush().await;
         // A stable marker reconciles network timeouts or crashes without duplicate comments.
         let round = crate::review_loop::round_number(&self.snapshot().await, r);
-        match github::publish(&fresh, r, round).await {
-            Ok(url) => {
-                self.update(|s| {
-                    if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
-                        r.status = "posted".into();
-                        r.comment_url = Some(url);
-                        r.updated_at = now();
-                        r.error = None;
-                    }
-                })
-                .await;
-                self.flush().await
-            }
+        let published = if r.findings.is_some() {
+            self.publish_review(&fresh, r, round).await
+        } else {
+            github::publish(&fresh, r, round)
+                .await
+                .map(|url| (url, None))
+        };
+        match published {
+            Ok((url, review_id)) => self.record_publication(&fresh, id, url, review_id).await,
             Err(error) => {
                 self.update(|s| {
                     if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
@@ -150,6 +138,60 @@ impl Engine {
                 Err(error)
             }
         }
+    }
+    /// Publishes a structured run as a PR review, with each finding inline
+    /// on its lines when they are in the diff. Returns its URL and ID.
+    async fn publish_review(
+        &self,
+        pr: &PullRequest,
+        r: &Review,
+        round: Option<u32>,
+    ) -> Result<(String, Option<u64>), String> {
+        let files = github::files(&pr.repo, pr.number).await?;
+        let hunks = inline::hunks(&files);
+        let plan = inline::plan(r, &hunks, round, true);
+        inline::check_size(&plan)?;
+        match github::create_review(pr, &r.head_sha, &plan.body, &plan.comments).await {
+            // GitHub refuses the whole review if it disagrees about a line, and
+            // posts nothing, so posting again with every finding in the body is safe.
+            Err(error) if github::unprocessable(&error) && !plan.comments.is_empty() => {
+                let plan = inline::plan(r, &hunks, round, false);
+                inline::check_size(&plan)?;
+                github::create_review(pr, &r.head_sha, &plan.body, &[]).await
+            }
+            result => result,
+        }
+        .map(|(url, id)| (url, Some(id)))
+    }
+    /// Marks a review posted. For a PR review, also saves which comment holds
+    /// each finding; that lookup is best effort, since the markers in the
+    /// comments identify the findings anyway.
+    async fn record_publication(
+        &self,
+        pr: &PullRequest,
+        id: &str,
+        url: String,
+        review_id: Option<u64>,
+    ) -> Result<(), String> {
+        let inline_comments = match review_id {
+            Some(review_id) => github::review_comments(pr, review_id)
+                .await
+                .map(|items| inline::inline_comments(&items))
+                .unwrap_or_default(),
+            None => vec![],
+        };
+        self.update(|s| {
+            if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
+                r.status = "posted".into();
+                r.comment_url = Some(url);
+                r.review_id = review_id;
+                r.inline_comments = inline_comments;
+                r.updated_at = now();
+                r.error = None;
+            }
+        })
+        .await;
+        self.flush().await
     }
 }
 /// Why an automatic review's report must wait for a person, if it must.

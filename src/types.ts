@@ -87,6 +87,14 @@ export interface Review {
   orbitVerdict?: Verdict | null;
   /** Replaced by a newer head; never published automatically. */
   superseded?: boolean;
+  /** The GitHub PR review a structured run was published as. */
+  reviewId?: number | null;
+  /** The review's inline comments, one per finding placed on its lines. */
+  inlineComments?: InlineComment[];
+}
+export interface InlineComment {
+  findingId: string;
+  commentId: number;
 }
 export type Verdict = "clean" | "changes_requested";
 export interface PreviousRound {
