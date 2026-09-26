@@ -64,10 +64,11 @@ mod worktrees_tests;
 /// |                | across an `.await`.                                               |
 ///
 /// When holding more than one, take them in the order of the table. Current
-/// nesting: `connect_lock` → `rpc` and `state`; `poll_lock` → `state` and
-/// `synced_repos` (one at a time); `publish_lock` → `state`; `cleanup_lock` →
-/// `git_lock` → `state`; `state` → `synced_repos` (`schedule`). `items` and
-/// `preparing` are only taken on their own.
+/// nesting: `connect_lock` → `rpc`, `items` and `state` (one at a time;
+/// `items` via `retire_dead_connection` → `disconnected`); `poll_lock` →
+/// `state` and `synced_repos` (one at a time); `publish_lock` → `state`;
+/// `cleanup_lock` → `git_lock` → `state`; `state` → `synced_repos`
+/// (`schedule`). `preparing` is only taken on its own.
 ///
 /// Known exception: `clean_worktrees_with` briefly holds a `git_lock` try-lock
 /// guard while it try-locks `cleanup_lock`, the reverse of `cleanup_lock` →
