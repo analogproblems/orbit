@@ -88,41 +88,49 @@ impl Engine {
         if let Some((url, review_id)) = github::existing_publication(cached, r).await? {
             return self.record_publication(cached, id, url, review_id).await;
         }
-        let fresh = github::pull(
-            &cached.repo,
-            cached.number,
-            s.github_user.as_deref().unwrap_or(""),
-        )
-        .await?;
-        if !publishable(r, &fresh) {
-            return Err("The pull request changed since this review. Sync and review the new commits before publishing.".into());
+        // Anything slow (the diff, the placement) is prepared before the final
+        // checks, which run again immediately before each write.
+        let round = crate::review_loop::round_number(&self.snapshot().await, r);
+        let hunks = match r.findings {
+            Some(_) => Some(inline::hunks(
+                &github::files(&cached.repo, cached.number).await?,
+            )),
+            None => None,
+        };
+        let plan = hunks
+            .as_ref()
+            .map(|hunks| inline::plan(r, hunks, round, true));
+        if let Some(plan) = &plan {
+            inline::check_size(plan)?;
         }
-        // Recheck switches immediately before the write; disabling autopost cancels pending publication.
-        if automatic {
-            let s = self.snapshot().await;
-            if !(s.settings.automatic
-                && s.settings.auto_post
-                && s.settings
-                    .repositories
-                    .iter()
-                    .any(|repo| same_repo(&repo.name, &fresh.repo) && repo.automatic))
-            {
-                return Ok(());
-            }
-            if let Some(reason) = automatic_hold(&fresh, &sensitive, &s.settings.trusted_authors) {
-                return Err(reason);
-            }
-        }
+        let Some(fresh) = self.final_checks(cached, r, automatic, &sensitive).await? else {
+            return Ok(());
+        };
         // Persisted first, so a crash mid-request is recovered as an interrupted publication.
         let _ = self.flush().await;
         // A stable marker reconciles network timeouts or crashes without duplicate comments.
-        let round = crate::review_loop::round_number(&self.snapshot().await, r);
-        let published = if r.findings.is_some() {
-            self.publish_review(&fresh, r, round).await
-        } else {
-            github::publish(&fresh, r, round)
+        let published = match (&plan, &hunks) {
+            (Some(plan), Some(hunks)) => {
+                match github::create_review(&fresh, &r.head_sha, &plan.body, &plan.comments).await {
+                    // GitHub refuses the whole review if it disagrees about a line, and
+                    // posts nothing, so posting again with every finding in the body is safe.
+                    Err(error) if github::unprocessable(&error) && !plan.comments.is_empty() => {
+                        let plan = inline::plan(r, hunks, round, false);
+                        inline::check_size(&plan)?;
+                        let Some(fresh) =
+                            self.final_checks(cached, r, automatic, &sensitive).await?
+                        else {
+                            return Ok(());
+                        };
+                        github::create_review(&fresh, &r.head_sha, &plan.body, &[]).await
+                    }
+                    result => result,
+                }
+                .map(|(url, id)| (url, Some(id)))
+            }
+            _ => github::publish(&fresh, r, round)
                 .await
-                .map(|url| (url, None))
+                .map(|url| (url, None)),
         };
         match published {
             Ok((url, review_id)) => self.record_publication(&fresh, id, url, review_id).await,
@@ -139,29 +147,38 @@ impl Engine {
             }
         }
     }
-    /// Publishes a structured run as a PR review, with each finding inline
-    /// on its lines when they are in the diff. Returns its URL and ID.
-    async fn publish_review(
+    /// The checks run immediately before each write: the PR is still open at
+    /// the reviewed head and base, and, for automatic publication, the
+    /// switches still allow it. Returns the fresh PR, or None when automatic
+    /// publication was switched off, which cancels it.
+    async fn final_checks(
         &self,
-        pr: &PullRequest,
+        cached: &PullRequest,
         r: &Review,
-        round: Option<u32>,
-    ) -> Result<(String, Option<u64>), String> {
-        let files = github::files(&pr.repo, pr.number).await?;
-        let hunks = inline::hunks(&files);
-        let plan = inline::plan(r, &hunks, round, true);
-        inline::check_size(&plan)?;
-        match github::create_review(pr, &r.head_sha, &plan.body, &plan.comments).await {
-            // GitHub refuses the whole review if it disagrees about a line, and
-            // posts nothing, so posting again with every finding in the body is safe.
-            Err(error) if github::unprocessable(&error) && !plan.comments.is_empty() => {
-                let plan = inline::plan(r, &hunks, round, false);
-                inline::check_size(&plan)?;
-                github::create_review(pr, &r.head_sha, &plan.body, &[]).await
-            }
-            result => result,
+        automatic: bool,
+        sensitive: &[String],
+    ) -> Result<Option<PullRequest>, String> {
+        let login = self.snapshot().await.github_user.unwrap_or_default();
+        let fresh = github::pull(&cached.repo, cached.number, &login).await?;
+        if !publishable(r, &fresh) {
+            return Err("The pull request changed since this review. Sync and review the new commits before publishing.".into());
         }
-        .map(|(url, id)| (url, Some(id)))
+        if automatic {
+            let s = self.snapshot().await;
+            if !(s.settings.automatic
+                && s.settings.auto_post
+                && s.settings
+                    .repositories
+                    .iter()
+                    .any(|repo| same_repo(&repo.name, &fresh.repo) && repo.automatic))
+            {
+                return Ok(None);
+            }
+            if let Some(reason) = automatic_hold(&fresh, sensitive, &s.settings.trusted_authors) {
+                return Err(reason);
+            }
+        }
+        Ok(Some(fresh))
     }
     /// Marks a review posted. For a PR review, also saves which comment holds
     /// each finding; that lookup is best effort, since the markers in the

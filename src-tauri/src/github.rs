@@ -80,6 +80,18 @@ impl Drop for TerminateOnDrop {
         }
     }
 }
+#[cfg(test)]
+tokio::task_local! {
+    /// A stand-in for `gh` in tests, so no test reaches GitHub.
+    pub static GH: std::path::PathBuf;
+}
+fn gh() -> String {
+    #[cfg(test)]
+    if let Ok(path) = GH.try_with(|p| p.to_string_lossy().into_owned()) {
+        return path;
+    }
+    "gh".into()
+}
 pub async fn api(
     endpoint: &str,
     method: &str,
@@ -100,7 +112,7 @@ pub async fn api(
     if body.is_some() {
         args.extend(["--input".into(), "-".into()]);
     }
-    let out = run("gh", &args, None, body.map(|v| v.to_string())).await?;
+    let out = run(&gh(), &args, None, body.map(|v| v.to_string())).await?;
     serde_json::from_str(&out).map_err(|e| format!("Invalid GitHub response: {e}"))
 }
 pub async fn user() -> Result<String, String> {
