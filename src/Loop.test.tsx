@@ -46,9 +46,11 @@ describe("review loop panel", () => {
         prId,
         repo: snapshot.prs[1].repo,
         sha: snapshot.prs[1].headSha,
-        state: "failure",
-        description: "Round 4 · 1 blocking finding",
-        error: "Resource not accessible by integration",
+        refused: {
+          state: "failure",
+          description: "Round 4 · 1 blocking finding",
+          error: "Resource not accessible by integration",
+        },
       },
     ];
     useOrbit.setState({ snapshot });

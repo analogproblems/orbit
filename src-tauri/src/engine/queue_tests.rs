@@ -278,11 +278,45 @@ async fn sends_each_commit_status_once_and_records_refusals() {
     assert_eq!(states(&sent), ["pending", "success"]);
     let s = e.snapshot().await;
     assert_eq!(s.reviews[0].status, "posted");
-    let check = &s.commit_checks[0].status;
-    assert_eq!(check.state, "success");
+    let check = &s.commit_checks[0];
+    assert_eq!(check.accepted.as_ref().unwrap().state, "pending");
+    let refused = check.refused.as_ref().unwrap();
+    assert_eq!(refused.state, "success");
     assert_eq!(
-        check.error.as_deref(),
+        refused.error.as_deref(),
         Some("Resource not accessible by integration")
+    );
+}
+#[tokio::test]
+async fn a_refused_update_still_lets_a_pending_check_close() {
+    let (_d, e) = autopilot_engine(trusted_pr()).await;
+    e.update(|s| s.settings.auto_post = true).await;
+    let refuse = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sent = recording_sender(&e, refuse.clone(), Default::default());
+    let old = trusted_pr().head_sha;
+    let id = automatic(&e, &old, "reviewing").await;
+    sync(&e).await;
+    // An approval makes the check an error, but GitHub refuses that update.
+    refuse.store(true, std::sync::atomic::Ordering::SeqCst);
+    e.update(|s| {
+        s.approvals.push(Approval {
+            id: 1.into(),
+            review_id: id.clone(),
+            method: "item/commandExecution/requestApproval".into(),
+            params: serde_json::Value::Null,
+        })
+    })
+    .await;
+    sync(&e).await;
+    // GitHub recovers, and a push replaces the round.
+    refuse.store(false, std::sync::atomic::Ordering::SeqCst);
+    e.update(|s| s.prs[0].head_sha = "d".repeat(40)).await;
+    e.supersede_outdated_runs().await;
+    sync(&e).await;
+    let sent = sent.lock().unwrap().clone();
+    assert_eq!(
+        sent.last().unwrap(),
+        &(old, "error".into(), "Replaced by newer commits".into())
     );
 }
 #[tokio::test]
@@ -320,7 +354,11 @@ async fn a_slow_status_for_a_stopped_round_cannot_overwrite_a_newer_one() {
     sync(&e).await;
     sync(&e).await;
     assert_eq!(states(&sent), ["pending", "error", "success"]);
-    assert_eq!(e.snapshot().await.commit_checks[0].status.state, "success");
+    let s = e.snapshot().await;
+    assert_eq!(
+        s.commit_checks[0].accepted.as_ref().unwrap().state,
+        "success"
+    );
 }
 #[tokio::test]
 async fn statuses_update_while_codex_is_disconnected() {

@@ -171,11 +171,15 @@ export interface CommitStatus {
   description: string;
   error?: string | null;
 }
-/** The last `orbit/review` status Orbit sent for a commit. */
-export interface CommitCheck extends CommitStatus {
-  prId: string;
+/** What Orbit knows of a commit's `orbit/review` status. */
+export interface CommitCheck {
   repo: string;
   sha: string;
+  prId: string;
+  /** The last status GitHub accepted. */
+  accepted?: CommitStatus | null;
+  /** The last status GitHub refused, with why. */
+  refused?: CommitStatus | null;
 }
 export type SettingsPatch = Partial<Omit<Settings, "repositories">>;
 export type ActionResult<T> =

@@ -24,52 +24,75 @@ pub(super) fn github_sender() -> StatusSender {
 }
 
 impl Engine {
-    /// Sends each wanted commit status that differs from the last one sent
+    /// Sends each wanted commit status that GitHub neither shows nor refused
     /// for that commit. One request per commit at a time, recomputed after
     /// each, so a slow request for an older round cannot overwrite a newer
     /// one. A status GitHub refused is recorded and not sent again until the
     /// wanted status changes; reviews are unaffected. Runs whether or not
     /// Codex is connected.
     pub(super) async fn sync_commit_statuses(self: &Arc<Self>) {
-        let wanted: Vec<CommitCheck> = {
+        use crate::review_loop::{same_commit, wanted_commit_checks, WantedStatus};
+        let wanted: Vec<WantedStatus> = {
             let s = self.state.lock().await;
-            crate::review_loop::wanted_commit_checks(&s)
+            wanted_commit_checks(&s)
                 .into_iter()
                 .filter(|w| {
-                    !s.commit_checks.iter().any(|c| {
-                        c.pr_id == w.pr_id
-                            && c.sha == w.sha
-                            && c.status.state == w.status.state
-                            && c.status.description == w.status.description
-                    })
+                    !s.commit_checks
+                        .iter()
+                        .any(|c| same_commit(&c.repo, &c.sha, &w.repo, &w.sha) && w.settled_by(c))
                 })
                 .collect()
         };
-        for check in wanted {
-            let key = format!("{}@{}", check.repo.to_ascii_lowercase(), check.sha);
+        for w in wanted {
+            let key = format!("{}@{}", w.repo.to_ascii_lowercase(), w.sha);
             if !self.sending_statuses.lock().unwrap().insert(key.clone()) {
                 continue;
             }
             let send = self.status_sender.lock().unwrap().clone();
             let e = self.clone();
             tokio::spawn(async move {
-                let result =
-                    send(check.repo.clone(), check.sha.clone(), check.status.clone()).await;
+                let result = send(w.repo.clone(), w.sha.clone(), w.status.clone()).await;
                 e.update(|s| {
-                    s.commit_checks
-                        .retain(|c| !(c.pr_id == check.pr_id && c.sha == check.sha));
-                    s.commit_checks.push(CommitCheck {
-                        status: CommitStatus {
-                            error: result.err(),
-                            ..check.status
-                        },
-                        ..check
-                    });
-                    // Only open checks and current heads are needed again.
+                    let i = match s
+                        .commit_checks
+                        .iter()
+                        .position(|c| same_commit(&c.repo, &c.sha, &w.repo, &w.sha))
+                    {
+                        Some(i) => i,
+                        None => {
+                            s.commit_checks.push(CommitCheck {
+                                repo: w.repo.clone(),
+                                sha: w.sha.clone(),
+                                pr_id: w.pr_id.clone(),
+                                accepted: None,
+                                refused: None,
+                            });
+                            s.commit_checks.len() - 1
+                        }
+                    };
+                    let c = &mut s.commit_checks[i];
+                    c.pr_id = w.pr_id.clone();
+                    match result {
+                        Ok(()) => {
+                            c.accepted = Some(w.status.clone());
+                            c.refused = None;
+                        }
+                        // What GitHub shows is unchanged, so an accepted pending
+                        // check is still closed later.
+                        Err(error) => {
+                            c.refused = Some(CommitStatus {
+                                error: Some(error),
+                                ..w.status.clone()
+                            })
+                        }
+                    }
+                    // Only pending checks and current heads are needed again.
                     let prs = s.prs.clone();
                     s.commit_checks.retain(|c| {
-                        c.status.state == "pending"
-                            || prs.iter().any(|p| p.id == c.pr_id && p.head_sha == c.sha)
+                        c.accepted.as_ref().is_some_and(|a| a.state == "pending")
+                            || prs
+                                .iter()
+                                .any(|p| same_commit(&p.repo, &p.head_sha, &c.repo, &c.sha))
                     });
                 })
                 .await;

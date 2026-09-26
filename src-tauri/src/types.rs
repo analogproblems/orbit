@@ -179,16 +179,23 @@ pub struct CommitStatus {
     #[serde(default)]
     pub error: Option<String>,
 }
-/// The last `orbit/review` status Orbit sent for a commit. Every round on a
-/// commit shares its one status, so it is tracked per commit, not per round.
+/// What Orbit knows of a commit's `orbit/review` status. GitHub keeps one
+/// such status per commit, whichever PR or round set it, so it is tracked per
+/// repository and commit.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommitCheck {
-    pub pr_id: String,
     pub repo: String,
     pub sha: String,
-    #[serde(flatten)]
-    pub status: CommitStatus,
+    /// The PR whose round the status was last sent for.
+    pub pr_id: String,
+    /// The last status GitHub accepted, which is what it shows.
+    #[serde(default)]
+    pub accepted: Option<CommitStatus>,
+    /// The last status GitHub refused, with why; not sent again until the
+    /// wanted status changes.
+    #[serde(default)]
+    pub refused: Option<CommitStatus>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

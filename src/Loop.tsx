@@ -40,9 +40,12 @@ export function LoopToken({ state }: { state: LoopState }) {
 
 /** Why GitHub refused the status check on the PR's current head, if it did. */
 function latestStatusError(s: Snapshot, prId: string) {
-  const head = s.prs.find((p) => p.id === prId)?.headSha;
-  const check = s.commitChecks?.find((c) => c.prId === prId && c.sha === head);
-  return check?.error ?? undefined;
+  const pr = s.prs.find((p) => p.id === prId);
+  const check = s.commitChecks?.find(
+    (c) =>
+      c.sha === pr?.headSha && c.repo.toLowerCase() === pr.repo.toLowerCase(),
+  );
+  return check?.refused?.error ?? undefined;
 }
 
 /** The loop's state, why it needs a person, and its controls. */
