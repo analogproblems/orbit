@@ -156,6 +156,20 @@ function SinceLastRound({
   );
 }
 
+/** Orbit's verdict when it has one, else the model's (older reviews). */
+function verdictLine(review: Review, count: number) {
+  const findings = `${count} ${count === 1 ? "finding" : "findings"}`;
+  if (review.orbitVerdict === "clean")
+    return count
+      ? `Verdict: clean · ${findings}, none blocking`
+      : "Verdict: clean";
+  if (review.orbitVerdict)
+    return `Verdict: changes requested · ${review.blocking ?? 0} blocking · ${findings}`;
+  return review.verdict === "clean"
+    ? "Verdict: clean"
+    : `Verdict: changes requested · ${findings}`;
+}
+
 /** The structured findings of a finished review, or why there are none. */
 export function Findings({
   review,
@@ -180,13 +194,15 @@ export function Findings({
     );
   return (
     <VStack gap={2}>
-      <Text weight="medium">
-        {review.verdict === "clean"
-          ? "Verdict: clean"
-          : `Verdict: changes requested · ${review.findings.length} ${
-              review.findings.length === 1 ? "finding" : "findings"
-            }`}
-      </Text>
+      <Text weight="medium">{verdictLine(review, review.findings.length)}</Text>
+      {review.orbitVerdict &&
+        review.verdict &&
+        review.orbitVerdict !== review.verdict && (
+          <Text type="supporting">
+            Codex’s own verdict:{" "}
+            {review.verdict === "clean" ? "clean" : "changes requested"}.
+          </Text>
+        )}
       {review.summary && <Text type="supporting">{review.summary}</Text>}
       {review.findings.length > 0 && (
         <Table

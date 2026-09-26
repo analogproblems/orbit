@@ -339,3 +339,20 @@ it("does not activate a model pair or legacy choice after a simulated save failu
     ).ok,
   ).toBe(false);
 });
+describe("review loop controls", () => {
+  it("stops a loop and continues it with two more rounds", async () => {
+    const store = useOrbit.getState();
+    const prId = store.snapshot.prs[1].id;
+    const loop = () =>
+      useOrbit.getState().snapshot.loopStates!.find((l) => l.prId === prId)!;
+    expect(loop().status).toBe("needs_you");
+    await store.action("continue_loop", { prId, rounds: 2 });
+    expect(loop()).toMatchObject({
+      status: "waiting_for_author",
+      reason: null,
+      roundLimit: 6,
+    });
+    await store.action("stop_loop", { prId });
+    expect(loop().status).toBe("stopped");
+  });
+});

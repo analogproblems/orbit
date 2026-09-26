@@ -37,6 +37,39 @@ describe("structured findings", () => {
     expect(screen.queryByText(/Verdict/)).toBeNull();
   });
 });
+describe("Orbit's verdict", () => {
+  it("counts blocking findings and notes when Codex disagrees", () => {
+    const findings = demoFindings("r");
+    const { rerender } = render(
+      <Findings
+        review={review({
+          findings,
+          verdict: "changes_requested",
+          orbitVerdict: "clean",
+          blocking: 0,
+        })}
+      />,
+    );
+    expect(
+      screen.getByText("Verdict: clean · 2 findings, none blocking"),
+    ).toBeTruthy();
+    expect(screen.getByText(/Codex’s own verdict/)).toBeTruthy();
+    rerender(
+      <Findings
+        review={review({
+          findings,
+          verdict: "changes_requested",
+          orbitVerdict: "changes_requested",
+          blocking: 1,
+        })}
+      />,
+    );
+    expect(
+      screen.getByText("Verdict: changes requested · 1 blocking · 2 findings"),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Codex’s own verdict/)).toBeNull();
+  });
+});
 describe("since the last round", () => {
   const earlier = demoFindings("demo-completed");
   const reReview = review({

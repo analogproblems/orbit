@@ -30,6 +30,8 @@ export interface PullRequest {
   headRepo?: string;
   authorAssociation?: string;
   baseRepo?: string;
+  /** When Orbit first saw the current head. */
+  headSeenAt?: string;
 }
 export interface ModelSelection {
   model: string;
@@ -79,6 +81,12 @@ export interface Review {
   previousRound?: PreviousRound | null;
   /** What the reviewer decided about each finding in `previousRound`. */
   priorFindings?: PriorFinding[];
+  /** Blocking findings this review left open; null without findings. */
+  blocking?: number | null;
+  /** Orbit's verdict from the blocking priority; `verdict` is the model's. */
+  orbitVerdict?: Verdict | null;
+  /** Replaced by a newer head; never published automatically. */
+  superseded?: boolean;
 }
 export type Verdict = "clean" | "changes_requested";
 export interface PreviousRound {
@@ -133,6 +141,8 @@ export interface Repository {
   automatic: boolean;
   setupCommand: string;
   networkAccess: boolean;
+  /** Automatic rounds per PR before the loop needs a person. */
+  roundLimit: number;
 }
 export interface RepositorySummary {
   name: string;
@@ -149,6 +159,10 @@ export interface Settings {
   effort: string;
   repositories: Repository[];
   trustedAuthors: string[];
+  /** Findings at this priority or more severe (0 = P0) block a clean verdict. */
+  blockingPriority: number;
+  /** Queue a new head automatically only once it is a poll interval old. */
+  settlePushes: boolean;
 }
 export type SettingsPatch = Partial<Omit<Settings, "repositories">>;
 export type ActionResult<T> =
@@ -185,7 +199,34 @@ export interface Approval {
   method: string;
   params: Record<string, unknown>;
 }
+export type LoopStatus =
+  "reviewing" | "waiting_for_author" | "clean" | "needs_you" | "stopped";
+export interface LoopState {
+  prId: string;
+  status: LoopStatus;
+  reason: string | null;
+  rounds: number;
+  roundLimit: number;
+}
+export interface LoopControl {
+  prId: string;
+  stopped: boolean;
+  extraRounds: number;
+}
+export const loopStatusLabels: Record<LoopStatus, string> = {
+  reviewing: "Reviewing",
+  waiting_for_author: "Waiting for author",
+  clean: "Clean",
+  needs_you: "Needs you",
+  stopped: "Stopped",
+};
+export function loopState(s: Snapshot, prId: string) {
+  return s.loopStates?.find((l) => l.prId === prId);
+}
 export interface Snapshot {
+  loops?: LoopControl[];
+  /** Derived by the app for display. */
+  loopStates?: LoopState[];
   prs: PullRequest[];
   historyPrs?: PullRequest[];
   reviews: Review[];
@@ -235,6 +276,8 @@ export const defaults: Settings = {
   effort: "",
   repositories: [],
   trustedAuthors: [],
+  blockingPriority: 1,
+  settlePushes: true,
 };
 export function latestReview(reviews: Review[], prId: string) {
   return reviews
@@ -264,11 +307,13 @@ export function canPublish(review: Review, pr: PullRequest | undefined) {
     review.baseSha === pr?.baseSha
   );
 }
-export type DisplayStatus = Status | "outdated" | "saved";
+export type DisplayStatus = Status | "outdated" | "saved" | "superseded";
 export function reviewDisplayStatus(
   s: Snapshot,
   review: Review,
 ): DisplayStatus {
+  if (review.superseded && ["ready", "cancelled"].includes(review.status))
+    return "superseded";
   if (review.status !== "ready") return review.status;
   const pr = [...s.prs, ...(s.historyPrs ?? [])].find(
     (p) => p.id === review.prId,
@@ -281,6 +326,7 @@ export const displayStatusLabels: Record<DisplayStatus, string> = {
   ...statusLabels,
   outdated: "Outdated report",
   saved: "Saved report",
+  superseded: "Superseded",
 };
 export function selectionError(
   models: Model[],

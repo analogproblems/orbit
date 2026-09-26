@@ -53,6 +53,7 @@ async fn merges_case_duplicate_repositories_saved_by_older_versions() {
         automatic,
         setup_command: String::new(),
         network_access: false,
+        round_limit: 4,
     };
     let mut upper = crate::types::tests::pr();
     upper.id = "A/B#1".into();

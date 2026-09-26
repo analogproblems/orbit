@@ -564,6 +564,16 @@ impl Engine {
         let e = self.clone();
         let id = id.to_string();
         tokio::spawn(async move {
+            let superseded = e
+                .state
+                .lock()
+                .await
+                .reviews
+                .iter()
+                .any(|r| r.id == id && r.superseded);
+            if superseded {
+                return;
+            }
             if let Err(error) = e.publish(&id, true, false).await {
                 e.update(|s| {
                     if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
@@ -593,6 +603,7 @@ pub(super) fn apply_notification(s: &mut Snapshot, id: &str, method: &str, p: &V
     if method == "turn/completed" {
         s.approvals.retain(|a| a.review_id != id);
     }
+    let blocking_priority = s.settings.blocking_priority;
     let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) else {
         return Next::Nothing;
     };
@@ -690,6 +701,7 @@ pub(super) fn apply_notification(s: &mut Snapshot, id: &str, method: &str, p: &V
                 ),
             };
             r.end_extraction(error);
+            crate::review_loop::decide(r, blocking_priority);
             if r.automatic {
                 next = Next::Publish;
             }

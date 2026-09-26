@@ -48,6 +48,14 @@ impl Engine {
                 }
             }
             self.update(|s| {
+                for pr in &mut prs {
+                    // Keep when the head was first seen, so pushes can settle.
+                    pr.head_seen_at = s
+                        .prs
+                        .iter()
+                        .find(|p| p.id == pr.id && p.head_sha == pr.head_sha)
+                        .map_or_else(now, |p| p.head_seen_at.clone());
+                }
                 for previous in &s.prs {
                     if !prs.iter().any(|p| p.id == previous.id) {
                         s.history_prs.retain(|p| p.id != previous.id);
@@ -126,6 +134,7 @@ impl Engine {
         Ok(id)
     }
     pub(super) async fn schedule(self: &Arc<Self>) {
+        self.supersede_outdated_runs().await;
         let candidates: Vec<String> = {
             let s = self.state.lock().await;
             let synced = self.synced_repos.lock().await;
@@ -198,6 +207,105 @@ impl Engine {
                 preparing.insert(id, task.abort_handle());
             }
         }
+    }
+}
+impl Engine {
+    /// Replaces automatic runs whose PR moved to a new head or base. A run
+    /// that has not started inference is stopped so the new head can be
+    /// queued; one that has keeps running but is marked superseded, so it is
+    /// not published automatically, and the new head is queued once it ends.
+    pub(super) async fn supersede_outdated_runs(self: &Arc<Self>) {
+        let mut stop = vec![];
+        self.update(|s| {
+            let prs = s.prs.clone();
+            for r in s.reviews.iter_mut() {
+                let outdated = r.automatic
+                    && !r.superseded
+                    && active(&r.status)
+                    && prs.iter().any(|p| {
+                        p.id == r.pr_id && (p.head_sha != r.head_sha || p.base_sha != r.base_sha)
+                    });
+                if outdated {
+                    r.superseded = true;
+                    if matches!(r.status.as_str(), "queued" | "preparing") {
+                        stop.push(r.id.clone());
+                    }
+                }
+            }
+        })
+        .await;
+        for id in stop {
+            let _ = self.cancel(&id).await;
+        }
+    }
+    /// Pauses the automatic loop for a PR. A round that has not started yet
+    /// is stopped; a running one finishes.
+    pub async fn stop_loop(self: &Arc<Self>, pr_id: &str) -> Result<(), String> {
+        let queued: Vec<String> = {
+            let mut s = self.state.lock().await;
+            let mut next = s.clone();
+            match next.loops.iter_mut().find(|c| c.pr_id == pr_id) {
+                Some(c) => c.stopped = true,
+                None => next.loops.push(LoopControl {
+                    pr_id: pr_id.into(),
+                    stopped: true,
+                    extra_rounds: 0,
+                }),
+            }
+            self.persist(&next)
+                .map_err(|e| format!("The loop was not stopped: {e}"))?;
+            *s = next;
+            (self.emit)(&s);
+            s.reviews
+                .iter()
+                .filter(|r| r.pr_id == pr_id && r.automatic && r.status == "queued")
+                .map(|r| r.id.clone())
+                .collect()
+        };
+        for id in queued {
+            let _ = self.cancel(&id).await;
+        }
+        Ok(())
+    }
+    /// Resumes a stopped loop and allows `rounds` more automatic rounds.
+    pub async fn continue_loop(&self, pr_id: &str, rounds: u32) -> Result<(), String> {
+        if !(1..=10).contains(&rounds) {
+            return Err("Continue for 1 to 10 more rounds.".into());
+        }
+        let mut s = self.state.lock().await;
+        let pr = s
+            .prs
+            .iter()
+            .find(|p| p.id == pr_id)
+            .cloned()
+            .ok_or("Pull request is no longer in the inbox. Sync first.")?;
+        let used = crate::review_loop::state(&s, &pr).map_or(0, |l| l.rounds);
+        let base = crate::review_loop::round_limit(&s, &pr)
+            - s.loops
+                .iter()
+                .find(|c| c.pr_id == pr_id)
+                .map_or(0, |c| c.extra_rounds);
+        let mut next = s.clone();
+        let control = match next.loops.iter_mut().find(|c| c.pr_id == pr_id) {
+            Some(c) => c,
+            None => {
+                next.loops.push(LoopControl {
+                    pr_id: pr_id.into(),
+                    ..LoopControl::default()
+                });
+                next.loops.last_mut().unwrap()
+            }
+        };
+        control.stopped = false;
+        // `rounds` more from here, whatever was granted before.
+        control.extra_rounds = (used + rounds)
+            .saturating_sub(base)
+            .max(control.extra_rounds);
+        self.persist(&next)
+            .map_err(|e| format!("The loop was not continued: {e}"))?;
+        *s = next;
+        (self.emit)(&s);
+        Ok(())
     }
 }
 /// Open PRs in one repository. Size statistics only come from the per-PR

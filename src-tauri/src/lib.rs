@@ -1,6 +1,7 @@
 pub mod engine;
 pub mod github;
 pub mod models;
+pub mod review_loop;
 pub mod rpc;
 pub mod storage;
 pub mod types;
@@ -104,6 +105,18 @@ mod desktop {
         engine.enqueue(&pr_id, false).await
     }
     #[tauri::command]
+    async fn stop_loop(engine: State<'_, AppState>, pr_id: String) -> Result<(), String> {
+        engine.stop_loop(&pr_id).await
+    }
+    #[tauri::command]
+    async fn continue_loop(
+        engine: State<'_, AppState>,
+        pr_id: String,
+        rounds: u32,
+    ) -> Result<(), String> {
+        engine.continue_loop(&pr_id, rounds).await
+    }
+    #[tauri::command]
     async fn cancel_review(engine: State<'_, AppState>, review_id: String) -> Result<(), String> {
         engine.cancel(&review_id).await
     }
@@ -200,6 +213,8 @@ mod desktop {
                 connect_services,
                 start_review,
                 cancel_review,
+                stop_loop,
+                continue_loop,
                 publish_review,
                 send_message,
                 set_legacy_chat_model,

@@ -328,6 +328,17 @@ async function demoAction(
   if (command === "start_review") {
     return demoRun(args.prId as string);
   }
+  if (command === "stop_loop" || command === "continue_loop") {
+    const state = demo.loopStates?.find((l) => l.prId === args.prId);
+    if (state) {
+      const stop = command === "stop_loop";
+      state.status = stop ? "stopped" : "waiting_for_author";
+      state.reason = null;
+      if (!stop) state.roundLimit = state.rounds + Number(args.rounds);
+    }
+    commit();
+    return;
+  }
   if (command === "cancel_review") {
     const r = demo.reviews.find((r) => r.id === args.reviewId)!;
     clearTimeout(timers.get(r.id));

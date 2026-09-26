@@ -22,6 +22,7 @@ import {
   LayoutFooter,
   List,
   ListItem,
+  Selector,
   Spinner,
   Switch,
   Text,
@@ -221,6 +222,7 @@ export function Repositories() {
       automatic: false,
       setupCommand: "",
       networkAccess: false,
+      roundLimit: 4,
     });
   };
   const save = async (e: FormEvent) => {
@@ -391,6 +393,19 @@ export function Repositories() {
                         setEditing({ ...editing, networkAccess })
                       }
                       description="Enable when setup needs to download dependencies. Setup and the review agent can then reach the network, including code from the pull request."
+                    />
+                    <Selector
+                      label="Automatic rounds per pull request"
+                      value={String(editing.roundLimit ?? 4)}
+                      isDisabled={busy}
+                      onChange={(v) =>
+                        setEditing({ ...editing, roundLimit: Number(v) })
+                      }
+                      options={[1, 2, 3, 4, 5, 6, 8, 10].map((n) => ({
+                        value: String(n),
+                        label: `${n} ${n === 1 ? "round" : "rounds"}`,
+                      }))}
+                      description="After this many automatic reviews of a pull request, the loop stops and needs you. Review again always works."
                     />
                     <Switch
                       label="Include repository in automatic reviews"
