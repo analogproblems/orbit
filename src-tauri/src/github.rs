@@ -324,9 +324,26 @@ pub async fn existing_comment(pr: &PullRequest, r: &Review) -> Result<Option<Str
     }
     Ok(None)
 }
-/// The PR comment for a review, including the marker used to reconcile retries.
-fn comment_body(r: &Review) -> String {
+/// A hidden line with Orbit's verdict that agents can read from the comment.
+fn verdict_marker(r: &Review, round: Option<u32>) -> String {
+    let Some(verdict) = r.orbit_verdict else {
+        return String::new();
+    };
+    let verdict = match verdict {
+        Verdict::Clean => "clean",
+        Verdict::ChangesRequested => "changes_requested",
+    };
+    let round = round.map(|n| format!(" round={n}")).unwrap_or_default();
+    format!(
+        "\n<!-- orbit-verdict: {verdict}{round} blocking={} -->",
+        r.blocking.unwrap_or(0)
+    )
+}
+/// The PR comment for a review, including the marker used to reconcile retries
+/// and, when the review has one, Orbit's verdict.
+fn comment_body(r: &Review, round: Option<u32>) -> String {
     let marker = format!("<!-- orbit-review:{} -->", r.id);
+    let marker = marker + &verdict_marker(r, round);
     let selection = crate::models::report_selection_label(r);
     format!(
         "{marker}\n## Orbit · Codex review\n\n\
@@ -334,8 +351,8 @@ fn comment_body(r: &Review) -> String {
         r.head_sha, r.base_sha, r.report
     )
 }
-pub async fn publish(pr: &PullRequest, r: &Review) -> Result<String, String> {
-    let body = comment_body(r);
+pub async fn publish(pr: &PullRequest, r: &Review, round: Option<u32>) -> Result<String, String> {
+    let body = comment_body(r, round);
     if body.len() > 60000 {
         return Err(
             "Review exceeds GitHub’s comment size limit. Copy it from the chat instead.".into(),
@@ -352,6 +369,21 @@ pub async fn publish(pr: &PullRequest, r: &Review) -> Result<String, String> {
         .as_str()
         .map(str::to_owned)
         .ok_or("GitHub did not return a comment URL.".into())
+}
+/// Sets the `orbit/review` status on a commit.
+pub async fn set_status(repo: &str, sha: &str, status: &CommitStatus) -> Result<(), String> {
+    api(
+        &format!("repos/{repo}/statuses/{sha}"),
+        "POST",
+        &[],
+        Some(json!({
+            "state": status.state,
+            "description": status.description,
+            "context": "orbit/review",
+        })),
+    )
+    .await
+    .map(|_| ())
 }
 
 #[cfg(test)]
@@ -404,23 +436,37 @@ mod tests {
             "a".repeat(40),
             "b".repeat(40)
         );
-        assert_eq!(comment_body(&r), expected);
+        assert_eq!(comment_body(&r, None), expected);
         r.model = "gpt-x".into();
         r.effort = "high".into();
-        assert!(comment_body(&r).ends_with(
+        assert!(comment_body(&r, None).ends_with(
             "Model: gpt-x (requested, unverified) · Effort: high (requested, unverified)"
         ));
         r.legacy_chat_selection = Some(ModelSelection {
             model: "chat-only".into(),
             effort: "low".into(),
         });
-        assert!(!comment_body(&r).contains("chat-only"));
+        assert!(!comment_body(&r, None).contains("chat-only"));
         r.confirmed_review_selection = Some(ModelSelection {
             model: "confirmed-report".into(),
             effort: "medium".into(),
         });
-        assert!(comment_body(&r)
+        assert!(comment_body(&r, None)
             .ends_with("Model: confirmed-report (confirmed) · Effort: medium (confirmed)"));
+    }
+    #[test]
+    fn adds_orbits_verdict_as_a_hidden_line() {
+        let mut r = Review::new(&crate::types::tests::pr(), &Settings::default(), true);
+        r.id = "rid".into();
+        assert!(comment_body(&r, Some(2)).starts_with("<!-- orbit-review:rid -->\n## Orbit"));
+        r.orbit_verdict = Some(Verdict::ChangesRequested);
+        r.blocking = Some(1);
+        assert!(comment_body(&r, Some(2)).starts_with(
+            "<!-- orbit-review:rid -->\n<!-- orbit-verdict: changes_requested round=2 blocking=1 -->\n## Orbit"
+        ));
+        r.orbit_verdict = Some(Verdict::Clean);
+        r.blocking = Some(0);
+        assert!(comment_body(&r, None).contains("<!-- orbit-verdict: clean blocking=0 -->"));
     }
     #[tokio::test]
     async fn lists_up_to_exactly_a_thousand_items() {

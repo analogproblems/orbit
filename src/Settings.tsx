@@ -349,6 +349,19 @@ export function SettingsPage() {
             />
             <SaveFeedback saveKey="settlePushes" />
           </VStack>
+          <VStack gap={2}>
+            <Switch
+              label="GitHub status check"
+              labelPosition="start"
+              labelSpacing="spread"
+              width="100%"
+              value={draft.commitStatus ?? true}
+              isDisabled={pending("commitStatus")}
+              onChange={(commitStatus) => void updateSettings({ commitStatus })}
+              description="Show each automatic review’s result on its commit as the orbit/review check. Only while automatic publication is on."
+            />
+            <SaveFeedback saveKey="commitStatus" />
+          </VStack>
           <FormLayout>
             <VStack gap={2}>
               <Selector

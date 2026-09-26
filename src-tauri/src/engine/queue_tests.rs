@@ -209,3 +209,61 @@ async fn emitted_snapshots_carry_loop_states_that_are_never_saved() {
     let saved = std::fs::read_to_string(d.path().join("state.json")).unwrap();
     assert!(!saved.contains("loopStates"));
 }
+#[tokio::test]
+async fn sends_each_commit_status_once_and_records_refusals() {
+    let (_d, e) = autopilot_engine(trusted_pr()).await;
+    e.update(|s| s.settings.auto_post = true).await;
+    let sent = Arc::new(Mutex::new(vec![]));
+    let refuse = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (log, fail) = (sent.clone(), refuse.clone());
+    e.set_status_sender(Arc::new(move |repo, sha, status: CommitStatus| {
+        log.lock().unwrap().push((repo, sha, status.state));
+        let fail = fail.load(std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async move {
+            if fail {
+                Err("Resource not accessible by integration".into())
+            } else {
+                Ok(())
+            }
+        })
+    }));
+    let id = automatic(&e, &trusted_pr().head_sha, "reviewing").await;
+    let settle = || async {
+        e.sync_commit_statuses().await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    settle().await;
+    settle().await;
+    assert_eq!(
+        *sent.lock().unwrap(),
+        [(
+            "a/b".to_string(),
+            trusted_pr().head_sha,
+            "pending".to_string()
+        )]
+    );
+    let r = e.snapshot().await.reviews.remove(0);
+    assert_eq!(r.commit_status.unwrap().description, "Round 1 · reviewing");
+
+    // A refused status is recorded, not retried, and leaves the review as it was.
+    refuse.store(true, std::sync::atomic::Ordering::SeqCst);
+    e.update(|s| {
+        let r = s.reviews.iter_mut().find(|r| r.id == id).unwrap();
+        r.status = "posted".into();
+        r.report = "Report".into();
+        r.findings = Some(vec![]);
+        crate::review_loop::decide(r, 1);
+    })
+    .await;
+    settle().await;
+    settle().await;
+    assert_eq!(sent.lock().unwrap().len(), 2);
+    let r = e.snapshot().await.reviews.remove(0);
+    assert_eq!(r.status, "posted");
+    let status = r.commit_status.unwrap();
+    assert_eq!(status.state, "success");
+    assert_eq!(
+        status.error.as_deref(),
+        Some("Resource not accessible by integration")
+    );
+}

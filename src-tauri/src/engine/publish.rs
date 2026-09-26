@@ -124,7 +124,8 @@ impl Engine {
         // Persisted first, so a crash mid-request is recovered as an interrupted publication.
         let _ = self.flush().await;
         // A stable marker reconciles network timeouts or crashes without duplicate comments.
-        match github::publish(&fresh, r).await {
+        let round = crate::review_loop::round_number(&self.snapshot().await, r);
+        match github::publish(&fresh, r, round).await {
             Ok(url) => {
                 self.update(|s| {
                     if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {

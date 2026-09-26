@@ -227,6 +227,94 @@ pub fn states(s: &Snapshot) -> Vec<LoopState> {
     s.prs.iter().filter_map(|pr| state(s, pr)).collect()
 }
 
+/// A review's round number within its PR's loop. None for a run that is not
+/// a round (manual, superseded or stopped).
+pub fn round_number(s: &Snapshot, r: &Review) -> Option<u32> {
+    let rounds = rounds_of(s, &r.pr_id);
+    let at = rounds.iter().position(|x| x.id == r.id)?;
+    Some((rounds.len() - at) as u32)
+}
+
+/// GitHub allows commit status descriptions of up to 140 characters.
+fn short(text: String) -> String {
+    if text.chars().count() <= 140 {
+        return text;
+    }
+    let mut cut: String = text.chars().take(139).collect();
+    cut.push('…');
+    cut
+}
+/// The `orbit/review` status the PR's latest round should show on its commit,
+/// with that round's id. None when statuses are off or the latest round is for
+/// an older head, whose status was already set.
+pub fn wanted_status(s: &Snapshot, pr: &PullRequest) -> Option<(String, CommitStatus)> {
+    if !(s.settings.commit_status && s.settings.auto_post) {
+        return None;
+    }
+    let rounds = rounds_of(s, &pr.id);
+    let latest = *rounds.first()?;
+    if latest.head_sha != pr.head_sha || latest.base_sha != pr.base_sha {
+        return None;
+    }
+    let loop_state = state(s, pr)?;
+    let round = format!("Round {}", rounds.len());
+    let blocking = |n: u32| {
+        format!(
+            "{round} · {n} blocking {}",
+            if n == 1 { "finding" } else { "findings" }
+        )
+    };
+    let by_verdict = || match latest.orbit_verdict {
+        Some(Verdict::Clean) => ("success", format!("{round} · no blocking findings")),
+        Some(Verdict::ChangesRequested) => ("failure", blocking(latest.blocking.unwrap_or(0))),
+        None => ("error", format!("{round} · loop stopped")),
+    };
+    let (state, description) = match loop_state.status {
+        LoopStatus::Reviewing => ("pending", format!("{round} · reviewing")),
+        LoopStatus::Clean | LoopStatus::WaitingForAuthor | LoopStatus::Stopped => by_verdict(),
+        LoopStatus::NeedsYou => (
+            "error",
+            format!(
+                "{round} · needs you: {}",
+                loop_state
+                    .reason
+                    .unwrap_or_default()
+                    .trim_end_matches('.')
+                    .to_lowercase()
+            ),
+        ),
+    };
+    Some((
+        latest.id.clone(),
+        CommitStatus {
+            state: state.into(),
+            description: short(description),
+            error: None,
+        },
+    ))
+}
+
+/// A round left pending on GitHub that will not finish there: it was stopped,
+/// or replaced by a newer head. Its check is closed rather than left pending.
+pub fn closing_status(r: &Review) -> Option<CommitStatus> {
+    let sent = r.commit_status.as_ref()?;
+    if sent.state != "pending" {
+        return None;
+    }
+    let description = if r.superseded {
+        "Replaced by newer commits"
+    } else if r.status == "cancelled" {
+        "Review stopped"
+    } else {
+        return None;
+    };
+    Some(CommitStatus {
+        state: "error".into(),
+        description: description.into(),
+        error: None,
+    })
+}
+
 #[cfg(test)]
 #[path = "review_loop_tests.rs"]
 mod tests;

@@ -37,4 +37,28 @@ describe("review loop panel", () => {
       prId: snapshot.prs[1].id,
     });
   });
+  it("says when GitHub refused the status check", () => {
+    const snapshot = freshDemo();
+    snapshot.settings.autoPost = true;
+    const prId = snapshot.prs[1].id;
+    snapshot.reviews = [
+      {
+        ...snapshot.reviews[0],
+        prId,
+        automatic: true,
+        commitStatus: {
+          state: "failure",
+          description: "Round 4 · 1 blocking finding",
+          error: "Resource not accessible by integration",
+        },
+      },
+    ];
+    useOrbit.setState({ snapshot });
+    render(<LoopPanel prId={prId} />);
+    expect(
+      screen.getByText(
+        "GitHub did not accept the status check: Resource not accessible by integration",
+      ),
+    ).toBeTruthy();
+  });
 });

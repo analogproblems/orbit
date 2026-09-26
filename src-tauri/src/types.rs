@@ -167,6 +167,21 @@ pub struct Review {
     /// or running. It is never published automatically and is not a round.
     #[serde(default)]
     pub superseded: bool,
+    /// The last GitHub commit status Orbit sent for this round, and whether
+    /// GitHub accepted it.
+    #[serde(default)]
+    pub commit_status: Option<CommitStatus>,
+}
+/// A GitHub commit status in the `orbit/review` context.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitStatus {
+    /// `pending`, `success`, `failure` or `error`.
+    pub state: String,
+    pub description: String,
+    /// Why GitHub did not accept it. It is not sent again until it changes.
+    #[serde(default)]
+    pub error: Option<String>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -289,6 +304,7 @@ impl Review {
             blocking: None,
             orbit_verdict: None,
             superseded: false,
+            commit_status: None,
         }
     }
     /// Credential-like text in the report and in the structured findings.
@@ -395,6 +411,9 @@ pub struct Settings {
     pub blocking_priority: u8,
     /// Queue a new head automatically only once it is a poll interval old.
     pub settle_pushes: bool,
+    /// Show each automatic round's result on its commit as the `orbit/review`
+    /// status. Only while automatic publication is on.
+    pub commit_status: bool,
 }
 /// Only supplied fields change. Repository mutations have separate commands.
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -409,6 +428,7 @@ pub struct SettingsPatch {
     pub trusted_authors: Option<Vec<String>>,
     pub blocking_priority: Option<u8>,
     pub settle_pushes: Option<bool>,
+    pub commit_status: Option<bool>,
 }
 impl SettingsPatch {
     pub fn apply(self, settings: &mut Settings) {
@@ -439,6 +459,9 @@ impl SettingsPatch {
         if let Some(v) = self.settle_pushes {
             settings.settle_pushes = v;
         }
+        if let Some(v) = self.commit_status {
+            settings.commit_status = v;
+        }
     }
 }
 impl Default for Settings {
@@ -454,6 +477,7 @@ impl Default for Settings {
             trusted_authors: vec![],
             blocking_priority: 1,
             settle_pushes: true,
+            commit_status: true,
         }
     }
 }

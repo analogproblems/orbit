@@ -87,6 +87,8 @@ export interface Review {
   orbitVerdict?: Verdict | null;
   /** Replaced by a newer head; never published automatically. */
   superseded?: boolean;
+  /** The last `orbit/review` commit status sent for this round. */
+  commitStatus?: CommitStatus | null;
 }
 export type Verdict = "clean" | "changes_requested";
 export interface PreviousRound {
@@ -163,6 +165,13 @@ export interface Settings {
   blockingPriority: number;
   /** Queue a new head automatically only once it is a poll interval old. */
   settlePushes: boolean;
+  /** Show each automatic round's result on its commit as `orbit/review`. */
+  commitStatus: boolean;
+}
+export interface CommitStatus {
+  state: "pending" | "success" | "failure" | "error";
+  description: string;
+  error?: string | null;
 }
 export type SettingsPatch = Partial<Omit<Settings, "repositories">>;
 export type ActionResult<T> =
@@ -278,6 +287,7 @@ export const defaults: Settings = {
   trustedAuthors: [],
   blockingPriority: 1,
   settlePushes: true,
+  commitStatus: true,
 };
 export function latestReview(reviews: Review[], prId: string) {
   return reviews
