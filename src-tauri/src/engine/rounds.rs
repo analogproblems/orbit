@@ -49,6 +49,23 @@ pub(super) fn carried_findings(previous: &Review) -> Vec<Finding> {
     findings
 }
 
+/// The latest classification of each carried finding: the previous round's,
+/// or else the one it was given from the round before.
+pub(super) fn carried_decisions(previous: &Review, findings: &[Finding]) -> Vec<PriorFinding> {
+    let older = previous.previous_round.iter().flat_map(|p| &p.decisions);
+    findings
+        .iter()
+        .filter_map(|f| {
+            previous
+                .prior_findings
+                .iter()
+                .chain(older.clone())
+                .find(|p| p.id == f.id)
+                .cloned()
+        })
+        .collect()
+}
+
 #[derive(Debug, PartialEq)]
 pub(super) struct Comment {
     pub author: String,
@@ -207,7 +224,10 @@ pub(super) fn review_prompt(
          Then check every earlier finding and classify it as fixed, still_open, \
          declined_accepted (the author gave a reasonable reason not to fix it) or \
          declined_disputed (the author declined it, but you still believe it is a real defect). \
+         An earlier finding marked with a previous classification was already judged in an earlier round, with the reason shown: \
+         keep that classification unless the code or the discussion since gives a reason to change it. \
          Do not report an earlier finding again as a new finding, whatever its status; report only new problems as findings. \
+         The patch is not correct while any earlier finding is still_open or declined_disputed. \
          In overall_explanation, after explaining your verdict, add one line per earlier finding in the form \
          `Earlier finding <id>: <status>. <one-sentence note>`.\n\n<{tag}>\n",
         round.head_sha
@@ -234,6 +254,15 @@ pub(super) fn review_prompt(
             f.title,
             indent(&f.body)
         ));
+        if let Some(d) = round.decisions.iter().find(|d| d.id == f.id) {
+            let status = serde_json::to_value(d.status).unwrap_or_default();
+            out.push_str(&indent(&format!(
+                "Previous classification: {}. {}",
+                status.as_str().unwrap_or(""),
+                d.note
+            )));
+            out.push('\n');
+        }
     }
     match comments {
         Ok(c) => {
@@ -333,11 +362,13 @@ impl Engine {
             .await
             .map(|m| m.trim().to_string())
             .unwrap_or_else(|_| r.base_sha.clone());
+        let findings = carried_findings(previous);
         let round = PreviousRound {
             review_id: previous.id.clone(),
             head_sha: previous.head_sha.clone(),
             verdict: previous.verdict,
-            findings: carried_findings(previous),
+            decisions: carried_decisions(previous, &findings),
+            findings,
             comments_included: comments.as_ref().map_or(0, |c| c.kept.len()),
             comments_omitted: comments.as_ref().map_or(0, |c| c.omitted),
         };

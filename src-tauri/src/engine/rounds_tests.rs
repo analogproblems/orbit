@@ -1,6 +1,7 @@
 use super::{
     rounds::{
-        carried_findings, changes_since, previous_review, review_prompt, trusted_comments, Comments,
+        carried_decisions, carried_findings, changes_since, previous_review, review_prompt,
+        trusted_comments, Comments,
     },
     test_support::*,
     worktrees::git,
@@ -103,6 +104,7 @@ fn carries_earlier_findings_until_they_are_fixed() {
         head_sha: "a".into(),
         verdict: Some(Verdict::ChangesRequested),
         findings: vec![finding("r1-0"), finding("r1-1"), finding("r1-2")],
+        decisions: vec![],
         comments_included: 0,
         comments_omitted: 0,
     });
@@ -121,6 +123,97 @@ fn carries_earlier_findings_until_they_are_fixed() {
         .collect();
     // r1-2 was not classified at all, so it is carried too.
     assert_eq!(ids, ["r2-0", "r1-1", "r1-2"]);
+}
+#[test]
+fn carries_the_latest_classification_of_each_earlier_finding() {
+    let pr = trusted_pr();
+    let mut previous = finished(&pr, "b", "2026-01-02T00:00:00.000Z", &["r2-0"]);
+    let decision = |id: &str, status, note: &str| PriorFinding {
+        id: id.into(),
+        status,
+        note: note.into(),
+    };
+    previous.previous_round = Some(PreviousRound {
+        review_id: "r1".into(),
+        head_sha: "a".into(),
+        verdict: Some(Verdict::ChangesRequested),
+        findings: vec![finding("r0-0"), finding("r1-0")],
+        decisions: vec![
+            decision("r0-0", PriorStatus::DeclinedAccepted, "Intended."),
+            decision("r1-0", PriorStatus::StillOpen, "Older."),
+        ],
+        comments_included: 0,
+        comments_omitted: 0,
+    });
+    // Round 2 reclassified r1-0 and said nothing about r0-0.
+    previous.prior_findings = vec![decision(
+        "r1-0",
+        PriorStatus::DeclinedDisputed,
+        "Still racy.",
+    )];
+    let findings = carried_findings(&previous);
+    assert_eq!(
+        carried_decisions(&previous, &findings),
+        [
+            decision("r0-0", PriorStatus::DeclinedAccepted, "Intended."),
+            decision("r1-0", PriorStatus::DeclinedDisputed, "Still racy."),
+        ]
+    );
+}
+#[tokio::test]
+async fn a_third_round_keeps_the_accepted_reason_for_a_declined_finding() {
+    let (_d, e, id) = running_engine().await;
+    let (_g, repo) = git_repo().await;
+    let base = git_base(&repo);
+    let one = commit(&repo, "Round one").await;
+    let two = commit(&repo, "Unrelated push").await;
+    let three = commit(&repo, "Another unrelated push").await;
+    e.update(|s| {
+        s.prs[0] = trusted_pr();
+        s.prs[0].head_sha = three.clone();
+        s.prs[0].base_sha = base.clone();
+        let pr = s.prs[0].clone();
+        let mut first = finished(&pr, &one, "2026-01-01T00:00:00.000Z", &["one-0"]);
+        first.id = "one".into();
+        let mut second = finished(&pr, &two, "2026-01-02T00:00:00.000Z", &[]);
+        second.verdict = Some(Verdict::Clean);
+        second.previous_round = Some(PreviousRound {
+            review_id: "one".into(),
+            head_sha: one.clone(),
+            verdict: Some(Verdict::ChangesRequested),
+            findings: first.findings.clone().unwrap(),
+            decisions: vec![],
+            comments_included: 1,
+            comments_omitted: 0,
+        });
+        second.prior_findings = vec![PriorFinding {
+            id: "one-0".into(),
+            status: PriorStatus::DeclinedAccepted,
+            note: "The author showed the fallback is intentional.".into(),
+        }];
+        let r = &mut s.reviews[0];
+        r.head_sha = three.clone();
+        r.base_sha = base;
+        s.reviews.push(first);
+        s.reviews.push(second);
+    })
+    .await;
+    // The author's explanation predates round two, so no comment carries it.
+    e.carry_previous_round_with(&id, &repo, |_| async { Ok(vec![]) })
+        .await
+        .unwrap();
+    let r = e.snapshot().await.reviews.remove(0);
+    let round = r.previous_round.unwrap();
+    assert_eq!(round.findings[0].id, "one-0");
+    assert_eq!(round.decisions[0].status, PriorStatus::DeclinedAccepted);
+    let prompt = r.review_prompt.unwrap();
+    assert!(
+        prompt.contains(
+            "- one-0 · P2 · src/a.rs:4-9 · Title one-0\n  Body one-0\n  \
+             Previous classification: declined_accepted. The author showed the fallback is intentional."
+        ),
+        "{prompt}"
+    );
 }
 #[test]
 fn keeps_only_trusted_comments_posted_since_the_previous_round() {
@@ -209,6 +302,7 @@ fn round() -> PreviousRound {
         head_sha: "1".repeat(40),
         verdict: Some(Verdict::ChangesRequested),
         findings: vec![finding("r1-0")],
+        decisions: vec![],
         comments_included: 1,
         comments_omitted: 2,
     }

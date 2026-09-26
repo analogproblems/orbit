@@ -87,6 +87,8 @@ export interface PreviousRound {
   verdict: Verdict | null;
   /** Each keeps the ID of the review that first reported it. */
   findings: Finding[];
+  /** The latest classification of each earlier finding that has one. */
+  decisions?: PriorFinding[];
   commentsIncluded: number;
   commentsOmitted: number;
 }

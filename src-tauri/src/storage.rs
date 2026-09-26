@@ -436,6 +436,7 @@ mod tests {
             head_sha: "c".repeat(40),
             verdict: Some(Verdict::ChangesRequested),
             findings: earlier.clone(),
+            decisions: vec![],
             comments_included: 0,
             comments_omitted: 0,
         });

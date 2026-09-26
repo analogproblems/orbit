@@ -147,6 +147,7 @@ function demoSchedule() {
                 headSha: earlier.headSha,
                 verdict: earlier.verdict ?? null,
                 findings: earlier.findings,
+                decisions: earlier.priorFindings ?? [],
                 commentsIncluded: 1,
                 commentsOmitted: 0,
               };

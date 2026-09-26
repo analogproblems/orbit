@@ -42,12 +42,13 @@ describe("since the last round", () => {
   const reReview = review({
     id: "second",
     findings: [],
-    verdict: "clean",
+    verdict: "changes_requested",
     previousRound: {
       reviewId: "demo-completed",
       headSha: "abc0000",
       verdict: "changes_requested",
       findings: [...earlier, { ...earlier[0], id: "gone-0", title: "Old" }],
+      decisions: [],
       commentsIncluded: 1,
       commentsOmitted: 2,
     },

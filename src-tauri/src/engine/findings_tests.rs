@@ -126,6 +126,7 @@ fn previous() -> PreviousRound {
         )
         .unwrap()
         .findings,
+        decisions: vec![],
         comments_included: 0,
         comments_omitted: 0,
     }
@@ -164,6 +165,23 @@ fn keeps_classifications_of_known_earlier_findings_only() {
         .unwrap()
         .prior_findings
         .is_empty());
+}
+#[test]
+fn unresolved_earlier_findings_rule_out_a_clean_verdict() {
+    let clean = |status: &str| {
+        let mut v: Value = serde_json::from_str(&with_prior(json!([
+            {"id":"r0-0","status":status,"note":"."},
+        ])))
+        .unwrap();
+        v["verdict"] = json!("clean");
+        parse(&v.to_string(), "r1", None, Some(&previous()))
+            .unwrap()
+            .verdict
+    };
+    assert_eq!(clean("still_open"), Verdict::ChangesRequested);
+    assert_eq!(clean("declined_disputed"), Verdict::ChangesRequested);
+    assert_eq!(clean("fixed"), Verdict::Clean);
+    assert_eq!(clean("declined_accepted"), Verdict::Clean);
 }
 #[tokio::test]
 async fn stores_prior_findings_and_they_survive_a_restart() {

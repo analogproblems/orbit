@@ -184,6 +184,10 @@ pub struct PreviousRound {
     /// The previous round's findings, then any earlier ones it did not
     /// report fixed. Each keeps the ID of the review that first found it.
     pub findings: Vec<Finding>,
+    /// The latest classification of each of `findings` that has one, with
+    /// its reason, so a later round does not reopen it without cause.
+    #[serde(default)]
+    pub decisions: Vec<PriorFinding>,
     /// Comments from trusted accounts given to the reviewer.
     pub comments_included: usize,
     /// Comments from other accounts, left out.

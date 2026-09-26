@@ -13,7 +13,7 @@ const EXTRACTION_PROMPT: &str = "Restate the findings from the review you just c
     Do not run commands, read files, or review the code again. \
     Include every finding you reported, including low-priority ones, with the title without its [P#] prefix, \
     priority 0-3 for P0-P3, the file path relative to the repository root, and the line range. \
-    Use verdict \"clean\" only when you reported no findings. \
+    Use verdict \"clean\" only when you reported no findings and no earlier finding is still_open or declined_disputed. \
     If your review classified earlier findings, list each in priorFindings with its ID, status and note; otherwise use an empty list.";
 
 const PRIOR_STATUSES: [(&str, PriorStatus); 4] = [
@@ -170,6 +170,19 @@ pub(super) fn parse(
             prior_findings.push(PriorFinding { id, status, note });
         }
     }
+    // An unresolved earlier finding is kept out of `findings`, but the change
+    // is not clean while it stands.
+    let unresolved = prior_findings.iter().any(|p| {
+        matches!(
+            p.status,
+            PriorStatus::StillOpen | PriorStatus::DeclinedDisputed
+        )
+    });
+    let verdict = if unresolved {
+        Verdict::ChangesRequested
+    } else {
+        verdict
+    };
     Ok(Extracted {
         verdict,
         summary: string(&v, "summary")?,
