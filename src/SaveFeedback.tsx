@@ -13,6 +13,8 @@ export function SaveFeedback({ saveKey }: { saveKey?: string }) {
       concurrency: "Concurrent reviews",
       pollSeconds: "Poll interval",
       trustedAuthors: "Trusted accounts",
+      blockingPriority: "Blocking findings",
+      settlePushes: "Wait for pushes to settle",
     };
     return Object.entries(patch)
       .map(([key, value]) => {
@@ -30,9 +32,13 @@ export function SaveFeedback({ saveKey }: { saveKey?: string }) {
                 ? value || "Unresolved effort"
                 : key === "pollSeconds"
                   ? `${value} seconds`
-                  : Array.isArray(value)
-                    ? value.join(", ") || "None"
-                    : value;
+                  : key === "blockingPriority"
+                    ? value === 0
+                      ? "P0 only"
+                      : `P0 to P${value}`
+                    : Array.isArray(value)
+                      ? value.join(", ") || "None"
+                      : value;
         return `${label}: ${display}`;
       })
       .join("; ");

@@ -42,6 +42,10 @@ pub struct PullRequest {
     /// differs from `repo` after a rename or transfer.
     #[serde(default)]
     pub base_repo: String,
+    /// When Orbit first saw the current head; empty when unknown (older
+    /// state), which counts as settled.
+    #[serde(default)]
+    pub head_seen_at: String,
 }
 /// A repository the signed-in user can access, offered when connecting one.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -151,6 +155,18 @@ pub struct Review {
     /// What the reviewer decided about each finding in `previous_round`.
     #[serde(default)]
     pub prior_findings: Vec<PriorFinding>,
+    /// Blocking findings left open by this review, counted with the blocking
+    /// priority in force when its findings were extracted. None without
+    /// structured findings.
+    #[serde(default)]
+    pub blocking: Option<u32>,
+    /// Orbit's verdict from `blocking`; `verdict` is the model's own.
+    #[serde(default)]
+    pub orbit_verdict: Option<Verdict>,
+    /// An automatic review whose PR moved to a new head while it was queued
+    /// or running. It is never published automatically and is not a round.
+    #[serde(default)]
+    pub superseded: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -270,6 +286,9 @@ impl Review {
             previous_round: None,
             review_prompt: None,
             prior_findings: vec![],
+            blocking: None,
+            orbit_verdict: None,
+            superseded: false,
         }
     }
     /// Credential-like text in the report and in the structured findings.
@@ -352,6 +371,12 @@ pub struct Repository {
     pub automatic: bool,
     pub setup_command: String,
     pub network_access: bool,
+    /// Automatic rounds per PR before the loop needs a person.
+    #[serde(default = "default_round_limit")]
+    pub round_limit: u32,
+}
+fn default_round_limit() -> u32 {
+    4
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -366,6 +391,10 @@ pub struct Settings {
     /// Extra GitHub logins, such as bots acting for the user, whose same-repository
     /// PRs are trusted like those of owners, members, and collaborators.
     pub trusted_authors: Vec<String>,
+    /// Findings at this priority or more severe (0 = P0) block a clean verdict.
+    pub blocking_priority: u8,
+    /// Queue a new head automatically only once it is a poll interval old.
+    pub settle_pushes: bool,
 }
 /// Only supplied fields change. Repository mutations have separate commands.
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -378,6 +407,8 @@ pub struct SettingsPatch {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub trusted_authors: Option<Vec<String>>,
+    pub blocking_priority: Option<u8>,
+    pub settle_pushes: Option<bool>,
 }
 impl SettingsPatch {
     pub fn apply(self, settings: &mut Settings) {
@@ -402,6 +433,12 @@ impl SettingsPatch {
         if let Some(v) = self.trusted_authors {
             settings.trusted_authors = v;
         }
+        if let Some(v) = self.blocking_priority {
+            settings.blocking_priority = v;
+        }
+        if let Some(v) = self.settle_pushes {
+            settings.settle_pushes = v;
+        }
     }
 }
 impl Default for Settings {
@@ -415,6 +452,8 @@ impl Default for Settings {
             effort: String::new(),
             repositories: vec![],
             trusted_authors: vec![],
+            blocking_priority: 1,
+            settle_pushes: true,
         }
     }
 }
@@ -425,6 +464,9 @@ impl Settings {
         }
         if !(1..=4).contains(&self.concurrency) {
             return Err("Choose between 1 and 4 concurrent reviews.".into());
+        }
+        if self.blocking_priority > 3 {
+            return Err("Choose a blocking priority from P0 to P3.".into());
         }
         if self.trusted_authors.len() > 50 {
             return Err("Trust at most 50 accounts.".into());
@@ -515,6 +557,40 @@ pub struct Snapshot {
     pub model_catalog_ready: bool,
     pub model_configuration_error: Option<String>,
     pub model_selection_notice: Option<String>,
+    /// Per-PR controls of the automatic review loop.
+    pub loops: Vec<LoopControl>,
+    /// Derived for display when the snapshot is emitted; never saved.
+    #[serde(skip_deserializing, skip_serializing_if = "Vec::is_empty")]
+    pub loop_states: Vec<LoopState>,
+}
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoopControl {
+    pub pr_id: String,
+    /// The developer paused the loop for this PR.
+    pub stopped: bool,
+    /// Rounds granted beyond the repository's round limit by Continue loop.
+    pub extra_rounds: u32,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoopStatus {
+    Reviewing,
+    WaitingForAuthor,
+    Clean,
+    NeedsYou,
+    Stopped,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoopState {
+    pub pr_id: String,
+    pub status: LoopStatus,
+    /// Why the loop needs a person.
+    pub reason: Option<String>,
+    /// Automatic rounds so far, and how many are allowed.
+    pub rounds: u32,
+    pub round_limit: u32,
 }
 pub fn eligible(pr: &PullRequest, s: &Snapshot) -> bool {
     !pr.draft
@@ -527,6 +603,7 @@ pub fn eligible(pr: &PullRequest, s: &Snapshot) -> bool {
             r.pr_id == pr.id
                 && ((r.head_sha == pr.head_sha && r.base_sha == pr.base_sha) || active(&r.status))
         })
+        && crate::review_loop::allows_new_round(pr, s)
 }
 /// Whether a review's report matches the PR as it is now. `publish()` checks
 /// the review's status itself when it claims the review.
@@ -608,6 +685,7 @@ pub(crate) mod tests {
             automatic: true,
             setup_command: String::new(),
             network_access: false,
+            round_limit: 4,
         });
         assert!(eligible(&p, &s));
         let mut fork = p.clone();

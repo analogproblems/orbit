@@ -1,0 +1,232 @@
+//! The automatic review loop on a PR: Orbit's verdict for each round, the
+//! loop's state worked out from the PR's automatic reviews, and when another
+//! automatic round may start.
+use crate::types::*;
+
+/// Blocking findings left open by a review: its new findings at or above the
+/// blocking priority, and earlier ones it found still open or disputed.
+/// None for a run without structured findings.
+pub fn blocking(r: &Review, blocking_priority: u8) -> Option<u32> {
+    let findings = r.findings.as_ref()?;
+    let new = findings
+        .iter()
+        .filter(|f| f.priority <= blocking_priority)
+        .count();
+    let earlier = r
+        .previous_round
+        .iter()
+        .flat_map(|p| &p.findings)
+        .filter(|f| {
+            f.priority <= blocking_priority
+                && r.prior_findings.iter().any(|p| {
+                    p.id == f.id
+                        && matches!(
+                            p.status,
+                            PriorStatus::StillOpen | PriorStatus::DeclinedDisputed
+                        )
+                })
+        })
+        .count();
+    Some((new + earlier) as u32)
+}
+/// Records Orbit's verdict on a review whose findings were just extracted.
+pub fn decide(r: &mut Review, blocking_priority: u8) {
+    r.blocking = blocking(r, blocking_priority);
+    r.orbit_verdict = r.blocking.map(|n| {
+        if n == 0 {
+            Verdict::Clean
+        } else {
+            Verdict::ChangesRequested
+        }
+    });
+}
+
+fn control<'a>(s: &'a Snapshot, pr_id: &str) -> Option<&'a LoopControl> {
+    s.loops.iter().find(|c| c.pr_id == pr_id)
+}
+/// A PR's automatic reviews that count as rounds, newest first. Runs replaced
+/// by a newer head and stopped runs are not rounds.
+fn rounds_of<'a>(s: &'a Snapshot, pr_id: &str) -> Vec<&'a Review> {
+    let mut rounds: Vec<&Review> = s
+        .reviews
+        .iter()
+        .filter(|r| r.pr_id == pr_id && r.automatic && !r.superseded && r.status != "cancelled")
+        .collect();
+    rounds.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    rounds
+}
+/// Automatic rounds allowed for a PR: its repository's limit plus any rounds
+/// granted by Continue loop.
+pub fn round_limit(s: &Snapshot, pr: &PullRequest) -> u32 {
+    let base = s
+        .settings
+        .repositories
+        .iter()
+        .find(|r| same_repo(&r.name, &pr.repo))
+        .map_or(0, |r| r.round_limit);
+    base + control(s, &pr.id).map_or(0, |c| c.extra_rounds)
+}
+/// Whether the head has stayed the same for a full poll interval.
+fn settled(pr: &PullRequest, s: &Snapshot) -> bool {
+    if !s.settings.settle_pushes {
+        return true;
+    }
+    let Ok(seen) = chrono::DateTime::parse_from_rfc3339(&pr.head_seen_at) else {
+        return true;
+    };
+    let age = chrono::Utc::now().signed_duration_since(seen);
+    age.num_seconds() >= s.settings.poll_seconds as i64
+}
+/// Whether the loop may start another automatic round for this PR now.
+pub fn allows_new_round(pr: &PullRequest, s: &Snapshot) -> bool {
+    !control(s, &pr.id).is_some_and(|c| c.stopped)
+        && (rounds_of(s, &pr.id).len() as u32) < round_limit(s, pr)
+        && settled(pr, s)
+}
+
+/// The same blocking findings stayed open for two rounds in a row: every
+/// blocking finding the latest round was given is still open and it found
+/// no new ones. Without earlier-finding statuses, the two rounds' blocking
+/// findings are compared by path and title.
+fn stalled(latest: &Review, before: Option<&Review>, blocking_priority: u8) -> bool {
+    let blocking_new = |r: &Review| -> Vec<(Option<String>, String)> {
+        let mut keys: Vec<_> = r
+            .findings
+            .iter()
+            .flatten()
+            .filter(|f| f.priority <= blocking_priority)
+            .map(|f| (f.path.clone(), f.title.to_lowercase()))
+            .collect();
+        keys.sort();
+        keys
+    };
+    match &latest.previous_round {
+        Some(round) if !latest.prior_findings.is_empty() => {
+            let accepted = |id: &str| {
+                round
+                    .decisions
+                    .iter()
+                    .any(|d| d.id == id && d.status == PriorStatus::DeclinedAccepted)
+            };
+            let earlier: Vec<&Finding> = round
+                .findings
+                .iter()
+                .filter(|f| f.priority <= blocking_priority && !accepted(&f.id))
+                .collect();
+            !earlier.is_empty()
+                && blocking_new(latest).is_empty()
+                && earlier.iter().all(|f| {
+                    latest
+                        .prior_findings
+                        .iter()
+                        .any(|p| p.id == f.id && p.status == PriorStatus::StillOpen)
+                })
+        }
+        _ => before.is_some_and(|before| {
+            let keys = blocking_new(latest);
+            before.findings.is_some() && !keys.is_empty() && keys == blocking_new(before)
+        }),
+    }
+}
+
+/// The loop's state for a PR, worked out from its automatic reviews. None when
+/// Orbit has not reviewed the PR automatically and the loop is not stopped.
+pub fn state(s: &Snapshot, pr: &PullRequest) -> Option<LoopState> {
+    let rounds = rounds_of(s, &pr.id);
+    let limit = round_limit(s, pr);
+    let make = |status, reason: Option<&str>| {
+        Some(LoopState {
+            pr_id: pr.id.clone(),
+            status,
+            reason: reason.map(str::to_owned),
+            rounds: rounds.len() as u32,
+            round_limit: limit,
+        })
+    };
+    if control(s, &pr.id).is_some_and(|c| c.stopped) {
+        return make(LoopStatus::Stopped, None);
+    }
+    let running: Vec<&Review> = s
+        .reviews
+        .iter()
+        .filter(|r| r.pr_id == pr.id && r.automatic && active(&r.status))
+        .collect();
+    if !running.is_empty() {
+        if running
+            .iter()
+            .any(|r| s.approvals.iter().any(|a| a.review_id == r.id))
+        {
+            return make(LoopStatus::NeedsYou, Some("An approval is pending."));
+        }
+        return make(LoopStatus::Reviewing, None);
+    }
+    let latest = *rounds.first()?;
+    let at_limit = rounds.len() as u32 >= limit;
+    let new_head = latest.head_sha != pr.head_sha || latest.base_sha != pr.base_sha;
+    // A newer head is next in line unless the loop is out of rounds.
+    let next_round = || {
+        if at_limit {
+            make(LoopStatus::NeedsYou, Some("Round limit reached."))
+        } else {
+            make(LoopStatus::Reviewing, None)
+        }
+    };
+    if latest.status == "failed" {
+        return make(LoopStatus::NeedsYou, Some("The review failed."));
+    }
+    let Some(verdict) = latest.orbit_verdict else {
+        return make(
+            LoopStatus::NeedsYou,
+            Some("The review has no structured findings."),
+        );
+    };
+    if latest
+        .prior_findings
+        .iter()
+        .any(|p| p.status == PriorStatus::DeclinedDisputed)
+    {
+        return make(
+            LoopStatus::NeedsYou,
+            Some("The reviewer disputes a declined finding."),
+        );
+    }
+    if verdict == Verdict::Clean {
+        return if new_head {
+            next_round()
+        } else {
+            make(LoopStatus::Clean, None)
+        };
+    }
+    // Changes requested: the author has to see the report.
+    if latest.status == "ready" && !new_head {
+        if latest.error.is_some() {
+            return make(LoopStatus::NeedsYou, Some("Publication was held."));
+        }
+        if !s.settings.auto_post {
+            return make(
+                LoopStatus::NeedsYou,
+                Some("The report is waiting for you to publish it."),
+            );
+        }
+        // Automatic publication is on its way.
+        return make(LoopStatus::Reviewing, None);
+    }
+    if new_head {
+        return next_round();
+    }
+    if stalled(latest, rounds.get(1).copied(), s.settings.blocking_priority) {
+        return make(LoopStatus::NeedsYou, Some("The loop is not converging."));
+    }
+    if at_limit {
+        return make(LoopStatus::NeedsYou, Some("Round limit reached."));
+    }
+    make(LoopStatus::WaitingForAuthor, None)
+}
+/// Loop states for every PR in the inbox that has one.
+pub fn states(s: &Snapshot) -> Vec<LoopState> {
+    s.prs.iter().filter_map(|pr| state(s, pr)).collect()
+}
+
+#[cfg(test)]
+#[path = "review_loop_tests.rs"]
+mod tests;

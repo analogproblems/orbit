@@ -25,8 +25,14 @@ import {
 } from "@astryxdesign/core";
 import { Inbox as InboxIcon, Plus, RefreshCw, Search } from "lucide-react";
 import { useOrbit } from "./store";
-import { latestReview, reviewDisplayStatus, type PullRequest } from "./types";
+import {
+  latestReview,
+  loopState,
+  reviewDisplayStatus,
+  type PullRequest,
+} from "./types";
 import { ReviewStatus } from "./ReviewStatus";
+import { LoopToken } from "./Loop";
 import { recentTimestamp } from "./timestamps";
 
 export function Inbox({
@@ -133,6 +139,7 @@ export function Inbox({
           <List density="spacious" hasDividers>
             {visible.map((p, index) => {
               const r = latestReview(s.reviews, p.id);
+              const loop = loopState(s, p.id);
               return (
                 <ListItem
                   key={p.id}
@@ -154,7 +161,8 @@ export function Inbox({
                           {...recentTimestamp(index)}
                         />
                       </HStack>
-                      <HStack>
+                      <HStack gap={2} wrap="wrap">
+                        {loop && <LoopToken state={loop} />}
                         <ReviewStatus
                           status={
                             r

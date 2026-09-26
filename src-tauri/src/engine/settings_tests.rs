@@ -79,6 +79,7 @@ async fn partial_settings_are_atomic_and_unavailable_checkouts_do_not_block_edit
             automatic: true,
             setup_command: String::new(),
             network_access: false,
+            round_limit: 4,
         });
     })
     .await;
@@ -137,6 +138,7 @@ async fn repository_save_validates_and_keeps_other_settings() {
         automatic: false,
         setup_command: "exit 1 # must not execute".into(),
         network_access: false,
+        round_limit: 4,
     };
     e.save_repository(config.clone(), None).await.unwrap();
     assert_eq!(

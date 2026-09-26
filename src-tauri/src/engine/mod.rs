@@ -187,7 +187,12 @@ impl Engine {
             state: Mutex::new(state),
             rpc: Mutex::new(None),
             root,
-            emit: Box::new(emit),
+            // Loop states are derived from the reviews for display, never saved.
+            emit: Box::new(move |s: &Snapshot| {
+                let mut shown = s.clone();
+                shown.loop_states = crate::review_loop::states(s);
+                emit(&shown)
+            }),
             connect_lock: Mutex::new(()),
             poll_lock: Mutex::new(()),
             publish_lock: Mutex::new(()),

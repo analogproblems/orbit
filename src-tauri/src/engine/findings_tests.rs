@@ -234,6 +234,11 @@ async fn stores_extracted_findings_without_adding_chat_messages() {
     assert!(!r.extracting && r.error.is_none());
     assert!(r.messages.is_empty(), "{:?}", r.messages);
     assert_eq!(r.verdict, Some(Verdict::ChangesRequested));
+    // A P2 finding does not block at the default blocking priority (P1).
+    assert_eq!(
+        (r.blocking, r.orbit_verdict),
+        (Some(0), Some(Verdict::Clean))
+    );
     let findings = r.findings.unwrap();
     assert_eq!(findings[0].path.as_deref(), Some("src/a.rs"));
     assert_eq!(findings[0].id, format!("{}-0", r.id));

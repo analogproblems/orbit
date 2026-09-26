@@ -201,6 +201,7 @@ An automatic review can be queued when:
 - The PR is not a draft and its head branch belongs to its base repository.
 - GitHub identifies the author as an owner, member, or collaborator, or the login is in **Trusted accounts**.
 - There is no active run for the PR and no previous run for the same head/base pair.
+- The PR's review loop is not stopped and has rounds left, and its head has not changed for one poll interval (see **The review loop** below).
 
 **Enabling Autopilot can pick up existing eligible PRs already in the inbox**, not just PRs opened afterward. Any previous run for a head/base pair, including a manual, failed, or stopped run, prevents a new automatic attempt for that pair. A changed head or base can qualify for a new automatic run. Use **Review again** for an explicit retry.
 
@@ -216,6 +217,14 @@ For an otherwise eligible same-repository PR skipped because of its author, **Tr
 
 Trust only accounts whose PRs you intend to review automatically. Anyone able to direct a trusted bot can supply code and instructions to its PRs. Trust never bypasses the fork exclusion, draft exclusion, or credential check, and it does not enable the automation switches by itself.
 
+### The review loop
+
+Each automatic review of a PR is one round of its review loop. Orbit gives every round with a findings list its own verdict: **changes requested** when a finding at or above the **Blocking findings** priority is new or was found still open or disputed, and **clean** otherwise. Codex's own verdict is shown beside it when the two differ. The verdict is recorded when the findings are extracted, so changing the setting affects later rounds only.
+
+The PR detail and inbox show the loop's state: **Reviewing**, **Waiting for author**, **Clean**, **Needs you** with the reason, or **Stopped**. A loop needs you when a review failed or has no findings list, an approval is pending, a report is waiting for you to publish it, the reviewer disputes a finding the author declined, the same blocking findings stayed open across two rounds, or the round limit is reached. Each repository allows 4 automatic rounds per PR by default (**Automatic rounds per pull request**). **Continue loop** allows two more; **Stop loop** pauses automatic reviews of that PR. **Review again** always works and does not count as a round.
+
+When a PR gets new commits while an automatic round is queued or running for the older head, that round is marked **Superseded**: a queued one is cancelled, a running one finishes but is not published or counted. With **Wait for pushes to settle** on, Orbit starts the next round only after the head has stayed the same for one poll interval, so a burst of pushes gets one review. This also delays the first review of a newly found PR by one interval.
+
 ## Settings and when changes take effect
 
 | Setting                                | Initial value                      | Available choices                                                                                                 |
@@ -227,6 +236,8 @@ Trust only accounts whose PRs you intend to review automatically. Anyone able to
 | Concurrent reviews                     | 2                                  | 1–4 slots, shared by preparation, reviewing, approvals, and follow-ups. Lowering it does not cancel running work. |
 | Poll interval                          | 2 minutes                          | 30 seconds; 1, 2, 5, 10, 30, or 60 minutes.                                                                       |
 | Trusted accounts                       | Empty                              | Up to 50 account logins.                                                                                          |
+| Blocking findings                      | P0 to P1                           | P0 only, or P0 to P1, P2 or P3.                                                                                   |
+| Wait for pushes to settle              | On                                 | On/off.                                                                                                           |
 
 Settings switches and selections save immediately. Changing the model saves that model and its explicit supported default effort in the same update. **Choose a model** and **Choose an effort** are placeholders, not executable default choices. **Saving…**, **Saved**, or an error with **Retry saving** shows the result. **Saved** clears after 2.5 seconds; errors remain until resolved. After a failed write, controls return to the active values. The unapplied request is listed beside its error and **Retry saving**, and survives page navigation along with typed account input. Retry after resolving the failure. If a model change fails, effort stays disabled until you retry successfully or choose a model again; this prevents a later retry from resetting a newly selected effort.
 

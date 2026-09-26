@@ -198,6 +198,7 @@ fn parse_pull(v: &Value, repo: &str, login: &str) -> Result<PullRequest, String>
         head_repo: v["head"]["repo"]["full_name"].as_str().unwrap_or("").into(),
         author_association: text("author_association"),
         base_repo: v["base"]["repo"]["full_name"].as_str().unwrap_or("").into(),
+        head_seen_at: String::new(),
     };
     if !valid_sha(&pr.head_sha) || !valid_sha(&pr.base_sha) {
         return Err("GitHub returned an invalid commit SHA.".into());

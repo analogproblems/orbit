@@ -320,6 +320,35 @@ export function SettingsPage() {
             </HStack>
             <SaveFeedback saveKey="trustedAuthors" />
           </VStack>
+          <VStack gap={2}>
+            <Selector
+              label="Blocking findings"
+              value={String(draft.blockingPriority ?? 1)}
+              isDisabled={pending("blockingPriority")}
+              onChange={(v) =>
+                void updateSettings({ blockingPriority: Number(v) })
+              }
+              options={[0, 1, 2, 3].map((n) => ({
+                value: String(n),
+                label: n === 0 ? "P0 only" : `P0 to P${n}`,
+              }))}
+              description="A review with a finding at these priorities asks for changes; with none, it is clean. Applies to reviews that finish after you change it."
+            />
+            <SaveFeedback saveKey="blockingPriority" />
+          </VStack>
+          <VStack gap={2}>
+            <Switch
+              label="Wait for pushes to settle"
+              labelPosition="start"
+              labelSpacing="spread"
+              width="100%"
+              value={draft.settlePushes ?? true}
+              isDisabled={pending("settlePushes")}
+              onChange={(settlePushes) => void updateSettings({ settlePushes })}
+              description="Review a new commit automatically only once it has stayed the latest for one poll interval, so a quick series of pushes gets one review."
+            />
+            <SaveFeedback saveKey="settlePushes" />
+          </VStack>
           <FormLayout>
             <VStack gap={2}>
               <Selector

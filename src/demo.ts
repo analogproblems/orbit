@@ -260,6 +260,16 @@ export function freshDemo(): Snapshot {
   return {
     prs,
     reviews: [review],
+    // The browser demo has no engine to derive these, so one loop is shown.
+    loopStates: [
+      {
+        prId: prs[1].id,
+        status: "needs_you",
+        reason: "Round limit reached.",
+        rounds: 4,
+        roundLimit: 4,
+      },
+    ],
     settings: {
       ...defaults,
       model: "demo-review-model",
@@ -270,6 +280,7 @@ export function freshDemo(): Snapshot {
         automatic: n === "orbit",
         setupCommand: "",
         networkAccess: false,
+        roundLimit: 4,
       })),
     },
     models: [

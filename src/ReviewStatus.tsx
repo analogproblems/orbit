@@ -16,7 +16,9 @@ export function ReviewStatus({
             ? "green"
             : status === "ready"
               ? "blue"
-              : status === "outdated" || status === "awaitingApproval"
+              : status === "outdated" ||
+                  status === "superseded" ||
+                  status === "awaitingApproval"
                 ? "orange"
                 : "default"
       }

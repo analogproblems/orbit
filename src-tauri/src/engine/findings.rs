@@ -255,8 +255,10 @@ impl Engine {
         if let Err(error) = result {
             let mut autopost = false;
             self.update(|s| {
+                let blocking_priority = s.settings.blocking_priority;
                 if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
                     autopost = r.end_extraction(Some(error)) && r.automatic;
+                    crate::review_loop::decide(r, blocking_priority);
                 }
             })
             .await;
