@@ -1,0 +1,309 @@
+use crate::{rpc::Rpc, storage, types::*};
+use serde_json::Value;
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
+use tokio::sync::Mutex;
+
+mod chat;
+mod connection;
+mod publish;
+mod queue;
+mod run;
+mod settings;
+mod worktrees;
+
+pub use settings::validate_checkout;
+
+#[cfg(test)]
+mod chat_tests;
+#[cfg(test)]
+mod connection_tests;
+#[cfg(test)]
+mod model_tests;
+#[cfg(test)]
+mod publish_tests;
+#[cfg(test)]
+mod queue_tests;
+#[cfg(test)]
+mod run_tests;
+#[cfg(test)]
+mod settings_tests;
+#[cfg(test)]
+mod state_tests;
+#[cfg(test)]
+mod test_support;
+#[cfg(test)]
+mod worktrees_tests;
+
+/// Orbit's review engine. Its methods are split by area: `connection` (Codex),
+/// `settings` (workspace settings and checkouts), `queue` (sync and scheduling),
+/// `run` (preparing and running reviews, Codex events), `chat` (follow-ups),
+/// `publish` (GitHub comments) and `worktrees` (cleanup).
+///
+/// # Locks
+///
+/// | Lock           | Protects                                                          |
+/// | -------------- | ----------------------------------------------------------------- |
+/// | `connect_lock` | One `connect` at a time.                                          |
+/// | `poll_lock`    | One sync at a time; `poll` skips a round rather than wait.        |
+/// | `publish_lock` | One publication at a time.                                        |
+/// | `cleanup_lock` | One worktree removal at a time.                                   |
+/// | `git_lock`     | Git commands against users' clones (fetch, worktree add/remove).  |
+/// | `rpc`          | The current Codex connection.                                     |
+/// | `state`        | The snapshot shown in the UI and saved to disk.                   |
+/// | `synced_repos` | Repositories that synced in the latest poll.                      |
+/// | `items`        | In-progress Codex items, keyed by `thread:item`.                  |
+/// | `preparing`    | Abort handles of running preparations. A `std` mutex: never held  |
+/// |                | across an `.await`.                                               |
+///
+/// When holding more than one, take them in the order of the table. Current
+/// nesting: `connect_lock` → `rpc` and `state`; `poll_lock` → `state` and
+/// `synced_repos` (one at a time); `publish_lock` → `state`; `cleanup_lock` →
+/// `git_lock` → `state`; `state` → `synced_repos` (`schedule`). `items` and
+/// `preparing` are only taken on their own.
+///
+/// Known exception: `clean_worktrees_with` briefly holds a `git_lock` try-lock
+/// guard while it try-locks `cleanup_lock`, the reverse of `cleanup_lock` →
+/// `git_lock`. Both are non-blocking `try_lock` calls, so it cannot deadlock.
+pub struct Engine {
+    pub state: Mutex<Snapshot>,
+    pub rpc: Mutex<Option<Arc<Rpc>>>,
+    root: PathBuf,
+    emit: Box<dyn Fn(&Snapshot) + Send + Sync>,
+    connect_lock: Mutex<()>,
+    poll_lock: Mutex<()>,
+    publish_lock: Mutex<()>,
+    git_lock: Mutex<()>,
+    items: Mutex<HashMap<String, Value>>,
+    /// State must be written to disk (and shown) on the next flush.
+    dirty: AtomicBool,
+    /// State only needs to be shown, e.g. streamed text not yet worth persisting.
+    changed: AtomicBool,
+    stopping: AtomicBool,
+    /// Repositories whose open PRs synced in the latest poll; autopilot only acts on these.
+    synced_repos: Mutex<HashSet<String>>,
+    /// Running preparations, so Stop can end a long fetch or checkout immediately.
+    preparing: std::sync::Mutex<HashMap<String, tokio::task::AbortHandle>>,
+    cleanup_lock: Mutex<()>,
+    _instance_lock: std::fs::File,
+}
+impl Engine {
+    pub fn new(
+        root: PathBuf,
+        emit: impl Fn(&Snapshot) + Send + Sync + 'static,
+    ) -> Result<Arc<Self>, String> {
+        std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+        let instance_lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(root.join("orbit.lock"))
+            .map_err(|e| e.to_string())?;
+        instance_lock
+            .try_lock()
+            .map_err(|_| "Orbit is already running for this workspace.".to_string())?;
+        let path = root.join("state.json");
+        let mut state: Snapshot = if path.exists() {
+            serde_json::from_slice(&std::fs::read(&path).map_err(|e| e.to_string())?).map_err(
+                |e| format!("Cannot read saved Orbit state; it has been left untouched: {e}"),
+            )?
+        } else {
+            Snapshot::default()
+        };
+        // Repository names and PR ids became case-insensitive. Older versions could
+        // save `a/b` and `A/B` as separate repositories, so merge those before
+        // validating: keep the first entry, automatic if either was.
+        let mut repositories: Vec<Repository> = vec![];
+        for repo in std::mem::take(&mut state.settings.repositories) {
+            match repositories
+                .iter_mut()
+                .find(|r| same_repo(&r.name, &repo.name))
+            {
+                Some(kept) => kept.automatic |= repo.automatic,
+                None => repositories.push(repo),
+            }
+        }
+        state.settings.repositories = repositories;
+        for p in state.prs.iter_mut().chain(state.history_prs.iter_mut()) {
+            p.id = p.id.to_ascii_lowercase();
+        }
+        let mut seen = HashSet::new();
+        state.prs.retain(|p| seen.insert(p.id.clone()));
+        state.history_prs.retain(|p| seen.insert(p.id.clone()));
+        state.settings.validate()?;
+        for r in &mut state.reviews {
+            r.pr_id = r.pr_id.to_ascii_lowercase();
+            r.sensitive = credential_kinds(&r.report);
+            if active(&r.status)
+                && !r.end_follow_up(Some(
+                    "Orbit restarted during the follow-up, so its answer may be incomplete.".into(),
+                ))
+            {
+                r.status = "cancelled".into();
+                r.error = Some(
+                    "Orbit restarted while this review was active. Start a new review to retry."
+                        .into(),
+                );
+            } else if r.status == "publishing" {
+                r.status = "ready".into();
+                r.error = Some(
+                    "Publication was interrupted. Retry publishing to reconcile the existing GitHub comment."
+                        .into(),
+                );
+            }
+        }
+        state.approvals.clear();
+        state.polling = false;
+        state.codex_ready = false;
+        state.model_catalog_ready = false;
+        state.model_configuration_error = None;
+        state.models.clear();
+        Ok(Arc::new(Self {
+            state: Mutex::new(state),
+            rpc: Mutex::new(None),
+            root,
+            emit: Box::new(emit),
+            connect_lock: Mutex::new(()),
+            poll_lock: Mutex::new(()),
+            publish_lock: Mutex::new(()),
+            git_lock: Mutex::new(()),
+            items: Mutex::new(HashMap::new()),
+            dirty: AtomicBool::new(true),
+            changed: AtomicBool::new(false),
+            stopping: AtomicBool::new(false),
+            synced_repos: Mutex::new(HashSet::new()),
+            preparing: std::sync::Mutex::new(HashMap::new()),
+            cleanup_lock: Mutex::new(()),
+            _instance_lock: instance_lock,
+        }))
+    }
+    pub async fn snapshot(&self) -> Snapshot {
+        self.state.lock().await.clone()
+    }
+    pub async fn update(&self, f: impl FnOnce(&mut Snapshot)) {
+        let mut s = self.state.lock().await;
+        f(&mut s);
+        self.dirty.store(true, Ordering::SeqCst);
+    }
+    /// Like `update`, for changes the UI should show but that need not survive
+    /// a restart on their own, such as streamed text before its item completes.
+    async fn update_live(&self, f: impl FnOnce(&mut Snapshot)) {
+        let mut s = self.state.lock().await;
+        f(&mut s);
+        self.changed.store(true, Ordering::SeqCst);
+    }
+    pub async fn flush(&self) -> Result<(), String> {
+        let mut s = self.state.lock().await;
+        if self.dirty.swap(false, Ordering::SeqCst) {
+            self.changed.store(false, Ordering::SeqCst);
+            if let Err(e) = self.persist(&s) {
+                self.dirty.store(true, Ordering::SeqCst);
+                s.settings.automatic = false;
+                s.codex_error = Some(format!(
+                    "Could not save local state; automation paused: {e}"
+                ));
+                (self.emit)(&s);
+                return Err(e);
+            }
+            (self.emit)(&s);
+        } else if self.changed.swap(false, Ordering::SeqCst) {
+            (self.emit)(&s);
+        }
+        Ok(())
+    }
+    fn persist(&self, s: &Snapshot) -> Result<(), String> {
+        let data = serde_json::to_vec(s).map_err(|e| e.to_string())?;
+        let temp = self.root.join("state.json.tmp");
+        use std::io::Write;
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).truncate(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temp).map_err(|e| e.to_string())?;
+        file.write_all(&data)
+            .and_then(|_| file.sync_all())
+            .map_err(|e| e.to_string())?;
+        std::fs::rename(temp, self.root.join("state.json")).map_err(|e| e.to_string())?;
+        // Make the rename itself durable.
+        #[cfg(unix)]
+        std::fs::File::open(&self.root)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    pub fn launch(self: &Arc<Self>) {
+        let e = self.clone();
+        tokio::spawn(async move {
+            let _ = e.connect().await;
+        });
+        let e = self.clone();
+        tokio::spawn(async move {
+            let _ = e.poll().await;
+            e.clean_worktrees().await;
+        });
+        let e = self.clone();
+        tokio::spawn(async move {
+            e.resume_cleanup().await;
+        });
+        let e = self.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_millis(200));
+            let mut last_poll = std::time::Instant::now();
+            while !e.stopping.load(Ordering::SeqCst) {
+                tick.tick().await;
+                if e.flush().await.is_err() {
+                    continue;
+                }
+                let (poll_seconds, codex_ready) = {
+                    let s = e.state.lock().await;
+                    (s.settings.poll_seconds, s.codex_ready)
+                };
+                if last_poll.elapsed().as_secs() >= poll_seconds {
+                    last_poll = std::time::Instant::now();
+                    let p = e.clone();
+                    tokio::spawn(async move {
+                        let _ = p.poll().await;
+                        p.clean_worktrees().await;
+                    });
+                }
+                if codex_ready {
+                    e.schedule().await;
+                }
+            }
+        });
+    }
+    pub async fn storage_usage(&self) -> Result<storage::StorageUsage, String> {
+        let snapshot = self.snapshot().await;
+        let root = self.root.clone();
+        tokio::task::spawn_blocking(move || storage::inspect(&root, &snapshot))
+            .await
+            .map_err(|e| e.to_string())
+    }
+    pub async fn export_report(&self, id: &str) -> Result<(String, String), String> {
+        storage::report(&self.snapshot().await, id)
+    }
+    pub async fn shutdown(&self) {
+        self.stopping.store(true, Ordering::SeqCst);
+        if let Some(rpc) = self.rpc.lock().await.as_ref() {
+            rpc.shutdown().await;
+        }
+        let _ = self.flush().await;
+    }
+}
+impl Drop for Engine {
+    fn drop(&mut self) {
+        // Explicitly release the lock: a concurrently spawned child may briefly
+        // inherit the descriptor between fork and exec, even with CLOEXEC.
+        let _ = self._instance_lock.unlock();
+    }
+}

@@ -108,7 +108,7 @@ Controllable app-server fixtures verify model migration, reconnect recovery, imm
 | Workflow UI                                             | `src/Inbox.tsx`, `src/Detail.tsx`, `src/Chat.tsx`, `src/Files.tsx`, `src/Repositories.tsx`, `src/Settings.tsx`, `src/Activity.tsx` |
 | Typed application state and native bridge               | `src/types.ts`, `src/store.ts`                                                                                                     |
 | Separate interactive demo                               | `src/demo.ts` and the demo adapter in `src/store.ts`                                                                               |
-| Queue, worktrees, orchestration, persistence            | `src-tauri/src/engine.rs`                                                                                                          |
+| Queue, worktrees, orchestration, persistence            | `src-tauri/src/engine/` (one file per area; see `engine/mod.rs`)                                                                   |
 | GitHub discovery, PR details, files, comments           | `src-tauri/src/github.rs`                                                                                                          |
 | Codex process and bidirectional RPC                     | `src-tauri/src/rpc.rs`                                                                                                             |
 | Storage inspection, ownership checks, report generation | `src-tauri/src/storage.rs`                                                                                                         |
