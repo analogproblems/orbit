@@ -216,3 +216,54 @@ async fn older_saved_reviews_load_without_findings() {
         .remove(0);
     assert!(r.findings.is_none() && r.verdict.is_none() && !r.extracting);
 }
+/// An automatic review with a credential-shaped report is held with a
+/// message when automatic publication runs, without any GitHub request.
+async fn automatic_extracting(e: &Arc<Engine>, worktree: &str) {
+    let report = format!("Found ghp_{} in the fixture.", "a1".repeat(18));
+    ready_for_autopost(e, &report, true).await;
+    e.update(|s| {
+        let r = &mut s.reviews[0];
+        r.status = "reviewing".into();
+        r.extracting = true;
+        r.worktree = Some(worktree.into());
+    })
+    .await;
+}
+async fn wait_for_publication_attempt(e: &Engine) -> Review {
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let r = e.snapshot().await.reviews[0].clone();
+            if r.error
+                .as_deref()
+                .is_some_and(|m| m.contains("Not published automatically"))
+            {
+                return r;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("automatic publication was not attempted")
+}
+#[tokio::test]
+async fn automatic_reviews_recovered_from_extraction_are_still_published() {
+    let (d, e, _) = running_engine().await;
+    automatic_extracting(&e, d.path().to_str().unwrap()).await;
+    e.event(json!({"method":"orbit/disconnected"})).await;
+    let r = wait_for_publication_attempt(&e).await;
+    assert_eq!(r.status, "ready");
+    assert!(r.findings.is_none());
+
+    let (d, e, _) = running_engine().await;
+    automatic_extracting(&e, d.path().to_str().unwrap()).await;
+    e.flush().await.unwrap();
+    drop(e);
+    let e = Engine::new(d.path().into(), |_| {}).unwrap();
+    assert!(e.snapshot().await.reviews[0]
+        .error
+        .as_deref()
+        .unwrap()
+        .contains("restarted during extraction"));
+    e.publish_recovered();
+    assert_eq!(wait_for_publication_attempt(&e).await.status, "ready");
+}

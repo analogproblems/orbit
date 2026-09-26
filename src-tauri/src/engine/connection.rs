@@ -167,7 +167,7 @@ impl Engine {
     }
     /// A dead connection's own disconnect event is dropped once it is replaced,
     /// so its reviews are ended before a new connection takes over.
-    pub(super) async fn retire_dead_connection(&self) {
+    pub(super) async fn retire_dead_connection(self: &Arc<Self>) {
         let dead = self
             .rpc
             .lock()
@@ -179,8 +179,9 @@ impl Engine {
         }
     }
     /// Ends everything that ran on a Codex connection that has gone away.
-    pub(super) async fn disconnected(&self) {
+    pub(super) async fn disconnected(self: &Arc<Self>) {
         self.items.lock().await.clear();
+        let mut recovered = vec![];
         self.update(|s| {
             s.codex_ready = false;
             if s.codex_error.is_none() {
@@ -188,16 +189,26 @@ impl Engine {
             }
             s.approvals.clear();
             for r in &mut s.reviews {
-                if active(&r.status)
-                    && !r.end_follow_up(Some("Codex disconnected during the follow-up.".into()))
-                    && !r.end_extraction(Some("Codex disconnected during extraction.".into()))
+                if !active(&r.status)
+                    || r.end_follow_up(Some("Codex disconnected during the follow-up.".into()))
                 {
+                    continue;
+                }
+                if r.end_extraction(Some("Codex disconnected during extraction.".into())) {
+                    // The report is complete, so an automatic review still publishes it.
+                    if r.automatic {
+                        recovered.push(r.id.clone());
+                    }
+                } else {
                     r.status = "failed".into();
                     r.error = Some("Codex disconnected. Start a new review to retry.".into());
                 }
             }
         })
         .await;
+        for id in recovered {
+            self.autopost(&id);
+        }
     }
     pub(super) async fn client(&self) -> Result<Arc<Rpc>, String> {
         self.rpc
