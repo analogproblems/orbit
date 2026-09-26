@@ -1,6 +1,7 @@
 import {
   defaults,
   selectionError,
+  type Finding,
   type Model,
   type ModelSelection,
   type Snapshot,
@@ -165,6 +166,30 @@ export const demoRepositories: RepositorySummary[] = (
 }));
 export const demoReport =
   "## Review findings\n\n### [P2] Preserve repository overrides when saving defaults\n\n`src/config/repositories.ts:48`\n\nSaving the global review configuration replaces the repository configuration object. A repository with its own model or environment setup loses those overrides the next time global settings are saved.\n\nMerge the updated defaults with the existing repository entries, and add a regression test that saves defaults after configuring an override.\n\n### [P2] Validate the workspace before enqueueing a review\n\n`src/reviews/queue.ts:72`\n\nA deleted or moved checkout still passes the current configuration check. The job enters the queue and fails during worktree creation without a useful recovery action.\n\nCheck that the configured directory is a Git repository before enqueueing, then show a link to repository settings when validation fails.\n\n---\nReviewed the configuration flow, queue behavior, and affected tests. These are illustrative findings in demo mode.";
+export function demoFindings(reviewId: string): Finding[] {
+  return [
+    {
+      id: `${reviewId}-0`,
+      title: "Preserve repository overrides when saving defaults",
+      priority: 2,
+      path: "src/config/repositories.ts",
+      startLine: 48,
+      endLine: 48,
+      body: "Saving the global review configuration replaces the repository configuration object, so per-repository overrides are lost. Merge the updated defaults with the existing entries and add a regression test.",
+      confidence: 0.8,
+    },
+    {
+      id: `${reviewId}-1`,
+      title: "Validate the workspace before enqueueing a review",
+      priority: 2,
+      path: "src/reviews/queue.ts",
+      startLine: 72,
+      endLine: 72,
+      body: "A deleted or moved checkout still passes the configuration check and fails later during worktree creation. Check the directory before enqueueing and link to repository settings on failure.",
+      confidence: 0.7,
+    },
+  ];
+}
 export function freshDemo(): Snapshot {
   const prs: PullRequest[] = data.map((d, i) => ({
     id: `acme/${d[0]}#${d[1]}`,
@@ -224,6 +249,11 @@ export function freshDemo(): Snapshot {
       { id: "demo-msg-3", role: "agent", text: demoReport, createdAt: ago(6) },
     ],
     report: demoReport,
+    findings: demoFindings("demo-completed"),
+    verdict: "changes_requested",
+    summary:
+      "Two defects in the new repository configuration flow; the rest of the change looks sound.",
+    testsNotRun: ["End-to-end tests (no browser in the review sandbox)"],
     automatic: false,
     isReview: true,
   };

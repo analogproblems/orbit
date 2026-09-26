@@ -1,4 +1,4 @@
-use crate::types::{active, Review, Snapshot};
+use crate::types::{active, Review, Snapshot, Verdict};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -232,9 +232,56 @@ pub fn report(snapshot: &Snapshot, review_id: &str) -> Result<(String, String), 
     if let Some(url) = &r.comment_url {
         body.push_str(&format!("Published comment: {url}\n\n"));
     }
+    body.push_str(&findings_section(r));
     body.push_str(&r.report);
     body.push('\n');
     Ok((name, body))
+}
+
+/// The verdict and a findings table, ahead of the Markdown report.
+fn findings_section(r: &Review) -> String {
+    let Some(findings) = &r.findings else {
+        return "Findings: unstructured run (not extracted).\n\n".into();
+    };
+    let cell = |text: &str| text.replace('|', "\\|").replace(['\r', '\n'], " ");
+    let mut out = format!(
+        "Verdict: {}\n\n",
+        match r.verdict {
+            Some(Verdict::Clean) => "clean",
+            Some(Verdict::ChangesRequested) => "changes requested",
+            None => "not reported",
+        }
+    );
+    if let Some(summary) = r.summary.as_deref().filter(|s| !s.trim().is_empty()) {
+        out.push_str(&format!("{}\n\n", summary.trim()));
+    }
+    if !findings.is_empty() {
+        out.push_str("| Priority | Location | Finding |\n| --- | --- | --- |\n");
+        for f in findings {
+            let lines = if f.start_line == f.end_line {
+                f.start_line.to_string()
+            } else {
+                format!("{}-{}", f.start_line, f.end_line)
+            };
+            let location = f
+                .path
+                .as_deref()
+                .map_or("(outside the repository)".into(), |p| {
+                    format!("`{}:{lines}`", cell(p))
+                });
+            out.push_str(&format!(
+                "| P{} | {location} | {} |\n",
+                f.priority,
+                cell(&f.title)
+            ));
+        }
+        out.push('\n');
+    }
+    if !r.tests_not_run.is_empty() {
+        out.push_str(&format!("Not run: {}\n\n", r.tests_not_run.join("; ")));
+    }
+    out.push_str("## Report\n\n");
+    out
 }
 
 pub fn select_report_path(
@@ -323,6 +370,47 @@ mod tests {
             .unwrap()
             .1
             .contains("Model: confirmed-report (confirmed) · Effort: high (confirmed)"));
+    }
+    #[test]
+    fn exports_the_verdict_and_a_findings_table() {
+        let mut s = snapshot();
+        assert!(report(&s, &s.reviews[0].id.clone())
+            .unwrap()
+            .1
+            .contains("Findings: unstructured run"));
+        let r = &mut s.reviews[0];
+        r.verdict = Some(Verdict::ChangesRequested);
+        r.summary = Some("Two defects.".into());
+        r.tests_not_run = vec!["cargo test".into()];
+        let finding = crate::types::Finding {
+            id: format!("{}-0", r.id),
+            title: "Escape | pipes\nand lines".into(),
+            priority: 1,
+            path: Some("src/a.rs".into()),
+            start_line: 4,
+            end_line: 9,
+            body: "Details.".into(),
+            confidence: 0.9,
+        };
+        let outside = crate::types::Finding {
+            path: None,
+            start_line: 2,
+            end_line: 2,
+            ..finding.clone()
+        };
+        r.findings = Some(vec![finding, outside]);
+        let body = report(&s, &s.reviews[0].id).unwrap().1;
+        assert!(
+            body.contains("Verdict: changes requested\n\nTwo defects."),
+            "{body}"
+        );
+        assert!(
+            body.contains("| P1 | `src/a.rs:4-9` | Escape \\| pipes and lines |"),
+            "{body}"
+        );
+        assert!(body.contains("| P1 | (outside the repository) |"), "{body}");
+        assert!(body.contains("Not run: cargo test"));
+        assert!(body.find("## Report").unwrap() < body.find("A useful report.").unwrap());
     }
     #[test]
     fn export_cancellation_and_write_failures_are_explicit() {

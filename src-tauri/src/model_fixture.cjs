@@ -70,7 +70,9 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
           const confirmed =
             m.method === "review/start"
               ? r.confirmedReviewSelection
-              : r.messages.at(-1)?.confirmedSelection;
+              : m.params.outputSchema
+                ? r.extractionSelection
+                : r.messages.at(-1)?.confirmedSelection;
           if (!confirmed?.model || !confirmed?.effort) {
             return process.stdout.write(
               JSON.stringify({

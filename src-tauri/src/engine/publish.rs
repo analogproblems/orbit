@@ -62,7 +62,7 @@ impl Engine {
                 "Only a completed review of the current head and base can be published.".into(),
             );
         }
-        let sensitive = credential_kinds(&r.report);
+        let sensitive = r.credential_scan();
         if automatic {
             if !(s.settings.automatic
                 && s.settings.auto_post

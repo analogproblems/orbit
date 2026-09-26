@@ -3,6 +3,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   freshDemo,
+  demoFindings,
   demoReport,
   demoRepositories,
   resolveDemoModelSelection,
@@ -135,6 +136,8 @@ function demoSchedule() {
           setTimeout(() => {
             r.status = "ready";
             r.report = demoReport;
+            r.findings = demoFindings(r.id);
+            r.verdict = "changes_requested";
             const pr = demo.prs.find((p) => p.id === r.prId);
             if (
               r.automatic &&

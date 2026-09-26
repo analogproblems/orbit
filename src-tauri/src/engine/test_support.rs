@@ -3,6 +3,7 @@ use crate::types::*;
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 pub(super) async fn running_engine() -> (tempfile::TempDir, Arc<Engine>, String) {
@@ -111,4 +112,17 @@ pub(super) fn trusted_pr() -> PullRequest {
     p.head_repo = p.repo.clone();
     p.author_association = "OWNER".into();
     p
+}
+pub(super) async fn wait_for_status(e: &Engine, status: &str) -> Review {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let r = e.snapshot().await.reviews[0].clone();
+            if r.status == status {
+                return r;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("Timed out waiting for status {status}"))
 }

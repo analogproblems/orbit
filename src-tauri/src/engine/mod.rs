@@ -13,6 +13,7 @@ use tokio::sync::Mutex;
 
 mod chat;
 mod connection;
+mod findings;
 mod publish;
 mod queue;
 mod run;
@@ -25,6 +26,8 @@ pub use settings::validate_checkout;
 mod chat_tests;
 #[cfg(test)]
 mod connection_tests;
+#[cfg(test)]
+mod findings_tests;
 #[cfg(test)]
 mod model_tests;
 #[cfg(test)]
@@ -141,11 +144,12 @@ impl Engine {
         state.settings.validate()?;
         for r in &mut state.reviews {
             r.pr_id = r.pr_id.to_ascii_lowercase();
-            r.sensitive = credential_kinds(&r.report);
+            r.sensitive = r.credential_scan();
             if active(&r.status)
                 && !r.end_follow_up(Some(
                     "Orbit restarted during the follow-up, so its answer may be incomplete.".into(),
                 ))
+                && !r.end_extraction(Some("Orbit restarted during extraction.".into()))
             {
                 r.status = "cancelled".into();
                 r.error = Some(

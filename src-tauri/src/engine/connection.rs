@@ -190,6 +190,7 @@ impl Engine {
             for r in &mut s.reviews {
                 if active(&r.status)
                     && !r.end_follow_up(Some("Codex disconnected during the follow-up.".into()))
+                    && !r.end_extraction(Some("Codex disconnected during extraction.".into()))
                 {
                     r.status = "failed".into();
                     r.error = Some("Codex disconnected. Start a new review to retry.".into());
