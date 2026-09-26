@@ -214,26 +214,35 @@ impl Engine {
     /// that has not started inference is stopped so the new head can be
     /// queued; one that has keeps running but is marked superseded, so it is
     /// not published automatically, and the new head is queued once it ends.
+    /// A follow-up chat on a finished round is not a run and keeps its round.
+    /// State is only marked for saving when a run was superseded, since this
+    /// runs on every scheduler tick.
     pub(super) async fn supersede_outdated_runs(self: &Arc<Self>) {
         let mut stop = vec![];
-        self.update(|s| {
+        {
+            let mut s = self.state.lock().await;
             let prs = s.prs.clone();
+            let mut changed = false;
             for r in s.reviews.iter_mut() {
                 let outdated = r.automatic
                     && !r.superseded
                     && active(&r.status)
+                    && r.before_follow_up.is_none()
                     && prs.iter().any(|p| {
                         p.id == r.pr_id && (p.head_sha != r.head_sha || p.base_sha != r.base_sha)
                     });
                 if outdated {
                     r.superseded = true;
+                    changed = true;
                     if matches!(r.status.as_str(), "queued" | "preparing") {
                         stop.push(r.id.clone());
                     }
                 }
             }
-        })
-        .await;
+            if changed {
+                self.dirty.store(true, Ordering::SeqCst);
+            }
+        }
         for id in stop {
             let _ = self.cancel(&id).await;
         }

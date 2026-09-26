@@ -84,6 +84,49 @@ async fn a_new_head_replaces_queued_runs_and_supersedes_running_ones() {
     assert_eq!(s.reviews.len(), 3);
 }
 #[tokio::test]
+async fn a_follow_up_on_a_finished_round_keeps_its_round() {
+    let (_d, e) = autopilot_engine(trusted_pr()).await;
+    e.update(|s| s.settings.repositories[0].round_limit = 1)
+        .await;
+    let old = "c".repeat(40);
+    let id = automatic(&e, &old, "posted").await;
+    let pr = trusted_pr();
+    let allows = |s: &Snapshot| crate::review_loop::allows_new_round(&pr, s);
+    assert!(!allows(&e.snapshot().await));
+    // A follow-up chat makes the finished round active again for a while.
+    e.update(|s| {
+        let r = &mut s.reviews[0];
+        r.before_follow_up = Some(Outcome {
+            status: r.status.clone(),
+            error: None,
+        });
+        r.status = "reviewing".into();
+    })
+    .await;
+    e.supersede_outdated_runs().await;
+    e.update(|s| {
+        let r = s.reviews.iter_mut().find(|r| r.id == id).unwrap();
+        r.status = r.before_follow_up.take().unwrap().status;
+    })
+    .await;
+    let s = e.snapshot().await;
+    assert!(!s.reviews[0].superseded);
+    assert!(!allows(&s));
+}
+#[tokio::test]
+async fn an_unchanged_scheduling_pass_does_not_save_state() {
+    let (_d, e) = autopilot_engine(trusted_pr()).await;
+    e.update(|s| s.settings.automatic = false).await;
+    e.flush().await.unwrap();
+    e.schedule().await;
+    assert!(!e.dirty.load(std::sync::atomic::Ordering::SeqCst));
+    // Superseding a run does need saving.
+    automatic(&e, &"c".repeat(40), "reviewing").await;
+    e.flush().await.unwrap();
+    e.supersede_outdated_runs().await;
+    assert!(e.dirty.load(std::sync::atomic::Ordering::SeqCst));
+}
+#[tokio::test]
 async fn superseded_runs_are_not_published_automatically() {
     let (_d, e, id) = running_engine().await;
     ready_for_autopost(&e, "Report", true).await;
