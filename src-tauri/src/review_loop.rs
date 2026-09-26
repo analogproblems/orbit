@@ -276,14 +276,18 @@ pub struct WantedStatus {
     pub status: CommitStatus,
 }
 impl WantedStatus {
+    fn is(&self, c: &Option<CommitStatus>) -> bool {
+        c.as_ref().is_some_and(|c| {
+            c.state == self.status.state && c.description == self.status.description
+        })
+    }
+    /// Whether GitHub refused exactly this status last time.
+    pub fn refused_by(&self, check: &CommitCheck) -> bool {
+        self.is(&check.refused)
+    }
     /// Whether GitHub already shows it, or already refused it.
     pub fn settled_by(&self, check: &CommitCheck) -> bool {
-        let same = |c: &Option<CommitStatus>| {
-            c.as_ref().is_some_and(|c| {
-                c.state == self.status.state && c.description == self.status.description
-            })
-        };
-        same(&check.accepted) || same(&check.refused)
+        self.is(&check.accepted) || self.refused_by(check)
     }
 }
 pub fn same_commit(repo: &str, sha: &str, other_repo: &str, other_sha: &str) -> bool {

@@ -3,7 +3,11 @@ use super::Engine;
 #[cfg(not(test))]
 use crate::github;
 use crate::types::*;
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{atomic::Ordering, Arc},
+};
 
 /// Sends one commit status to GitHub: repository, commit and status.
 pub(super) type StatusSender = Arc<
@@ -33,8 +37,27 @@ impl Engine {
     pub(super) async fn sync_commit_statuses(self: &Arc<Self>) {
         use crate::review_loop::{same_commit, wanted_commit_checks, WantedStatus};
         let wanted: Vec<WantedStatus> = {
-            let s = self.state.lock().await;
-            wanted_commit_checks(&s)
+            let mut s = self.state.lock().await;
+            let wanted = wanted_commit_checks(&s);
+            // A refusal only holds while the same status is wanted. Once the
+            // wanted status moves on, even to what GitHub already shows, it is
+            // forgotten, so a later return to the refused status is sent again.
+            let mut changed = false;
+            for w in &wanted {
+                for c in s.commit_checks.iter_mut() {
+                    if same_commit(&c.repo, &c.sha, &w.repo, &w.sha)
+                        && c.refused.is_some()
+                        && !w.refused_by(c)
+                    {
+                        c.refused = None;
+                        changed = true;
+                    }
+                }
+            }
+            if changed {
+                self.dirty.store(true, Ordering::SeqCst);
+            }
+            wanted
                 .into_iter()
                 .filter(|w| {
                     !s.commit_checks

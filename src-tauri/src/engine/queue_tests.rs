@@ -403,3 +403,33 @@ async fn a_round_that_finishes_before_a_push_still_closes_its_check() {
         )
     );
 }
+#[tokio::test]
+async fn a_refusal_is_forgotten_once_the_wanted_status_moves_on() {
+    let (_d, e) = autopilot_engine(trusted_pr()).await;
+    e.update(|s| s.settings.auto_post = true).await;
+    let refuse = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sent = recording_sender(&e, refuse.clone(), Default::default());
+    let id = automatic(&e, &trusted_pr().head_sha, "reviewing").await;
+    let approval = |id: String| Approval {
+        id: 1.into(),
+        review_id: id,
+        method: "item/commandExecution/requestApproval".into(),
+        params: serde_json::Value::Null,
+    };
+    sync(&e).await;
+    // An approval's error status is refused while GitHub is failing.
+    refuse.store(true, std::sync::atomic::Ordering::SeqCst);
+    e.update(|s| s.approvals.push(approval(id.clone()))).await;
+    sync(&e).await;
+    // GitHub recovers and the approval is answered: pending is already shown.
+    refuse.store(false, std::sync::atomic::Ordering::SeqCst);
+    e.update(|s| s.approvals.clear()).await;
+    sync(&e).await;
+    assert!(e.snapshot().await.commit_checks[0].refused.is_none());
+    // A second approval in the same round is sent again.
+    e.update(|s| s.approvals.push(approval(id.clone()))).await;
+    sync(&e).await;
+    assert_eq!(states(&sent), ["pending", "error", "error"]);
+    let s = e.snapshot().await;
+    assert_eq!(s.commit_checks[0].accepted.as_ref().unwrap().state, "error");
+}
