@@ -80,6 +80,18 @@ impl Drop for TerminateOnDrop {
         }
     }
 }
+#[cfg(test)]
+tokio::task_local! {
+    /// A stand-in for `gh` in tests, so no test reaches GitHub.
+    pub static GH: std::path::PathBuf;
+}
+fn gh() -> String {
+    #[cfg(test)]
+    if let Ok(path) = GH.try_with(|p| p.to_string_lossy().into_owned()) {
+        return path;
+    }
+    "gh".into()
+}
 pub async fn api(
     endpoint: &str,
     method: &str,
@@ -100,7 +112,7 @@ pub async fn api(
     if body.is_some() {
         args.extend(["--input".into(), "-".into()]);
     }
-    let out = run("gh", &args, None, body.map(|v| v.to_string())).await?;
+    let out = run(&gh(), &args, None, body.map(|v| v.to_string())).await?;
     serde_json::from_str(&out).map_err(|e| format!("Invalid GitHub response: {e}"))
 }
 pub async fn user() -> Result<String, String> {
@@ -295,37 +307,56 @@ pub async fn comments(pr: &PullRequest, since: &str) -> Result<Vec<Value>, Strin
     }
     Ok(all)
 }
-pub async fn existing_comment(pr: &PullRequest, r: &Review) -> Result<Option<String>, String> {
-    let marker = format!("<!-- orbit-review:{} -->", r.id);
-    // Resolve an uncertain previous POST by looking for our stable marker before retrying.
+/// A comment or review with a body containing `marker`, by its URL and ID.
+fn find_marker(items: &[Value], marker: &str) -> Result<Option<(String, u64)>, String> {
+    let Some(item) = items
+        .iter()
+        .find(|c| c["body"].as_str().is_some_and(|b| b.contains(marker)))
+    else {
+        return Ok(None);
+    };
+    let url = item["html_url"].as_str().ok_or("Missing comment URL")?;
+    Ok(Some((url.to_string(), item["id"].as_u64().unwrap_or(0))))
+}
+/// Pages through a list looking for Orbit's marker, up to 10,000 items.
+async fn search_marker(endpoint: &str, marker: &str) -> Result<Option<(String, u64)>, String> {
     for page in 1..=100 {
         let v = api(
-            &format!("repos/{}/issues/{}/comments", pr.repo, pr.number),
+            endpoint,
             "GET",
             &[("per_page", "100".into()), ("page", page.to_string())],
             None,
         )
         .await?;
-        let comments = v.as_array().ok_or("Invalid comment list")?;
-        for c in comments {
-            if c["body"].as_str().is_some_and(|b| b.contains(&marker)) {
-                return c["html_url"]
-                    .as_str()
-                    .map(|url| Some(url.to_string()))
-                    .ok_or("Missing comment URL".into());
-            }
+        let items = v.as_array().ok_or("Invalid comment list")?;
+        if let Some(found) = find_marker(items, marker)? {
+            return Ok(Some(found));
         }
-        if comments.len() < 100 {
-            break;
-        }
-        if page == 100 {
-            return Err("Too many comments to safely check for duplicate publication.".into());
+        if items.len() < 100 {
+            return Ok(None);
         }
     }
-    Ok(None)
+    Err("Too many comments to safely check for duplicate publication.".into())
+}
+/// Where an earlier, uncertain attempt published the review, if it did: a PR
+/// review (with its ID) or an issue comment (ID None).
+pub async fn existing_publication(
+    pr: &PullRequest,
+    r: &Review,
+) -> Result<Option<(String, Option<u64>)>, String> {
+    validate_repo(&pr.repo)?;
+    let marker = format!("<!-- orbit-review:{} -->", r.id);
+    let reviews = format!("repos/{}/pulls/{}/reviews", pr.repo, pr.number);
+    if let Some((url, id)) = search_marker(&reviews, &marker).await? {
+        return Ok(Some((url, Some(id))));
+    }
+    let comments = format!("repos/{}/issues/{}/comments", pr.repo, pr.number);
+    Ok(search_marker(&comments, &marker)
+        .await?
+        .map(|(url, _)| (url, None)))
 }
 /// A hidden line with Orbit's verdict that agents can read from the comment.
-fn verdict_marker(r: &Review, round: Option<u32>) -> String {
+pub(crate) fn verdict_marker(r: &Review, round: Option<u32>) -> String {
     let Some(verdict) = r.orbit_verdict else {
         return String::new();
     };
@@ -369,6 +400,59 @@ pub async fn publish(pr: &PullRequest, r: &Review, round: Option<u32>) -> Result
         .as_str()
         .map(str::to_owned)
         .ok_or("GitHub did not return a comment URL.".into())
+}
+/// Posts a PR review of `sha` and returns its URL and ID. The event is always
+/// COMMENT: GitHub refuses approvals from the PR's author, and the verdict is
+/// in the commit status.
+pub async fn create_review(
+    pr: &PullRequest,
+    sha: &str,
+    body: &str,
+    comments: &[Value],
+) -> Result<(String, u64), String> {
+    validate_repo(&pr.repo)?;
+    let v = api(
+        &format!("repos/{}/pulls/{}/reviews", pr.repo, pr.number),
+        "POST",
+        &[],
+        Some(json!({"commit_id": sha, "event": "COMMENT", "body": body, "comments": comments})),
+    )
+    .await?;
+    let url = v["html_url"]
+        .as_str()
+        .ok_or("GitHub did not return a review URL.")?;
+    let id = v["id"]
+        .as_u64()
+        .ok_or("GitHub did not return a review ID.")?;
+    Ok((url.to_string(), id))
+}
+/// Whether GitHub refused a request as unprocessable, which for a review means
+/// it posted nothing, usually because a comment targets a line outside the diff.
+pub fn unprocessable(error: &str) -> bool {
+    error.contains("HTTP 422")
+}
+/// The inline comments of one review, up to 3,000.
+pub async fn review_comments(pr: &PullRequest, review_id: u64) -> Result<Vec<Value>, String> {
+    validate_repo(&pr.repo)?;
+    let mut all = vec![];
+    for page in 1..=30 {
+        let v = api(
+            &format!(
+                "repos/{}/pulls/{}/reviews/{review_id}/comments",
+                pr.repo, pr.number
+            ),
+            "GET",
+            &[("per_page", "100".into()), ("page", page.to_string())],
+            None,
+        )
+        .await?;
+        let items = v.as_array().ok_or("Invalid comment list")?;
+        all.extend(items.iter().cloned());
+        if items.len() < 100 {
+            break;
+        }
+    }
+    Ok(all)
 }
 /// Sets the `orbit/review` status on a commit.
 pub async fn set_status(repo: &str, sha: &str, status: &CommitStatus) -> Result<(), String> {
@@ -467,6 +551,21 @@ mod tests {
         r.orbit_verdict = Some(Verdict::Clean);
         r.blocking = Some(0);
         assert!(comment_body(&r, None).contains("<!-- orbit-verdict: clean blocking=0 -->"));
+    }
+    #[test]
+    fn finds_orbits_marker_in_reviews_and_comments() {
+        let marker = "<!-- orbit-review:rid -->";
+        let items = json!([
+            {"id": 1, "body": null, "html_url": "https://github.com/me/app/pull/7#pullrequestreview-1"},
+            {"id": 2, "body": "<!-- orbit-review:other -->", "html_url": "u2"},
+            {"id": 3, "body": format!("{marker}\n## Orbit"), "html_url": "u3"}
+        ]);
+        let items = items.as_array().unwrap();
+        assert_eq!(find_marker(items, marker).unwrap(), Some(("u3".into(), 3)));
+        assert_eq!(find_marker(&items[..2], marker).unwrap(), None);
+        assert!(find_marker(&[json!({"id": 4, "body": marker})], marker).is_err());
+        assert!(unprocessable("gh: Unprocessable Entity (HTTP 422)"));
+        assert!(!unprocessable("gh: Bad Gateway (HTTP 502)"));
     }
     #[tokio::test]
     async fn lists_up_to_exactly_a_thousand_items() {

@@ -14,6 +14,7 @@ use tokio::sync::Mutex;
 mod chat;
 mod connection;
 mod findings;
+mod inline;
 mod publish;
 mod queue;
 mod rounds;
@@ -30,6 +31,8 @@ mod chat_tests;
 mod connection_tests;
 #[cfg(test)]
 mod findings_tests;
+#[cfg(test)]
+mod inline_tests;
 #[cfg(test)]
 mod model_tests;
 #[cfg(test)]
