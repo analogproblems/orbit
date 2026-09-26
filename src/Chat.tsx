@@ -323,7 +323,7 @@ export function Chat({
               </ChatMessage>
             ),
           )}
-          <Findings review={review} />
+          <Findings review={review} onOpenReview={onHistory} />
           {running && (
             <ChatSystemMessage>
               <Spinner

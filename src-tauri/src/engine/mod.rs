@@ -16,6 +16,7 @@ mod connection;
 mod findings;
 mod publish;
 mod queue;
+mod rounds;
 mod run;
 mod settings;
 mod worktrees;
@@ -34,6 +35,8 @@ mod model_tests;
 mod publish_tests;
 #[cfg(test)]
 mod queue_tests;
+#[cfg(test)]
+mod rounds_tests;
 #[cfg(test)]
 mod run_tests;
 #[cfg(test)]

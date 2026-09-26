@@ -75,8 +75,38 @@ export interface Review {
   testsNotRun?: string[];
   /** The findings-extraction turn is running. */
   extracting?: boolean;
+  /** The earlier round a re-review started from; absent for a first review. */
+  previousRound?: PreviousRound | null;
+  /** What the reviewer decided about each finding in `previousRound`. */
+  priorFindings?: PriorFinding[];
 }
 export type Verdict = "clean" | "changes_requested";
+export interface PreviousRound {
+  reviewId: string;
+  headSha: string;
+  verdict: Verdict | null;
+  /** Each keeps the ID of the review that first reported it. */
+  findings: Finding[];
+  commentsIncluded: number;
+  commentsOmitted: number;
+}
+export type PriorStatus =
+  "fixed" | "still_open" | "declined_accepted" | "declined_disputed";
+export interface PriorFinding {
+  id: string;
+  status: PriorStatus;
+  note: string;
+}
+export const priorStatusLabels: Record<PriorStatus, string> = {
+  fixed: "fixed",
+  still_open: "still open",
+  declined_accepted: "declined (accepted)",
+  declined_disputed: "declined (disputed)",
+};
+/** The review that first reported a finding: its ID is `{reviewId}-{index}`. */
+export function findingReviewId(f: Finding) {
+  return f.id.slice(0, f.id.lastIndexOf("-"));
+}
 export interface Finding extends Record<string, unknown> {
   id: string;
   title: string;

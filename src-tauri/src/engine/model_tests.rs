@@ -1023,8 +1023,7 @@ async fn extraction_pins_the_review_selection_and_saves_confirmation_before_infe
     assert!(r.extracting && r.status == "reviewing" && r.error.is_none());
     assert_eq!(r.turn_id.as_deref(), Some("fixture-turn"));
     assert_eq!(r.extraction_selection.unwrap().model, "model-a");
-    let text =
-        json!({"verdict":"clean","summary":"Nothing to fix.","findings":[],"testsNotRun":[]});
+    let text = json!({"verdict":"clean","summary":"Nothing to fix.","findings":[],"testsNotRun":[],"priorFindings":[]});
     e.event(json!({"method":"item/completed","params":{"threadId":"fixture-thread","turnId":"fixture-turn","item":{"id":"j","type":"agentMessage","text":text.to_string()}}})).await;
     e.event(json!({"method":"turn/completed","params":{"threadId":"fixture-thread","turn":{"id":"fixture-turn","status":"completed"}}})).await;
     let r = e.snapshot().await.reviews.remove(0);
@@ -1055,4 +1054,32 @@ async fn extraction_selection_mismatch_stops_before_inference_and_keeps_the_repo
         "{error}"
     );
     rpc.shutdown().await;
+}
+#[tokio::test]
+async fn first_reviews_target_the_base_and_re_reviews_carry_custom_instructions() {
+    for prompt in [None, Some("Review against base with the previous round.")] {
+        let (d, e, rpc, id) = fixture().await;
+        e.update(|s| s.reviews[0].review_prompt = prompt.map(str::to_owned))
+            .await;
+        e.start_review_inference(&id, &rpc, d.path(), false)
+            .await
+            .unwrap();
+        let calls = requests(&rpc).await;
+        let thread = &calls[0]["params"];
+        let review = &calls[1];
+        assert_eq!(review["method"], "review/start");
+        // The thread is created exactly as for a first review either way.
+        assert!(thread["developerInstructions"]
+            .as_str()
+            .unwrap()
+            .starts_with("You are a pull request reviewer."));
+        let base = e.snapshot().await.reviews[0].base_sha.clone();
+        let expected = match prompt {
+            None => json!({"type":"baseBranch","branch":base}),
+            Some(p) => json!({"type":"custom","instructions":p}),
+        };
+        assert_eq!(review["params"]["target"], expected);
+        assert_eq!(review["params"].as_object().unwrap().len(), 3, "{review}");
+        rpc.shutdown().await;
+    }
 }

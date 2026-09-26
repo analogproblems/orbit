@@ -269,6 +269,31 @@ pub async fn files(repo: &str, number: u64) -> Result<Value, String> {
     }
     Ok(json!(files))
 }
+/// The PR's conversation comments updated at or after `since`, oldest first,
+/// up to 1,000.
+pub async fn comments(pr: &PullRequest, since: &str) -> Result<Vec<Value>, String> {
+    validate_repo(&pr.repo)?;
+    let mut all = vec![];
+    for page in 1..=10 {
+        let v = api(
+            &format!("repos/{}/issues/{}/comments", pr.repo, pr.number),
+            "GET",
+            &[
+                ("since", since.to_string()),
+                ("per_page", "100".into()),
+                ("page", page.to_string()),
+            ],
+            None,
+        )
+        .await?;
+        let comments = v.as_array().ok_or("Invalid comment list")?;
+        all.extend(comments.iter().cloned());
+        if comments.len() < 100 {
+            break;
+        }
+    }
+    Ok(all)
+}
 pub async fn existing_comment(pr: &PullRequest, r: &Review) -> Result<Option<String>, String> {
     let marker = format!("<!-- orbit-review:{} -->", r.id);
     // Resolve an uncertain previous POST by looking for our stable marker before retrying.
