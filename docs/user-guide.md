@@ -229,14 +229,14 @@ While automatic publication is on, Orbit also shows each automatic round's resul
 
 ### What needs you
 
-When something can only move forward with you, the sidebar shows **Needs you** with a count, and **Review activity** lists each item at the top with its reason. Selecting an item opens where it is resolved: the review's chat, the PR, **Repositories**, or **Settings**. An item appears when:
+When something can only move forward with you, the sidebar shows **Needs you** with a count, and **Review activity** lists each item at the top with its reason. Selecting an item opens where it is resolved: the review's chat, the PR, **Repositories**, or **Settings**. An approval item opens that exact request. An item appears when:
 
 - a review is waiting for your approval;
 - an automatic report was held instead of published, with the reason;
 - an automatic review failed, or was interrupted by a restart;
 - the loop needs you for another reason from the list above;
 - Autopilot was turned off because Orbit could not save its state (turn Autopilot back on once saving works);
-- a repository has failed to sync 3 times in a row.
+- a repository has failed to sync 3 times in a row, or Orbit could not sync with GitHub at all 3 times in a row (for example, when the GitHub sign-in expired).
 
 An item disappears once it is resolved. A stopped loop lists only its approvals, since you have already taken it over.
 

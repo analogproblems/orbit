@@ -25,6 +25,7 @@ fn item(
         kind,
         pr_id: pr_id.map(str::to_owned),
         review_id: review_id.map(str::to_owned),
+        approval_id: None,
         repo: None,
         reason,
     }
@@ -104,6 +105,19 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
             ));
         }
     }
+    if s.poll_failures >= SYNC_FAILURES {
+        out.push(item(
+            "sync:github".into(),
+            AttentionKind::SyncFailing,
+            None,
+            None,
+            format!(
+                "Orbit could not sync with GitHub {} times in a row: {}",
+                s.poll_failures,
+                s.github_error.as_deref().unwrap_or("unknown error")
+            ),
+        ));
+    }
     for f in s.sync_failures.iter().filter(|f| f.count >= SYNC_FAILURES) {
         out.push(Attention {
             repo: Some(f.repo.clone()),
@@ -125,13 +139,16 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
             .iter()
             .find(|r| r.id == a.review_id)
             .map(|r| r.pr_id.as_str());
-        out.push(item(
-            format!("approval:{}:{}", a.review_id, a.id),
-            AttentionKind::Approval,
-            pr_id,
-            Some(&a.review_id),
-            approval_reason(&a.method).into(),
-        ));
+        out.push(Attention {
+            approval_id: Some(a.id.clone()),
+            ..item(
+                format!("approval:{}:{}", a.review_id, a.id),
+                AttentionKind::Approval,
+                pr_id,
+                Some(&a.review_id),
+                approval_reason(&a.method).into(),
+            )
+        });
     }
     for pr in &s.prs {
         let state = crate::review_loop::state(s, pr);

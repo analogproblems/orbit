@@ -51,6 +51,7 @@ fn a_pending_approval_is_one_item_until_answered() {
     assert_eq!(all[0].key, "approval:run-1:7");
     assert_eq!(all[0].pr_id.as_deref(), Some("a/b#1"));
     assert_eq!(all[0].reason, "The reviewer asks to run a command.");
+    assert_eq!(all[0].approval_id, Some(json!(7)));
     s.approvals.clear();
     assert!(items(&s).is_empty());
 }
@@ -172,4 +173,20 @@ fn the_shown_snapshot_carries_items_that_are_never_saved() {
     let back: Snapshot = serde_json::from_str(&serde_json::to_string(&shown).unwrap()).unwrap();
     assert!(back.attention.is_empty());
     assert_eq!(back.state_write_error.as_deref(), Some("disk full"));
+}
+#[test]
+fn github_needs_you_after_three_failed_polls_in_a_row() {
+    let (mut s, _) = snapshot();
+    s.github_error = Some("HTTP 401: Bad credentials".into());
+    s.poll_failures = 2;
+    assert!(items(&s).is_empty());
+    s.poll_failures = 3;
+    let all = items(&s);
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].key, "sync:github");
+    assert_eq!(all[0].repo, None);
+    assert_eq!(
+        all[0].reason,
+        "Orbit could not sync with GitHub 3 times in a row: HTTP 401: Bad credentials"
+    );
 }

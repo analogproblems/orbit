@@ -159,6 +159,53 @@ describe("PR review regressions", () => {
     },
   );
 
+  it("opens the approval of the item chosen, not the oldest one", async () => {
+    const second = {
+      ...structuredClone(snapshot.reviews[0]),
+      id: "second-review",
+      prId: snapshot.prs[2].id,
+      status: "awaitingApproval" as const,
+    };
+    snapshot.reviews.push(second);
+    const request = (reviewId: string, id: string, reason: string) => ({
+      id,
+      reviewId,
+      method: "item/commandExecution/requestApproval",
+      params: { reason },
+    });
+    snapshot.approvals = [
+      request(snapshot.reviews[0].id, "approval-1", "Run the first check"),
+      request(second.id, "approval-2", "Run the second check"),
+    ];
+    snapshot.attention = snapshot.approvals.map((a, i) => ({
+      key: `approval:${a.reviewId}:${a.id}`,
+      kind: "approval" as const,
+      prId: [snapshot.prs[0].id, snapshot.prs[2].id][i],
+      reviewId: a.reviewId,
+      approvalId: a.id,
+      repo: null,
+      reason: `Request ${i + 1}`,
+    }));
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Review activity" }));
+    await user().click(await screen.findByText("Request 2"));
+    const dialog = screen.getByRole("dialog", {
+      name: "Codex needs your approval",
+    });
+    expect(within(dialog).getByText("Run the second check")).toBeTruthy();
+    await user().click(
+      within(dialog).getByRole("button", { name: "Approve once" }),
+    );
+    expect(invoke).toHaveBeenCalledWith("answer_approval", {
+      id: "approval-2",
+      accept: true,
+    });
+    expect(invoke).not.toHaveBeenCalledWith("answer_approval", {
+      id: "approval-1",
+      accept: true,
+    });
+  });
+
   it("keeps export, publication links, and stop usable without PR metadata", async () => {
     snapshot.prs = [];
     snapshot.historyPrs = [];

@@ -84,8 +84,12 @@ impl Engine {
         }
         self.update(|s| {
             s.polling = false;
-            if let Err(e) = &result {
-                s.github_error = Some(e.clone());
+            match &result {
+                Ok(()) => s.poll_failures = 0,
+                Err(e) => {
+                    s.github_error = Some(e.clone());
+                    s.poll_failures += 1;
+                }
             }
         })
         .await;

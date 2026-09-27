@@ -267,6 +267,8 @@ export interface Attention {
   kind: AttentionKind;
   prId: string | null;
   reviewId: string | null;
+  /** The request to answer, for an approval. */
+  approvalId: string | number | null;
   repo: string | null;
   reason: string;
 }

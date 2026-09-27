@@ -89,6 +89,11 @@ export default function App() {
   const [focusSearch, setFocusSearch] = useState(0);
   const [busy, setBusy] = useState(false);
   const [approvalOpen, setApprovalOpen] = useState(false);
+  // The request the dialog was opened for, so it never shows another one.
+  const [openedApproval, setOpenedApproval] = useState<{
+    reviewId: string;
+    id: string | number;
+  } | null>(null);
   const [answeringApproval, setAnsweringApproval] = useState(false);
   const [approvalError, setApprovalError] = useState<{
     id: string | number;
@@ -149,7 +154,19 @@ export default function App() {
     !!publishRun &&
     !!publishPr &&
     canPublish(publishRun, publishTarget(s, publishPr));
-  const approval = s.approvals[0];
+  // The banner offers the request of the review on screen, else the oldest.
+  const offeredApproval =
+    s.approvals.find((a) => page === "inbox" && a.reviewId === review?.id) ??
+    s.approvals[0];
+  const approval = s.approvals.find(
+    (a) =>
+      a.reviewId === openedApproval?.reviewId && a.id === openedApproval?.id,
+  );
+  const openApproval = (reviewId: string, id: string | number) => {
+    setOpenedApproval({ reviewId, id });
+    setApprovalError(null);
+    setApprovalOpen(true);
+  };
   const needsYou = s.attention?.length ?? 0;
   const choose = (p: PullRequest, r?: Review) => {
     setSelected(p.id);
@@ -363,18 +380,24 @@ export default function App() {
                     container="section"
                   />
                 )}
-                {approval && (
+                {offeredApproval && (
                   <Banner
                     status="warning"
-                    title="A review needs your approval to continue."
+                    title={
+                      s.approvals.length > 1
+                        ? `${s.approvals.length} requests need your approval.`
+                        : "A review needs your approval to continue."
+                    }
                     container="section"
                     endContent={
                       <Button
                         label="Review request"
-                        onClick={() => {
-                          setApprovalError(null);
-                          setApprovalOpen(true);
-                        }}
+                        onClick={() =>
+                          openApproval(
+                            offeredApproval.reviewId,
+                            offeredApproval.id,
+                          )
+                        }
                       />
                     }
                   />
@@ -446,6 +469,7 @@ export default function App() {
                       onChoose={choose}
                       onRepositories={() => setPage("repositories")}
                       onSettings={() => setPage("settings")}
+                      onApproval={openApproval}
                     />
                   ) : page === "repositories" ? (
                     <Repositories />

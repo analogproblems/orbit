@@ -30,21 +30,31 @@ export function Activity({
   onChoose,
   onRepositories,
   onSettings,
+  onApproval,
 }: {
   onChoose: (p: PullRequest, r?: Review) => void;
   onRepositories: () => void;
   onSettings: () => void;
+  onApproval: (reviewId: string, id: string | number) => void;
 }) {
   const { snapshot: s, action } = useOrbit();
   const knownPrs = [...s.prs, ...(s.historyPrs ?? [])];
   const attention = s.attention ?? [];
   /** Where each item is resolved: its review, its PR, or a settings page. */
   const open = (a: Attention) => {
-    if (a.kind === "sync_failing") return onRepositories;
-    if (a.kind === "autopilot_paused") return onSettings;
+    if (a.kind === "sync_failing" && a.repo) return onRepositories;
+    if (a.kind === "autopilot_paused" || a.kind === "sync_failing")
+      return onSettings;
     const p = knownPrs.find((p) => p.id === a.prId);
-    if (!p) return undefined;
     const r = s.reviews.find((r) => r.id === a.reviewId);
+    if (a.kind === "approval" && r && a.approvalId != null) {
+      const id = a.approvalId;
+      return () => {
+        if (p) onChoose(p, r);
+        onApproval(r.id, id);
+      };
+    }
+    if (!p) return undefined;
     return () => onChoose(p, r);
   };
   const metrics: [

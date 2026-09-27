@@ -645,6 +645,9 @@ pub struct Snapshot {
     pub loop_states: Vec<LoopState>,
     /// Repositories whose latest syncs failed, with how many in a row.
     pub sync_failures: Vec<SyncFailure>,
+    /// Polls in a row that failed before any repository could sync, such as
+    /// when GitHub rejects the credential. The error is in `github_error`.
+    pub poll_failures: u32,
     /// Why saving local state failed, when that turned autopilot off.
     pub state_write_error: Option<String>,
     /// Everything waiting on the developer. Derived like `loop_states`.
@@ -677,6 +680,8 @@ pub struct Attention {
     pub kind: AttentionKind,
     pub pr_id: Option<String>,
     pub review_id: Option<String>,
+    /// The request to answer, for an approval.
+    pub approval_id: Option<Value>,
     pub repo: Option<String>,
     pub reason: String,
 }

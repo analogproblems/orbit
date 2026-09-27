@@ -267,6 +267,7 @@ export function freshDemo(): Snapshot {
         kind: "loop",
         prId: prs[1].id,
         reviewId: null,
+        approvalId: null,
         repo: null,
         reason: "Round limit reached.",
       },
@@ -275,6 +276,7 @@ export function freshDemo(): Snapshot {
         kind: "sync_failing",
         prId: null,
         reviewId: null,
+        approvalId: null,
         repo: "acme/dashboard",
         reason:
           "acme/dashboard failed to sync 3 times in a row: GitHub returned 404 Not Found.",

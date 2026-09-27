@@ -17,6 +17,7 @@ describe("needs you list", () => {
         onChoose={onChoose}
         onRepositories={onRepositories}
         onSettings={vi.fn()}
+        onApproval={vi.fn()}
       />,
     );
     expect(screen.getByRole("heading", { name: "Needs you" })).toBeTruthy();
@@ -33,6 +34,7 @@ describe("needs you list", () => {
         onChoose={vi.fn()}
         onRepositories={vi.fn()}
         onSettings={vi.fn()}
+        onApproval={vi.fn()}
       />,
     );
     expect(screen.queryByRole("heading", { name: "Needs you" })).toBeNull();
