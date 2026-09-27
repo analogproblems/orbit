@@ -174,6 +174,9 @@ pub struct Review {
     /// The review's inline comments, one per finding placed on its lines.
     #[serde(default)]
     pub inline_comments: Vec<InlineComment>,
+    /// Requests Orbit declined because no one approved them in time.
+    #[serde(default)]
+    pub declined_approvals: Vec<String>,
 }
 /// Where publication will put each finding of a structured run, shown before
 /// it is published.
@@ -352,6 +355,7 @@ impl Review {
             superseded: false,
             review_id: None,
             inline_comments: vec![],
+            declined_approvals: vec![],
         }
     }
     /// Credential-like text in the report and in the structured findings.
@@ -370,7 +374,13 @@ impl Review {
             text.push_str(&f.title);
         }
         let notes = self.prior_findings.iter().map(|p| &p.note);
-        for part in self.summary.iter().chain(&self.tests_not_run).chain(notes) {
+        for part in self
+            .summary
+            .iter()
+            .chain(&self.tests_not_run)
+            .chain(&self.declined_approvals)
+            .chain(notes)
+        {
             text.push('\n');
             text.push_str(part);
         }
@@ -443,7 +453,12 @@ pub struct Repository {
     /// Automatic rounds per PR before the loop needs a person.
     #[serde(default = "default_round_limit")]
     pub round_limit: u32,
+    /// Minutes an approval on an automatic review may wait before Orbit
+    /// declines it. 0 waits for the developer however long it takes.
+    #[serde(default)]
+    pub approval_minutes: u32,
 }
+pub const MAX_APPROVAL_MINUTES: u32 = 1440;
 fn default_round_limit() -> u32 {
     4
 }
@@ -467,6 +482,8 @@ pub struct Settings {
     /// Show each automatic round's result on its commit as the `orbit/review`
     /// status. Only while automatic publication is on.
     pub commit_status: bool,
+    /// Show a desktop notification when something new needs the developer.
+    pub notify: bool,
 }
 /// Only supplied fields change. Repository mutations have separate commands.
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -482,6 +499,7 @@ pub struct SettingsPatch {
     pub blocking_priority: Option<u8>,
     pub settle_pushes: Option<bool>,
     pub commit_status: Option<bool>,
+    pub notify: Option<bool>,
 }
 impl SettingsPatch {
     pub fn apply(self, settings: &mut Settings) {
@@ -515,6 +533,9 @@ impl SettingsPatch {
         if let Some(v) = self.commit_status {
             settings.commit_status = v;
         }
+        if let Some(v) = self.notify {
+            settings.notify = v;
+        }
     }
 }
 impl Default for Settings {
@@ -531,6 +552,7 @@ impl Default for Settings {
             blocking_priority: 1,
             settle_pushes: true,
             commit_status: true,
+            notify: true,
         }
     }
 }
@@ -568,6 +590,9 @@ impl Settings {
             }
             if repo.setup_command.len() > 10000 {
                 return Err("Setup command is too long.".into());
+            }
+            if repo.approval_minutes > MAX_APPROVAL_MINUTES {
+                return Err("Approval time limits can be at most 24 hours.".into());
             }
         }
         Ok(())
@@ -615,6 +640,9 @@ pub struct Approval {
     pub review_id: String,
     pub method: String,
     pub params: Value,
+    /// When Codex asked, for the time limit on automatic reviews.
+    #[serde(default)]
+    pub requested_at: String,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -650,6 +678,8 @@ pub struct Snapshot {
     pub poll_failures: u32,
     /// Why saving local state failed, when that turned autopilot off.
     pub state_write_error: Option<String>,
+    /// Keys of the open items already announced, so each is announced once.
+    pub announced: Vec<String>,
     /// Everything waiting on the developer. Derived like `loop_states`.
     #[serde(skip_deserializing, skip_serializing_if = "Vec::is_empty")]
     pub attention: Vec<Attention>,
@@ -808,6 +838,7 @@ pub(crate) mod tests {
             setup_command: String::new(),
             network_access: false,
             round_limit: 4,
+            approval_minutes: 0,
         });
         assert!(eligible(&p, &s));
         let mut fork = p.clone();

@@ -40,11 +40,14 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import { useOrbit, desktop } from "./store";
+import { listen } from "@tauri-apps/api/event";
 import {
   activeStatuses,
+  attentionAction,
   canPublish,
   latestReview,
   publishTarget,
+  type Attention,
   type PullRequest,
   type Review,
 } from "./types";
@@ -100,6 +103,15 @@ export default function App() {
     error: string;
   } | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  // Opens the item of a notification when Orbit is brought forward for it.
+  const openNotified = useRef<(a: Attention) => void>(() => {});
+  useEffect(() => {
+    if (!desktop) return;
+    const off = listen<Attention>("orbit-open", (e) =>
+      openNotified.current(e.payload),
+    );
+    return () => void off.then((f) => f());
+  }, []);
   useEffect(() => {
     let off: (() => void) | undefined;
     let gone = false;
@@ -174,6 +186,19 @@ export default function App() {
     setTab(r ? "chat" : "overview");
     setPage("inbox");
   };
+  const handlers = {
+    onChoose: choose,
+    onRepositories: () => setPage("repositories"),
+    onSettings: () => setPage("settings"),
+    onApproval: openApproval,
+  };
+  useEffect(() => {
+    openNotified.current = (item) => {
+      // Only an item that is still open.
+      if (s.attention?.some((a) => a.key === item.key))
+        attentionAction(s, item, handlers)?.();
+    };
+  });
   const closePublish = () => {
     setPublish(null);
     setConfirmSensitive(false);
@@ -465,12 +490,7 @@ export default function App() {
               <LayoutContent padding={0}>
                 <Suspense fallback={<Spinner label="Loading page…" />}>
                   {page === "activity" ? (
-                    <Activity
-                      onChoose={choose}
-                      onRepositories={() => setPage("repositories")}
-                      onSettings={() => setPage("settings")}
-                      onApproval={openApproval}
-                    />
+                    <Activity {...handlers} />
                   ) : page === "repositories" ? (
                     <Repositories />
                   ) : (

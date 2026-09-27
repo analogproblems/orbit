@@ -36,6 +36,8 @@ mod inline_tests;
 #[cfg(test)]
 mod model_tests;
 #[cfg(test)]
+mod notice_tests;
+#[cfg(test)]
 mod publish_tests;
 #[cfg(test)]
 mod queue_tests;
@@ -52,6 +54,7 @@ mod test_support;
 #[cfg(test)]
 mod worktrees_tests;
 
+type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// Orbit's review engine. Its methods are split by area: `connection` (Codex),
 /// `settings` (workspace settings and checkouts), `queue` (sync and scheduling),
 /// `run` (preparing and running reviews, Codex events), `chat` (follow-ups),
@@ -90,6 +93,8 @@ pub struct Engine {
     pub rpc: Mutex<Option<Arc<Rpc>>>,
     root: PathBuf,
     emit: Box<dyn Fn(&Snapshot) + Send + Sync>,
+    /// Shows a desktop notification; set by the app, absent in tests.
+    notifier: std::sync::OnceLock<Notifier>,
     connect_lock: Mutex<()>,
     poll_lock: Mutex<()>,
     publish_lock: Mutex<()>,
@@ -112,6 +117,9 @@ pub struct Engine {
     status_sender: std::sync::Mutex<status::StatusSender>,
     /// Rounds whose commit status is on its way to GitHub.
     sending_statuses: std::sync::Mutex<HashSet<String>>,
+    /// Approvals being answered, so the developer and the time limit
+    /// cannot both answer one.
+    answering: std::sync::Mutex<HashSet<String>>,
     _instance_lock: std::fs::File,
 }
 impl Engine {
@@ -198,6 +206,7 @@ impl Engine {
             root,
             // Loop states and attention items are derived for display, never saved.
             emit: Box::new(move |s: &Snapshot| emit(&crate::attention::shown(s))),
+            notifier: std::sync::OnceLock::new(),
             connect_lock: Mutex::new(()),
             poll_lock: Mutex::new(()),
             publish_lock: Mutex::new(()),
@@ -212,6 +221,7 @@ impl Engine {
             recovered_publications: std::sync::Mutex::new(recovered),
             status_sender: std::sync::Mutex::new(status::github_sender()),
             sending_statuses: std::sync::Mutex::new(HashSet::new()),
+            answering: std::sync::Mutex::new(HashSet::new()),
             _instance_lock: instance_lock,
         }))
     }
@@ -234,8 +244,19 @@ impl Engine {
         f(&mut s);
         self.changed.store(true, Ordering::SeqCst);
     }
+    /// Sets how desktop notifications are shown. Only the first call counts.
+    pub fn on_notice(&self, notify: impl Fn(&crate::attention::Notice) + Send + Sync + 'static) {
+        let _ = self.notifier.set(Box::new(notify));
+    }
     pub async fn flush(&self) -> Result<(), String> {
         let mut s = self.state.lock().await;
+        // The record of announced items is saved with the state, so an item
+        // still open after a restart is not announced again.
+        let (notices, recorded) = crate::attention::announce(&mut s);
+        if recorded {
+            self.dirty.store(true, Ordering::SeqCst);
+        }
+        let mut result = Ok(());
         if self.dirty.swap(false, Ordering::SeqCst) {
             self.changed.store(false, Ordering::SeqCst);
             if let Err(e) = self.persist(&s) {
@@ -245,14 +266,20 @@ impl Engine {
                 s.codex_error = Some(format!(
                     "Could not save local state; automation paused: {e}"
                 ));
-                (self.emit)(&s);
-                return Err(e);
+                result = Err(e);
             }
             (self.emit)(&s);
         } else if self.changed.swap(false, Ordering::SeqCst) {
             (self.emit)(&s);
         }
-        Ok(())
+        let enabled = s.settings.notify;
+        drop(s);
+        if enabled {
+            if let Some(notify) = self.notifier.get() {
+                notices.iter().for_each(notify);
+            }
+        }
+        result
     }
     fn persist(&self, s: &Snapshot) -> Result<(), String> {
         let data = serde_json::to_vec(s).map_err(|e| e.to_string())?;
@@ -331,6 +358,7 @@ impl Engine {
         if codex_ready {
             self.schedule().await;
         }
+        self.expire_approvals().await;
         self.sync_commit_statuses().await;
     }
     pub async fn storage_usage(&self) -> Result<storage::StorageUsage, String> {

@@ -184,13 +184,22 @@ export function Findings({
     !["ready", "publishing", "posted"].includes(review.status)
   )
     return null;
+  // Shown whether or not the findings were extracted.
+  const declined = review.declinedApprovals?.map((note) => (
+    <Text key={note} type="supporting">
+      {note}
+    </Text>
+  ));
   if (!review.findings)
     return (
-      <Banner
-        status="info"
-        title="Unstructured run"
-        description="Orbit could not save these findings as a list. The report above is complete."
-      />
+      <VStack gap={2}>
+        <Banner
+          status="info"
+          title="Unstructured run"
+          description="Orbit could not save these findings as a list. The report above is complete."
+        />
+        {declined}
+      </VStack>
     );
   return (
     <VStack gap={2}>
@@ -216,6 +225,7 @@ export function Findings({
       {review.testsNotRun && review.testsNotRun.length > 0 && (
         <Text type="supporting">Not run: {review.testsNotRun.join("; ")}</Text>
       )}
+      {declined}
       <SinceLastRound review={review} onOpenReview={onOpenReview} />
     </VStack>
   );

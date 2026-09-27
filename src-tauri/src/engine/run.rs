@@ -401,6 +401,16 @@ impl Engine {
         self.flush().await
     }
     pub async fn decide(&self, id: Value, accept: bool) -> Result<(), String> {
+        // Claims the request, so a second answer waits for none and fails.
+        let key = id.to_string();
+        if !self.answering.lock().unwrap().insert(key.clone()) {
+            return Err("This approval is already being answered.".into());
+        }
+        let result = self.answer(id, accept).await;
+        self.answering.lock().unwrap().remove(&key);
+        result
+    }
+    async fn answer(&self, id: Value, accept: bool) -> Result<(), String> {
         let a = self
             .state
             .lock()
@@ -439,6 +449,44 @@ impl Engine {
         })
         .await;
         Ok(())
+    }
+    /// Declines approvals on automatic reviews that waited longer than their
+    /// repository allows, and notes each in the review. Declining grants the
+    /// reviewer nothing; approvals on manual reviews always wait.
+    pub(super) async fn expire_approvals(&self) {
+        let expired: Vec<(Value, String, String)> = {
+            let s = self.state.lock().await;
+            let now = chrono::Utc::now();
+            s.approvals
+                .iter()
+                .filter_map(|a| {
+                    let minutes = approval_limit(&s, a)?;
+                    let asked = chrono::DateTime::parse_from_rfc3339(&a.requested_at).ok()?;
+                    let waited = now.signed_duration_since(asked).num_seconds();
+                    (waited >= i64::from(minutes) * 60).then(|| {
+                        let unit = if minutes == 1 { "minute" } else { "minutes" };
+                        let note = format!(
+                            "Declined {} because no one approved it within {minutes} {unit}.",
+                            requested(a)
+                        );
+                        (a.id.clone(), a.review_id.clone(), note)
+                    })
+                })
+                .collect()
+        };
+        for (id, review_id, note) in expired {
+            if self.decide(id, false).await.is_err() {
+                continue;
+            }
+            self.update(|s| {
+                if let Some(r) = s.reviews.iter_mut().find(|r| r.id == review_id) {
+                    r.messages.push(Message::new("system", &note));
+                    r.declined_approvals.push(note);
+                    r.sensitive = r.credential_scan();
+                }
+            })
+            .await;
+        }
     }
     pub(super) async fn event(self: &Arc<Self>, event: Value) {
         let method = event["method"].as_str().unwrap_or("");
@@ -485,6 +533,7 @@ impl Engine {
                             review_id: id.clone(),
                             method: method.into(),
                             params,
+                            requested_at: now(),
                         });
                         if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
                             r.status = "awaitingApproval".into();
@@ -757,4 +806,37 @@ pub(super) fn apply_notification(s: &mut Snapshot, id: &str, method: &str, p: &V
         _ => {}
     }
     next
+}
+
+/// The time limit on an approval, in minutes: set only for automatic reviews,
+/// not follow-ups on them, in repositories that opted in.
+fn approval_limit(s: &Snapshot, a: &Approval) -> Option<u32> {
+    // A follow-up the developer asked on an automatic review is theirs.
+    let r = s
+        .reviews
+        .iter()
+        .find(|r| r.id == a.review_id && r.automatic && r.before_follow_up.is_none())?;
+    let repo = s
+        .prs
+        .iter()
+        .chain(&s.history_prs)
+        .find(|p| p.id == r.pr_id)
+        .map_or_else(|| r.pr_id.split('#').next().unwrap_or(""), |p| &p.repo);
+    s.settings
+        .repositories
+        .iter()
+        .find(|x| same_repo(&x.name, repo))
+        .map(|x| x.approval_minutes)
+        .filter(|&m| m > 0)
+}
+/// What an approval asked for, in words.
+fn requested(a: &Approval) -> String {
+    let command = a.params["command"]
+        .as_str()
+        .or_else(|| a.params["itemDetails"]["command"].as_str());
+    match command {
+        Some(c) => format!("the reviewer's command `{}`", c.replace('`', "'")),
+        None if a.method.contains("fileChange") => "the reviewer's file change".into(),
+        None => "the reviewer's command".into(),
+    }
 }

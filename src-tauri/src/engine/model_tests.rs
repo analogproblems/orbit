@@ -138,6 +138,7 @@ async fn queued_selection_is_immutable_and_confirmation_is_durable_before_review
             setup_command: String::new(),
             network_access: false,
             round_limit: 4,
+            approval_minutes: 0,
         });
     })
     .await;
@@ -547,6 +548,7 @@ async fn rejected_settings_and_queue_writes_do_not_activate_unsaved_selections_o
             setup_command: String::new(),
             network_access: false,
             round_limit: 4,
+            approval_minutes: 0,
         });
     })
     .await;

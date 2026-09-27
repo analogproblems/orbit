@@ -214,6 +214,9 @@ fn review_body(r: &Review, round: Option<u32>, other: &[(&Finding, &str)]) -> St
     if !r.tests_not_run.is_empty() {
         out.push_str(&format!("Not run: {}\n\n", r.tests_not_run.join("; ")));
     }
+    for note in &r.declined_approvals {
+        out.push_str(&format!("{note}\n\n"));
+    }
     out.push_str(&format!(
         "---\n{}",
         crate::models::report_selection_label(r)

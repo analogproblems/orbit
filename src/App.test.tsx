@@ -28,10 +28,18 @@ import { freshDemo } from "./demo";
 import { useOrbit } from "./store";
 import type { Snapshot, SettingsPatch, ChangedFile } from "./types";
 
-const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
+const { invoke, listeners } = vi.hoisted(() => ({
+  invoke: vi.fn(),
+  listeners: new Map<string, (event: { payload: unknown }) => void>(),
+}));
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => true, invoke }));
 vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn(async () => () => {}),
+  listen: vi.fn(
+    async (name: string, handler: (event: { payload: unknown }) => void) => {
+      listeners.set(name, handler);
+      return () => {};
+    },
+  ),
 }));
 let snapshot: Snapshot;
 const user = () => userEvent.setup();
@@ -204,6 +212,51 @@ describe("PR review regressions", () => {
       id: "approval-1",
       accept: true,
     });
+  });
+
+  it("turns desktop notifications off from Settings", async () => {
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Settings" }));
+    await user().click(
+      await screen.findByRole("switch", {
+        name: /Notify me when a review needs attention/,
+      }),
+    );
+    expect(invoke).toHaveBeenCalledWith("update_settings", {
+      patch: { notify: false },
+    });
+  });
+
+  it("opens a notified approval when Orbit comes forward, if still open", async () => {
+    snapshot.reviews[0].status = "awaitingApproval";
+    snapshot.approvals = [
+      {
+        id: 7,
+        reviewId: snapshot.reviews[0].id,
+        method: "item/commandExecution/requestApproval",
+        params: { reason: "Run the notified check" },
+      },
+    ];
+    const item = {
+      key: `approval:${snapshot.reviews[0].id}:7`,
+      kind: "approval" as const,
+      prId: snapshot.prs[0].id,
+      reviewId: snapshot.reviews[0].id,
+      approvalId: 7,
+      repo: null,
+      reason: "The reviewer asks to run a command.",
+    };
+    snapshot.attention = [item];
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Review activity" }));
+    // An item resolved in the meantime is not opened.
+    act(() => listeners.get("orbit-open")!({ payload: { ...item, key: "x" } }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    act(() => listeners.get("orbit-open")!({ payload: item }));
+    const dialog = await screen.findByRole("dialog", {
+      name: "Codex needs your approval",
+    });
+    expect(within(dialog).getByText("Run the notified check")).toBeTruthy();
   });
 
   it("keeps export, publication links, and stop usable without PR metadata", async () => {

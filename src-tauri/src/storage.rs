@@ -233,6 +233,10 @@ pub fn report(snapshot: &Snapshot, review_id: &str) -> Result<(String, String), 
         body.push_str(&format!("Published comment: {url}\n\n"));
     }
     body.push_str(&findings_section(r));
+    // Kept apart from the findings, which an unstructured run lacks.
+    for note in &r.declined_approvals {
+        body.push_str(&format!("{note}\n\n"));
+    }
     body.push_str(&r.report);
     body.push('\n');
     Ok((name, body))

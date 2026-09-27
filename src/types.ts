@@ -75,6 +75,8 @@ export interface Review {
   verdict?: Verdict | null;
   summary?: string | null;
   testsNotRun?: string[];
+  /** Requests Orbit declined because no one approved them in time. */
+  declinedApprovals?: string[];
   /** The findings-extraction turn is running. */
   extracting?: boolean;
   /** The earlier round a re-review started from; absent for a first review. */
@@ -164,6 +166,8 @@ export interface Repository {
   networkAccess: boolean;
   /** Automatic rounds per PR before the loop needs a person. */
   roundLimit: number;
+  /** Minutes an approval on an automatic review may wait; 0 waits. */
+  approvalMinutes?: number;
 }
 export interface RepositorySummary {
   name: string;
@@ -186,6 +190,8 @@ export interface Settings {
   settlePushes: boolean;
   /** Show each automatic round's result on its commit as `orbit/review`. */
   commitStatus: boolean;
+  /** Show a desktop notification when something new needs you. */
+  notify: boolean;
 }
 export interface CommitStatus {
   state: "pending" | "success" | "failure" | "error";
@@ -280,6 +286,33 @@ export const attentionLabels: Record<AttentionKind, string> = {
   autopilot_paused: "Autopilot paused",
   sync_failing: "Sync failing",
 };
+export interface AttentionHandlers {
+  onChoose: (p: PullRequest, r?: Review) => void;
+  onRepositories: () => void;
+  onSettings: () => void;
+  onApproval: (reviewId: string, id: string | number) => void;
+}
+/** Where an item is resolved: its review, its PR, or a settings page. */
+export function attentionAction(
+  s: Snapshot,
+  a: Attention,
+  go: AttentionHandlers,
+): (() => void) | undefined {
+  if (a.kind === "sync_failing" && a.repo) return go.onRepositories;
+  if (a.kind === "autopilot_paused" || a.kind === "sync_failing")
+    return go.onSettings;
+  const p = [...s.prs, ...(s.historyPrs ?? [])].find((p) => p.id === a.prId);
+  const r = s.reviews.find((r) => r.id === a.reviewId);
+  if (a.kind === "approval" && r && a.approvalId != null) {
+    const id = a.approvalId;
+    return () => {
+      if (p) go.onChoose(p, r);
+      go.onApproval(r.id, id);
+    };
+  }
+  if (!p) return undefined;
+  return () => go.onChoose(p, r);
+}
 export function loopState(s: Snapshot, prId: string) {
   return s.loopStates?.find((l) => l.prId === prId);
 }
@@ -342,6 +375,7 @@ export const defaults: Settings = {
   blockingPriority: 1,
   settlePushes: true,
   commitStatus: true,
+  notify: true,
 };
 export function latestReview(reviews: Review[], prId: string) {
   return reviews

@@ -223,6 +223,7 @@ export function Repositories() {
       setupCommand: "",
       networkAccess: false,
       roundLimit: 4,
+      approvalMinutes: 0,
     });
   };
   const save = async (e: FormEvent) => {
@@ -406,6 +407,19 @@ export function Repositories() {
                         label: `${n} ${n === 1 ? "round" : "rounds"}`,
                       }))}
                       description="After this many automatic reviews of a pull request, the loop stops and needs you. Review again always works."
+                    />
+                    <Selector
+                      label="Approval time limit for automatic reviews"
+                      value={String(editing.approvalMinutes ?? 0)}
+                      isDisabled={busy}
+                      onChange={(v) =>
+                        setEditing({ ...editing, approvalMinutes: Number(v) })
+                      }
+                      options={[0, 5, 15, 30, 60, 120].map((n) => ({
+                        value: String(n),
+                        label: n ? `Decline after ${n} minutes` : "Wait for me",
+                      }))}
+                      description="When an automatic review asks to run a command or change files and no one answers in time, Orbit declines the request and notes it in the report. Declining grants nothing. Manual reviews always wait."
                     />
                     <Switch
                       label="Include repository in automatic reviews"

@@ -178,6 +178,48 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
     }
     out
 }
+/// A desktop notification for an item.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Notice {
+    pub item: Attention,
+    pub title: String,
+    pub body: String,
+}
+fn notice(s: &Snapshot, a: Attention) -> Notice {
+    let title = match a.kind {
+        AttentionKind::Approval => "A review needs your approval",
+        AttentionKind::Held => "A report was held back",
+        AttentionKind::Failed => "An automatic review stopped",
+        AttentionKind::Loop => "A review loop needs you",
+        AttentionKind::AutopilotPaused => "Autopilot was turned off",
+        AttentionKind::SyncFailing => "Orbit can't sync",
+    };
+    let pr = s.prs.iter().find(|p| Some(&p.id) == a.pr_id.as_ref());
+    let body = match pr {
+        Some(pr) => format!("{} · {}\n{}", pr.id, pr.title, a.reason),
+        None => a.reason.clone(),
+    };
+    Notice {
+        title: title.into(),
+        body,
+        item: a,
+    }
+}
+/// Records which open items have been announced and returns a notice for
+/// each one that is new, with whether the record changed. A resolved item
+/// leaves the record, so it is announced again if it opens again later.
+pub fn announce(s: &mut Snapshot) -> (Vec<Notice>, bool) {
+    let open = items(s);
+    let keys: Vec<String> = open.iter().map(|a| a.key.clone()).collect();
+    let changed = keys != s.announced;
+    let fresh: Vec<Attention> = open
+        .into_iter()
+        .filter(|a| !s.announced.contains(&a.key))
+        .collect();
+    s.announced = keys;
+    let notices = fresh.into_iter().map(|a| notice(s, a)).collect();
+    (notices, changed)
+}
 /// The snapshot as the app shows it, with the derived lists filled in.
 pub fn shown(s: &Snapshot) -> Snapshot {
     let mut shown = s.clone();

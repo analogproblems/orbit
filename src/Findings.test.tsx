@@ -25,6 +25,21 @@ describe("structured findings", () => {
     expect(screen.getAllByText("Open")).toHaveLength(2);
     expect(screen.getByText(/End-to-end tests/)).toBeTruthy();
   });
+  it("notes requests declined by the approval time limit", () => {
+    const note =
+      "Declined the reviewer's command `npm test` because no one approved it within 5 minutes.";
+    render(<Findings review={review({ declinedApprovals: [note] })} />);
+    expect(screen.getByText(note)).toBeTruthy();
+    cleanup();
+    // Also when the findings could not be extracted.
+    render(
+      <Findings
+        review={review({ findings: undefined, declinedApprovals: [note] })}
+      />,
+    );
+    expect(screen.getByText("Unstructured run")).toBeTruthy();
+    expect(screen.getByText(note)).toBeTruthy();
+  });
   it("labels unstructured runs and hides findings until a run finishes", () => {
     const { rerender } = render(
       <Findings review={review({ findings: null })} />,

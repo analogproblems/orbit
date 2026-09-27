@@ -14,6 +14,7 @@ fn snapshot() -> (Snapshot, PullRequest) {
         setup_command: String::new(),
         network_access: false,
         round_limit: 4,
+        approval_minutes: 0,
     });
     s.prs.push(p.clone());
     (s, p)
@@ -44,6 +45,7 @@ fn a_pending_approval_is_one_item_until_answered() {
         review_id: "run-1".into(),
         method: "item/commandExecution/requestApproval".into(),
         params: json!({}),
+        requested_at: String::new(),
     });
     let all = items(&s);
     assert_eq!(all.len(), 1, "the loop's own reason is not repeated");
