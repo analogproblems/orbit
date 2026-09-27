@@ -1,5 +1,13 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
 import {
   act,
   cleanup,
@@ -151,6 +159,53 @@ describe("PR review regressions", () => {
     },
   );
 
+  it("opens the approval of the item chosen, not the oldest one", async () => {
+    const second = {
+      ...structuredClone(snapshot.reviews[0]),
+      id: "second-review",
+      prId: snapshot.prs[2].id,
+      status: "awaitingApproval" as const,
+    };
+    snapshot.reviews.push(second);
+    const request = (reviewId: string, id: string, reason: string) => ({
+      id,
+      reviewId,
+      method: "item/commandExecution/requestApproval",
+      params: { reason },
+    });
+    snapshot.approvals = [
+      request(snapshot.reviews[0].id, "approval-1", "Run the first check"),
+      request(second.id, "approval-2", "Run the second check"),
+    ];
+    snapshot.attention = snapshot.approvals.map((a, i) => ({
+      key: `approval:${a.reviewId}:${a.id}`,
+      kind: "approval" as const,
+      prId: [snapshot.prs[0].id, snapshot.prs[2].id][i],
+      reviewId: a.reviewId,
+      approvalId: a.id,
+      repo: null,
+      reason: `Request ${i + 1}`,
+    }));
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Review activity" }));
+    await user().click(await screen.findByText("Request 2"));
+    const dialog = screen.getByRole("dialog", {
+      name: "Codex needs your approval",
+    });
+    expect(within(dialog).getByText("Run the second check")).toBeTruthy();
+    await user().click(
+      within(dialog).getByRole("button", { name: "Approve once" }),
+    );
+    expect(invoke).toHaveBeenCalledWith("answer_approval", {
+      id: "approval-2",
+      accept: true,
+    });
+    expect(invoke).not.toHaveBeenCalledWith("answer_approval", {
+      id: "approval-1",
+      accept: true,
+    });
+  });
+
   it("keeps export, publication links, and stop usable without PR metadata", async () => {
     snapshot.prs = [];
     snapshot.historyPrs = [];
@@ -191,6 +246,24 @@ describe("PR review regressions", () => {
       reviewId: running.id,
     });
     expect(screen.getByText("Good reviews, in motion.")).toBeTruthy();
+  });
+
+  it("counts what needs you in the sidebar and opens the list", async () => {
+    // Wide enough that the sidebar shows its counts.
+    const wide = vi.spyOn(window, "innerWidth", "get").mockReturnValue(1400);
+    onTestFinished(() => wide.mockRestore());
+    await mount();
+    const item = screen.getByRole("button", { name: /^Needs you/ });
+    expect(item.parentElement?.textContent).toContain("2");
+    await user().click(item);
+    expect(
+      await screen.findByRole("heading", { name: "Needs you" }),
+    ).toBeTruthy();
+    snapshot.attention = [];
+    emit();
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: /^Needs you/ })).toBeNull(),
+    );
   });
 
   it("labels every tab panel while mounting only the active tab contents", async () => {

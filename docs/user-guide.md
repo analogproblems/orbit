@@ -227,6 +227,19 @@ When a PR gets new commits while an automatic round is queued or running for the
 
 While automatic publication is on, Orbit also shows each automatic round's result on the reviewed commit as the **orbit/review** status check: pending while the round is in progress, success when clean, failure when changes are requested, and error when the loop needs you. Its description gives the round and the blocking count, such as "Round 2 · 1 blocking finding". Published comments also carry a hidden line with the verdict for agents to read, such as `<!-- orbit-verdict: changes_requested round=2 blocking=1 -->`. Turn off **GitHub status check** in Settings to stop setting the check. If GitHub refuses a status, the PR detail says why; the review is not affected. Orbit never makes the check required: that is a branch protection choice in GitHub.
 
+### What needs you
+
+When something can only move forward with you, the sidebar shows **Needs you** with a count, and **Review activity** lists each item at the top with its reason. Selecting an item opens where it is resolved: the review's chat, the PR, **Repositories**, or **Settings**. An approval item opens that exact request. An item appears when:
+
+- a review is waiting for your approval;
+- an automatic report was held instead of published, with the reason;
+- an automatic review failed, or was interrupted by a restart;
+- the loop needs you for another reason from the list above;
+- Autopilot was turned off because Orbit could not save its state (turn Autopilot back on once saving works);
+- a repository has failed to sync 3 times in a row, or Orbit could not sync with GitHub at all 3 times in a row (for example, when the GitHub sign-in expired).
+
+An item disappears once it is resolved. A stopped loop lists only its approvals, since you have already taken it over.
+
 ## Settings and when changes take effect
 
 | Setting                                | Initial value                      | Available choices                                                                                                 |

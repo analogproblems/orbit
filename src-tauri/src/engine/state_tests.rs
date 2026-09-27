@@ -139,3 +139,24 @@ fn corrupt_state_is_never_overwritten() {
         "broken"
     );
 }
+#[tokio::test]
+async fn a_failed_save_pauses_autopilot_until_it_is_turned_back_on() {
+    let d = tempfile::tempdir().unwrap();
+    let e = super::Engine::new(d.path().into(), |_| {}).unwrap();
+    let mut settings = e.snapshot().await.settings;
+    settings.automatic = true;
+    e.save_settings(settings.clone()).await.unwrap();
+    std::fs::create_dir(d.path().join("state.json.tmp")).unwrap();
+    e.update(|s| s.github_user = Some("me".into())).await;
+    assert!(e.flush().await.is_err());
+    let s = e.snapshot().await;
+    assert!(!s.settings.automatic);
+    assert!(s.state_write_error.is_some());
+    let shown = e.shown_snapshot().await;
+    assert_eq!(shown.attention.len(), 1);
+    assert_eq!(shown.attention[0].kind, AttentionKind::AutopilotPaused);
+    std::fs::remove_dir(d.path().join("state.json.tmp")).unwrap();
+    e.save_settings(settings).await.unwrap();
+    assert!(e.snapshot().await.state_write_error.is_none());
+    assert!(e.shown_snapshot().await.attention.is_empty());
+}

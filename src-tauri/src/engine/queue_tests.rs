@@ -433,3 +433,31 @@ async fn a_refusal_is_forgotten_once_the_wanted_status_moves_on() {
     let s = e.snapshot().await;
     assert_eq!(s.commit_checks[0].accepted.as_ref().unwrap().state, "error");
 }
+/// Polls that fail before any repository syncs, here because GitHub rejects
+/// the credential, are counted and reset by the next good poll.
+#[cfg(unix)]
+#[tokio::test]
+async fn counts_polls_that_fail_before_any_repository_syncs() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tempfile::tempdir().unwrap();
+    let e = super::Engine::new(d.path().join("state"), |_| {}).unwrap();
+    let gh = d.path().join("gh");
+    let script = format!(
+        "#!/bin/sh\nif [ -e {0}/ok ]; then case \"$*\" in *user*) echo '{{\"login\":\"me\"}}' ;; *) echo '[]' ;; esac; exit 0; fi\necho 'HTTP 401: Bad credentials' >&2\nexit 1\n",
+        d.path().display()
+    );
+    std::fs::write(&gh, script).unwrap();
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    for _ in 0..3 {
+        let _ = crate::github::GH.scope(gh.clone(), e.poll()).await;
+    }
+    let shown = e.shown_snapshot().await;
+    assert_eq!(shown.poll_failures, 3);
+    assert_eq!(shown.attention.len(), 1);
+    assert_eq!(shown.attention[0].key, "sync:github");
+    assert!(shown.attention[0].reason.contains("Bad credentials"));
+    std::fs::write(d.path().join("ok"), "").unwrap();
+    crate::github::GH.scope(gh, e.poll()).await.unwrap();
+    assert_eq!(e.snapshot().await.poll_failures, 0);
+    assert!(e.shown_snapshot().await.attention.is_empty());
+}

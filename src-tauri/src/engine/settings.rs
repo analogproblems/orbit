@@ -15,6 +15,10 @@ impl Engine {
             ModelSelection::workspace(&settings).validate_execution(s)?;
         }
         let mut next = s.clone();
+        // Turning autopilot back on acknowledges a failed save that paused it.
+        if settings.automatic {
+            next.state_write_error = None;
+        }
         next.settings = settings;
         if ModelSelection::workspace(&next.settings)
             .validate_execution(&next)

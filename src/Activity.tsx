@@ -7,6 +7,7 @@ import {
   HStack,
   List,
   ListItem,
+  StatusDot,
   Text,
   Timestamp,
   VStack,
@@ -15,7 +16,9 @@ import { Activity as ActivityIcon, GitPullRequest, Square } from "lucide-react";
 import { useOrbit } from "./store";
 import {
   activeStatuses,
+  attentionLabels,
   reportSelectionLabel,
+  type Attention,
   reviewDisplayStatus,
   type PullRequest,
   type Review,
@@ -25,11 +28,35 @@ import { ReviewStatus } from "./ReviewStatus";
 import { recentTimestamp } from "./timestamps";
 export function Activity({
   onChoose,
+  onRepositories,
+  onSettings,
+  onApproval,
 }: {
-  onChoose: (p: PullRequest, r: Review) => void;
+  onChoose: (p: PullRequest, r?: Review) => void;
+  onRepositories: () => void;
+  onSettings: () => void;
+  onApproval: (reviewId: string, id: string | number) => void;
 }) {
   const { snapshot: s, action } = useOrbit();
   const knownPrs = [...s.prs, ...(s.historyPrs ?? [])];
+  const attention = s.attention ?? [];
+  /** Where each item is resolved: its review, its PR, or a settings page. */
+  const open = (a: Attention) => {
+    if (a.kind === "sync_failing" && a.repo) return onRepositories;
+    if (a.kind === "autopilot_paused" || a.kind === "sync_failing")
+      return onSettings;
+    const p = knownPrs.find((p) => p.id === a.prId);
+    const r = s.reviews.find((r) => r.id === a.reviewId);
+    if (a.kind === "approval" && r && a.approvalId != null) {
+      const id = a.approvalId;
+      return () => {
+        if (p) onChoose(p, r);
+        onApproval(r.id, id);
+      };
+    }
+    if (!p) return undefined;
+    return () => onChoose(p, r);
+  };
   const metrics: [
     [string, number],
     [string, number],
@@ -55,6 +82,40 @@ export function Activity({
           Every run, every finding, every conversation. All in one place.
         </Text>
       </VStack>
+      {attention.length > 0 && (
+        <List hasDividers header={<Heading level={3}>Needs you</Heading>}>
+          {attention.map((a) => {
+            const p = knownPrs.find((p) => p.id === a.prId);
+            return (
+              <ListItem
+                key={a.key}
+                label={
+                  <Text weight="medium" maxLines={2}>
+                    {p?.title ?? a.repo ?? attentionLabels[a.kind]}
+                  </Text>
+                }
+                onClick={open(a)}
+                startContent={
+                  <StatusDot
+                    variant="warning"
+                    label={attentionLabels[a.kind]}
+                  />
+                }
+                description={
+                  <VStack gap={1}>
+                    <Text color="secondary">
+                      {[attentionLabels[a.kind], a.prId]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </Text>
+                    <Text maxLines={3}>{a.reason}</Text>
+                  </VStack>
+                }
+              />
+            );
+          })}
+        </List>
+      )}
       <Grid columns={{ minWidth: 140 }} gap={4}>
         {metrics.map(([label, value]) => (
           <VStack gap={2} key={label}>

@@ -196,12 +196,8 @@ impl Engine {
             state: Mutex::new(state),
             rpc: Mutex::new(None),
             root,
-            // Loop states are derived from the reviews for display, never saved.
-            emit: Box::new(move |s: &Snapshot| {
-                let mut shown = s.clone();
-                shown.loop_states = crate::review_loop::states(s);
-                emit(&shown)
-            }),
+            // Loop states and attention items are derived for display, never saved.
+            emit: Box::new(move |s: &Snapshot| emit(&crate::attention::shown(s))),
             connect_lock: Mutex::new(()),
             poll_lock: Mutex::new(()),
             publish_lock: Mutex::new(()),
@@ -222,6 +218,10 @@ impl Engine {
     pub async fn snapshot(&self) -> Snapshot {
         self.state.lock().await.clone()
     }
+    /// The snapshot as emitted to the app.
+    pub async fn shown_snapshot(&self) -> Snapshot {
+        crate::attention::shown(&*self.state.lock().await)
+    }
     pub async fn update(&self, f: impl FnOnce(&mut Snapshot)) {
         let mut s = self.state.lock().await;
         f(&mut s);
@@ -241,6 +241,7 @@ impl Engine {
             if let Err(e) = self.persist(&s) {
                 self.dirty.store(true, Ordering::SeqCst);
                 s.settings.automatic = false;
+                s.state_write_error = Some(e.clone());
                 s.codex_error = Some(format!(
                     "Could not save local state; automation paused: {e}"
                 ));

@@ -1,3 +1,4 @@
+pub mod attention;
 pub mod engine;
 pub mod github;
 pub mod models;
@@ -16,7 +17,7 @@ mod desktop {
     type AppState = Arc<engine::Engine>;
     #[tauri::command]
     async fn get_snapshot(engine: State<'_, AppState>) -> Result<types::Snapshot, String> {
-        Ok(engine.snapshot().await)
+        Ok(engine.shown_snapshot().await)
     }
     #[tauri::command]
     async fn update_settings(
