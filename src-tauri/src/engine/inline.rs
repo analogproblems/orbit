@@ -46,6 +46,27 @@ fn hunk_range(line: &str) -> Option<(u32, u32)> {
     Some((start.max(1), (start + count).saturating_sub(1)))
 }
 
+/// What the publish dialog shows: each finding's placement, and the review
+/// text as it will be posted.
+pub(crate) fn preview(r: &Review, hunks: &Hunks, round: Option<u32>) -> PublishPlan {
+    let placements = r
+        .findings
+        .iter()
+        .flatten()
+        .map(|f| {
+            let reason = placement(f, hunks);
+            Placement {
+                finding_id: f.id.clone(),
+                inline: reason.is_none(),
+                reason: reason.map(str::to_owned),
+            }
+        })
+        .collect();
+    PublishPlan {
+        placements,
+        body: plan(r, hunks, round, true).body,
+    }
+}
 /// Why a finding cannot be an inline comment, or None when it can.
 pub(crate) fn placement(f: &Finding, hunks: &Hunks) -> Option<&'static str> {
     let Some(path) = &f.path else {

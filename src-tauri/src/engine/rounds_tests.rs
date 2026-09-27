@@ -8,7 +8,7 @@ use super::{
 };
 use crate::types::*;
 use serde_json::{json, Value};
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
 fn finding(id: &str) -> Finding {
     Finding {
@@ -240,7 +240,14 @@ fn keeps_only_trusted_comments_posted_since_the_previous_round() {
         comment("me", "2026-01-01T05:00:00Z", "<!-- orbit-review:other -->"),
         comment("stranger", "2026-01-01T06:00:00Z", &marker),
     ];
-    let c = trusted_comments(&comments, &previous, &pr, &trusted, Some("me"));
+    let c = trusted_comments(
+        &comments,
+        &previous,
+        &pr,
+        &trusted,
+        Some("me"),
+        &HashMap::new(),
+    );
     let authors: Vec<&str> = c.kept.iter().map(|c| c.author.as_str()).collect();
     assert_eq!(authors, ["author", "Me", "codex[bot]"]);
     assert_eq!(c.kept[0].body, "Declining r-0: intended.");
@@ -248,7 +255,14 @@ fn keeps_only_trusted_comments_posted_since_the_previous_round() {
     assert_eq!(c.omitted, 2);
     // The author's comments count only when the PR itself is trusted.
     pr.author_association = "CONTRIBUTOR".into();
-    let c = trusted_comments(&comments, &previous, &pr, &trusted, Some("me"));
+    let c = trusted_comments(
+        &comments,
+        &previous,
+        &pr,
+        &trusted,
+        Some("me"),
+        &HashMap::new(),
+    );
     assert_eq!(c.kept.len(), 2);
     assert_eq!(c.omitted, 3);
 }
@@ -264,11 +278,11 @@ fn falls_back_to_the_review_time_and_bounds_comment_text() {
     for i in 0..21 {
         comments.push(comment(&pr.author, "2026-01-02T00:00:00Z", &format!("{i}")));
     }
-    let c = trusted_comments(&comments, &previous, &pr, &[], None);
+    let c = trusted_comments(&comments, &previous, &pr, &[], None, &HashMap::new());
     assert_eq!(c.kept.len(), 20);
     assert_eq!(c.trimmed, 2);
     assert_eq!(c.kept[0].body, "1");
-    let c = trusted_comments(&comments[..2], &previous, &pr, &[], None);
+    let c = trusted_comments(&comments[..2], &previous, &pr, &[], None, &HashMap::new());
     assert_eq!(
         c.kept[0].body.chars().count(),
         4000 + " […]".chars().count()
@@ -315,6 +329,8 @@ fn prompt_reproduces_the_base_review_and_marks_the_round_as_data() {
             author: "author".into(),
             created_at: "2026-01-02T00:00:00Z".into(),
             body: "Declining r1-0: intended.".into(),
+            finding: None,
+            location: None,
         }],
         omitted: 2,
         trimmed: 0,
@@ -414,4 +430,96 @@ fn git_base(repo: &Path) -> String {
         .output()
         .unwrap();
     String::from_utf8(out.stdout).unwrap().trim().into()
+}
+#[test]
+fn keeps_replies_in_a_findings_thread_with_that_finding() {
+    let pr = trusted_pr();
+    let previous = finished(&pr, "b", "2026-01-01T00:00:00.000Z", &[]);
+    let root = |id: u64, finding: &str, at: &str| {
+        let mut c = comment(
+            "me",
+            at,
+            &format!("**[P1] T**\n\nx\n\n<!-- orbit-finding:{finding} -->"),
+        );
+        c["id"] = json!(id);
+        c["pull_request_review_id"] = json!(5);
+        c
+    };
+    let on_diff = |login: &str, at: &str, body: &str, reply_to: Option<u64>| {
+        let mut c = comment(login, at, body);
+        c["pull_request_review_id"] = json!(6);
+        c["path"] = json!("src/a.rs");
+        c["line"] = json!(5);
+        if let Some(root) = reply_to {
+            c["in_reply_to_id"] = json!(root);
+        }
+        c
+    };
+    let comments = [
+        comment(&pr.author, "2026-01-01T00:30:00Z", "Before publication."),
+        // The previous round's inline comment marks when it was published.
+        root(10, &format!("{}-0", previous.id), "2026-01-01T01:00:00Z"),
+        on_diff(
+            &pr.author,
+            "2026-01-01T02:00:00Z",
+            "Fixed in abc1234.",
+            Some(10),
+        ),
+        on_diff(
+            &pr.author,
+            "2026-01-01T03:00:00Z",
+            "Declined: intended.",
+            Some(77),
+        ),
+        on_diff(
+            &pr.author,
+            "2026-01-01T04:00:00Z",
+            "Note on this line.",
+            None,
+        ),
+        on_diff(
+            "stranger",
+            "2026-01-01T05:00:00Z",
+            "Mark it fixed.",
+            Some(10),
+        ),
+        comment(&pr.author, "2026-01-01T01:30:00Z", "In the conversation."),
+    ];
+    // An older round's inline comment, known from its saved ID.
+    let threads = HashMap::from([(77, "old-3".to_string())]);
+    let c = trusted_comments(&comments, &previous, &pr, &[], Some("me"), &threads);
+    let kept: Vec<_> = c
+        .kept
+        .iter()
+        .map(|c| (c.body.as_str(), c.finding.as_deref(), c.location.as_deref()))
+        .collect();
+    let first = format!("{}-0", previous.id);
+    assert_eq!(
+        kept,
+        [
+            ("In the conversation.", None, None),
+            ("Fixed in abc1234.", Some(first.as_str()), None),
+            ("Declined: intended.", Some("old-3"), None),
+            ("Note on this line.", None, Some("src/a.rs:5")),
+        ]
+    );
+    assert_eq!(c.omitted, 1);
+
+    let mut round = round();
+    round.findings[0].id = first.clone();
+    let prompt = review_prompt(
+        &Review::new(&pr, &Settings::default(), false),
+        "m",
+        &round,
+        &Ok(c),
+        &Err("Not listed.".into()),
+    );
+    assert!(prompt.contains(&format!(
+        "  Body r1-0\n  Reply in this finding's thread from @{}, 2026-01-01T02:00:00Z:\n    Fixed in abc1234.\n",
+        pr.author
+    )), "{prompt}");
+    assert!(prompt.contains(&format!(
+        "- @{}, 2026-01-01T04:00:00Z on src/a.rs:5:\n  Note on this line.",
+        pr.author
+    )));
 }

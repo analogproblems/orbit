@@ -129,6 +129,13 @@ mod desktop {
         engine.publish(&review_id, false, allow_sensitive).await
     }
     #[tauri::command]
+    async fn publish_plan(
+        engine: State<'_, AppState>,
+        review_id: String,
+    ) -> Result<Option<types::PublishPlan>, String> {
+        engine.publish_plan(&review_id).await
+    }
+    #[tauri::command]
     async fn set_legacy_chat_model(
         engine: State<'_, AppState>,
         review_id: String,
@@ -216,6 +223,7 @@ mod desktop {
                 stop_loop,
                 continue_loop,
                 publish_review,
+                publish_plan,
                 send_message,
                 set_legacy_chat_model,
                 answer_approval,

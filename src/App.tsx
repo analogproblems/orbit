@@ -50,7 +50,7 @@ import {
 import { Inbox } from "./Inbox";
 import { Detail, type DetailTab } from "./Detail";
 import { SaveFeedback } from "./SaveFeedback";
-import { SafeMarkdown } from "./SafeMarkdown";
+import { PublishPreview } from "./PublishPreview";
 
 const Activity = lazy(() =>
   import("./Activity").then((m) => ({ default: m.Activity })),
@@ -466,9 +466,11 @@ export default function App() {
               <LayoutContent>
                 <VStack gap={4}>
                   <Text>
-                    {desktop
-                      ? "This comment will be posted using your connected GitHub account."
-                      : "This is a demo. No comment will be sent to GitHub."}
+                    {!desktop
+                      ? "This is a demo. Nothing will be sent to GitHub."
+                      : publish.findings
+                        ? "This review will be posted using your connected GitHub account."
+                        : "This comment will be posted using your connected GitHub account."}
                   </Text>
                   <HStack gap={2}>
                     <Text>{publish.prId}</Text>
@@ -492,7 +494,7 @@ export default function App() {
                       />
                     </>
                   )}
-                  <SafeMarkdown>{publish.report}</SafeMarkdown>
+                  <PublishPreview key={publish.id} review={publish} />
                 </VStack>
               </LayoutContent>
             )
@@ -511,7 +513,7 @@ export default function App() {
                       publishError
                         ? "Retry publication"
                         : desktop
-                          ? "Publish comment"
+                          ? "Publish to GitHub"
                           : "Simulate publish"
                     }
                     variant="primary"
