@@ -117,6 +117,9 @@ pub struct Engine {
     status_sender: std::sync::Mutex<status::StatusSender>,
     /// Rounds whose commit status is on its way to GitHub.
     sending_statuses: std::sync::Mutex<HashSet<String>>,
+    /// Approvals being answered, so the developer and the time limit
+    /// cannot both answer one.
+    answering: std::sync::Mutex<HashSet<String>>,
     _instance_lock: std::fs::File,
 }
 impl Engine {
@@ -218,6 +221,7 @@ impl Engine {
             recovered_publications: std::sync::Mutex::new(recovered),
             status_sender: std::sync::Mutex::new(status::github_sender()),
             sending_statuses: std::sync::Mutex::new(HashSet::new()),
+            answering: std::sync::Mutex::new(HashSet::new()),
             _instance_lock: instance_lock,
         }))
     }

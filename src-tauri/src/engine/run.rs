@@ -401,6 +401,16 @@ impl Engine {
         self.flush().await
     }
     pub async fn decide(&self, id: Value, accept: bool) -> Result<(), String> {
+        // Claims the request, so a second answer waits for none and fails.
+        let key = id.to_string();
+        if !self.answering.lock().unwrap().insert(key.clone()) {
+            return Err("This approval is already being answered.".into());
+        }
+        let result = self.answer(id, accept).await;
+        self.answering.lock().unwrap().remove(&key);
+        result
+    }
+    async fn answer(&self, id: Value, accept: bool) -> Result<(), String> {
         let a = self
             .state
             .lock()
@@ -798,13 +808,14 @@ pub(super) fn apply_notification(s: &mut Snapshot, id: &str, method: &str, p: &V
     next
 }
 
-/// The time limit on an approval, in minutes: set only for automatic reviews
-/// in repositories that opted in.
+/// The time limit on an approval, in minutes: set only for automatic reviews,
+/// not follow-ups on them, in repositories that opted in.
 fn approval_limit(s: &Snapshot, a: &Approval) -> Option<u32> {
+    // A follow-up the developer asked on an automatic review is theirs.
     let r = s
         .reviews
         .iter()
-        .find(|r| r.id == a.review_id && r.automatic)?;
+        .find(|r| r.id == a.review_id && r.automatic && r.before_follow_up.is_none())?;
     let repo = s
         .prs
         .iter()

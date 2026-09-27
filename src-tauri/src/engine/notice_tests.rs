@@ -171,3 +171,86 @@ fn approval_time_limits_are_at_most_a_day() {
     settings.repositories[0].approval_minutes = MAX_APPROVAL_MINUTES + 1;
     assert!(settings.validate().unwrap_err().contains("24 hours"));
 }
+/// An automatic review in `a/b` with a five-minute limit and one request
+/// that has waited six minutes; returns its review ID.
+async fn expired_request(e: &Engine, dir: &Path) -> String {
+    *e.rpc.lock().await = Some(recording_codex(dir).await);
+    let r = run(true, "awaitingApproval");
+    let id = r.id.clone();
+    e.update(|s| {
+        s.settings.repositories = vec![repository(5)];
+        s.prs = vec![crate::types::tests::pr()];
+        s.reviews = vec![r];
+        s.approvals = vec![approval(1, &id, 6)];
+    })
+    .await;
+    id
+}
+async fn decisions(dir: &Path) -> Vec<String> {
+    // Writes reach the stand-in asynchronously; give them a moment.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    std::fs::read_to_string(dir.join("sent"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.contains("decision"))
+        .map(str::to_owned)
+        .collect()
+}
+#[tokio::test]
+async fn the_time_limit_never_answers_a_request_already_being_answered() {
+    let d = tempfile::tempdir().unwrap();
+    let (e, _) = engine(&d.path().join("state"));
+    expired_request(&e, d.path()).await;
+    // The developer's answer is on its way.
+    e.answering.lock().unwrap().insert(json!(1).to_string());
+    e.expire_approvals().await;
+    assert!(e.snapshot().await.reviews[0].declined_approvals.is_empty());
+    assert!(decisions(d.path()).await.is_empty());
+    e.answering.lock().unwrap().clear();
+    // Racing for real, exactly one answer reaches Codex, and the note is
+    // written only when the time limit's decline is that answer.
+    let (accepted, ()) = tokio::join!(e.decide(json!(1), true), e.expire_approvals());
+    let sent = decisions(d.path()).await;
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    let declined = e.snapshot().await.reviews[0].declined_approvals.len();
+    if accepted.is_ok() {
+        assert!(sent[0].contains("accept"));
+        assert_eq!(declined, 0);
+    } else {
+        assert!(sent[0].contains("decline"));
+        assert_eq!(declined, 1);
+    }
+    assert!(e.snapshot().await.approvals.is_empty());
+}
+#[tokio::test]
+async fn a_follow_up_on_an_automatic_review_always_waits() {
+    let d = tempfile::tempdir().unwrap();
+    let (e, _) = engine(&d.path().join("state"));
+    expired_request(&e, d.path()).await;
+    e.update(|s| {
+        s.reviews[0].is_review = false;
+        s.reviews[0].before_follow_up = Some(Outcome {
+            status: "posted".into(),
+            error: None,
+        });
+    })
+    .await;
+    e.expire_approvals().await;
+    let s = e.snapshot().await;
+    assert_eq!(s.approvals.len(), 1);
+    assert!(s.reviews[0].declined_approvals.is_empty());
+}
+#[test]
+fn an_unstructured_export_keeps_its_declined_requests() {
+    let mut r = run(true, "ready");
+    r.report = "Report".into();
+    r.declined_approvals = vec!["Declined the reviewer's command.".into()];
+    let s = Snapshot {
+        prs: vec![crate::types::tests::pr()],
+        reviews: vec![r.clone()],
+        ..Default::default()
+    };
+    let (_, body) = crate::storage::report(&s, &r.id).unwrap();
+    assert!(body.contains("unstructured run"));
+    assert!(body.contains("Declined the reviewer's command."));
+}

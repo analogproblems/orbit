@@ -233,6 +233,10 @@ pub fn report(snapshot: &Snapshot, review_id: &str) -> Result<(String, String), 
         body.push_str(&format!("Published comment: {url}\n\n"));
     }
     body.push_str(&findings_section(r));
+    // Kept apart from the findings, which an unstructured run lacks.
+    for note in &r.declined_approvals {
+        body.push_str(&format!("{note}\n\n"));
+    }
     body.push_str(&r.report);
     body.push('\n');
     Ok((name, body))
@@ -279,9 +283,6 @@ fn findings_section(r: &Review) -> String {
     }
     if !r.tests_not_run.is_empty() {
         out.push_str(&format!("Not run: {}\n\n", r.tests_not_run.join("; ")));
-    }
-    for note in &r.declined_approvals {
-        out.push_str(&format!("{note}\n\n"));
     }
     if let Some(round) = &r.previous_round {
         out.push_str(&format!(
