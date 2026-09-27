@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import "./test-setup";
+import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   act,
@@ -23,7 +24,11 @@ function show(snapshot: Snapshot) {
     onApproval: vi.fn(),
     onPublish: vi.fn(),
   };
-  render(<Loops {...go} />);
+  function Page() {
+    const [selected, onSelect] = useState<string | null>(null);
+    return <Loops {...go} selected={selected} onSelect={onSelect} />;
+  }
+  render(<Page />);
   return go;
 }
 const list = (name: string) => screen.getByRole("list", { name });

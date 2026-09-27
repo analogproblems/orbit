@@ -78,6 +78,12 @@ export default function App() {
     saves,
   } = useOrbit();
   const [page, setPage] = useState<Page>("inbox");
+  // The loop whose rounds are open on the loops page.
+  const [loop, setLoop] = useState<string | null>(null);
+  const openLoops = () => {
+    setLoop(null);
+    setPage("loops");
+  };
   const [selected, setSelected] = useState<string | null>(null);
   const [selectedReview, setSelectedReview] = useState<string | null>(null);
   const [tab, setTab] = useState<DetailTab>("overview");
@@ -299,7 +305,7 @@ export default function App() {
                   label="Needs you"
                   icon={<BellRing />}
                   endContent={<Badge variant="warning" label={needsYou} />}
-                  onClick={() => setPage("loops")}
+                  onClick={openLoops}
                 />
               )}
               <SideNavItem
@@ -309,7 +315,7 @@ export default function App() {
                 endContent={
                   active.length ? <Badge label={active.length} /> : undefined
                 }
-                onClick={() => setPage("loops")}
+                onClick={openLoops}
               />
               <SideNavItem
                 label="All pull requests"
@@ -336,7 +342,7 @@ export default function App() {
                     key={r.id}
                     label={p?.title ?? r.prId}
                     icon={<GitPullRequest />}
-                    onClick={() => (p ? choose(p, r) : setPage("loops"))}
+                    onClick={() => (p ? choose(p, r) : openLoops())}
                   />
                 );
               })}
@@ -493,7 +499,7 @@ export default function App() {
               <LayoutContent padding={0}>
                 <Suspense fallback={<Spinner label="Loading page…" />}>
                   {page === "loops" ? (
-                    <Loops {...handlers} />
+                    <Loops {...handlers} selected={loop} onSelect={setLoop} />
                   ) : page === "repositories" ? (
                     <Repositories />
                   ) : (

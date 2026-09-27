@@ -356,6 +356,21 @@ describe("PR review regressions", () => {
       screen.getByRole("heading", { level: 1, name: "All pull requests" }),
     ).toBeTruthy();
   });
+  it("returns to the loop overview from the sidebar while a loop is open", async () => {
+    await mount();
+    for (const name of [/^Needs you/, /^Review loops/]) {
+      await user().click(screen.getByRole("button", { name: "Review loops" }));
+      await user().click(
+        within(screen.getByRole("list", { name: "Loops" })).getByText(
+          snapshot.prs[2].title,
+        ),
+      );
+      expect(screen.getByRole("list", { name: "Rounds" })).toBeTruthy();
+      await user().click(screen.getByRole("button", { name }));
+      expect(screen.queryByRole("list", { name: "Rounds" })).toBeNull();
+      expect(screen.getByRole("list", { name: "Needs you" })).toBeTruthy();
+    }
+  });
   it("opens on all pull requests in manual mode", async () => {
     await mount();
     expect(

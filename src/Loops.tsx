@@ -389,9 +389,16 @@ function AllReviews({ onChoose }: Pick<AttentionHandlers, "onChoose">) {
 }
 
 /** Which loops are running, which are finished, and which need you. */
-export function Loops(go: AttentionHandlers) {
+export function Loops({
+  selected,
+  onSelect,
+  ...go
+}: AttentionHandlers & {
+  /** The loop whose rounds are shown; the app clears it to show the overview. */
+  selected: string | null;
+  onSelect: (prId: string | null) => void;
+}) {
   const { snapshot: s } = useOrbit();
-  const [selected, setSelected] = useState<string | null>(null);
   const all = loops(s);
   const loop = all.find((l) => l.prId === selected);
   if (loop)
@@ -400,7 +407,7 @@ export function Loops(go: AttentionHandlers) {
         <Timeline
           loop={loop}
           pr={knownPr(s, loop.prId)}
-          onBack={() => setSelected(null)}
+          onBack={() => onSelect(null)}
           onChoose={go.onChoose}
         />
       </VStack>
@@ -419,7 +426,7 @@ export function Loops(go: AttentionHandlers) {
       {running.length > 0 && (
         <LoopRows
           items={running}
-          onSelect={setSelected}
+          onSelect={onSelect}
           header={<Heading level={3}>Loops</Heading>}
         />
       )}
@@ -430,7 +437,7 @@ export function Loops(go: AttentionHandlers) {
         >
           <LoopRows
             items={finished}
-            onSelect={setSelected}
+            onSelect={onSelect}
             label="Finished loops"
           />
         </Collapsible>
