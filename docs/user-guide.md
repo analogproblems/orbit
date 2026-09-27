@@ -8,7 +8,7 @@ Orbit connects open GitHub pull requests to local Codex review runs. Each run ha
 
 1. Launch the desktop app and open **Settings**. Check that **Codex CLI** and **GitHub CLI** show **Connected** and that GitHub shows the account you intend to use.
 2. Open **Repositories → Add repository**. Choose a GitHub repository and enter the absolute path to its existing local clone. Leave automatic reviews off for a manual first run, then click **Save repository**.
-3. Open **Pull requests**. Saving the repository starts a sync; the refresh button also syncs on demand.
+3. Open **All pull requests**. Saving the repository starts a sync; the refresh button also syncs on demand.
 4. Select an open PR and click **Start review**. Open **Review chat** to follow its progress. Expand **Execution log** entries to inspect command and setup output.
 5. If a banner says approval is needed, open **Review request**, inspect the requested action, and choose **Approve once** or **Deny**.
 6. When the status becomes **Ready to publish**, read the report and the findings list under it. You can ask a follow-up before publishing.
@@ -140,13 +140,13 @@ Each run captures an explicit model, effort, head commit, and base commit when q
 | **Failed**            | Open the chat error and execution logs. Correct the cause and use **Review again** when the PR is in the inbox.                      |
 | **Stopped**           | The run was interrupted or cancelled. It is not automatically retried for the same revision.                                         |
 
-Use **Stop** in the PR detail or Review activity to cancel queued work or interrupt active work. Publishing is a separate state and does not have a Stop control.
+Use **Stop** in the PR detail or under **All reviews** on the **Review loops** page to cancel queued work or interrupt active work. Publishing is a separate state and does not have a Stop control.
 
-**Review activity** lists runs, including those whose PR has left the inbox. **In progress** includes queued runs as well as executing runs. Open a row to read its chat. When a PR has multiple runs, the **Review history** dropdown in its chat selects one. The sidebar shows up to five recent runs. **Ready to publish** counts use the same rules as the badges and publication buttons. Derived labels do not overwrite stored review outcomes; a published report retains **Published** even when the PR changes.
+**All reviews**, folded at the bottom of the **Review loops** page, lists every run, manual ones and those whose PR has left the inbox included. Open a row to read its chat. When a PR has multiple runs, the **Review history** dropdown in its chat selects one. The sidebar shows up to five recent runs and counts the runs in progress, queued ones included, beside **Review loops**. **Ready to publish** labels use the same rules as the badges and publication buttons. Derived labels do not overwrite stored review outcomes; a published report retains **Published** even when the PR changes.
 
 The chat shows short status notes inline. Expand **Execution log** entries for multiline setup output and recorded command output. Some output is capped, so these logs are not a complete terminal transcript. The composer stays docked at the bottom; a **Scroll to bottom** button appears when you scroll away from the latest messages.
 
-In long inbox and activity lists, the first ten visible entries use live relative timestamps. The ten latest chat entries also use live relative timestamps; older entries show an absolute date and time to avoid a timer for every retained message.
+In long inbox, loop and review lists, the first ten visible entries use live relative timestamps. The ten latest chat entries also use live relative timestamps; older entries show an absolute date and time to avoid a timer for every retained message.
 
 ### Approvals and follow-ups
 
@@ -174,7 +174,7 @@ Before the first follow-up with that choice, Orbit unsubscribes its idle thread 
 
 Publishing uses the connected GitHub account. A run with a findings list is published as a GitHub pull request review. Each finding whose lines are all inside one changed part of the diff becomes an inline comment on those lines, starting with its priority and title, so the PR author can reply to each finding in its own thread. The review's own text holds the verdict, the summary, **Since the last round**, any tests Codex could not run, and, under **Other findings**, each finding that could not go inline with its file, lines and the reason: outside the repository, file not changed in this pull request, diff too large to show, lines not in the diff, or spans more than one part of the diff. If GitHub refuses a comment's lines anyway, Orbit posts the review again once with every finding in its text. The review is always a plain comment review, never Approve or Request changes; Orbit's verdict is in its commit status. An unstructured run is published as a regular comment in the PR conversation, as before. Orbit never merges the PR.
 
-The publication dialog previews the stored report. A failed request leaves the preview open with its error and **Retry publication**. A successful request closes the preview. Published run details, chats, and Activity offer **View comment on GitHub** when the saved comment URL is available. The posted comment also includes an Orbit heading, the reviewed head and base commit IDs, and model/effort labels. For a run with a findings list, the preview lists each finding and says whether it will go on its lines or in the review's text, and why, then shows the review's text as it will be posted. It checks the PR's current diff to decide; if that check fails, the preview says so, and Orbit checks again when publishing. For an unstructured run, the preview shows the stored report. The preview is not an editor, and there is no report-editing or comment-updating control.
+The publication dialog previews the stored report. A failed request leaves the preview open with its error and **Retry publication**. A successful request closes the preview. Published run details, chats, loop rounds, and **All reviews** offer **View comment on GitHub** when the saved comment URL is available. The posted comment also includes an Orbit heading, the reviewed head and base commit IDs, and model/effort labels. For a run with a findings list, the preview lists each finding and says whether it will go on its lines or in the review's text, and why, then shows the review's text as it will be posted. It checks the PR's current diff to decide; if that check fails, the preview says so, and Orbit checks again when publishing. For an unstructured run, the preview shows the stored report. The preview is not an editor, and there is no report-editing or comment-updating control.
 
 Before posting a new comment, Orbit requires a completed, nonempty report and rechecks that the PR is open and its head and base still match. If new commits are available, sync and use **Review again**. A GitHub change can still occur between the final check and the write; the comment identifies the exact commits reviewed.
 
@@ -221,15 +221,26 @@ Trust only accounts whose PRs you intend to review automatically. Anyone able to
 
 Each automatic review of a PR is one round of its review loop. Orbit gives every round with a findings list its own verdict: **changes requested** when a finding at or above the **Blocking findings** priority is new or was found still open or disputed, and **clean** otherwise. Codex's own verdict is shown beside it when the two differ. The verdict is recorded when the findings are extracted, so changing the setting affects later rounds only.
 
-The PR detail and inbox show the loop's state: **Reviewing**, **Waiting for author**, **Clean**, **Needs you** with the reason, or **Stopped**. A loop needs you when a review failed or has no findings list, an approval is pending, a report is waiting for you to publish it, the reviewer disputes a finding the author declined, the same blocking findings stayed open across two rounds, or the round limit is reached. Each repository allows 4 automatic rounds per PR by default (**Automatic rounds per pull request**). **Continue loop** allows two more; **Stop loop** pauses automatic reviews of that PR. **Review again** always works and does not count as a round.
+The **Review loops** page, the PR detail and the inbox show the loop's state: **Reviewing**, **Waiting for author**, **Clean**, **Needs you** with the reason, or **Stopped**. A loop needs you when a review failed or has no findings list, an approval is pending, a report is waiting for you to publish it, the reviewer disputes a finding the author declined, the same blocking findings stayed open across two rounds, or the round limit is reached. Each repository allows 4 automatic rounds per PR by default (**Automatic rounds per pull request**). **Continue loop** allows two more; **Stop loop** pauses automatic reviews of that PR. **Review again** always works and does not count as a round.
 
 When a PR gets new commits while an automatic round is queued or running for the older head, that round is marked **Superseded**: a queued one is cancelled, a running one finishes but is not published or counted. With **Wait for pushes to settle** on, Orbit starts the next round only after the head has stayed the same for one poll interval, so a burst of pushes gets one review. This also delays the first review of a newly found PR by one interval.
 
 While automatic publication is on, Orbit also shows each automatic round's result on the reviewed commit as the **orbit/review** status check: pending while the round is in progress, success when clean, failure when changes are requested, and error when the loop needs you. Its description gives the round and the blocking count, such as "Round 2 · 1 blocking finding". Published comments also carry a hidden line with the verdict for agents to read, such as `<!-- orbit-verdict: changes_requested round=2 blocking=1 -->`. Turn off **GitHub status check** in Settings to stop setting the check. If GitHub refuses a status, the PR detail says why; the review is not affected. Orbit never makes the check required: that is a branch protection choice in GitHub.
 
+### Review loops
+
+**Review loops** is the first page Orbit opens while Autopilot is on; otherwise it opens **All pull requests**. The header reads, for example, "Autopilot · 3 loops running · 1 needs you". The page lists:
+
+- **Needs you** at the top (see below);
+- **Loops**: one row per PR that has had at least one automatic round, with its state, "Round 3 of 4", its blocking findings round by round such as "4 → 1 → 0", and when it last changed;
+- **Finished**, folded: loops that are clean, and loops whose PR left the inbox (merged, closed, or no longer requested), shown as **Left the inbox**;
+- **All reviews**, folded: every run, as described above.
+
+Select a loop to see its rounds in order. Each round shows the commits it covered, its verdict, its findings by priority, what happened since the last round (fixed, still open, declined), **View comment on GitHub** once published, and a button to open that round's chat. **All loops** goes back.
+
 ### What needs you
 
-When something can only move forward with you, the sidebar shows **Needs you** with a count, and **Review activity** lists each item at the top with its reason. Selecting an item opens where it is resolved: the review's chat, the PR, **Repositories**, or **Settings**. An approval item opens that exact request. An item appears when:
+When something can only move forward with you, the sidebar shows **Needs you** with a count, and the **Review loops** page lists each item at the top with its reason and one main action: **Approve or deny** for an approval, **Publish** for a held report or one waiting for you, **Continue loop** when the round limit is reached, **Open repositories** or **Open settings** for sync and save problems, and **Open chat** otherwise. Selecting the item itself opens where it is resolved: the review's chat, the PR, **Repositories**, or **Settings**. An approval item opens that exact request. An item appears when:
 
 - a review is waiting for your approval;
 - an automatic report was held instead of published, with the reason;
@@ -307,7 +318,7 @@ If the disk is full or Orbit cannot write its data directory, cleanup cannot sav
 
 ### Export a report
 
-For an inactive run with a nonempty report, choose **Export report** in its chat or Review activity. The desktop app opens a native **Save As** dialog. Choose a Markdown destination or cancel normally. If you omit the extension, the dialog opens again with `.md` added for you to confirm the final filename and any overwrite. An explicitly entered extension is kept. Orbit writes only the final dialog-selected destination. A write failure is shown next to the action and can be retried.
+For an inactive run with a nonempty report, choose **Export report** in its chat or under **All reviews**. The desktop app opens a native **Save As** dialog. Choose a Markdown destination or cancel normally. If you omit the extension, the dialog opens again with `.md` added for you to confirm the final filename and any overwrite. An explicitly entered extension is kept. Orbit writes only the final dialog-selected destination. A write failure is shown next to the action and can be retried.
 
 The Markdown contains the stored report, PR identity/link, reviewed head and base commits, creation time, saved model/effort labels, and publication link when available. It excludes chat transcripts and execution logs. Export does not post to GitHub. In the browser demo, export downloads Markdown; storage sizes and cleanup are simulated.
 
@@ -331,7 +342,7 @@ The Markdown contains the stored report, PR identity/link, reviewed head and bas
 | Files failed to load                                 | Use **Retry** in **Files changed**.                                                                                                                                     |
 | Cleanup failed                                       | Check the per-run error under Storage, correct the cause, refresh, and select the run again.                                                                            |
 | **Ready to publish** but no automatic comment        | The run may be manual, a switch may have been off when it completed, or publication may have been held/failed. Read the chat error and publish manually if appropriate. |
-| Follow-up rejected after cleanup                     | Read the saved chat in Activity. Reconnect the repository and start another review if the PR is still open.                                                             |
+| Follow-up rejected after cleanup                     | Read the saved chat under **All reviews**. Reconnect the repository and start another review if the PR is still open.                                                   |
 | **Orbit is already running for this workspace**      | Close the existing instance. Removing the lock file is not the normal recovery path.                                                                                    |
 | Cannot read saved state                              | The app leaves the invalid file untouched and cannot start normally. Preserve the app-data directory for recovery; it does not offer an automatic repair/reset flow.    |
 | Could not save local state; automation paused        | Resolve the app-data write failure before re-enabling automation. Unsaved changes are not guaranteed to survive exit.                                                   |
@@ -346,7 +357,7 @@ The links below point to the implementation in this checkout, including the usab
 
 | Area                                                                    | Code inspected                                                                                                                                                    |
 | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Navigation and PR details                                               | [App.tsx](../src/App.tsx), [Inbox.tsx](../src/Inbox.tsx), [Detail.tsx](../src/Detail.tsx), [Activity.tsx](../src/Activity.tsx)                                    |
+| Navigation and PR details                                               | [App.tsx](../src/App.tsx), [Inbox.tsx](../src/Inbox.tsx), [Detail.tsx](../src/Detail.tsx), [Loops.tsx](../src/Loops.tsx)                                          |
 | Chat, Markdown, and changed files                                       | [Chat.tsx](../src/Chat.tsx), [LegacyChatModel.tsx](../src/LegacyChatModel.tsx), [SafeMarkdown.tsx](../src/SafeMarkdown.tsx), [Files.tsx](../src/Files.tsx)        |
 | Settings autosave and repository dialogs                                | [Settings.tsx](../src/Settings.tsx), [SaveFeedback.tsx](../src/SaveFeedback.tsx), [Repositories.tsx](../src/Repositories.tsx)                                     |
 | Derived statuses, publication/send eligibility                          | [types.ts](../src/types.ts)                                                                                                                                       |

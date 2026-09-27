@@ -743,6 +743,12 @@ pub struct LoopState {
     /// Automatic rounds so far, and how many are allowed.
     pub rounds: u32,
     pub round_limit: u32,
+    /// The rounds' review IDs, oldest first.
+    pub round_ids: Vec<String>,
+    /// The PR has left the inbox (merged, closed, or no longer requested),
+    /// so the loop is over whatever its last state was.
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub closed: bool,
 }
 pub fn eligible(pr: &PullRequest, s: &Snapshot) -> bool {
     !pr.draft

@@ -32,8 +32,8 @@ export function LoopToken({ state }: { state: LoopState }) {
   return (
     <Token
       size="sm"
-      color={loopColors[state.status]}
-      label={`Loop: ${loopStatusLabels[state.status]}`}
+      color={state.closed ? "gray" : loopColors[state.status]}
+      label={`Loop: ${state.closed ? "Left the inbox" : loopStatusLabels[state.status]}`}
     />
   );
 }
@@ -75,36 +75,40 @@ export function LoopPanel({ prId }: { prId: string }) {
           Round {state.rounds} of {state.roundLimit}
         </Text>
       </HStack>
-      {state.reason && <Text>{state.reason}</Text>}
+      {state.reason && !state.closed && <Text>{state.reason}</Text>}
       {statusError && (
         <Text type="supporting" color="secondary">
           GitHub did not accept the status check: {statusError}
         </Text>
       )}
-      <HStack gap={2}>
-        {paused ? (
-          <Button
-            label="Continue loop"
-            size="sm"
-            isLoading={busy}
-            isDisabled={busy}
-            onClick={() => void run("continue_loop", { rounds: 2 })}
-          />
-        ) : (
-          <Button
-            label="Stop loop"
-            size="sm"
-            isLoading={busy}
-            isDisabled={busy}
-            onClick={() => void run("stop_loop", {})}
-          />
-        )}
-      </HStack>
-      <Text type="supporting" color="secondary">
-        {paused
-          ? "Continue allows two more automatic rounds. Review again always works and doesn’t count toward the limit."
-          : "Stop pauses automatic reviews of this pull request. Review again still works."}
-      </Text>
+      {!state.closed && (
+        <HStack gap={2}>
+          {paused ? (
+            <Button
+              label="Continue loop"
+              size="sm"
+              isLoading={busy}
+              isDisabled={busy}
+              onClick={() => void run("continue_loop", { rounds: 2 })}
+            />
+          ) : (
+            <Button
+              label="Stop loop"
+              size="sm"
+              isLoading={busy}
+              isDisabled={busy}
+              onClick={() => void run("stop_loop", {})}
+            />
+          )}
+        </HStack>
+      )}
+      {!state.closed && (
+        <Text type="supporting" color="secondary">
+          {paused
+            ? "Continue allows two more automatic rounds. Review again always works and doesn’t count toward the limit."
+            : "Stop pauses automatic reviews of this pull request. Review again still works."}
+        </Text>
+      )}
     </VStack>
   );
 }

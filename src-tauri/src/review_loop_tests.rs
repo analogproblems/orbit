@@ -456,3 +456,42 @@ fn the_newest_round_on_a_commit_decides_its_status() {
     assert_eq!(wanted.len(), 1);
     assert_eq!(wanted[0].status.state, "success");
 }
+#[test]
+fn states_list_rounds_oldest_first_and_keep_loops_that_left_the_inbox() {
+    let (mut s, p) = snapshot();
+    let mut other = p.clone();
+    other.id = "a/b#2".into();
+    other.number = 2;
+    s.prs.push(other.clone());
+    let mut stopped = round(&p, "old", 3, vec![]);
+    stopped.status = "cancelled".into();
+    let mut replaced = round(&p, "older", 4, vec![]);
+    replaced.superseded = true;
+    let first = round(&p, "a", 1, vec![finding("a-0", 1, "Bug")]);
+    let second = round(&p, &p.head_sha, 5, vec![]);
+    s.reviews
+        .extend([second.clone(), stopped, replaced, first.clone()]);
+    let all = states(&s);
+    assert_eq!(all.len(), 1, "a PR without automatic rounds has no loop");
+    assert_eq!(all[0].round_ids, [first.id.clone(), second.id.clone()]);
+    assert!(!all[0].closed);
+
+    // The PR leaves the inbox: its loop is kept as finished.
+    s.history_prs.push(s.prs.remove(0));
+    let all = states(&s);
+    assert_eq!(all.len(), 1);
+    assert!(all[0].closed);
+    assert_eq!(all[0].pr_id, p.id);
+    assert_eq!(all[0].round_ids.len(), 2);
+    // One that left without a round is not a loop, even if it was stopped.
+    s.history_prs.push(s.prs.remove(0));
+    s.loops.push(LoopControl {
+        pr_id: other.id.clone(),
+        stopped: true,
+        extra_rounds: 0,
+    });
+    assert_eq!(states(&s).len(), 1);
+    let saved = serde_json::to_value(&all[0]).unwrap();
+    assert_eq!(saved["closed"], true);
+    assert_eq!(saved["roundIds"].as_array().unwrap().len(), 2);
+}
