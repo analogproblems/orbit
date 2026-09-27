@@ -41,6 +41,7 @@ const columns: TableColumn<Row>[] = [
       <VStack gap={1}>
         <Text weight="medium">{f.title}</Text>
         <Text type="code">{findingLocation(f)}</Text>
+        <Text type="supporting">{f.body}</Text>
       </VStack>
     ),
   },

@@ -337,7 +337,14 @@ pub(super) fn review_prompt(
                 out.push_str(&format!(" ({})", left_out.join("; ")));
             }
             out.push_str(":\n");
-            let general: Vec<_> = c.kept.iter().filter(|c| c.finding.is_none()).collect();
+            // Replies shown above stay there; a reply to a finding no longer
+            // carried (fixed in an earlier round) is listed here with its thread.
+            let carried = |c: &&Comment| {
+                c.finding
+                    .as_ref()
+                    .is_some_and(|id| round.findings.iter().any(|f| &f.id == id))
+            };
+            let general: Vec<_> = c.kept.iter().filter(|c| !carried(c)).collect();
             if general.is_empty() {
                 out.push_str(if c.kept.is_empty() {
                     "(none)\n"
@@ -346,11 +353,11 @@ pub(super) fn review_prompt(
                 });
             }
             for comment in general {
-                let on = comment
-                    .location
-                    .as_ref()
-                    .map(|l| format!(" on {l}"))
-                    .unwrap_or_default();
+                let on = match (&comment.finding, &comment.location) {
+                    (Some(id), _) => format!(" in the thread of earlier finding {id}"),
+                    (None, Some(l)) => format!(" on {l}"),
+                    (None, None) => String::new(),
+                };
                 out.push_str(&format!(
                     "- @{}, {}{on}:\n{}\n",
                     comment.author,

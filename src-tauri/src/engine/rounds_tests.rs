@@ -523,3 +523,38 @@ fn keeps_replies_in_a_findings_thread_with_that_finding() {
         pr.author
     )));
 }
+#[test]
+fn keeps_replies_to_findings_no_longer_carried() {
+    let pr = trusted_pr();
+    let mut previous = finished(&pr, "b", "2026-01-01T00:00:00.000Z", &["r-0"]);
+    previous.previous_round = Some(round());
+    previous.prior_findings = vec![PriorFinding {
+        id: "r1-0".into(),
+        status: PriorStatus::Fixed,
+        note: "Fixed.".into(),
+    }];
+    let mut reply = comment(
+        &pr.author,
+        "2026-01-02T00:00:00Z",
+        "The fix was reverted; this is broken again.",
+    );
+    reply["pull_request_review_id"] = json!(6);
+    reply["in_reply_to_id"] = json!(77);
+    let threads = HashMap::from([(77, "r1-0".to_string())]);
+    let c = trusted_comments(&[reply], &previous, &pr, &[], None, &threads);
+    assert_eq!(c.kept[0].finding.as_deref(), Some("r1-0"));
+    let mut round = round();
+    round.findings = carried_findings(&previous);
+    assert!(round.findings.iter().all(|f| f.id != "r1-0"));
+    let prompt = review_prompt(
+        &Review::new(&pr, &Settings::default(), false),
+        "m",
+        &round,
+        &Ok(c),
+        &Err("Not listed.".into()),
+    );
+    assert!(prompt.contains(&format!(
+        "- @{}, 2026-01-02T00:00:00Z in the thread of earlier finding r1-0:\n  The fix was reverted; this is broken again.",
+        pr.author
+    )), "{prompt}");
+}

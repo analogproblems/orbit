@@ -40,6 +40,8 @@ describe("publish preview", () => {
       ),
     ).toBeTruthy();
     expect(screen.getByText("On its lines")).toBeTruthy();
+    // An inline finding's text is not in the review text, so the row shows it.
+    expect(screen.getByText(findings[0].body)).toBeTruthy();
     expect(
       screen.getByText("In the review text: lines not in the diff"),
     ).toBeTruthy();
