@@ -2,7 +2,7 @@
 
 Verified against the application code on September 23, 2026, including the usability and storage changes on `codex/usability-storage` based on commit `7768c85433e71946bf2163606a53e018fb0d8e3d`. This guide describes the desktop app. The browser demo has simulated behavior and separate data.
 
-Orbit connects open GitHub pull requests to local Codex review runs. Each run has a Git worktree and a chat. You can start reviews yourself, let Autopilot start eligible reviews, and publish completed reports as PR comments.
+Orbit connects open GitHub pull requests to local Codex review runs. Each run has a Git worktree and a chat. You can start reviews yourself, let Autopilot start eligible reviews, and publish completed reports as PR comments. For how Orbit works internally, including its isolation limits, see [architecture](architecture.md).
 
 ## Your first review
 
@@ -30,14 +30,14 @@ On this Linux checkout, launch the compiled app with:
 
 Close an existing Orbit instance before launching another. Orbit allows only one instance using the same app-data directory.
 
-The desktop app runs the `gh`, `git`, and `codex` programs from its environment. It uses the existing GitHub CLI authentication and Codex account configuration; there is no in-app login form or token field. If a connection is missing, use the relevant login command in a terminal:
+The desktop app runs the `gh`, `git`, and `codex` programs from its environment. It uses the existing GitHub CLI authentication and Codex account configuration; there is no in-app login form or token field, and Orbit does not store copies of your tokens. If a connection is missing, use the relevant login command in a terminal:
 
 ```sh
 gh auth login
 codex login
 ```
 
-Then use **Settings → Reconnect**. That action connects Codex and, if the connection succeeds, syncs GitHub. The inbox refresh button can sync GitHub separately. If launching through a desktop shortcut cannot find the CLIs, launch the executable from the terminal where they work.
+Then use **Settings → Reconnect**. That action connects Codex and, if the connection succeeds, syncs GitHub. The inbox refresh button can sync GitHub separately. If launching through a desktop shortcut cannot find the CLIs or their sign-ins (some desktops give GUI apps a different `PATH` or keyring environment), launch the executable from the terminal where they work.
 
 GitHub integration is fixed to **github.com**. There is no GitHub Enterprise hostname setting. Git fetches use the clone's `origin`, so Git must also be able to authenticate to that remote without an interactive prompt.
 
@@ -178,7 +178,7 @@ The publication dialog previews the stored report. A failed request leaves the p
 
 Before posting a new comment, Orbit requires a completed, nonempty report and rechecks that the PR is open and its head and base still match. If new commits are available, sync and use **Review again**. A GitHub change can still occur between the final check and the write; the comment identifies the exact commits reviewed.
 
-Reports matching recognized credential formats are held from automatic publication. Manual publication requires the **I checked the report** switch before **Publish to GitHub** becomes available. The formats include common service tokens, private-key headers, and JSON web tokens. This check does not detect every secret or redact matching text. Inspect the report before overriding it.
+Reports matching recognized credential formats are held from automatic publication. Manual publication requires the **I checked the report** switch before **Publish to GitHub** becomes available. The formats are GitHub, OpenAI/Anthropic, AWS, Slack, Google, Stripe, and npm tokens, private-key headers, and JSON web tokens. This check does not detect every secret or redact matching text. Inspect the report before overriding it.
 
 On an uncertain posting result, retry publication of the **same run**. Orbit looks for that run's marker in the PR's reviews and conversation comments before posting again. This avoids starting a fresh review merely to retry a comment. It can also confirm a comment that was posted before the PR subsequently changed. A formatted comment, review text or inline comment over Orbit's 60,000-byte threshold is refused; the error asks you to copy the report from the chat instead.
 
@@ -199,7 +199,7 @@ An automatic review can be queued when:
 - Codex is connected, workspace Autopilot is on, and the repository's automation switch is on.
 - The repository synced successfully in the latest completed poll in this session. This check governs new automatic scheduling; it is not a fresh GitHub check each time a previously queued run starts.
 - The PR is not a draft and its head branch belongs to its base repository.
-- GitHub identifies the author as an owner, member, or collaborator, or the login is in **Trusted accounts**.
+- GitHub identifies the author as an owner, member, or collaborator, or the login is in **Trusted accounts**. Pull requests you open with your own `gh` login from a branch in the repository qualify this way.
 - There is no active run for the PR and no previous run for the same head/base pair.
 - The PR's review loop is not stopped and has rounds left, and its head has not changed for one poll interval (see **The review loop** below).
 
@@ -221,7 +221,7 @@ Trust only accounts whose PRs you intend to review automatically. Anyone able to
 
 Each automatic review of a PR is one round of its review loop. Orbit gives every round with a findings list its own verdict: **changes requested** when a finding at or above the **Blocking findings** priority is new or was found still open or disputed, and **clean** otherwise. Codex's own verdict is shown beside it when the two differ. The verdict is recorded when the findings are extracted, so changing the setting affects later rounds only.
 
-The **Review loops** page, the PR detail and the inbox show the loop's state: **Reviewing**, **Waiting for author**, **Clean**, **Needs you** with the reason, or **Stopped**. A loop needs you when a review failed or has no findings list, an approval is pending, a report is waiting for you to publish it, the reviewer disputes a finding the author declined, the same blocking findings stayed open across two rounds, or the round limit is reached. Each repository allows 4 automatic rounds per PR by default (**Automatic rounds per pull request**). **Continue loop** allows two more; **Stop loop** pauses automatic reviews of that PR. **Review again** always works and does not count as a round.
+The **Review loops** page, the PR detail and the inbox show the loop's state: **Reviewing**, **Waiting for author**, **Clean**, **Needs you** with the reason, or **Stopped**. A loop needs you when a review failed or has no findings list, an approval is pending, a report is waiting for you to publish it, the reviewer disputes a finding the author declined, the same blocking findings stayed open across two rounds, or the round limit is reached. Apart from the round limit, **Needs you** is an alert, not a pause: while rounds remain, a new push still starts the next automatic round, and a clean loop is reviewed again when new commits arrive. Only the round limit and **Stop loop** keep Orbit from reviewing new pushes. Each repository allows 4 automatic rounds per PR by default (**Automatic rounds per pull request**). **Continue loop** allows two more; **Stop loop** pauses automatic reviews of that PR. **Review again** always works and does not count as a round.
 
 When a PR gets new commits while an automatic round is queued or running for the older head, that round is marked **Superseded**: a queued one is cancelled, a running one finishes but is not published or counted. With **Wait for pushes to settle** on, Orbit starts the next round only after the head has stayed the same for one poll interval, so a burst of pushes gets one review. This also delays the first review of a newly found PR by one interval.
 
