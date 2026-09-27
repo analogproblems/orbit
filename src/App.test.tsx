@@ -56,7 +56,17 @@ async function mount() {
       <App />
     </Theme>,
   );
-  await screen.findByPlaceholderText("Search pull requests…");
+  await waitFor(() =>
+    expect(screen.queryByText("Loading your workspace…")).toBeNull(),
+  );
+}
+/** Opens All reviews on the loops page and returns the row titled `label`. */
+async function allReviewsRow(label: string) {
+  await user().click(screen.getByRole("button", { name: "Review loops" }));
+  await user().click(screen.getByRole("button", { name: /^All reviews/ }));
+  return within(screen.getByRole("list", { name: "All reviews" }))
+    .getByText(label)
+    .closest("li") as HTMLElement;
 }
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -195,7 +205,7 @@ describe("PR review regressions", () => {
       reason: `Request ${i + 1}`,
     }));
     await mount();
-    await user().click(screen.getByRole("button", { name: "Review activity" }));
+    await user().click(screen.getByRole("button", { name: "Review loops" }));
     await user().click(await screen.findByText("Request 2"));
     const dialog = screen.getByRole("dialog", {
       name: "Codex needs your approval",
@@ -248,7 +258,7 @@ describe("PR review regressions", () => {
     };
     snapshot.attention = [item];
     await mount();
-    await user().click(screen.getByRole("button", { name: "Review activity" }));
+    await user().click(screen.getByRole("button", { name: "Review loops" }));
     // An item resolved in the meantime is not opened.
     act(() => listeners.get("orbit-open")!({ payload: { ...item, key: "x" } }));
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -275,14 +285,14 @@ describe("PR review regressions", () => {
     };
     snapshot.reviews.push(running);
     await mount();
-    await user().click(screen.getByRole("button", { name: "Review activity" }));
-    const exportButton = await screen.findByRole("button", {
+    const row = await allReviewsRow(saved.prId);
+    const exportButton = within(row).getByRole("button", {
       name: "Export report",
     });
     expect(exportButton.closest('[aria-disabled="true"]')).toBeNull();
     await user().click(exportButton);
     await user().click(
-      screen.getByRole("button", { name: "View comment on GitHub" }),
+      within(row).getByRole("button", { name: "View comment on GitHub" }),
     );
     const stop = screen.getByRole("button", {
       name: "Stop review acme/missing#12",
@@ -298,7 +308,11 @@ describe("PR review regressions", () => {
     expect(invoke).toHaveBeenCalledWith("cancel_review", {
       reviewId: running.id,
     });
-    expect(screen.getByText("Good reviews, in motion.")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Each pull request Orbit reviews on its own, round by round.",
+      ),
+    ).toBeTruthy();
   });
 
   it("counts what needs you in the sidebar and opens the list", async () => {
@@ -317,6 +331,51 @@ describe("PR review regressions", () => {
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: /^Needs you/ })).toBeNull(),
     );
+  });
+
+  it("opens on the loops under autopilot and keeps inbox search on Ctrl+K", async () => {
+    snapshot.settings.automatic = true;
+    await mount();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Review loops" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByText("Autopilot · 2 loops running · 2 need you"),
+    ).toBeTruthy();
+    fireEvent.keyDown(document, { key: "k", ctrlKey: true });
+    const search = await screen.findByPlaceholderText("Search pull requests…");
+    await waitFor(() => expect(document.activeElement).toBe(search));
+    expect(
+      screen.getByRole("heading", { level: 1, name: "All pull requests" }),
+    ).toBeTruthy();
+    // Landing happens once; switching autopilot off later stays put.
+    snapshot.settings.automatic = false;
+    act(emit);
+    expect(await screen.findByText("Manual mode")).toBeTruthy();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "All pull requests" }),
+    ).toBeTruthy();
+  });
+  it("returns to the loop overview from the sidebar while a loop is open", async () => {
+    await mount();
+    for (const name of [/^Needs you/, /^Review loops/]) {
+      await user().click(screen.getByRole("button", { name: "Review loops" }));
+      await user().click(
+        within(screen.getByRole("list", { name: "Loops" })).getByText(
+          snapshot.prs[2].title,
+        ),
+      );
+      expect(screen.getByRole("list", { name: "Rounds" })).toBeTruthy();
+      await user().click(screen.getByRole("button", { name }));
+      expect(screen.queryByRole("list", { name: "Rounds" })).toBeNull();
+      expect(screen.getByRole("list", { name: "Needs you" })).toBeTruthy();
+    }
+  });
+  it("opens on all pull requests in manual mode", async () => {
+    await mount();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "All pull requests" }),
+    ).toBeTruthy();
   });
 
   it("labels every tab panel while mounting only the active tab contents", async () => {
@@ -478,9 +537,9 @@ describe("publication", () => {
     expect(invoke).toHaveBeenCalledWith("open_github", {
       url: snapshot.reviews[0].commentUrl,
     });
-    await user().click(screen.getByRole("button", { name: "Review activity" }));
+    const row = await allReviewsRow(snapshot.prs[0].title);
     expect(
-      await screen.findByRole("button", { name: /View comment on GitHub/ }),
+      within(row).getByRole("button", { name: /View comment on GitHub/ }),
     ).toBeTruthy();
   });
 });
@@ -575,7 +634,7 @@ describe("autosave and follow-ups", () => {
       screen.getByRole("textbox", { name: "Add a trusted account" }),
       "half-typed",
     );
-    await user().click(screen.getByRole("button", { name: "Review activity" }));
+    await user().click(screen.getByRole("button", { name: "Review loops" }));
     fireEvent.keyDown(document, { key: ",", ctrlKey: true });
     expect(
       await screen.findByRole("combobox", { name: "Poll interval" }),
@@ -613,7 +672,8 @@ describe("autosave and follow-ups", () => {
     );
     fireEvent.keyDown(composer, { key: "Enter" });
     expect(invoke.mock.calls.some(([c]) => c === "send_message")).toBe(false);
-    await user().click(screen.getByRole("button", { name: "Review activity" }));
+    await user().click(screen.getByRole("button", { name: "Review loops" }));
+    await user().click(screen.getByRole("button", { name: /^All reviews/ }));
     await user().click(
       screen.getAllByRole("button", {
         name: new RegExp(snapshot.prs[0].title),
@@ -743,8 +803,10 @@ describe("storage and export", () => {
       return backend(cmd, args);
     });
     await mount();
-    await user().click(screen.getByRole("button", { name: "Review activity" }));
-    const exportButton = screen.getByRole("button", { name: "Export report" });
+    const row = await allReviewsRow(snapshot.prs[0].title);
+    const exportButton = within(row).getByRole("button", {
+      name: "Export report",
+    });
     await user().click(exportButton);
     expect(screen.queryByText(/Report exported/)).toBeNull();
     await user().click(exportButton);
@@ -815,7 +877,7 @@ describe("review regression cases", () => {
         (screen.getByRole("switch", { name }) as HTMLInputElement).checked,
       ).toBe(false);
     }
-    await user().click(screen.getByRole("button", { name: "Review activity" }));
+    await user().click(screen.getByRole("button", { name: "Review loops" }));
     fireEvent.keyDown(document, { key: ",", ctrlKey: true });
     expect(
       (
@@ -929,7 +991,7 @@ describe("review regression cases", () => {
     expect(
       screen.getByRole("combobox", { name: /^Reasoning effort/ }),
     ).toHaveProperty("disabled", true);
-    await user().click(screen.getByRole("button", { name: "Review activity" }));
+    await user().click(screen.getByRole("button", { name: "Review loops" }));
     fireEvent.keyDown(document, { key: ",", ctrlKey: true });
     expect(
       screen.getByRole("combobox", { name: /^Reasoning effort/ }),
@@ -971,7 +1033,7 @@ describe("review regression cases", () => {
     expect(screen.getByText(/keep using Orbit/).getAttribute("role")).toBe(
       "status",
     );
-    await user().click(screen.getByRole("button", { name: "Review activity" }));
+    await user().click(screen.getByRole("button", { name: "Review loops" }));
     fireEvent.keyDown(document, { key: ",", ctrlKey: true });
     expect(screen.getByText(/Removing worktrees…/).getAttribute("role")).toBe(
       "status",

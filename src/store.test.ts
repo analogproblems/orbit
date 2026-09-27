@@ -48,6 +48,11 @@ describe("review interactions", () => {
     expect(useOrbit.getState().snapshot.reviews[0].status).toBe("ready");
   });
   it("honors queue capacity and pauses automatic jobs when autopilot is disabled", async () => {
+    // Without the demo's loops, so both orbit PRs are new to autopilot.
+    const old = structuredClone(useOrbit.getState().snapshot);
+    old.reviews = old.reviews.filter((r) => !r.automatic);
+    localStorage.setItem("orbit-demo-v3", JSON.stringify(old));
+    await useOrbit.getState().init();
     const store = useOrbit.getState();
     await store.action("update_settings", {
       patch: { automatic: true, concurrency: 1 },
@@ -143,9 +148,11 @@ describe("older demo storage", () => {
     localStorage.setItem("orbit-demo-v3", JSON.stringify(old));
     await useOrbit.getState().init();
     const s = useOrbit.getState().snapshot;
+    const run = (id: string) =>
+      useOrbit.getState().snapshot.reviews.find((r) => r.id === id)!;
     expect(s.reviews[0].threadId).toBeTruthy();
-    expect(s.reviews[1].worktree).toBeTruthy();
-    expect(s.reviews[2].worktree).toBeUndefined();
+    expect(run(legacyRun.id).worktree).toBeTruthy();
+    expect(run(removed.id).worktree).toBeUndefined();
     expect(s.reviews[0].report).toBe(seeded.report);
     expect(s.reviews[0].messages).toEqual(seeded.messages);
     const sent = await useOrbit
@@ -153,7 +160,7 @@ describe("older demo storage", () => {
       .action("send_message", { reviewId: legacyRun.id, text: "Follow-up" });
     expect(sent.ok).toBe(true);
     await useOrbit.getState().init();
-    expect(useOrbit.getState().snapshot.reviews[2].worktree).toBeUndefined();
+    expect(run(removed.id).worktree).toBeUndefined();
   });
 });
 

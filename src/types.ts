@@ -251,6 +251,10 @@ export interface LoopState {
   reason: string | null;
   rounds: number;
   roundLimit: number;
+  /** The rounds' review IDs, oldest first. */
+  roundIds?: string[];
+  /** The PR left the inbox, so the loop is over. */
+  closed?: boolean;
 }
 export interface LoopControl {
   prId: string;
@@ -291,6 +295,7 @@ export interface AttentionHandlers {
   onRepositories: () => void;
   onSettings: () => void;
   onApproval: (reviewId: string, id: string | number) => void;
+  onPublish: (r: Review) => void;
 }
 /** Where an item is resolved: its review, its PR, or a settings page. */
 export function attentionAction(
@@ -312,6 +317,27 @@ export function attentionAction(
   }
   if (!p) return undefined;
   return () => go.onChoose(p, r);
+}
+/** The loop is over: clean, or its PR left the inbox. */
+export function loopFinished(l: LoopState) {
+  return !!l.closed || l.status === "clean";
+}
+/** Loops with at least one round, and the header's summary of them. */
+export function loops(s: Snapshot) {
+  return (s.loopStates ?? []).filter((l) => l.rounds > 0);
+}
+export function autopilotSummary(s: Snapshot) {
+  const running = loops(s).filter(
+    (l) => !loopFinished(l) && l.status !== "stopped",
+  ).length;
+  const needs = s.attention?.length ?? 0;
+  return [
+    "Autopilot",
+    `${running} ${running === 1 ? "loop" : "loops"} running`,
+    needs > 0 && `${needs} ${needs === 1 ? "needs" : "need"} you`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 export function loopState(s: Snapshot, prId: string) {
   return s.loopStates?.find((l) => l.prId === prId);

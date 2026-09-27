@@ -190,6 +190,126 @@ export function demoFindings(reviewId: string): Finding[] {
     },
   ];
 }
+/** One published automatic round with `blocking` findings left open. Later
+ * rounds find nothing new and carry the earlier findings forward. */
+function demoRound(
+  pr: PullRequest,
+  round: number,
+  blocking: number,
+  minutesAgo: number,
+  last: boolean,
+  previous?: Review,
+): Review {
+  const id = `demo-${pr.number}-round-${round}`;
+  const head = last ? pr.headSha : `${round}`.repeat(7) + pr.headSha.slice(7);
+  // What the previous round found, and what it left open from before.
+  const earlier = previous
+    ? [
+        ...(previous.findings ?? []),
+        ...(previous.previousRound?.findings ?? []).filter((f) =>
+          previous.priorFindings?.some(
+            (p) => p.id === f.id && p.status === "still_open",
+          ),
+        ),
+      ]
+    : [];
+  const findings: Finding[] = previous
+    ? []
+    : [
+        ...Array.from({ length: blocking }, (_, i) => ({
+          id: `${id}-${i}`,
+          title: `Blocking issue ${i + 1}`,
+          priority: 1,
+          path: "src/reviews/queue.ts",
+          startLine: 40 + i * 10,
+          endLine: 40 + i * 10,
+          body: "An illustrative finding in demo mode.",
+          confidence: 0.8,
+        })),
+        {
+          id: `${id}-${blocking}`,
+          title: "Name the retry constant",
+          priority: 2,
+          path: "src/reviews/queue.ts",
+          startLine: 12,
+          endLine: 12,
+          body: "An illustrative nit in demo mode.",
+          confidence: 0.6,
+        },
+      ];
+  // The first `blocking` earlier blocking findings stay open; the rest are fixed.
+  let open = 0;
+  const priorFindings = earlier.map((f) => ({
+    id: f.id,
+    status:
+      f.priority > 1
+        ? ("declined_accepted" as const)
+        : open++ < blocking
+          ? ("still_open" as const)
+          : ("fixed" as const),
+    note: "",
+  }));
+  const verdict = blocking ? "changes_requested" : "clean";
+  const report = blocking
+    ? `${blocking} blocking finding${blocking === 1 ? "" : "s"} remain. Illustrative report in demo mode.`
+    : "No blocking findings. Illustrative report in demo mode.";
+  return {
+    id,
+    prId: pr.id,
+    headSha: head,
+    baseSha: pr.baseSha,
+    status: "posted",
+    model: "demo-review-model",
+    effort: "high",
+    createdAt: ago(minutesAgo + 4),
+    updatedAt: ago(minutesAgo),
+    messages: [
+      {
+        id: `${id}-msg`,
+        role: "agent",
+        text: report,
+        createdAt: ago(minutesAgo),
+      },
+    ],
+    report,
+    commentUrl: `${pr.url}#pullrequestreview-${pr.number}${round}`,
+    automatic: true,
+    isReview: true,
+    findings,
+    verdict,
+    orbitVerdict: verdict,
+    blocking,
+    summary: report,
+    previousRound: previous
+      ? {
+          reviewId: previous.id,
+          headSha: previous.headSha,
+          verdict: previous.orbitVerdict ?? null,
+          findings: earlier,
+          commentsIncluded: 0,
+          commentsOmitted: 0,
+        }
+      : null,
+    priorFindings,
+  };
+}
+/** A loop's rounds, newest first as the engine keeps them. */
+function demoLoop(pr: PullRequest, blocking: number[], minutesAgo: number) {
+  const rounds: Review[] = [];
+  blocking.forEach((n, i) =>
+    rounds.push(
+      demoRound(
+        pr,
+        i + 1,
+        n,
+        minutesAgo + (blocking.length - 1 - i) * 90,
+        i === blocking.length - 1,
+        rounds[i - 1],
+      ),
+    ),
+  );
+  return rounds.reverse();
+}
 export function freshDemo(): Snapshot {
   const prs: PullRequest[] = data.map((d, i) => ({
     id: `acme/${d[0]}#${d[1]}`,
@@ -257,16 +377,21 @@ export function freshDemo(): Snapshot {
     automatic: false,
     isReview: true,
   };
+  // Converged, waiting for its author, and out of rounds.
+  const clean = demoLoop(prs[4], [4, 1, 0], 30);
+  const waiting = demoLoop(prs[2], [3, 2], 20);
+  const limited = demoLoop(prs[1], [3, 2, 2, 1], 15);
+  const ids = (rounds: Review[]) => rounds.map((r) => r.id).reverse();
   return {
     prs,
-    reviews: [review],
+    reviews: [review, ...limited, ...waiting, ...clean],
     // The browser demo has no engine to derive these, so they are fixed.
     attention: [
       {
         key: `loop:${prs[1].id}:Round limit reached.`,
         kind: "loop",
         prId: prs[1].id,
-        reviewId: null,
+        reviewId: limited[0].id,
         approvalId: null,
         repo: null,
         reason: "Round limit reached.",
@@ -289,6 +414,23 @@ export function freshDemo(): Snapshot {
         reason: "Round limit reached.",
         rounds: 4,
         roundLimit: 4,
+        roundIds: ids(limited),
+      },
+      {
+        prId: prs[2].id,
+        status: "waiting_for_author",
+        reason: null,
+        rounds: 2,
+        roundLimit: 4,
+        roundIds: ids(waiting),
+      },
+      {
+        prId: prs[4].id,
+        status: "clean",
+        reason: null,
+        rounds: 3,
+        roundLimit: 4,
+        roundIds: ids(clean),
       },
     ],
     settings: {

@@ -30,11 +30,11 @@ import {
   VStack,
 } from "@astryxdesign/core";
 import {
-  Activity as ActivityIcon,
   BellRing,
   FolderGit2,
   GitPullRequest,
   Inbox as InboxIcon,
+  Repeat,
   Send,
   Settings2,
   SlidersHorizontal,
@@ -44,6 +44,7 @@ import { listen } from "@tauri-apps/api/event";
 import {
   activeStatuses,
   attentionAction,
+  autopilotSummary,
   canPublish,
   latestReview,
   publishTarget,
@@ -56,9 +57,7 @@ import { Detail, type DetailTab } from "./Detail";
 import { SaveFeedback } from "./SaveFeedback";
 import { PublishPreview } from "./PublishPreview";
 
-const Activity = lazy(() =>
-  import("./Activity").then((m) => ({ default: m.Activity })),
-);
+const Loops = lazy(() => import("./Loops").then((m) => ({ default: m.Loops })));
 const SettingsPage = lazy(() =>
   import("./Settings").then((m) => ({ default: m.SettingsPage })),
 );
@@ -66,7 +65,7 @@ const Repositories = lazy(() =>
   import("./Repositories").then((m) => ({ default: m.Repositories })),
 );
 
-type Page = "inbox" | "activity" | "repositories" | "settings";
+type Page = "inbox" | "loops" | "repositories" | "settings";
 export default function App() {
   const {
     snapshot: s,
@@ -79,6 +78,12 @@ export default function App() {
     saves,
   } = useOrbit();
   const [page, setPage] = useState<Page>("inbox");
+  // The loop whose rounds are open on the loops page.
+  const [loop, setLoop] = useState<string | null>(null);
+  const openLoops = () => {
+    setLoop(null);
+    setPage("loops");
+  };
   const [selected, setSelected] = useState<string | null>(null);
   const [selectedReview, setSelectedReview] = useState<string | null>(null);
   const [tab, setTab] = useState<DetailTab>("overview");
@@ -116,8 +121,11 @@ export default function App() {
     let off: (() => void) | undefined;
     let gone = false;
     void init().then((f) => {
-      if (gone) f();
-      else off = f;
+      if (gone) return f();
+      off = f;
+      // Loops is the first page under autopilot; the inbox otherwise.
+      if (useOrbit.getState().snapshot.settings.automatic)
+        setPage((p) => (p === "inbox" ? "loops" : p));
     });
     return () => {
       gone = true;
@@ -191,6 +199,7 @@ export default function App() {
     onRepositories: () => setPage("repositories"),
     onSettings: () => setPage("settings"),
     onApproval: openApproval,
+    onPublish: setPublish,
   };
   useEffect(() => {
     openNotified.current = (item) => {
@@ -218,8 +227,8 @@ export default function App() {
     setBusy(false);
   };
   const titles: Record<Page, string> = {
-    inbox: "Pull requests",
-    activity: "Review activity",
+    inbox: "All pull requests",
+    loops: "Review loops",
     repositories: "Repositories",
     settings: "Settings",
   };
@@ -296,24 +305,24 @@ export default function App() {
                   label="Needs you"
                   icon={<BellRing />}
                   endContent={<Badge variant="warning" label={needsYou} />}
-                  onClick={() => setPage("activity")}
+                  onClick={openLoops}
                 />
               )}
               <SideNavItem
-                label="Pull requests"
+                label="Review loops"
+                icon={<Repeat />}
+                isSelected={page === "loops"}
+                endContent={
+                  active.length ? <Badge label={active.length} /> : undefined
+                }
+                onClick={openLoops}
+              />
+              <SideNavItem
+                label="All pull requests"
                 icon={<GitPullRequest />}
                 isSelected={page === "inbox"}
                 endContent={<Badge label={s.prs.length} />}
                 onClick={() => setPage("inbox")}
-              />
-              <SideNavItem
-                label="Review activity"
-                icon={<ActivityIcon />}
-                isSelected={page === "activity"}
-                endContent={
-                  active.length ? <Badge label={active.length} /> : undefined
-                }
-                onClick={() => setPage("activity")}
               />
               <SideNavItem
                 label="Repositories"
@@ -333,7 +342,7 @@ export default function App() {
                     key={r.id}
                     label={p?.title ?? r.prId}
                     icon={<GitPullRequest />}
-                    onClick={() => (p ? choose(p, r) : setPage("activity"))}
+                    onClick={() => (p ? choose(p, r) : openLoops())}
                   />
                 );
               })}
@@ -357,7 +366,7 @@ export default function App() {
                   isDisabled={saves.automatic?.state === "saving"}
                   onChange={(automatic) => void save({ automatic })}
                   description={
-                    s.settings.automatic ? "Autopilot" : "Manual mode"
+                    s.settings.automatic ? autopilotSummary(s) : "Manual mode"
                   }
                 />
                 <IconButton
@@ -489,8 +498,8 @@ export default function App() {
             ) : (
               <LayoutContent padding={0}>
                 <Suspense fallback={<Spinner label="Loading page…" />}>
-                  {page === "activity" ? (
-                    <Activity {...handlers} />
+                  {page === "loops" ? (
+                    <Loops {...handlers} selected={loop} onSelect={setLoop} />
                   ) : page === "repositories" ? (
                     <Repositories />
                   ) : (

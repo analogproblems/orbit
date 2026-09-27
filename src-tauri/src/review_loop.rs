@@ -141,6 +141,8 @@ pub fn state(s: &Snapshot, pr: &PullRequest) -> Option<LoopState> {
             reason: reason.map(str::to_owned),
             rounds: rounds.len() as u32,
             round_limit: limit,
+            round_ids: rounds.iter().rev().map(|r| r.id.clone()).collect(),
+            closed: false,
         })
     };
     if control(s, &pr.id).is_some_and(|c| c.stopped) {
@@ -222,9 +224,15 @@ pub fn state(s: &Snapshot, pr: &PullRequest) -> Option<LoopState> {
     }
     make(LoopStatus::WaitingForAuthor, None)
 }
-/// Loop states for every PR in the inbox that has one.
+/// Loop states for every PR in the inbox that has one, then the finished
+/// loops of PRs that left the inbox after at least one round.
 pub fn states(s: &Snapshot) -> Vec<LoopState> {
-    s.prs.iter().filter_map(|pr| state(s, pr)).collect()
+    let open = s.prs.iter().filter_map(|pr| state(s, pr));
+    let closed = s.history_prs.iter().filter_map(|pr| {
+        let l = state(s, pr).filter(|l| l.rounds > 0)?;
+        Some(LoopState { closed: true, ..l })
+    });
+    open.chain(closed).collect()
 }
 
 /// A review's round number within its PR's loop. None for a run that is not
