@@ -304,6 +304,7 @@ async fn a_refused_update_still_lets_a_pending_check_close() {
             review_id: id.clone(),
             method: "item/commandExecution/requestApproval".into(),
             params: serde_json::Value::Null,
+            requested_at: String::new(),
         })
     })
     .await;
@@ -415,6 +416,7 @@ async fn a_refusal_is_forgotten_once_the_wanted_status_moves_on() {
         review_id: id,
         method: "item/commandExecution/requestApproval".into(),
         params: serde_json::Value::Null,
+        requested_at: String::new(),
     };
     sync(&e).await;
     // An approval's error status is refused while GitHub is failing.

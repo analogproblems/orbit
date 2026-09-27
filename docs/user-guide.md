@@ -240,6 +240,12 @@ When something can only move forward with you, the sidebar shows **Needs you** w
 
 An item disappears once it is resolved. A stopped loop lists only its approvals, since you have already taken it over.
 
+Orbit also shows a desktop notification once when an item first appears, and not again while it stays open, even after a restart. When Orbit comes to the front after a notification, it opens that item. Turn off **Notify me when a review needs attention** in Settings to stop notifications; the list and count still appear.
+
+### Approval time limit
+
+By default an approval waits for you however long it takes. For a repository, you can set **Approval time limit for automatic reviews** so that a request on an automatic review is declined when no one answers in time. Orbit then notes in the report and the chat which request it declined and why. Declining grants the reviewer nothing. Approvals on manual reviews always wait.
+
 ## Settings and when changes take effect
 
 | Setting                                | Initial value                      | Available choices                                                                                                 |

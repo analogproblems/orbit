@@ -401,9 +401,14 @@ fn comment_body(r: &Review, round: Option<u32>) -> String {
     let marker = format!("<!-- orbit-review:{} -->", r.id);
     let marker = marker + &verdict_marker(r, round);
     let selection = crate::models::report_selection_label(r);
+    let declined: String = r
+        .declined_approvals
+        .iter()
+        .map(|note| format!("{note}\n\n"))
+        .collect();
     format!(
         "{marker}\n## Orbit · Codex review\n\n\
-         Reviewed head `{}` against base `{}`.\n\n{}\n\n---\n{selection}",
+         Reviewed head `{}` against base `{}`.\n\n{}\n\n{declined}---\n{selection}",
         r.head_sha, r.base_sha, r.report
     )
 }

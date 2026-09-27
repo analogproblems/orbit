@@ -16,6 +16,7 @@ export function SaveFeedback({ saveKey }: { saveKey?: string }) {
       blockingPriority: "Blocking findings",
       settlePushes: "Wait for pushes to settle",
       commitStatus: "GitHub status check",
+      notify: "Notifications",
     };
     return Object.entries(patch)
       .map(([key, value]) => {

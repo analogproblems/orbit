@@ -280,6 +280,9 @@ fn findings_section(r: &Review) -> String {
     if !r.tests_not_run.is_empty() {
         out.push_str(&format!("Not run: {}\n\n", r.tests_not_run.join("; ")));
     }
+    for note in &r.declined_approvals {
+        out.push_str(&format!("{note}\n\n"));
+    }
     if let Some(round) = &r.previous_round {
         out.push_str(&format!(
             "Since the last round (head `{}`):\n\n| Status | Earlier finding | Note |\n| --- | --- | --- |\n",

@@ -14,7 +14,13 @@ mod desktop {
     use std::sync::Arc;
     use tauri::{Emitter, Manager, State};
     use tauri_plugin_dialog::DialogExt;
+    use tauri_plugin_notification::NotificationExt;
     type AppState = Arc<engine::Engine>;
+    /// The item of the latest notification sent while Orbit was in the
+    /// background. Desktop notifications report no clicks, so the item opens
+    /// when Orbit next comes to the front, as clicking the notification does.
+    #[derive(Default)]
+    struct Unseen(std::sync::Mutex<Option<types::Attention>>);
     #[tauri::command]
     async fn get_snapshot(engine: State<'_, AppState>) -> Result<types::Snapshot, String> {
         Ok(engine.shown_snapshot().await)
@@ -195,6 +201,7 @@ mod desktop {
     pub fn run() {
         tauri::Builder::default()
             .plugin(tauri_plugin_dialog::init())
+            .plugin(tauri_plugin_notification::init())
             .setup(|app| {
                 let handle = app.handle().clone();
                 let root = app.path().app_data_dir()?;
@@ -202,11 +209,38 @@ mod desktop {
                     let _ = handle.emit("orbit-state", snapshot);
                 })
                 .map_err(std::io::Error::other)?;
+                app.manage(Unseen::default());
+                let handle = app.handle().clone();
+                engine.on_notice(move |notice| {
+                    let _ = handle
+                        .notification()
+                        .builder()
+                        .title(&notice.title)
+                        .body(&notice.body)
+                        .show();
+                    let focused = handle
+                        .get_webview_window("main")
+                        .and_then(|w| w.is_focused().ok())
+                        .unwrap_or(false);
+                    if !focused {
+                        *handle.state::<Unseen>().0.lock().unwrap() = Some(notice.item.clone());
+                    }
+                });
                 app.manage(engine.clone());
                 tauri::async_runtime::spawn(async move {
                     engine.launch();
                 });
                 Ok(())
+            })
+            .on_window_event(|window, event| {
+                if let tauri::WindowEvent::Focused(true) = event {
+                    let unseen = window
+                        .try_state::<Unseen>()
+                        .and_then(|u| u.0.lock().unwrap().take());
+                    if let Some(item) = unseen {
+                        let _ = window.emit("orbit-open", item);
+                    }
+                }
             })
             .invoke_handler(tauri::generate_handler![
                 get_snapshot,

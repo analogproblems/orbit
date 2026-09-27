@@ -216,6 +216,11 @@ export function Findings({
       {review.testsNotRun && review.testsNotRun.length > 0 && (
         <Text type="supporting">Not run: {review.testsNotRun.join("; ")}</Text>
       )}
+      {review.declinedApprovals?.map((note) => (
+        <Text key={note} type="supporting">
+          {note}
+        </Text>
+      ))}
       <SinceLastRound review={review} onOpenReview={onOpenReview} />
     </VStack>
   );

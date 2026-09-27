@@ -16,47 +16,19 @@ import { Activity as ActivityIcon, GitPullRequest, Square } from "lucide-react";
 import { useOrbit } from "./store";
 import {
   activeStatuses,
+  attentionAction,
   attentionLabels,
   reportSelectionLabel,
-  type Attention,
+  type AttentionHandlers,
   reviewDisplayStatus,
-  type PullRequest,
-  type Review,
 } from "./types";
 import { ReviewActions } from "./ReviewActions";
 import { ReviewStatus } from "./ReviewStatus";
 import { recentTimestamp } from "./timestamps";
-export function Activity({
-  onChoose,
-  onRepositories,
-  onSettings,
-  onApproval,
-}: {
-  onChoose: (p: PullRequest, r?: Review) => void;
-  onRepositories: () => void;
-  onSettings: () => void;
-  onApproval: (reviewId: string, id: string | number) => void;
-}) {
+export function Activity(go: AttentionHandlers) {
   const { snapshot: s, action } = useOrbit();
   const knownPrs = [...s.prs, ...(s.historyPrs ?? [])];
   const attention = s.attention ?? [];
-  /** Where each item is resolved: its review, its PR, or a settings page. */
-  const open = (a: Attention) => {
-    if (a.kind === "sync_failing" && a.repo) return onRepositories;
-    if (a.kind === "autopilot_paused" || a.kind === "sync_failing")
-      return onSettings;
-    const p = knownPrs.find((p) => p.id === a.prId);
-    const r = s.reviews.find((r) => r.id === a.reviewId);
-    if (a.kind === "approval" && r && a.approvalId != null) {
-      const id = a.approvalId;
-      return () => {
-        if (p) onChoose(p, r);
-        onApproval(r.id, id);
-      };
-    }
-    if (!p) return undefined;
-    return () => onChoose(p, r);
-  };
   const metrics: [
     [string, number],
     [string, number],
@@ -94,7 +66,7 @@ export function Activity({
                     {p?.title ?? a.repo ?? attentionLabels[a.kind]}
                   </Text>
                 }
-                onClick={open(a)}
+                onClick={attentionAction(s, a, go)}
                 startContent={
                   <StatusDot
                     variant="warning"
@@ -141,7 +113,7 @@ export function Activity({
                   {p?.title ?? r.prId}
                 </Text>
               }
-              onClick={p ? () => onChoose(p, r) : undefined}
+              onClick={p ? () => go.onChoose(p, r) : undefined}
               startContent={<GitPullRequest />}
               endContent={
                 <VStack gap={2}>

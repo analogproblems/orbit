@@ -362,6 +362,19 @@ export function SettingsPage() {
             />
             <SaveFeedback saveKey="commitStatus" />
           </VStack>
+          <VStack gap={2}>
+            <Switch
+              label="Notify me when a review needs attention"
+              labelPosition="start"
+              labelSpacing="spread"
+              width="100%"
+              value={draft.notify ?? true}
+              isDisabled={pending("notify")}
+              onChange={(notify) => void updateSettings({ notify })}
+              description="Show a desktop notification once when something new needs you, such as an approval or a held report. The Needs you list shows every item either way."
+            />
+            <SaveFeedback saveKey="notify" />
+          </VStack>
           <FormLayout>
             <VStack gap={2}>
               <Selector

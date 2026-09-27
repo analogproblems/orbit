@@ -33,6 +33,7 @@ fn snapshot() -> (Snapshot, PullRequest) {
         setup_command: String::new(),
         network_access: false,
         round_limit: 4,
+        approval_minutes: 0,
     });
     s.prs.push(p.clone());
     (s, p)
@@ -137,6 +138,7 @@ fn states_follow_the_latest_automatic_round() {
         review_id: running_id,
         method: "item/commandExecution/requestApproval".into(),
         params: Value::Null,
+        requested_at: String::new(),
     });
     assert_eq!(
         status(&s, &p),
