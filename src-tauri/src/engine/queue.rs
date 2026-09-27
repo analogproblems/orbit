@@ -43,7 +43,7 @@ impl Engine {
                                 .filter(|p| same_repo(&p.repo, repo))
                                 .cloned(),
                         );
-                        failed.push(format!("{repo}: {e}"));
+                        failed.push((repo.clone(), e));
                     }
                 }
             }
@@ -66,8 +66,12 @@ impl Engine {
                     .retain(|p| !prs.iter().any(|current| current.id == p.id));
                 s.prs = prs;
                 s.github_user = Some(login);
-                s.github_error =
-                    (!failed.is_empty()).then(|| format!("Could not sync {}", failed.join("; ")));
+                s.github_error = (!failed.is_empty()).then(|| {
+                    let each: Vec<String> =
+                        failed.iter().map(|(r, e)| format!("{r}: {e}")).collect();
+                    format!("Could not sync {}", each.join("; "))
+                });
+                crate::attention::count_sync_failures(s, &failed);
                 s.last_poll = Some(now());
             })
             .await;

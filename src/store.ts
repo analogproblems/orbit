@@ -337,6 +337,7 @@ async function demoAction(
       state.reason = null;
       if (!stop) state.roundLimit = state.rounds + Number(args.rounds);
     }
+    demo.attention = demo.attention?.filter((a) => a.prId !== args.prId);
     commit();
     return;
   }

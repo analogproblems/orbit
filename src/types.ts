@@ -258,6 +258,26 @@ export const loopStatusLabels: Record<LoopStatus, string> = {
   needs_you: "Needs you",
   stopped: "Stopped",
 };
+export type AttentionKind =
+  "approval" | "held" | "failed" | "loop" | "autopilot_paused" | "sync_failing";
+/** Something only the developer can resolve. */
+export interface Attention {
+  /** Stays the same while the item is open. */
+  key: string;
+  kind: AttentionKind;
+  prId: string | null;
+  reviewId: string | null;
+  repo: string | null;
+  reason: string;
+}
+export const attentionLabels: Record<AttentionKind, string> = {
+  approval: "Approval",
+  held: "Publication held",
+  failed: "Review failed",
+  loop: "Loop",
+  autopilot_paused: "Autopilot paused",
+  sync_failing: "Sync failing",
+};
 export function loopState(s: Snapshot, prId: string) {
   return s.loopStates?.find((l) => l.prId === prId);
 }
@@ -266,6 +286,8 @@ export interface Snapshot {
   /** Derived by the app for display. */
   commitChecks?: CommitCheck[];
   loopStates?: LoopState[];
+  /** Derived by the app for display. */
+  attention?: Attention[];
   prs: PullRequest[];
   historyPrs?: PullRequest[];
   reviews: Review[];

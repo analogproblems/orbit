@@ -643,6 +643,42 @@ pub struct Snapshot {
     /// Derived for display when the snapshot is emitted; never saved.
     #[serde(skip_deserializing, skip_serializing_if = "Vec::is_empty")]
     pub loop_states: Vec<LoopState>,
+    /// Repositories whose latest syncs failed, with how many in a row.
+    pub sync_failures: Vec<SyncFailure>,
+    /// Why saving local state failed, when that turned autopilot off.
+    pub state_write_error: Option<String>,
+    /// Everything waiting on the developer. Derived like `loop_states`.
+    #[serde(skip_deserializing, skip_serializing_if = "Vec::is_empty")]
+    pub attention: Vec<Attention>,
+}
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncFailure {
+    pub repo: String,
+    pub count: u32,
+    pub error: String,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttentionKind {
+    Approval,
+    Held,
+    Failed,
+    Loop,
+    AutopilotPaused,
+    SyncFailing,
+}
+/// Something only the developer can resolve.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Attention {
+    /// Stays the same while the item is open, so it is announced once.
+    pub key: String,
+    pub kind: AttentionKind,
+    pub pr_id: Option<String>,
+    pub review_id: Option<String>,
+    pub repo: Option<String>,
+    pub reason: String,
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

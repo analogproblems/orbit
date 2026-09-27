@@ -1,5 +1,13 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
 import {
   act,
   cleanup,
@@ -191,6 +199,24 @@ describe("PR review regressions", () => {
       reviewId: running.id,
     });
     expect(screen.getByText("Good reviews, in motion.")).toBeTruthy();
+  });
+
+  it("counts what needs you in the sidebar and opens the list", async () => {
+    // Wide enough that the sidebar shows its counts.
+    const wide = vi.spyOn(window, "innerWidth", "get").mockReturnValue(1400);
+    onTestFinished(() => wide.mockRestore());
+    await mount();
+    const item = screen.getByRole("button", { name: /^Needs you/ });
+    expect(item.parentElement?.textContent).toContain("2");
+    await user().click(item);
+    expect(
+      await screen.findByRole("heading", { name: "Needs you" }),
+    ).toBeTruthy();
+    snapshot.attention = [];
+    emit();
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: /^Needs you/ })).toBeNull(),
+    );
   });
 
   it("labels every tab panel while mounting only the active tab contents", async () => {

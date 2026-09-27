@@ -31,6 +31,7 @@ import {
 } from "@astryxdesign/core";
 import {
   Activity as ActivityIcon,
+  BellRing,
   FolderGit2,
   GitPullRequest,
   Inbox as InboxIcon,
@@ -149,6 +150,7 @@ export default function App() {
     !!publishPr &&
     canPublish(publishRun, publishTarget(s, publishPr));
   const approval = s.approvals[0];
+  const needsYou = s.attention?.length ?? 0;
   const choose = (p: PullRequest, r?: Review) => {
     setSelected(p.id);
     setSelectedReview(r?.id ?? null);
@@ -247,6 +249,14 @@ export default function App() {
             }
           >
             <SideNavSection title="Your workspace">
+              {needsYou > 0 && (
+                <SideNavItem
+                  label="Needs you"
+                  icon={<BellRing />}
+                  endContent={<Badge variant="warning" label={needsYou} />}
+                  onClick={() => setPage("activity")}
+                />
+              )}
               <SideNavItem
                 label="Pull requests"
                 icon={<GitPullRequest />}
@@ -432,7 +442,11 @@ export default function App() {
               <LayoutContent padding={0}>
                 <Suspense fallback={<Spinner label="Loading page…" />}>
                   {page === "activity" ? (
-                    <Activity onChoose={choose} />
+                    <Activity
+                      onChoose={choose}
+                      onRepositories={() => setPage("repositories")}
+                      onSettings={() => setPage("settings")}
+                    />
                   ) : page === "repositories" ? (
                     <Repositories />
                   ) : (
