@@ -48,44 +48,33 @@ body {
 .diff-removed {
   color: var(--color-text-red);
 }
-.file-diff {
-  border: var(--border-width) solid var(--color-border);
-  border-radius: var(--radius-container);
-  overflow: hidden;
-}
-.file-diff summary {
-  cursor: pointer;
-  background: var(--color-background-muted);
-  padding: var(--spacing-3);
-}
-.diff-lines {
-  overflow: auto;
+/* The diff's line grid, the one raw-element exception (see DiffLines in
+   Files.tsx). ScrollableArea sizes its content to the longest line, so each
+   row's background spans the full scroll width. */
+.diff-line {
+  display: grid;
+  grid-template-columns: 4ch 4ch 1fr;
+  gap: var(--spacing-2);
+  padding-inline: var(--spacing-2);
   font-family: var(--font-family-code);
   font-size: var(--font-size-sm);
 }
-.diff-lines > div {
-  display: grid;
-  grid-template-columns: 4ch 4ch minmax(max-content, 1fr);
-  gap: var(--spacing-2);
-  padding-inline: var(--spacing-2);
-  min-width: max-content;
-}
-.diff-lines span {
+.diff-line span {
   color: var(--color-text-secondary);
   text-align: right;
   user-select: none;
 }
-.diff-lines .added {
+.diff-line.added {
   background: var(--color-background-green);
 }
-.diff-lines .removed {
+.diff-line.removed {
   background: var(--color-background-red);
 }
-.diff-lines .hunk {
+.diff-line.hunk {
   background: var(--color-background-blue);
   color: var(--color-text-blue);
 }
-.diff-lines code {
+.diff-line code {
   font: inherit;
   white-space: pre;
 }
