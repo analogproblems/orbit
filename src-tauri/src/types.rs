@@ -175,6 +175,24 @@ pub struct Review {
     #[serde(default)]
     pub inline_comments: Vec<InlineComment>,
 }
+/// Where publication will put each finding of a structured run, shown before
+/// it is published.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishPlan {
+    pub placements: Vec<Placement>,
+    /// The review's own text, as it will be posted.
+    pub body: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Placement {
+    pub finding_id: String,
+    /// On its lines in the diff; otherwise in the review text.
+    pub inline: bool,
+    /// Why it is not inline.
+    pub reason: Option<String>,
+}
 /// A finding published as an inline comment on the pull request.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

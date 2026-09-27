@@ -92,6 +92,19 @@ export interface Review {
   /** The review's inline comments, one per finding placed on its lines. */
   inlineComments?: InlineComment[];
 }
+/** Where publication will put each finding of a structured run. */
+export interface PublishPlan {
+  placements: Placement[];
+  /** The review's own text, as it will be posted. */
+  body: string;
+}
+export interface Placement {
+  findingId: string;
+  /** On its lines in the diff; otherwise in the review text. */
+  inline: boolean;
+  /** Why it is not inline. */
+  reason: string | null;
+}
 export interface InlineComment {
   findingId: string;
   commentId: number;

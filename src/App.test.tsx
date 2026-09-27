@@ -333,7 +333,7 @@ describe("publication", () => {
       name: "Publish review to GitHub",
     });
     await user().click(
-      within(dialog).getByRole("button", { name: "Publish comment" }),
+      within(dialog).getByRole("button", { name: "Publish to GitHub" }),
     );
     expect(await within(dialog).findByRole("alert")).toHaveProperty(
       "textContent",
@@ -1114,7 +1114,9 @@ describe("Astryx dialog and composer integration", () => {
     );
     await mount();
     await user().click(screen.getByRole("button", { name: "Publish review" }));
-    await user().click(screen.getByRole("button", { name: "Publish comment" }));
+    await user().click(
+      screen.getByRole("button", { name: "Publish to GitHub" }),
+    );
     const dialog = screen.getByRole("alertdialog", {
       name: "Publish review to GitHub",
     });

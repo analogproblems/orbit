@@ -307,6 +307,31 @@ pub async fn comments(pr: &PullRequest, since: &str) -> Result<Vec<Value>, Strin
     }
     Ok(all)
 }
+/// The PR's comments on the diff updated at or after `since`, up to 1,000.
+/// Replies in a thread carry `in_reply_to_id`, the thread's first comment.
+pub async fn review_comments_since(pr: &PullRequest, since: &str) -> Result<Vec<Value>, String> {
+    validate_repo(&pr.repo)?;
+    let mut all = vec![];
+    for page in 1..=10 {
+        let v = api(
+            &format!("repos/{}/pulls/{}/comments", pr.repo, pr.number),
+            "GET",
+            &[
+                ("since", since.to_string()),
+                ("per_page", "100".into()),
+                ("page", page.to_string()),
+            ],
+            None,
+        )
+        .await?;
+        let comments = v.as_array().ok_or("Invalid comment list")?;
+        all.extend(comments.iter().cloned());
+        if comments.len() < 100 {
+            break;
+        }
+    }
+    Ok(all)
+}
 /// A comment or review with a body containing `marker`, by its URL and ID.
 fn find_marker(items: &[Value], marker: &str) -> Result<Option<(String, u64)>, String> {
     let Some(item) = items

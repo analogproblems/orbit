@@ -11,13 +11,14 @@ use super::{worktrees::git, Engine};
 use crate::{github, types::*};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
-use std::{future::Future, path::Path};
+use std::{collections::HashMap, future::Future, path::Path};
 
 const MAX_COMMENTS: usize = 20;
 const MAX_COMMENT_CHARS: usize = 4000;
 const MAX_LOG_LINES: usize = 50;
 const MAX_STAT_CHARS: usize = 4000;
 const ORBIT_MARKER: &str = "<!-- orbit-review:";
+const FINDING_MARKER: &str = "<!-- orbit-finding:";
 
 /// The latest finished review of an earlier head that has structured findings.
 pub(super) fn previous_review<'a>(s: &'a Snapshot, r: &Review) -> Option<&'a Review> {
@@ -71,6 +72,10 @@ pub(super) struct Comment {
     pub author: String,
     pub created_at: String,
     pub body: String,
+    /// The finding whose inline thread this is a reply in.
+    pub finding: Option<String>,
+    /// `path:line` for a comment on the diff outside a finding's thread.
+    pub location: Option<String>,
 }
 /// Comments given to the reviewer, and how many were left out.
 #[derive(Debug, Default, PartialEq)]
@@ -88,17 +93,32 @@ fn time(text: &str) -> Option<DateTime<Utc>> {
         .map(|t| t.with_timezone(&Utc))
 }
 
+/// The inline comment holding each finding Orbit published on this PR, by
+/// GitHub comment ID, for matching replies to their finding.
+pub(super) fn finding_threads(s: &Snapshot, pr_id: &str) -> HashMap<u64, String> {
+    s.reviews
+        .iter()
+        .filter(|r| r.pr_id == pr_id)
+        .flat_map(|r| &r.inline_comments)
+        .map(|c| (c.comment_id, c.finding_id.clone()))
+        .collect()
+}
+
 /// Comments posted after the previous round, from the accounts autopilot
 /// trusts: the PR author when the PR itself is trusted, the signed-in user,
-/// and trusted accounts. The previous round starts when Orbit published its
-/// report, or when the review was created if it was not published. Orbit's own
-/// review comments are skipped.
+/// and trusted accounts. Conversation comments and comments on the diff
+/// (those with a `pull_request_review_id`) are both read; a reply in a
+/// finding's inline thread, found through `threads` or the finding's marker,
+/// is kept with that finding. The previous round starts when Orbit published
+/// its report, or when the review was created if it was not published.
+/// Orbit's own report and inline comments are skipped.
 pub(super) fn trusted_comments(
     comments: &[Value],
     previous: &Review,
     pr: &PullRequest,
     trusted_authors: &[String],
     me: Option<&str>,
+    threads: &HashMap<u64, String>,
 ) -> Comments {
     let author = |c: &Value| c["user"]["login"].as_str().unwrap_or("").to_string();
     let is_me = |login: &str| me.is_some_and(|m| m.eq_ignore_ascii_case(login));
@@ -109,16 +129,29 @@ pub(super) fn trusted_comments(
                 .any(|a| a.eq_ignore_ascii_case(login))
             || (login.eq_ignore_ascii_case(&pr.author) && trusted_source(pr, trusted_authors))
     };
+    fn body(c: &Value) -> &str {
+        c["body"].as_str().unwrap_or("")
+    }
     let orbit = |c: &Value| {
-        is_me(&author(c)) && c["body"].as_str().is_some_and(|b| b.contains(ORBIT_MARKER))
+        is_me(&author(c)) && (body(c).contains(ORBIT_MARKER) || body(c).contains(FINDING_MARKER))
     };
+    // The previous round's report, or one of its inline comments when it was
+    // published as a review.
     let marker = format!("{ORBIT_MARKER}{} -->", previous.id);
+    let inline_marker = format!("{FINDING_MARKER}{}-", previous.id);
     let since = comments
         .iter()
-        .find(|c| orbit(c) && c["body"].as_str().is_some_and(|b| b.contains(&marker)))
+        .find(|c| orbit(c) && (body(c).contains(&marker) || body(c).contains(&inline_marker)))
         .and_then(|c| c["created_at"].as_str())
         .or(Some(&previous.created_at))
         .and_then(time);
+    let mut threads = threads.clone();
+    for c in comments.iter().filter(|c| orbit(c)) {
+        let finding = super::inline::finding_marker(body(c));
+        if let (Some(id), Some(finding)) = (c["id"].as_u64(), finding) {
+            threads.insert(id, finding.to_string());
+        }
+    }
     let mut out = Comments::default();
     for c in comments {
         let Some(created) = c["created_at"].as_str().and_then(time) else {
@@ -137,12 +170,26 @@ pub(super) fn trusted_comments(
         if text.len() < body.len() {
             text.push_str(" […]");
         }
+        let on_diff = c.get("pull_request_review_id").is_some();
+        let finding = c["in_reply_to_id"]
+            .as_u64()
+            .and_then(|root| threads.get(&root).cloned());
+        let location = (on_diff && finding.is_none()).then(|| {
+            let line = c["line"].as_u64().or(c["original_line"].as_u64());
+            let path = c["path"].as_str().unwrap_or("");
+            line.map_or(path.to_string(), |line| format!("{path}:{line}"))
+        });
         out.kept.push(Comment {
             author: login,
             created_at: c["created_at"].as_str().unwrap_or("").into(),
             body: text,
+            finding,
+            location,
         });
     }
+    // Conversation and diff comments arrive as two lists; the newest are kept.
+    out.kept
+        .sort_by(|a, b| time(&a.created_at).cmp(&time(&b.created_at)));
     if out.kept.len() > MAX_COMMENTS {
         out.trimmed = out.kept.len() - MAX_COMMENTS;
         out.kept.drain(..out.trimmed);
@@ -263,6 +310,16 @@ pub(super) fn review_prompt(
             )));
             out.push('\n');
         }
+        let replies = comments.iter().flat_map(|c| &c.kept);
+        for reply in replies.filter(|c| c.finding.as_ref() == Some(&f.id)) {
+            out.push_str(&indent(&format!(
+                "Reply in this finding's thread from @{}, {}:\n{}",
+                reply.author,
+                reply.created_at,
+                indent(&reply.body)
+            )));
+            out.push('\n');
+        }
     }
     match comments {
         Ok(c) => {
@@ -280,12 +337,29 @@ pub(super) fn review_prompt(
                 out.push_str(&format!(" ({})", left_out.join("; ")));
             }
             out.push_str(":\n");
-            if c.kept.is_empty() {
-                out.push_str("(none)\n");
+            // Replies shown above stay there; a reply to a finding no longer
+            // carried (fixed in an earlier round) is listed here with its thread.
+            let carried = |c: &&Comment| {
+                c.finding
+                    .as_ref()
+                    .is_some_and(|id| round.findings.iter().any(|f| &f.id == id))
+            };
+            let general: Vec<_> = c.kept.iter().filter(|c| !carried(c)).collect();
+            if general.is_empty() {
+                out.push_str(if c.kept.is_empty() {
+                    "(none)\n"
+                } else {
+                    "(none besides the replies shown with the findings)\n"
+                });
             }
-            for comment in &c.kept {
+            for comment in general {
+                let on = match (&comment.finding, &comment.location) {
+                    (Some(id), _) => format!(" in the thread of earlier finding {id}"),
+                    (None, Some(l)) => format!(" on {l}"),
+                    (None, None) => String::new(),
+                };
                 out.push_str(&format!(
-                    "- @{}, {}:\n{}\n",
+                    "- @{}, {}{on}:\n{}\n",
                     comment.author,
                     comment.created_at,
                     indent(&comment.body)
@@ -318,7 +392,9 @@ impl Engine {
         worktree: &Path,
     ) -> Result<(), String> {
         self.carry_previous_round_with(id, worktree, |since| async move {
-            github::comments(pr, &since).await
+            let mut all = github::comments(pr, &since).await?;
+            all.extend(github::review_comments_since(pr, &since).await?);
+            Ok(all)
         })
         .await
     }
@@ -355,6 +431,7 @@ impl Engine {
                     pr,
                     &s.settings.trusted_authors,
                     s.github_user.as_deref(),
+                    &finding_threads(&s, &r.pr_id),
                 )
             });
         let since = changes_since(worktree, &previous.head_sha, &r.head_sha).await;

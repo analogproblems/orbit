@@ -180,6 +180,29 @@ impl Engine {
         }
         Ok(Some(fresh))
     }
+    /// Where a structured run's findings will go when it is published, from
+    /// the PR's current diff. None for an unstructured run, which is posted
+    /// as one comment.
+    pub async fn publish_plan(&self, id: &str) -> Result<Option<PublishPlan>, String> {
+        let s = self.snapshot().await;
+        let r = s
+            .reviews
+            .iter()
+            .find(|r| r.id == id)
+            .ok_or("Unknown review")?;
+        if r.findings.is_none() {
+            return Ok(None);
+        }
+        let pr = s
+            .prs
+            .iter()
+            .chain(&s.history_prs)
+            .find(|p| p.id == r.pr_id)
+            .ok_or("Unknown pull request. Sync first.")?;
+        let hunks = inline::hunks(&github::files(&pr.repo, pr.number).await?);
+        let round = crate::review_loop::round_number(&s, r);
+        Ok(Some(inline::preview(r, &hunks, round)))
+    }
     /// Marks a review posted. For a PR review, also saves which comment holds
     /// each finding; that lookup is best effort, since the markers in the
     /// comments identify the findings anyway.

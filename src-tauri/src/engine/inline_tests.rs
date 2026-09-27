@@ -116,6 +116,27 @@ fn builds_the_review_with_inline_comments_and_other_findings() {
     assert_eq!(all.body.matches("not inline").count(), 3);
 }
 #[test]
+fn previews_where_each_finding_goes() {
+    let r = review(vec![finding(Some("src/a.rs"), 11, 12), finding(None, 3, 3)]);
+    let preview = preview(&r, &files(), None);
+    assert_eq!(
+        preview.placements,
+        [
+            Placement {
+                finding_id: "rid-11".into(),
+                inline: true,
+                reason: None
+            },
+            Placement {
+                finding_id: "rid-3".into(),
+                inline: false,
+                reason: Some("outside the repository".into())
+            }
+        ]
+    );
+    assert_eq!(preview.body, plan(&r, &files(), None, true).body);
+}
+#[test]
 fn a_clean_review_has_no_other_findings_section() {
     let mut r = review(vec![]);
     r.orbit_verdict = Some(Verdict::Clean);

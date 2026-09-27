@@ -23,6 +23,7 @@ import {
   type Settings,
   type ChangedFile,
   type ActionResult,
+  type PublishPlan,
   type SettingsPatch,
   type Repository,
   type StorageUsage,
@@ -346,6 +347,18 @@ async function demoAction(
     r.status = "cancelled";
     demoSchedule();
     return;
+  }
+  if (command === "publish_plan") {
+    const r = demo.reviews.find((r) => r.id === args.reviewId)!;
+    if (!r.findings) return null;
+    return {
+      placements: r.findings.map((f) => ({
+        findingId: f.id,
+        inline: !!f.path,
+        reason: f.path ? null : "outside the repository",
+      })),
+      body: `## Orbit · Codex review\n\nReviewed head \`${r.headSha}\` against base \`${r.baseSha}\`.\n\n${r.summary ?? ""}`,
+    } satisfies PublishPlan;
   }
   if (command === "publish_review") {
     const r = demo.reviews.find((r) => r.id === args.reviewId)!;

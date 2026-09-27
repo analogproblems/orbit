@@ -15,7 +15,7 @@ import {
   type Review,
 } from "./types";
 
-const priorityColors = ["red", "orange", "yellow", "gray"] as const;
+export const priorityColors = ["red", "orange", "yellow", "gray"] as const;
 
 const columns: TableColumn<Finding>[] = [
   {
