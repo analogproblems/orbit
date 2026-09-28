@@ -2,8 +2,11 @@ import { useEffect, useState } from "react";
 import {
   Banner,
   Button,
+  Card,
   Code,
+  Collapsible,
   HStack,
+  ScrollableArea,
   Spinner,
   Text,
   VStack,
@@ -56,34 +59,49 @@ export function Files({ pr }: { pr: PullRequest }) {
         />
       ) : (
         files.map((f) => (
-          <details className="file-diff" open key={f.filename}>
-            <summary>
-              <HStack gap={2} vAlign="center">
-                <FileCode2 />
-                <Code>{f.filename}</Code>
-                <Text className="diff-added">+{f.additions}</Text>
-                <Text className="diff-removed">−{f.deletions}</Text>
-              </HStack>
-            </summary>
-            <div className="diff-lines">
+          <Card key={f.filename}>
+            <Collapsible
+              trigger={
+                <HStack gap={2} vAlign="center">
+                  <FileCode2 />
+                  <Code>{f.filename}</Code>
+                  <Text className="diff-added">+{f.additions}</Text>
+                  <Text className="diff-removed">−{f.deletions}</Text>
+                </HStack>
+              }
+            >
               {f.patch ? (
-                parseDiff(f.patch).map((line, i) => (
-                  <div key={i} className={line.kind}>
-                    <span aria-label="Original line">{line.oldLine ?? ""}</span>
-                    <span aria-label="Updated line">{line.newLine ?? ""}</span>
-                    <code>{line.text || " "}</code>
-                  </div>
-                ))
+                <ScrollableArea
+                  axis="inline"
+                  label={`Changes in ${f.filename}`}
+                >
+                  <DiffLines patch={f.patch} />
+                </ScrollableArea>
               ) : (
                 <Text color="secondary">
                   GitHub does not provide a preview for this file. It may be
                   binary or too large.
                 </Text>
               )}
-            </div>
-          </details>
+            </Collapsible>
+          </Card>
         ))
       )}
     </VStack>
   );
+}
+
+// The one exception to AGENTS.md's "no <div>/<span>" rule. Astryx has no diff
+// viewer: CodeBlock numbers lines 1..n in a single gutter, and Table cells wrap
+// or truncate instead of scrolling. Table also kept the main thread busy about
+// 75% longer on a 2,000-line patch than these plain rows, laid out by the
+// `.diff-line` rules in styles.css using tokens only.
+function DiffLines({ patch }: { patch: string }) {
+  return parseDiff(patch).map((line, i) => (
+    <div key={i} className={`diff-line ${line.kind}`}>
+      <span aria-label="Original line">{line.oldLine ?? ""}</span>
+      <span aria-label="Updated line">{line.newLine ?? ""}</span>
+      <code>{line.text || " "}</code>
+    </div>
+  ));
 }

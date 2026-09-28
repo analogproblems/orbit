@@ -65,7 +65,7 @@ On exit, Orbit closes the app-server's stdin and terminates it. Unix process-gro
 - The frontend has no generic shell/filesystem/RPC endpoint. Native commands are narrowly scoped (see the allowlist in `src-tauri/src/lib.rs`); CSP restricts network access, raw Markdown HTML is not executed, and remote Markdown images are not fetched.
 - Report export is generated and written in Rust; the frontend supplies only a review ID.
 - The UI uses Astryx 0.6.3 with its neutral theme. Astryx core, theme, CLI, and the StyleX peer are pinned; the compiled theme is imported after the core reset and component CSS. The UI is dark-only, uses local system fonts, and makes no font or asset requests to external hosts.
-- Settings, repositories, review loops, and chat load on demand. Pages use Astryx shell, layout, controls, dialogs, chat, and Markdown; only the line-numbered diff remains custom. `src/styles.css` contains viewport framing, system-font tokens, compact chat docking, and diff styling. The backend, command allowlist, store behavior, and browser demo adapter are independent of the component layer.
+- Settings, repositories, review loops, and chat load on demand. Pages use Astryx shell, layout, controls, dialogs, chat, and Markdown; only the diff's line grid remains custom (`DiffLines` in `src/Files.tsx` explains why). `src/styles.css` contains viewport framing, system-font tokens, compact chat docking, and diff styling. The backend, command allowlist, store behavior, and browser demo adapter are independent of the component layer.
 - Astryx component guidance is generated in [`AGENTS.md`](../AGENTS.md). Before changing UI, use `npx astryx component <Name>` for the installed API.
 
 ## Design notes
