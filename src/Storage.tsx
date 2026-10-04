@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { HardDrive, RefreshCw, Trash2 } from "lucide-react";
-import { useOrbit, desktop } from "./store";
+import { useOrbit, live } from "./store";
 import { activeStatuses, type StorageUsage } from "./types";
 import {
   AlertDialog,
@@ -124,7 +124,7 @@ export function Storage() {
         {cleanup.error && <Banner status="error" title={cleanup.error} />}
         {open && (
           <>
-            {!desktop && (
+            {!live && (
               <Text color="secondary">
                 Demo storage sizes and cleanup are simulated.
               </Text>

@@ -2,6 +2,7 @@ pub mod attention;
 pub mod engine;
 pub mod github;
 pub mod models;
+pub mod remote;
 pub mod review_loop;
 pub mod rpc;
 pub mod storage;
@@ -171,14 +172,7 @@ mod desktop {
     }
     #[tauri::command]
     async fn get_files(engine: State<'_, AppState>, pr_id: String) -> Result<Value, String> {
-        let s = engine.snapshot().await;
-        let pr = s
-            .prs
-            .iter()
-            .chain(s.history_prs.iter())
-            .find(|p| p.id == pr_id)
-            .ok_or("Unknown pull request")?;
-        github::files(&pr.repo, pr.number).await
+        engine.files(&pr_id).await
     }
     #[tauri::command]
     async fn list_repositories() -> Result<Vec<types::RepositorySummary>, String> {
@@ -198,6 +192,11 @@ mod desktop {
         };
         github::run(program, &args, None, None).await.map(|_| ())
     }
+    /// The port for browsers on other devices, from `ORBIT_REMOTE_PORT`.
+    /// Remote access is off when it is unset.
+    fn remote_port() -> Option<u16> {
+        std::env::var("ORBIT_REMOTE_PORT").ok()?.trim().parse().ok()
+    }
     pub fn run() {
         tauri::Builder::default()
             .plugin(tauri_plugin_dialog::init())
@@ -205,10 +204,50 @@ mod desktop {
             .setup(|app| {
                 let handle = app.handle().clone();
                 let root = app.path().app_data_dir()?;
-                let engine = engine::Engine::new(root, move |snapshot: &types::Snapshot| {
-                    let _ = handle.emit("orbit-state", snapshot);
-                })
-                .map_err(std::io::Error::other)?;
+                let hub = remote::Hub::default();
+                let browsers = hub.clone();
+                let engine =
+                    engine::Engine::new(root.clone(), move |snapshot: &types::Snapshot| {
+                        let _ = handle.emit("orbit-state", snapshot);
+                        browsers.publish(snapshot);
+                    })
+                    .map_err(std::io::Error::other)?;
+                // Browser access is optional, so a problem with it never stops Orbit.
+                let remote = remote_port().and_then(|port| match remote::token(&root) {
+                    Ok(token) => Some((port, token)),
+                    Err(e) => {
+                        eprintln!("Orbit remote access is off: cannot keep its token: {e}");
+                        None
+                    }
+                });
+                if let Some((port, token)) = remote {
+                    let resolver = app.handle().clone();
+                    let assets: remote::Assets = Arc::new(move |path: &str| {
+                        resolver
+                            .asset_resolver()
+                            .get(path.into())
+                            .map(|a| remote::Asset {
+                                bytes: a.bytes,
+                                mime_type: a.mime_type,
+                            })
+                    });
+                    let engine = engine.clone();
+                    tauri::async_runtime::spawn(async move {
+                        match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+                            Ok(listener) => {
+                                println!(
+                                    "Orbit remote access: http://127.0.0.1:{port}/#token={token}"
+                                );
+                                if let Err(e) =
+                                    remote::serve(listener, engine, hub, token, assets).await
+                                {
+                                    eprintln!("Orbit remote access stopped: {e}");
+                                }
+                            }
+                            Err(e) => eprintln!("Orbit remote access cannot use port {port}: {e}"),
+                        }
+                    });
+                }
                 app.manage(Unseen::default());
                 let handle = app.handle().clone();
                 engine.on_notice(move |notice| {

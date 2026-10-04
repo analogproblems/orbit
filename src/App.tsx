@@ -39,7 +39,7 @@ import {
   Settings2,
   SlidersHorizontal,
 } from "lucide-react";
-import { useOrbit, desktop } from "./store";
+import { useOrbit, desktop, live } from "./store";
 import { listen } from "@tauri-apps/api/event";
 import {
   activeStatuses,
@@ -251,7 +251,7 @@ export default function App() {
                 icon={
                   <img className="orbit-logo" src="/orbit.svg" alt="Orbit" />
                 }
-                subheading={desktop ? "Local workspace" : "Demo workspace"}
+                subheading={live ? "Local workspace" : "Demo workspace"}
               />
             }
             footer={
@@ -283,7 +283,7 @@ export default function App() {
                       </Text>
                     </HStack>
                     <Text type="supporting" color="secondary">
-                      {desktop
+                      {live
                         ? s.githubUser || "Local workspace"
                         : "Demo workspace"}
                     </Text>
@@ -383,7 +383,7 @@ export default function App() {
           header={
             <LayoutHeader padding={0}>
               <VStack>
-                {!desktop && (
+                {!live && (
                   <Banner
                     status="info"
                     container="section"
@@ -521,7 +521,7 @@ export default function App() {
           header={
             <DialogHeader
               title={
-                desktop
+                live
                   ? "Publish review to GitHub"
                   : "Simulate publishing a review"
               }
@@ -533,7 +533,7 @@ export default function App() {
               <LayoutContent>
                 <VStack gap={4}>
                   <Text>
-                    {!desktop
+                    {!live
                       ? "This is a demo. Nothing will be sent to GitHub."
                       : publish.findings
                         ? "This review will be posted using your connected GitHub account."
@@ -579,7 +579,7 @@ export default function App() {
                     label={
                       publishError
                         ? "Retry publication"
-                        : desktop
+                        : live
                           ? "Publish to GitHub"
                           : "Simulate publish"
                     }

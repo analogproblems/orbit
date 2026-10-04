@@ -22,7 +22,7 @@ import {
   VStack,
 } from "@astryxdesign/core";
 import { ArrowRight, ArrowUpRight, Play, Square } from "lucide-react";
-import { desktop, useOrbit } from "./store";
+import { desktop, live, useOrbit } from "./store";
 import {
   activeStatuses,
   canPublish,
@@ -348,7 +348,7 @@ export function Detail({
         <LayoutFooter padding={3} hasDivider>
           <HStack hAlign="between" gap={2} vAlign="center">
             <Text type="supporting" color="secondary">
-              {desktop
+              {live
                 ? "Local workspace · isolated reviews"
                 : "Demo workspace · no external actions"}
             </Text>

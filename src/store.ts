@@ -8,6 +8,7 @@ import {
   demoRepositories,
   resolveDemoModelSelection,
 } from "./demo";
+import { call, download, follow, lostConnection, readToken } from "./remote";
 import {
   defaults,
   selectionError,
@@ -31,7 +32,13 @@ import {
   followUpUnavailable,
   canExport,
 } from "./types";
+/** Running in the native desktop window. */
 export const desktop = isTauri();
+const remoteToken = desktop ? null : readToken();
+/** Running in a browser connected to a desktop Orbit through an access link. */
+export const remote = remoteToken !== null;
+/** Connected to a real workspace, rather than the browser demo. */
+export const live = desktop || remote;
 const empty: Snapshot = {
   prs: [],
   reviews: [],
@@ -413,14 +420,7 @@ async function demoAction(
       throw Error("Export requires an inactive review with a report.");
     const content = `# Orbit review: ${pr.title}\n\nPR: ${pr.id} (${pr.url})\n\nCreated: ${r.createdAt}\n\nHead: ${r.headSha}\n\nBase: ${r.baseSha}\n\nReport selection: ${reportSelectionLabel(r)}\n\n${r.commentUrl ? `Published comment: ${r.commentUrl}\n\n` : ""}${r.report}\n`;
     const name = `orbit-${pr.repo.replaceAll("/", "-")}-pr-${pr.number}-${r.headSha.slice(0, 7)}.md`;
-    const url = URL.createObjectURL(
-      new Blob([content], { type: "text/markdown;charset=utf-8" }),
-    );
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = name;
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    download(name, content);
     return name;
   }
   if (command === "set_legacy_chat_model") {
@@ -520,6 +520,21 @@ function resolveDemoSelection() {
       error instanceof Error ? error.message : String(error);
   }
 }
+async function remoteAction<T>(
+  token: string,
+  command: string,
+  args: Record<string, unknown>,
+): Promise<T> {
+  if (command !== "export_report") return call<T>(token, command, args);
+  // The browser saves the report itself, as the desktop's save dialog would.
+  const report = await call<{ fileName: string; text: string }>(
+    token,
+    command,
+    args,
+  );
+  download(report.fileName, report.text);
+  return report.fileName as T;
+}
 export const useOrbit = create<Store>((set, get) => ({
   snapshot: empty,
   loaded: false,
@@ -600,6 +615,20 @@ export const useOrbit = create<Store>((set, get) => ({
   },
   clearError: () => set({ error: null }),
   init: async () => {
+    if (remoteToken !== null) {
+      return follow(
+        remoteToken,
+        (snapshot) => set({ snapshot, loaded: true }),
+        (problem) =>
+          set((s) =>
+            problem
+              ? { error: problem, loaded: true }
+              : s.error === lostConnection
+                ? { error: null }
+                : {},
+          ),
+      );
+    }
     if (!desktop) {
       try {
         demo =
@@ -645,7 +674,9 @@ export const useOrbit = create<Store>((set, get) => ({
       if (!options.quiet) set({ error: null });
       const result = desktop
         ? await invoke<T>(command, args)
-        : ((await demoAction(command, args)) as T);
+        : remoteToken !== null
+          ? await remoteAction<T>(remoteToken, command, args)
+          : ((await demoAction(command, args)) as T);
       return { ok: true, data: result };
     } catch (e) {
       if (!options.quiet) set({ error: String(e) });
