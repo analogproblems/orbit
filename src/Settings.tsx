@@ -18,7 +18,7 @@ import {
   VStack,
 } from "@astryxdesign/core";
 import { Code2, GitBranch, RefreshCw } from "lucide-react";
-import { useOrbit, desktop } from "./store";
+import { useOrbit, live } from "./store";
 import { defaultEffort, workspaceSelectionUnavailable } from "./types";
 import { SaveFeedback } from "./SaveFeedback";
 import { Storage } from "./Storage";
@@ -127,7 +127,7 @@ export function SettingsPage() {
               }
             />
           </List>
-          {!desktop && (
+          {!live && (
             <Banner
               status="info"
               title="Ready for your real repositories?"

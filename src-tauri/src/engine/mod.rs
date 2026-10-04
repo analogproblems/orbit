@@ -368,6 +368,20 @@ impl Engine {
             .await
             .map_err(|e| e.to_string())
     }
+    /// The changed files of a pull request Orbit knows about.
+    pub async fn files(&self, pr_id: &str) -> Result<Value, String> {
+        let (repo, number) = {
+            let s = self.state.lock().await;
+            let pr = s
+                .prs
+                .iter()
+                .chain(s.history_prs.iter())
+                .find(|p| p.id == pr_id)
+                .ok_or("Unknown pull request")?;
+            (pr.repo.clone(), pr.number)
+        };
+        crate::github::files(&repo, number).await
+    }
     pub async fn export_report(&self, id: &str) -> Result<(String, String), String> {
         storage::report(&self.snapshot().await, id)
     }
