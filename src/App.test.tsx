@@ -26,6 +26,7 @@ import { Chat } from "./Chat";
 import { Inbox } from "./Inbox";
 import { freshDemo } from "./demo";
 import { useOrbit } from "./store";
+import type { RemoteAccessStatus } from "./RemoteAccess";
 import type { Snapshot, SettingsPatch, ChangedFile } from "./types";
 
 const { invoke, listeners } = vi.hoisted(() => ({
@@ -68,6 +69,13 @@ async function allReviewsRow(label: string) {
     .getByText(label)
     .closest("li") as HTMLElement;
 }
+/** The alert with text. Settings' port field keeps an empty alert region. */
+function banner() {
+  const found = screen.queryAllByRole("alert").find((a) => a.textContent);
+  if (!found) throw Error("No alert with text");
+  return found;
+}
+const findBanner = () => waitFor(banner);
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason: Error) => void;
@@ -95,8 +103,31 @@ async function backend(
     return;
   }
   if (command === "get_files" || command === "list_repositories") return [];
+  if (command === "get_remote_access") return remoteAccess;
+  if (command === "set_remote_access") {
+    const { enabled, port } = args as { enabled: boolean; port: number };
+    remoteAccess = {
+      enabled,
+      port,
+      running: enabled,
+      link: enabled
+        ? `http://127.0.0.1:${port}/#token=${"a".repeat(64)}`
+        : null,
+      tailnetHost: enabled ? "desk.example.ts.net" : null,
+    };
+    return remoteAccess;
+  }
+  if (command === "reset_remote_link") {
+    remoteAccess = {
+      ...remoteAccess,
+      link: `http://127.0.0.1:${remoteAccess.port}/#token=${"b".repeat(64)}`,
+    };
+    return remoteAccess;
+  }
 }
+let remoteAccess: RemoteAccessStatus;
 beforeEach(() => {
+  remoteAccess = { enabled: false, port: 4317, running: false };
   snapshot = freshDemo();
   useOrbit.setState({
     snapshot,
@@ -235,6 +266,27 @@ describe("PR review regressions", () => {
     expect(invoke).toHaveBeenCalledWith("update_settings", {
       patch: { notify: false },
     });
+  });
+
+  it("turns on browser access and shows the Tailscale link", async () => {
+    const shows = (text: string) =>
+      waitFor(() => expect(document.body.textContent).toContain(text));
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Settings" }));
+    const toggle = await screen.findByRole("switch", {
+      name: /Allow access from a browser/,
+    });
+    expect(document.body.textContent).not.toContain("tailscale serve");
+    await user().click(toggle);
+    expect(invoke).toHaveBeenCalledWith("set_remote_access", {
+      enabled: true,
+      port: 4317,
+    });
+    await shows("tailscale serve --bg 4317");
+    await shows(`https://desk.example.ts.net/#token=${"a".repeat(64)}`);
+    await user().click(screen.getByRole("button", { name: "Make a new link" }));
+    expect(invoke).toHaveBeenCalledWith("reset_remote_link", {});
+    await shows(`https://desk.example.ts.net/#token=${"b".repeat(64)}`);
   });
 
   it("opens a notified approval when Orbit comes forward, if still open", async () => {
@@ -625,7 +677,7 @@ describe("autosave and follow-ups", () => {
       name: "Poll interval",
     });
     await chooseOption(select, "1 minute");
-    expect(await screen.findByRole("alert")).toHaveProperty(
+    expect(await findBanner()).toHaveProperty(
       "textContent",
       expect.stringContaining("Disk is full"),
     );
@@ -639,13 +691,13 @@ describe("autosave and follow-ups", () => {
     expect(
       await screen.findByRole("combobox", { name: "Poll interval" }),
     ).toHaveProperty("textContent", "2 minutes");
-    expect(screen.getByRole("alert").textContent).toContain(
+    expect(banner().textContent).toContain(
       "Not applied — Poll interval: 60 seconds",
     );
     expect(
       screen.getByRole("textbox", { name: "Add a trusted account" }),
     ).toHaveProperty("value", "half-typed");
-    expect(screen.getByRole("alert").textContent).toContain("Disk is full");
+    expect(banner().textContent).toContain("Disk is full");
     fail = false;
     await user().click(screen.getByRole("button", { name: "Retry saving" }));
     await screen.findByText("Saved");
@@ -778,9 +830,7 @@ describe("storage and export", () => {
       within(dialog).getByRole("button", { name: "Confirm removal" }),
     );
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(screen.getByRole("alert").textContent).toContain(
-      "Directory is busy",
-    );
+    expect(banner().textContent).toContain("Directory is busy");
     expect(snapshot.reviews[0].report).not.toBe("");
     expect(
       screen.getByRole("button", { name: "Remove worktrees (1)" }),
@@ -810,7 +860,7 @@ describe("storage and export", () => {
     await user().click(exportButton);
     expect(screen.queryByText(/Report exported/)).toBeNull();
     await user().click(exportButton);
-    expect(await screen.findByRole("alert")).toHaveProperty(
+    expect(await findBanner()).toHaveProperty(
       "textContent",
       expect.stringContaining("Export disk full"),
     );
@@ -866,7 +916,7 @@ describe("review regression cases", () => {
         name: "Automatically review new pull requests",
       }),
     );
-    expect((await screen.findByRole("alert")).textContent).toContain(
+    expect((await findBanner()).textContent).toContain(
       "Not applied — Automatic reviews: On",
     );
     for (const name of [
@@ -886,9 +936,7 @@ describe("review regression cases", () => {
         }) as HTMLInputElement
       ).checked,
     ).toBe(false);
-    expect(screen.getByRole("alert").textContent).toContain(
-      "Automatic reviews: On",
-    );
+    expect(banner().textContent).toContain("Automatic reviews: On");
     fail = false;
     await user().click(screen.getByRole("button", { name: "Retry saving" }));
     for (const name of [
@@ -933,7 +981,7 @@ describe("review regression cases", () => {
       screen.getByRole("button", { name: "Remove worktrees (1)" }),
     );
     await user().click(screen.getByRole("button", { name: "Confirm removal" }));
-    expect((await screen.findByRole("alert")).textContent).toContain(
+    expect((await findBanner()).textContent).toContain(
       "Completion record could not be saved",
     );
     expect(
@@ -987,7 +1035,7 @@ describe("review regression cases", () => {
       screen.getByRole("combobox", { name: /^Model/ }),
       "Codex · demo",
     );
-    await screen.findByRole("alert");
+    await findBanner();
     expect(
       screen.getByRole("combobox", { name: /^Reasoning effort/ }),
     ).toHaveProperty("disabled", true);
@@ -1047,9 +1095,7 @@ describe("review regression cases", () => {
       ]),
     );
     await user().click(screen.getByRole("button", { name: "Inspect storage" }));
-    expect(screen.getByRole("alert").textContent).toContain(
-      "Could not remove test worktree",
-    );
+    expect(banner().textContent).toContain("Could not remove test worktree");
     expect(useOrbit.getState().cleanup.running).toBe(false);
   });
 });
@@ -1270,9 +1316,7 @@ describe("deterministic model controls", () => {
     });
     await user().type(composer, "Explain this finding");
     await user().click(screen.getByRole("button", { name: "Send" }));
-    expect((await screen.findByRole("alert")).textContent).toContain(
-      "did not confirm",
-    );
+    expect((await findBanner()).textContent).toContain("did not confirm");
     expect(composer).toHaveProperty("textContent", "Explain this finding");
     expect(snapshot.reviews[0].status).toBe("posted");
     expect(snapshot.reviews[0].report).not.toBe("");
@@ -1374,9 +1418,7 @@ describe("Astryx dialog and composer integration", () => {
     });
     await user().type(composer, "Keep on failure");
     fireEvent.keyDown(composer, { key: "Enter" });
-    expect((await screen.findByRole("alert")).textContent).toContain(
-      "Cannot resume chat",
-    );
+    expect((await findBanner()).textContent).toContain("Cannot resume chat");
     expect(composer.textContent).toBe("Keep on failure");
     fail = false;
     fireEvent.keyDown(composer, { key: "Enter" });
