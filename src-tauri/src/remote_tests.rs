@@ -13,12 +13,21 @@ fn assets() -> Assets {
         })
     })
 }
-fn server() -> (tempfile::TempDir, Arc<Engine>, Hub, Router) {
+/// A router with its stop signal. Keep the sender for the whole test: a
+/// dropped sender closes the channel, which event streams take as a stop.
+fn server() -> (
+    tempfile::TempDir,
+    Arc<Engine>,
+    Hub,
+    Router,
+    watch::Sender<bool>,
+) {
     let d = tempfile::tempdir().unwrap();
     let engine = Engine::new(d.path().into(), |_| {}).unwrap();
     let hub = Hub::default();
-    let app = router(engine.clone(), hub.clone(), TOKEN.into(), assets());
-    (d, engine, hub, app)
+    let (stop, stopped) = watch::channel(false);
+    let app = router(engine.clone(), hub.clone(), TOKEN.into(), assets(), stopped);
+    (d, engine, hub, app, stop)
 }
 fn call(command: &str, token: Option<&str>, body: &str) -> Request<Body> {
     let mut request = Request::post(format!("/api/{command}"));
@@ -33,7 +42,7 @@ async fn json(response: Response) -> Value {
 
 #[tokio::test]
 async fn api_needs_the_access_token() {
-    let (_d, _e, _hub, app) = server();
+    let (_d, _e, _hub, app, _stop) = server();
     for token in [
         None,
         Some("wrong"),
@@ -62,7 +71,7 @@ async fn api_needs_the_access_token() {
 
 #[tokio::test]
 async fn runs_commands_with_the_access_token() {
-    let (_d, _e, _hub, app) = server();
+    let (_d, _e, _hub, app, _stop) = server();
     let response = app
         .clone()
         .oneshot(call("get_snapshot", Some(TOKEN), ""))
@@ -87,7 +96,7 @@ async fn runs_commands_with_the_access_token() {
 
 #[tokio::test]
 async fn reports_command_errors_and_refuses_other_commands() {
-    let (_d, _e, _hub, app) = server();
+    let (_d, _e, _hub, app, _stop) = server();
     let response = app
         .clone()
         .oneshot(call("export_report", Some(TOKEN), r#"{"reviewId":"x"}"#))
@@ -130,7 +139,7 @@ async fn reports_command_errors_and_refuses_other_commands() {
 
 #[tokio::test]
 async fn streams_the_snapshot_then_each_change() {
-    let (_d, engine, hub, app) = server();
+    let (_d, engine, hub, app, _stop) = server();
     let response = app
         .oneshot(
             Request::get("/api/events")
@@ -159,6 +168,30 @@ async fn streams_the_snapshot_then_each_change() {
 }
 
 #[tokio::test]
+async fn ends_the_event_stream_on_stop() {
+    let (_d, _e, _hub, app, stop) = server();
+    let response = app
+        .oneshot(
+            Request::get("/api/events")
+                .header("authorization", format!("Bearer {TOKEN}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let mut body = response.into_body();
+    let first = tokio::time::timeout(Duration::from_secs(5), body.frame())
+        .await
+        .unwrap();
+    assert!(first.is_some());
+    stop.send(true).unwrap();
+    let end = tokio::time::timeout(Duration::from_secs(5), body.frame())
+        .await
+        .expect("the stream should end");
+    assert!(end.is_none());
+}
+
+#[tokio::test]
 async fn publishes_nothing_without_a_browser() {
     let hub = Hub::default();
     hub.publish(&Snapshot::default());
@@ -167,7 +200,7 @@ async fn publishes_nothing_without_a_browser() {
 
 #[tokio::test]
 async fn serves_the_frontend_without_escaping_it() {
-    let (_d, _e, _hub, app) = server();
+    let (_d, _e, _hub, app, _stop) = server();
     let response = app
         .clone()
         .oneshot(Request::get("/").body(Body::empty()).unwrap())
@@ -197,14 +230,14 @@ async fn serves_the_frontend_without_escaping_it() {
 }
 
 #[test]
-fn serves_every_desktop_command_but_opening_links() {
+fn serves_every_desktop_command_but_the_desktop_only_ones() {
     let lib = include_str!("lib.rs");
     let start = lib.find("generate_handler![").unwrap() + "generate_handler![".len();
     let end = start + lib[start..].find(']').unwrap();
     let mut desktop: Vec<&str> = lib[start..end]
         .split(',')
         .map(str::trim)
-        .filter(|name| !name.is_empty() && *name != "open_github")
+        .filter(|name| !name.is_empty() && !DESKTOP_ONLY.contains(name))
         .collect();
     let mut remote = COMMANDS.to_vec();
     desktop.sort_unstable();
@@ -230,5 +263,199 @@ fn keeps_one_access_token() {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+}
+
+/// Sends one HTTP/1.1 request and returns the status code and body.
+async fn request(port: u16, method: &str, path: &str, token: &str) -> (u16, String) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    stream
+        .write_all(
+            format!(
+                "{method} {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await.unwrap();
+    let status = response[9..12].parse().unwrap();
+    (status, response)
+}
+/// A free port below the ephemeral range. Port 0 would hand out ports that
+/// other tests' client connections can take as their local port meanwhile,
+/// so a server restarting on its port could find it in use.
+fn free_port() -> u16 {
+    use std::sync::atomic::{AtomicU16, Ordering};
+    static NEXT: AtomicU16 = AtomicU16::new(0);
+    let base = 20_000 + (std::process::id() % 500) as u16 * 20;
+    loop {
+        let port = base + NEXT.fetch_add(1, Ordering::SeqCst) % 10_000;
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
+}
+fn link_token(status: &Status) -> String {
+    status
+        .link
+        .as_deref()
+        .unwrap()
+        .split_once("#token=")
+        .unwrap()
+        .1
+        .to_string()
+}
+fn access() -> (tempfile::TempDir, Arc<Access>) {
+    let d = tempfile::tempdir().unwrap();
+    let engine = Engine::new(d.path().into(), |_| {}).unwrap();
+    let access = Access::new(engine, Hub::default(), d.path().into(), assets());
+    (d, access)
+}
+
+#[tokio::test]
+async fn turns_on_and_off_from_settings() {
+    let (d, access) = access();
+    access.start().await;
+    let status = access.status().await;
+    assert!(!status.enabled && !status.running && status.link.is_none());
+    assert_eq!(status.port, DEFAULT_PORT);
+
+    let port = free_port();
+    let status = access.set(true, port).await.unwrap();
+    assert!(status.running, "{status:?}");
+    assert_eq!(status.error, None);
+    let link = status.link.clone().unwrap();
+    assert!(link.starts_with(&format!("http://127.0.0.1:{port}/#token=")));
+    let token = link_token(&status);
+    assert_eq!(
+        token,
+        std::fs::read_to_string(d.path().join(TOKEN_FILE)).unwrap()
+    );
+    assert_eq!(
+        request(port, "POST", "/api/get_snapshot", &token).await.0,
+        200
+    );
+
+    // The choice is kept for the next launch.
+    let saved: Config =
+        serde_json::from_slice(&std::fs::read(d.path().join(CONFIG_FILE)).unwrap()).unwrap();
+    assert_eq!(
+        saved,
+        Config {
+            enabled: true,
+            port
+        }
+    );
+
+    let status = access.set(false, port).await.unwrap();
+    assert!(!status.running && status.link.is_none());
+    assert!(tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn reset_link_disconnects_the_old_link() {
+    let (_d, access) = access();
+    let port = free_port();
+    let old = link_token(&access.set(true, port).await.unwrap());
+    let reset = access.reset_link().await.unwrap();
+    assert!(reset.running, "{reset:?}");
+    let new = link_token(&reset);
+    assert_ne!(old, new);
+    assert_eq!(
+        request(port, "POST", "/api/get_snapshot", &old).await.0,
+        401
+    );
+    assert_eq!(
+        request(port, "POST", "/api/get_snapshot", &new).await.0,
+        200
+    );
+}
+
+#[tokio::test]
+async fn ends_open_event_streams_when_stopped() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (_d, access) = access();
+    let port = free_port();
+    let token = link_token(&access.set(true, port).await.unwrap());
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    stream
+        .write_all(
+            format!("GET /api/events HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\n\r\n")
+                .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut first = [0u8; 12];
+    stream.read_exact(&mut first).await.unwrap();
+    assert_eq!(&first, b"HTTP/1.1 200");
+    tokio::time::timeout(Duration::from_secs(5), access.set(false, port))
+        .await
+        .unwrap()
+        .unwrap();
+    let mut rest = vec![];
+    tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut rest))
+        .await
+        .expect("the stream should close")
+        .unwrap();
+}
+
+#[tokio::test]
+async fn reports_a_port_in_use_and_refuses_low_ports() {
+    let (_d, access) = access();
+    let port = free_port();
+    let taken = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+    let status = access.set(true, port).await.unwrap();
+    assert!(status.enabled && !status.running);
+    assert!(status
+        .error
+        .unwrap()
+        .starts_with(&format!("Port {port} is not available")));
+    drop(taken);
+    // Saving the same choice again retries it.
+    assert!(access.set(true, port).await.unwrap().running);
+    assert!(access.set(true, 80).await.is_err());
+}
+
+#[tokio::test]
+async fn starts_again_on_the_next_launch() {
+    let d = tempfile::tempdir().unwrap();
+    let port = free_port();
+    let config = Config {
+        enabled: true,
+        port,
+    };
+    std::fs::write(
+        d.path().join(CONFIG_FILE),
+        serde_json::to_vec(&config).unwrap(),
+    )
+    .unwrap();
+    let engine = Engine::new(d.path().into(), |_| {}).unwrap();
+    let access = Access::new(engine, Hub::default(), d.path().into(), assets());
+    access.start().await;
+    assert!(access.status().await.running);
+}
+
+#[test]
+fn reads_the_tailnet_name() {
+    assert_eq!(
+        tailnet_name(r#"{"Self":{"DNSName":"Desk.example.ts.net."}}"#).as_deref(),
+        Some("desk.example.ts.net")
+    );
+    for status in [
+        r#"{"Self":{"DNSName":""}}"#,
+        r#"{"Self":{"DNSName":"a/b.ts.net"}}"#,
+        r#"{"Self":{}}"#,
+        "not json",
+    ] {
+        assert_eq!(tailnet_name(status), None, "{status}");
     }
 }

@@ -271,6 +271,7 @@ By default an approval waits for you however long it takes. For a repository, yo
 | Blocking findings                      | P0 to P1                           | P0 only, or P0 to P1, P2 or P3.                                                                                   |
 | Wait for pushes to settle              | On                                 | On/off.                                                                                                           |
 | GitHub status check                    | On                                 | On/off; applies while automatic publication is on.                                                                |
+| Allow access from a browser            | Off                                | On/off and a port from 1024 to 65535; changed from the desktop app only.                                          |
 
 Settings switches and selections save immediately. Changing the model saves that model and its explicit supported default effort in the same update. **Choose a model** and **Choose an effort** are placeholders, not executable default choices. **Saving…**, **Saved**, or an error with **Retry saving** shows the result. **Saved** clears after 2.5 seconds; errors remain until resolved. After a failed write, controls return to the active values. The unapplied request is listed beside its error and **Retry saving**, and survives page navigation along with typed account input. Retry after resolving the failure. If a model change fails, effort stays disabled until you retry successfully or choose a model again; this prevents a later retry from resetting a newly selected effort.
 
@@ -283,6 +284,18 @@ Orbit saves both values atomically and displays a notice identifying where each 
 Orbit never replaces a nonempty explicit selection automatically. A missing model, unsupported effort, ambiguous catalog default, discovery failure, or failed save blocks new reviews with an explanation under **Review agent**. Codex can show **Connected** while review settings still need attention. **Reconnect** refreshes the model catalog and retries resolution even if the app-server is already connected. The last verified catalog remains usable during the refresh; an actual discovery failure blocks execution until a successful refresh. Choose valid settings to correct an unavailable selection. Unrelated settings, repository controls, and switching automation off remain available.
 
 Orbit requests explicit settings and rejects mismatched responses instead of asking for provider model fallback. It does not edit your Codex configuration. The integration is based on Codex CLI **0.156.1** and the [official app-server documentation](https://developers.openai.com/codex/app-server). The browser demo uses a simulated explicit model and the same pinning and legacy-selector workflow; it does not discover your account's models.
+
+## Use Orbit from your phone or laptop
+
+While Orbit runs on your computer, you can open the same workspace in a browser on your other devices through [Tailscale](https://tailscale.com). Everything works there: approvals, loops, publishing and chat. Exported reports download as files, and GitHub links open in a new tab.
+
+1. In **Settings → Use Orbit from other devices**, turn on **Allow access from a browser**. Orbit listens on this computer only, on port 4317 unless you choose another.
+2. Run the `tailscale serve` command Settings shows, once, on this computer. It publishes Orbit to your tailnet over HTTPS. Nothing is opened on your local network or the internet.
+3. Copy the link from Settings and open it on your other device. The browser keeps the link's key, so later visits only need the address.
+
+The link works like a key. Anyone with it can do everything you can in the desktop window, including running repository setup commands on this computer. Only open it on your own devices. **Make a new link** signs out every browser that uses the old one. You can only change these controls from the desktop app.
+
+Your computer has to stay on with Orbit running. Desktop notifications appear on the computer only, but **Needs you** shows every item in the browser too. When the connection drops, the browser says so and reconnects on its own.
 
 ## Restart, retained data, and cleanup
 
@@ -343,6 +356,9 @@ The Markdown contains the stored report, PR identity/link, reviewed head and bas
 | Cleanup failed                                       | Check the per-run error under Storage, correct the cause, refresh, and select the run again.                                                                            |
 | **Ready to publish** but no automatic comment        | The run may be manual, a switch may have been off when it completed, or publication may have been held/failed. Read the chat error and publish manually if appropriate. |
 | Follow-up rejected after cleanup                     | Read the saved chat under **All reviews**. Reconnect the repository and start another review if the PR is still open.                                                   |
+| Browser shows **Lost connection to Orbit**           | Check that the computer is awake, Orbit is running and browser access is on. The page reconnects on its own.                                                            |
+| Browser says the access link no longer works         | Someone made a new link, or the link is mistyped. Copy the current link from Settings on the desktop app.                                                               |
+| **Port … is not available**                          | Another program uses the port. Choose another port in Settings, then run the new `tailscale serve` command.                                                             |
 | **Orbit is already running for this workspace**      | Close the existing instance. Removing the lock file is not the normal recovery path.                                                                                    |
 | Cannot read saved state                              | The app leaves the invalid file untouched and cannot start normally. Preserve the app-data directory for recovery; it does not offer an automatic repair/reset flow.    |
 | Could not save local state; automation paused        | Resolve the app-data write failure before re-enabling automation. Unsaved changes are not guaranteed to survive exit.                                                   |

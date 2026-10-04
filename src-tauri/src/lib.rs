@@ -192,10 +192,27 @@ mod desktop {
         };
         github::run(program, &args, None, None).await.map(|_| ())
     }
-    /// The port for browsers on other devices, from `ORBIT_REMOTE_PORT`.
-    /// Remote access is off when it is unset.
-    fn remote_port() -> Option<u16> {
-        std::env::var("ORBIT_REMOTE_PORT").ok()?.trim().parse().ok()
+    // Browser access is controlled from the desktop window only; these three
+    // are left out of `remote::COMMANDS`.
+    #[tauri::command]
+    async fn get_remote_access(
+        access: State<'_, Arc<remote::Access>>,
+    ) -> Result<remote::Status, String> {
+        Ok(access.status().await)
+    }
+    #[tauri::command]
+    async fn set_remote_access(
+        access: State<'_, Arc<remote::Access>>,
+        enabled: bool,
+        port: u16,
+    ) -> Result<remote::Status, String> {
+        access.set(enabled, port).await
+    }
+    #[tauri::command]
+    async fn reset_remote_link(
+        access: State<'_, Arc<remote::Access>>,
+    ) -> Result<remote::Status, String> {
+        access.reset_link().await
     }
     pub fn run() {
         tauri::Builder::default()
@@ -212,42 +229,19 @@ mod desktop {
                         browsers.publish(snapshot);
                     })
                     .map_err(std::io::Error::other)?;
-                // Browser access is optional, so a problem with it never stops Orbit.
-                let remote = remote_port().and_then(|port| match remote::token(&root) {
-                    Ok(token) => Some((port, token)),
-                    Err(e) => {
-                        eprintln!("Orbit remote access is off: cannot keep its token: {e}");
-                        None
-                    }
+                let resolver = app.handle().clone();
+                let assets: remote::Assets = Arc::new(move |path: &str| {
+                    resolver
+                        .asset_resolver()
+                        .get(path.into())
+                        .map(|a| remote::Asset {
+                            bytes: a.bytes,
+                            mime_type: a.mime_type,
+                        })
                 });
-                if let Some((port, token)) = remote {
-                    let resolver = app.handle().clone();
-                    let assets: remote::Assets = Arc::new(move |path: &str| {
-                        resolver
-                            .asset_resolver()
-                            .get(path.into())
-                            .map(|a| remote::Asset {
-                                bytes: a.bytes,
-                                mime_type: a.mime_type,
-                            })
-                    });
-                    let engine = engine.clone();
-                    tauri::async_runtime::spawn(async move {
-                        match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
-                            Ok(listener) => {
-                                println!(
-                                    "Orbit remote access: http://127.0.0.1:{port}/#token={token}"
-                                );
-                                if let Err(e) =
-                                    remote::serve(listener, engine, hub, token, assets).await
-                                {
-                                    eprintln!("Orbit remote access stopped: {e}");
-                                }
-                            }
-                            Err(e) => eprintln!("Orbit remote access cannot use port {port}: {e}"),
-                        }
-                    });
-                }
+                let access = remote::Access::new(engine.clone(), hub, root, assets);
+                app.manage(access.clone());
+                tauri::async_runtime::spawn(async move { access.start().await });
                 app.manage(Unseen::default());
                 let handle = app.handle().clone();
                 engine.on_notice(move |notice| {
@@ -303,7 +297,10 @@ mod desktop {
                 answer_approval,
                 get_files,
                 list_repositories,
-                open_github
+                open_github,
+                get_remote_access,
+                set_remote_access,
+                reset_remote_link
             ])
             .build(tauri::generate_context!())
             .expect("Unable to start Orbit")

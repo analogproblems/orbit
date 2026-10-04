@@ -22,6 +22,7 @@ import { useOrbit, live } from "./store";
 import { defaultEffort, workspaceSelectionUnavailable } from "./types";
 import { SaveFeedback } from "./SaveFeedback";
 import { Storage } from "./Storage";
+import { RemoteAccess } from "./RemoteAccess";
 
 export function SettingsPage() {
   const {
@@ -412,6 +413,7 @@ export function SettingsPage() {
           </FormLayout>
         </VStack>
       </Card>
+      <RemoteAccess />
       <Text type="supporting" color="secondary">
         Changes save automatically on this device.
       </Text>

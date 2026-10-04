@@ -9,6 +9,10 @@
 //!   then each change. Empty lines keep the connection alive.
 //! - Any other `GET` serves the built frontend.
 //!
+//! [`Access`] runs the server as Settings ask: on or off, which port, and a
+//! fresh token when the link is reset. Those controls are desktop-only, so a
+//! browser can never widen or keep its own access.
+//!
 //! Every `/api` request needs `Authorization: Bearer <token>`. The token comes
 //! from the access link's URL fragment, so it is never sent in a URL. There are
 //! no cookies, so other websites cannot send commands, and a header that is not
@@ -24,7 +28,11 @@ use axum::{
 };
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 use tokio::{net::TcpListener, sync::watch};
 
 /// Commands a browser can run, named as the desktop app names them.
@@ -54,10 +62,20 @@ pub const COMMANDS: &[&str] = &[
     "get_files",
     "list_repositories",
 ];
+/// Desktop commands a browser cannot run: opening links starts a program on
+/// the host, and the remote access controls stay with the desktop window.
+pub const DESKTOP_ONLY: &[&str] = &[
+    "open_github",
+    "get_remote_access",
+    "set_remote_access",
+    "reset_remote_link",
+];
 /// How often an idle event stream sends an empty line, so the browser can
 /// tell a quiet workspace from a dropped connection.
 const KEEPALIVE: Duration = Duration::from_secs(15);
 const TOKEN_FILE: &str = "remote-token";
+const CONFIG_FILE: &str = "remote.json";
+pub const DEFAULT_PORT: u16 = 4317;
 const HTML_CSP: &str = "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'";
 
 /// A file of the built frontend.
@@ -98,22 +116,18 @@ pub fn token(root: &Path) -> Result<String, String> {
             return Ok(saved.into());
         }
     }
+    new_token(root)
+}
+/// Replaces the access token, so links made with the old one stop working.
+fn new_token(root: &Path) -> Result<String, String> {
+    let path = root.join(TOKEN_FILE);
     // Version 4 UUIDs come from the operating system's secure random source.
     let token = format!(
         "{}{}",
         uuid::Uuid::new_v4().simple(),
         uuid::Uuid::new_v4().simple()
     );
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let mut file = options.open(&path).map_err(|e| e.to_string())?;
-    // `mode` only applies to a new file, so also narrow one left from before.
-    #[cfg(unix)]
-    file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))
-        .map_err(|e| e.to_string())?;
-    std::io::Write::write_all(&mut file, token.as_bytes()).map_err(|e| e.to_string())?;
+    write_private(&path, token.as_bytes())?;
     Ok(token)
 }
 fn valid_token(token: &str) -> bool {
@@ -126,8 +140,17 @@ struct Remote {
     hub: Hub,
     token: Arc<str>,
     assets: Assets,
+    stop: watch::Receiver<bool>,
 }
-pub fn router(engine: Arc<Engine>, hub: Hub, token: String, assets: Assets) -> Router {
+/// The server's routes. Event streams end once `stop` turns true, so a server
+/// being stopped or given a new token does not wait on open browsers.
+pub fn router(
+    engine: Arc<Engine>,
+    hub: Hub,
+    token: String,
+    assets: Assets,
+    stop: watch::Receiver<bool>,
+) -> Router {
     Router::new()
         .route("/api/events", get(events))
         .route("/api/{command}", post(command))
@@ -137,16 +160,8 @@ pub fn router(engine: Arc<Engine>, hub: Hub, token: String, assets: Assets) -> R
             hub,
             token: token.into(),
             assets,
+            stop,
         })
-}
-pub async fn serve(
-    listener: TcpListener,
-    engine: Arc<Engine>,
-    hub: Hub,
-    token: String,
-    assets: Assets,
-) -> std::io::Result<()> {
-    axum::serve(listener, router(engine, hub, token, assets)).await
 }
 
 fn failure(status: StatusCode, error: impl Into<String>) -> Response {
@@ -285,12 +300,15 @@ async fn events(State(remote): State<Remote>, headers: HeaderMap) -> Response {
         Err(e) => return failure(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
     let lines = futures_util::stream::unfold(
-        (Some(first), changes),
-        |(pending, mut changes)| async move {
+        (Some(first), changes, remote.stop.clone()),
+        |(pending, mut changes, mut stop)| async move {
+            if *stop.borrow_and_update() {
+                return None;
+            }
             if let Some(line) = pending {
                 return Some((
                     Ok::<_, std::convert::Infallible>(line + "\n"),
-                    (None, changes),
+                    (None, changes, stop),
                 ));
             }
             tokio::select! {
@@ -298,9 +316,10 @@ async fn events(State(remote): State<Remote>, headers: HeaderMap) -> Response {
                     changed.ok()?;
                     let latest = changes.borrow_and_update().clone();
                     let line = latest.map_or_else(String::new, |json| json.to_string());
-                    Some((Ok(line + "\n"), (None, changes)))
+                    Some((Ok(line + "\n"), (None, changes, stop)))
                 }
-                _ = tokio::time::sleep(KEEPALIVE) => Some((Ok("\n".into()), (None, changes))),
+                _ = stop.changed() => None,
+                _ = tokio::time::sleep(KEEPALIVE) => Some((Ok("\n".into()), (None, changes, stop))),
             }
         },
     );
@@ -355,6 +374,219 @@ async fn asset(State(remote): State<Remote>, uri: Uri) -> Response {
         headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     }
     response
+}
+
+/// How browser access is set up, saved in `remote.json`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Config {
+    pub enabled: bool,
+    pub port: u16,
+}
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: DEFAULT_PORT,
+        }
+    }
+}
+/// What Settings shows about browser access.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Status {
+    pub enabled: bool,
+    pub port: u16,
+    /// Whether the server is listening now.
+    pub running: bool,
+    /// Why the server is not running although it is turned on.
+    pub error: Option<String>,
+    /// The access link on this computer, while running.
+    pub link: Option<String>,
+    /// This computer's Tailscale name, when the Tailscale CLI reports one.
+    pub tailnet_host: Option<String>,
+}
+struct Running {
+    stop: watch::Sender<bool>,
+    task: tokio::task::JoinHandle<()>,
+    token: String,
+}
+struct Inner {
+    config: Config,
+    running: Option<Running>,
+    error: Option<String>,
+}
+/// Starts, stops and restarts the server as its [`Config`] changes.
+pub struct Access {
+    engine: Arc<Engine>,
+    hub: Hub,
+    root: PathBuf,
+    assets: Assets,
+    inner: tokio::sync::Mutex<Inner>,
+}
+impl Access {
+    /// Loads the saved configuration. Nothing listens until [`Access::start`].
+    pub fn new(engine: Arc<Engine>, hub: Hub, root: PathBuf, assets: Assets) -> Arc<Self> {
+        let config = std::fs::read(root.join(CONFIG_FILE))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        Arc::new(Self {
+            engine,
+            hub,
+            root,
+            assets,
+            inner: tokio::sync::Mutex::new(Inner {
+                config,
+                running: None,
+                error: None,
+            }),
+        })
+    }
+    /// Starts the server if it was left turned on.
+    pub async fn start(&self) {
+        let mut inner = self.inner.lock().await;
+        self.restart(&mut inner).await;
+    }
+    pub async fn status(&self) -> Status {
+        let mut status = {
+            let inner = self.inner.lock().await;
+            Status {
+                enabled: inner.config.enabled,
+                port: inner.config.port,
+                running: inner.running.is_some(),
+                error: inner.error.clone(),
+                link: inner
+                    .running
+                    .as_ref()
+                    .map(|r| format!("http://127.0.0.1:{}/#token={}", inner.config.port, r.token)),
+                tailnet_host: None,
+            }
+        };
+        if status.running {
+            status.tailnet_host = tailnet_host().await;
+        }
+        status
+    }
+    /// Turns access on or off, or moves it to another port.
+    pub async fn set(&self, enabled: bool, port: u16) -> Result<Status, String> {
+        if port < 1024 {
+            return Err("Choose a port from 1024 to 65535.".into());
+        }
+        {
+            let mut inner = self.inner.lock().await;
+            let config = Config { enabled, port };
+            write_private(
+                &self.root.join(CONFIG_FILE),
+                &serde_json::to_vec(&config).map_err(|e| e.to_string())?,
+            )?;
+            if inner.config != config || inner.running.is_none() == enabled {
+                inner.config = config;
+                self.restart(&mut inner).await;
+            }
+        }
+        Ok(self.status().await)
+    }
+    /// Makes a new access link. Browsers using the old one are disconnected
+    /// and must open the new link.
+    pub async fn reset_link(&self) -> Result<Status, String> {
+        {
+            let mut inner = self.inner.lock().await;
+            new_token(&self.root)?;
+            self.restart(&mut inner).await;
+        }
+        Ok(self.status().await)
+    }
+    /// Stops the server, then starts it again if it is turned on.
+    async fn restart(&self, inner: &mut Inner) {
+        if let Some(running) = inner.running.take() {
+            stop(running).await;
+        }
+        inner.error = None;
+        if !inner.config.enabled {
+            return;
+        }
+        let port = inner.config.port;
+        let token = match token(&self.root) {
+            Ok(token) => token,
+            Err(e) => {
+                inner.error = Some(format!("Cannot keep the access token: {e}"));
+                return;
+            }
+        };
+        let listener = match TcpListener::bind(("127.0.0.1", port)).await {
+            Ok(listener) => listener,
+            Err(e) => {
+                inner.error = Some(format!(
+                    "Port {port} is not available ({e}). Choose another port."
+                ));
+                return;
+            }
+        };
+        let (stop, stopped) = watch::channel(false);
+        let app = router(
+            self.engine.clone(),
+            self.hub.clone(),
+            token.clone(),
+            self.assets.clone(),
+            stopped.clone(),
+        );
+        let mut shutdown = stopped;
+        let task = tokio::spawn(async move {
+            let _ = axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown.wait_for(|stop| *stop).await;
+                })
+                .await;
+        });
+        inner.running = Some(Running { stop, task, token });
+    }
+}
+/// Stops a server: event streams end at once, and other requests get a few
+/// seconds to finish.
+async fn stop(running: Running) {
+    let _ = running.stop.send(true);
+    let mut task = running.task;
+    if tokio::time::timeout(Duration::from_secs(5), &mut task)
+        .await
+        .is_err()
+    {
+        task.abort();
+    }
+}
+fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(path).map_err(|e| e.to_string())?;
+    // `mode` only applies to a new file, so also narrow one left from before.
+    #[cfg(unix)]
+    file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))
+        .map_err(|e| e.to_string())?;
+    std::io::Write::write_all(&mut file, bytes).map_err(|e| e.to_string())
+}
+/// This computer's name on the tailnet, such as `desk.example.ts.net`.
+async fn tailnet_host() -> Option<String> {
+    let out = crate::github::run_with_timeout(
+        "tailscale",
+        &["status".into(), "--json".into()],
+        None,
+        None,
+        Duration::from_secs(3),
+    )
+    .await
+    .ok()?;
+    tailnet_name(&out)
+}
+fn tailnet_name(status: &str) -> Option<String> {
+    let status: Value = serde_json::from_str(status).ok()?;
+    let name = status["Self"]["DNSName"].as_str()?.trim_end_matches('.');
+    (!name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.'))
+    .then(|| name.to_ascii_lowercase())
 }
 
 #[cfg(test)]
