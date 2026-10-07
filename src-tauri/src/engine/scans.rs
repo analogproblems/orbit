@@ -62,13 +62,16 @@ impl Engine {
             .await?
             .filter(|p| p.status.installed)
             .ok_or("Install the Codex Security plugin first.")?;
-        let read = self
+        // Skills Codex loads for the plugin, wherever it was installed from.
+        // No folder is passed, so a repository's own skills are never listed.
+        let skills = self
             .client()
             .await?
-            .request("plugin/read", plugin.params())
+            .request("skills/list", json!({"cwds": [], "forceReload": true}))
             .await?;
-        let (skill_name, skill_path) = scans::find_skill(&read, skill)
-            .ok_or("The installed Codex Security plugin has no scan skill. Update the plugin.")?;
+        let (skill_name, skill_path) = scans::find_skill(&skills, &plugin.id, skill).ok_or(
+            "Codex has not loaded the Codex Security plugin's scan skill. Turn the plugin on, or update it.",
+        )?;
         let scan = {
             let mut s = self.state.lock().await;
             if s.scans.iter().any(|x| scan_active(&x.status)) {
@@ -354,54 +357,160 @@ impl Engine {
         })
         .await;
     }
-    /// Stops a scan. A running scan's thread is also asked to cancel the
-    /// plugin's scan, since a deep scan's workers outlive an interrupted turn.
+    /// Cancels a scan. A scan still being prepared stops at once. A running
+    /// scan stays `cancelling`, keeping its slot and its files, until the
+    /// plugin confirms its own scan stopped: a deep scan's workers outlive an
+    /// interrupted turn. If that cannot be confirmed, Cancel can be tried again.
     pub async fn cancel_scan(self: &Arc<Self>, id: &str) -> Result<(), String> {
-        let scan = {
+        let preparing = {
             let mut s = self.state.lock().await;
             let x = s
                 .scans
                 .iter_mut()
                 .find(|x| x.id == id)
                 .ok_or("Unknown scan")?;
-            if !matches!(x.status.as_str(), "preparing" | "running") {
-                return Err("This scan is not running.".into());
+            match x.status.as_str() {
+                "preparing" => {
+                    x.status = "cancelled".into();
+                    x.finished_at = Some(now());
+                    true
+                }
+                "running" | "cancelling" => {
+                    x.status = "cancelling".into();
+                    x.error = None;
+                    false
+                }
+                _ => return Err("This scan is not running.".into()),
             }
-            x.status = "cancelled".into();
-            x.finished_at = Some(now());
-            x.clone()
         };
         self.dirty.store(true, std::sync::atomic::Ordering::SeqCst);
-        if let Some(task) = self.preparing.lock().unwrap().remove(id) {
-            task.abort();
-        }
-        if let (Ok(rpc), Some(thread)) = (self.client().await, &scan.thread_id) {
-            if let Some(turn) = &scan.turn_id {
-                let _ = rpc
-                    .request(
-                        "turn/interrupt",
-                        json!({"threadId": thread, "turnId": turn}),
-                    )
-                    .await;
+        if preparing {
+            if let Some(task) = self.preparing.lock().unwrap().remove(id) {
+                task.abort();
             }
-            let _ = rpc
-                .request(
-                    "turn/start",
-                    json!({
-                        "threadId": thread,
-                        "input": [{"type": "text", "text": cancel_prompt(&scan)}],
-                    }),
-                )
-                .await;
-        }
-        // The thread may still be cancelling the plugin's scan in the copy, so
-        // the copy is removed when the scan is deleted or Orbit next starts.
-        if scan.thread_id.is_none() {
             let e = self.clone();
             let id = id.to_string();
             tokio::spawn(async move { e.remove_scan_worktree(&id).await });
+        } else if self.stopping_scans.lock().unwrap().insert(id.to_string()) {
+            let e = self.clone();
+            let id = id.to_string();
+            tokio::spawn(async move {
+                let result = e.stop_scan(&id).await;
+                e.stopping_scans.lock().unwrap().remove(&id);
+                match result {
+                    Ok(()) => e.end_scan(&id, "cancelled", None).await,
+                    Err(error) => {
+                        e.update(|s| {
+                            if let Some(x) = s
+                                .scans
+                                .iter_mut()
+                                .find(|x| x.id == id && x.status == "cancelling")
+                            {
+                                x.error = Some(format!(
+                                    "Orbit could not confirm the scan stopped: {error} Try stopping it again."
+                                ));
+                            }
+                        })
+                        .await
+                    }
+                }
+            });
         }
         self.flush().await
+    }
+    /// Interrupts a cancelling scan's turn, cancels the plugin's scans for it,
+    /// and checks with the plugin that none is still running.
+    async fn stop_scan(&self, id: &str) -> Result<(), String> {
+        // A scan whose turn is still starting gets its turn id shortly.
+        let mut scan = None;
+        for _ in 0..50 {
+            let found = self.scan_live(id).await?;
+            if found.turn_id.is_some() {
+                scan = Some(found);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        let scan = scan.ok_or("Codex has not started the scan's turn yet.")?;
+        let (Some(thread), Some(turn)) = (&scan.thread_id, &scan.turn_id) else {
+            return Err("The scan has no Codex thread.".into());
+        };
+        let rpc = self.client().await?;
+        // Codex answers once the turn has stopped.
+        match rpc
+            .request_timeout(
+                "turn/interrupt",
+                json!({"threadId": thread, "turnId": turn}),
+                120,
+            )
+            .await
+        {
+            Err(e) if !e.contains("no active turn") => {
+                return Err(format!("Codex did not stop the scan's turn ({e})."))
+            }
+            _ => {}
+        }
+        let found = self.plugin_scans(&rpc, &scan).await?;
+        let mut cancel: Vec<&String> = found
+            .iter()
+            .filter(|(_, status)| status == "running")
+            .map(|(plugin_id, _)| plugin_id)
+            .collect();
+        let known_elsewhere = scan
+            .plugin_scan_id
+            .as_ref()
+            .filter(|known| !found.iter().any(|(p, _)| p == *known));
+        cancel.extend(known_elsewhere);
+        for plugin_id in &cancel {
+            plugin_tool(
+                &rpc,
+                thread,
+                "cancel_codex_security_scan",
+                json!({"scanId": plugin_id}),
+                300,
+            )
+            .await?;
+        }
+        let after = self.plugin_scans(&rpc, &scan).await?;
+        if let Some((plugin_id, _)) = after.iter().find(|(_, status)| status == "running") {
+            return Err(format!(
+                "Codex Security still reports its scan {plugin_id} as running."
+            ));
+        }
+        if scan.plugin_scan_id.is_none() {
+            if let Some((plugin_id, _)) = after.first() {
+                let plugin_id = plugin_id.clone();
+                self.update(|s| {
+                    if let Some(x) = s.scans.iter_mut().find(|x| x.id == id) {
+                        x.plugin_scan_id = Some(plugin_id);
+                    }
+                })
+                .await;
+            }
+        }
+        Ok(())
+    }
+    /// The plugin's own scans for an Orbit scan, with their status. The
+    /// plugin keeps a deep scan's id to itself until it ends, so they are
+    /// found by the scan's copy, whose folder is named after the scan.
+    async fn plugin_scans(
+        &self,
+        rpc: &crate::rpc::Rpc,
+        scan: &SecurityScan,
+    ) -> Result<Vec<(String, String)>, String> {
+        let thread = scan
+            .thread_id
+            .as_deref()
+            .ok_or("The scan has no Codex thread.")?;
+        let list = plugin_tool(
+            rpc,
+            thread,
+            "list_codex_security_scans",
+            json!({"query": scan.id}),
+            60,
+        )
+        .await?;
+        Ok(scans::plugin_scans(&list, &scan.id, Some(thread)))
     }
     /// Deletes a finished scan: its record, findings, report and files.
     pub async fn delete_scan(&self, id: &str) -> Result<(), String> {
@@ -414,6 +523,9 @@ impl Engine {
             .find(|x| x.id == id)
             .cloned()
             .ok_or("Unknown scan")?;
+        if scan.status == "cancelling" {
+            return Err("The scan is still stopping. Delete it once it has stopped.".into());
+        }
         if scan_active(&scan.status) {
             return Err("Cancel the scan before deleting it.".into());
         }
@@ -448,7 +560,7 @@ impl Engine {
             .await
             .map_err(|e| e.to_string())?
     }
-    /// The active scan a Codex thread belongs to.
+    /// The running or cancelling scan a Codex thread belongs to.
     pub(super) async fn scan_for_thread(&self, thread: Option<&str>) -> Option<String> {
         let thread = thread?;
         self.state
@@ -456,7 +568,10 @@ impl Engine {
             .await
             .scans
             .iter()
-            .find(|x| x.thread_id.as_deref() == Some(thread) && x.status == "running")
+            .find(|x| {
+                x.thread_id.as_deref() == Some(thread)
+                    && matches!(x.status.as_str(), "running" | "cancelling")
+            })
             .map(|x| x.id.clone())
     }
     /// Applies a Codex notification from a scan's thread.
@@ -584,14 +699,37 @@ fn scan_prompt(
         output.display(),
     )
 }
-fn cancel_prompt(scan: &SecurityScan) -> String {
-    let which = scan.plugin_scan_id.as_ref().map_or_else(
-        || "the Codex Security scan started in this thread".into(),
-        |id| format!("Codex Security scan {id}"),
-    );
-    format!(
-        "Orbit cancelled this scan. Cancel {which} now with cancel_codex_security_scan, then stop. Do no other work."
-    )
+/// Calls one of the plugin's tools on a scan's thread, which the plugin
+/// needs to know the scan is the thread's own.
+async fn plugin_tool(
+    rpc: &crate::rpc::Rpc,
+    thread: &str,
+    tool: &str,
+    arguments: Value,
+    seconds: u64,
+) -> Result<Value, String> {
+    let result = rpc
+        .request_timeout(
+            "mcpServer/tool/call",
+            json!({"threadId": thread, "server": scans::PLUGIN, "tool": tool, "arguments": arguments}),
+            seconds,
+        )
+        .await?;
+    if result["isError"] == true {
+        let text = result["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|c| c["text"].as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        return Err(if text.is_empty() {
+            format!("Codex Security's {tool} failed.")
+        } else {
+            text
+        });
+    }
+    Ok(result["structuredContent"].clone())
 }
 /// Applies a notification to the scan it belongs to. Returns how the scan's
 /// turn ended, once it has.
@@ -643,7 +781,10 @@ pub(super) fn apply_scan_notification(
             None
         }
         "turn/completed" => {
-            if x.turn_id.as_deref() != p["turn"]["id"].as_str() && x.turn_id.is_some() {
+            // A cancelling scan ends once the plugin confirms it stopped.
+            if x.status == "cancelling"
+                || (x.turn_id.as_deref() != p["turn"]["id"].as_str() && x.turn_id.is_some())
+            {
                 return None;
             }
             let status = p["turn"]["status"].as_str().unwrap_or_default();

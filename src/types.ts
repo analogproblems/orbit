@@ -396,6 +396,8 @@ export type ScanMode = "standard" | "deep";
 export type ScanStatus =
   | "preparing"
   | "running"
+  /** Waiting for the Codex Security plugin to confirm its scan stopped. */
+  | "cancelling"
   | "importing"
   | "completed"
   | "failed"
@@ -430,6 +432,7 @@ export interface SecurityScan {
 export const scanActive = (s: SecurityScan) =>
   s.status === "preparing" ||
   s.status === "running" ||
+  s.status === "cancelling" ||
   s.status === "importing";
 /** Whether the Codex Security plugin can be used. */
 export interface ScanPluginStatus {

@@ -571,12 +571,25 @@ async function demoAction(
     if (!scan || !scanActive(scan)) throw Error("This scan is not running.");
     clearTimeout(timers.get(scan.id));
     timers.delete(scan.id);
-    scan.status = "cancelled";
-    scan.finishedAt = new Date().toISOString();
+    // The app waits for the plugin to confirm its scan stopped.
+    scan.status = "cancelling";
+    scan.error = null;
     commit();
+    timers.set(
+      scan.id,
+      setTimeout(() => {
+        timers.delete(scan.id);
+        if (scan.status !== "cancelling") return;
+        scan.status = "cancelled";
+        scan.finishedAt = new Date().toISOString();
+        commit();
+      }, 1500),
+    );
     return;
   }
   if (command === "delete_scan") {
+    if (demo.scans?.some((s) => s.id === args.scanId && scanActive(s)))
+      throw Error("Cancel the scan before deleting it.");
     demo.scans = demo.scans?.filter((s) => s.id !== args.scanId);
     commit();
     return;

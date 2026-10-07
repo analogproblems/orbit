@@ -30,36 +30,47 @@ pub struct PluginStatus {
     pub installed: bool,
     pub version: Option<String>,
 }
-/// Where the plugin is listed, so it can be read or installed.
+/// Where the plugin is listed, so it can be installed and its skills found.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PluginSource {
     pub status: PluginStatus,
+    /// The plugin's id (`codex-security@marketplace`), which its skills carry.
+    pub id: String,
     pub marketplace_name: String,
     pub marketplace_path: Option<String>,
+    /// A remote marketplace's own id for the plugin, which Codex expects as
+    /// the plugin's name there.
+    pub remote_plugin_id: Option<String>,
 }
 impl PluginSource {
-    /// The `plugin/read` and `plugin/install` parameters for this plugin.
+    /// The `plugin/install` parameters for this plugin.
     pub fn params(&self) -> Value {
-        match &self.marketplace_path {
-            Some(path) => serde_json::json!({"marketplacePath": path, "pluginName": PLUGIN}),
-            None => serde_json::json!({
+        match (&self.marketplace_path, &self.remote_plugin_id) {
+            (Some(path), _) => serde_json::json!({"marketplacePath": path, "pluginName": PLUGIN}),
+            (None, remote) => serde_json::json!({
                 "remoteMarketplaceName": self.marketplace_name,
-                "pluginName": PLUGIN,
+                "pluginName": remote,
             }),
         }
     }
 }
 /// Finds the plugin in a `plugin/list` response. An installed copy wins over
-/// one that is only offered.
+/// one that is only offered. A remote marketplace's entry without its remote
+/// id cannot be installed, so it is skipped.
 pub fn find_plugin(list: &Value) -> Option<PluginSource> {
     let mut found: Option<PluginSource> = None;
     for market in list["marketplaces"].as_array().into_iter().flatten() {
+        let marketplace_path = market["path"].as_str().map(str::to_owned);
         for plugin in market["plugins"].as_array().into_iter().flatten() {
             let named = plugin["name"].as_str() == Some(PLUGIN)
                 || plugin["id"]
                     .as_str()
                     .is_some_and(|id| id.split('@').next() == Some(PLUGIN));
-            if !named {
+            let remote_plugin_id = plugin["remotePluginId"]
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned);
+            if !named || (marketplace_path.is_none() && remote_plugin_id.is_none()) {
                 continue;
             }
             let installed = plugin["installed"].as_bool().unwrap_or(false);
@@ -69,6 +80,7 @@ pub fn find_plugin(list: &Value) -> Option<PluginSource> {
             {
                 continue;
             }
+            let marketplace_name: String = market["name"].as_str().unwrap_or_default().into();
             found = Some(PluginSource {
                 status: PluginStatus {
                     available: true,
@@ -78,8 +90,13 @@ pub fn find_plugin(list: &Value) -> Option<PluginSource> {
                         .or_else(|| plugin["version"].as_str())
                         .map(str::to_owned),
                 },
-                marketplace_name: market["name"].as_str().unwrap_or_default().into(),
-                marketplace_path: market["path"].as_str().map(str::to_owned),
+                id: plugin["id"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("{PLUGIN}@{marketplace_name}")),
+                marketplace_name,
+                marketplace_path: marketplace_path.clone(),
+                remote_plugin_id,
             });
         }
     }
@@ -93,22 +110,54 @@ pub fn skill_for(mode: &str) -> Option<&'static str> {
         _ => None,
     }
 }
-/// The name and path of a skill in a `plugin/read` response. Skill names may
-/// carry the plugin's name as a prefix (`codex-security:security-scan`).
-pub fn find_skill(read: &Value, skill: &str) -> Option<(String, String)> {
-    read["plugin"]["skills"]
+/// The name and `SKILL.md` path of the plugin's skill in a `skills/list`
+/// response. Only a skill the installed plugin provides counts, so a skill of
+/// the same name elsewhere is never run. Names may carry the plugin's name as
+/// a prefix (`codex-security:security-scan`).
+pub fn find_skill(list: &Value, plugin_id: &str, skill: &str) -> Option<(String, String)> {
+    list["data"]
         .as_array()?
         .iter()
+        .flat_map(|entry| entry["skills"].as_array().into_iter().flatten())
         .find(|s| {
             let name = s["name"].as_str().unwrap_or_default();
-            name == skill || name.rsplit(':').next() == Some(skill)
+            s["pluginId"].as_str() == Some(plugin_id)
+                && s["enabled"].as_bool() != Some(false)
+                && (name == skill || name.rsplit(':').next() == Some(skill))
+                && s["path"].as_str().is_some_and(|p| !p.is_empty())
         })
         .and_then(|s| {
             Some((
                 s["name"].as_str()?.to_owned(),
-                s["path"].as_str().filter(|p| !p.is_empty())?.to_owned(),
+                s["path"].as_str()?.to_owned(),
             ))
         })
+}
+
+/// The plugin's own scans for an Orbit scan, from `list_codex_security_scans`:
+/// those run on the scan's copy or from its thread, with each one's status.
+pub fn plugin_scans(list: &Value, id: &str, thread: Option<&str>) -> Vec<(String, String)> {
+    list["scans"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|x| {
+            x["targetPath"]
+                .as_str()
+                .is_some_and(|p| Path::new(p).file_name().is_some_and(|n| n == id))
+                || (thread.is_some() && x["continuationThreadId"].as_str() == thread)
+        })
+        .filter_map(|x| {
+            Some((
+                x["scanId"].as_str()?.to_owned(),
+                x["progress"]["status"]
+                    .as_str()
+                    .or_else(|| x["status"].as_str())
+                    .unwrap_or("running")
+                    .to_owned(),
+            ))
+        })
+        .collect()
 }
 
 /// A tool call's arguments, which Codex may send as an object or as text.
@@ -475,10 +524,13 @@ mod tests {
 
     #[test]
     fn finds_the_plugin_and_its_skills() {
+        // Shaped like Codex's plugin/list: a remote marketplace has no path,
+        // and its plugins carry their own remote id.
         let list = json!({"marketplaces": [
             {"name": "local", "path": "/m/local.json", "plugins": [{"id": "other@local", "name": "other", "installed": true}]},
             {"name": "openai-curated", "path": null, "plugins": [
-                {"id": "codex-security@openai-curated", "name": "codex-security", "installed": false, "version": "0.1.24"}
+                {"id": "codex-security@openai-curated", "remotePluginId": "plugin_6f1c2a", "name": "codex-security",
+                 "installed": false, "version": "0.1.24"}
             ]},
         ]});
         let found = find_plugin(&list).unwrap();
@@ -490,10 +542,15 @@ mod tests {
                 version: Some("0.1.24".into())
             }
         );
+        assert_eq!(found.id, "codex-security@openai-curated");
         assert_eq!(
             found.params(),
-            json!({"remoteMarketplaceName": "openai-curated", "pluginName": "codex-security"})
+            json!({"remoteMarketplaceName": "openai-curated", "pluginName": "plugin_6f1c2a"})
         );
+        // A remote entry without its remote id cannot be installed.
+        let mut unnamed = list.clone();
+        unnamed["marketplaces"][1]["plugins"][0]["remotePluginId"] = Value::Null;
+        assert_eq!(find_plugin(&unnamed), None);
         // An installed copy in another marketplace wins.
         let mut both = list.clone();
         both["marketplaces"][0]["plugins"]
@@ -503,29 +560,60 @@ mod tests {
         let found = find_plugin(&both).unwrap();
         assert!(found.status.installed);
         assert_eq!(found.status.version.as_deref(), Some("0.1.25"));
+        assert_eq!(found.id, "codex-security@local");
         assert_eq!(
             found.params(),
             json!({"marketplacePath": "/m/local.json", "pluginName": "codex-security"})
         );
         assert_eq!(find_plugin(&json!({"marketplaces": []})), None);
 
-        let read = json!({"plugin": {"skills": [
-            {"name": "codex-security:deep-security-scan", "path": "/p/skills/deep-security-scan/SKILL.md"},
-            {"name": "codex-security:security-scan", "path": "/p/skills/security-scan/SKILL.md"},
-            {"name": "codex-security:security-diff-scan", "path": "/p/skills/security-diff-scan/SKILL.md"},
-        ]}});
+        // Shaped like skills/list. Only the plugin's own skills count.
+        let skills = json!({"data": [{"cwd": "/", "errors": [], "skills": [
+            {"name": "security-scan", "path": "/repo/.codex/skills/security-scan/SKILL.md", "scope": "repo", "enabled": true},
+            {"name": "codex-security:deep-security-scan", "path": "/c/plugins/codex-security/skills/deep-security-scan/SKILL.md",
+             "scope": "user", "enabled": true, "pluginId": "codex-security@openai-curated"},
+            {"name": "codex-security:security-scan", "path": "/c/plugins/codex-security/skills/security-scan/SKILL.md",
+             "scope": "user", "enabled": true, "pluginId": "codex-security@openai-curated"},
+        ]}]});
+        let plugin = "codex-security@openai-curated";
         assert_eq!(
-            find_skill(&read, skill_for("standard").unwrap()),
+            find_skill(&skills, plugin, skill_for("standard").unwrap()),
             Some((
                 "codex-security:security-scan".into(),
-                "/p/skills/security-scan/SKILL.md".into()
+                "/c/plugins/codex-security/skills/security-scan/SKILL.md".into()
             ))
         );
         assert_eq!(
-            find_skill(&read, skill_for("deep").unwrap()).unwrap().0,
+            find_skill(&skills, plugin, skill_for("deep").unwrap())
+                .unwrap()
+                .0,
             "codex-security:deep-security-scan"
         );
+        assert_eq!(
+            find_skill(&skills, "codex-security@local", "security-scan"),
+            None
+        );
+        let mut disabled = skills.clone();
+        disabled["data"][0]["skills"][2]["enabled"] = json!(false);
+        assert_eq!(find_skill(&disabled, plugin, "security-scan"), None);
         assert_eq!(skill_for("diff"), None);
+    }
+
+    #[test]
+    fn matches_the_plugins_scans_to_an_orbit_scan() {
+        let list = json!({"scans": [
+            {"scanId": "p1", "targetPath": "/o/scan-worktrees/scan-1", "progress": {"status": "running"}},
+            {"scanId": "p2", "targetPath": "/elsewhere", "continuationThreadId": "t1", "progress": {"status": "canceled"}},
+            {"scanId": "p3", "targetPath": "/o/scan-worktrees/scan-10", "progress": {"status": "running"}},
+        ]});
+        assert_eq!(
+            plugin_scans(&list, "scan-1", Some("t1")),
+            vec![
+                ("p1".to_string(), "running".to_string()),
+                ("p2".to_string(), "canceled".to_string())
+            ]
+        );
+        assert!(plugin_scans(&list, "scan-2", None).is_empty());
     }
 
     #[test]

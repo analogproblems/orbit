@@ -727,8 +727,9 @@ pub struct SecurityScan {
     pub repo: String,
     /// "standard" or "deep".
     pub mode: String,
-    /// preparing, running, importing, completed, failed, cancelled or
-    /// interrupted (Orbit or Codex stopped while it ran).
+    /// preparing, running, cancelling (waiting for the plugin to confirm it
+    /// stopped), importing, completed, failed, cancelled or interrupted
+    /// (Orbit or Codex stopped while it ran).
     pub status: String,
     pub created_at: String,
     pub finished_at: Option<String>,
@@ -757,7 +758,7 @@ pub struct SecurityScan {
     pub last_message: Option<String>,
 }
 pub fn scan_active(status: &str) -> bool {
-    matches!(status, "preparing" | "running" | "importing")
+    matches!(status, "preparing" | "running" | "cancelling" | "importing")
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

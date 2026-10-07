@@ -24,12 +24,12 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     return send(m.id, {});
   }
   requests.push(m);
-  if (m.method === options.failMethod) {
-    return process.stdout.write(
-      JSON.stringify({ id: m.id, error: { message: "fixture failure" } }) +
-        "\n",
+  const fail = (message) =>
+    process.stdout.write(
+      JSON.stringify({ id: m.id, error: { message } }) + "\n",
     );
-  }
+  if (m.method === options.failMethod) return fail("fixture failure");
+  if (options.errors?.[m.method]) return fail(options.errors[m.method]);
   const handle = () => {
     switch (m.method) {
       case "account/read":
@@ -94,6 +94,17 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
           }
         }
         return send(m.id, { turn: { id: "fixture-turn" } });
+      }
+      case "mcpServer/tool/call": {
+        // A tool's replies are given in order; the last one repeats.
+        const replies = options.toolResponses?.[m.params.tool];
+        const reply = Array.isArray(replies)
+          ? replies.length > 1
+            ? replies.shift()
+            : replies[0]
+          : replies;
+        if (reply?.error) return fail(reply.error);
+        return send(m.id, reply ?? { content: [], structuredContent: {} });
       }
       default:
         return send(m.id, options.responses?.[m.method] ?? {});

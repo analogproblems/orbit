@@ -92,9 +92,9 @@ type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// `items` via `retire_dead_connection` → `disconnected`); `poll_lock` →
 /// `state` and `synced_repos` (one at a time); `publish_lock` → `state`;
 /// `cleanup_lock` → `git_lock` → `state`; `state` → `synced_repos`
-/// (`schedule`). `preparing`, `recovered_publications`, `status_sender` and
-/// `sending_statuses` (`std` mutexes, like `preparing`) are only taken on
-/// their own.
+/// (`schedule`). `preparing`, `recovered_publications`, `status_sender`,
+/// `sending_statuses` and `stopping_scans` (`std` mutexes, like `preparing`)
+/// are only taken on their own.
 ///
 /// Known exception: `clean_worktrees_with` briefly holds a `git_lock` try-lock
 /// guard while it try-locks `cleanup_lock`, the reverse of `cleanup_lock` →
@@ -133,6 +133,9 @@ pub struct Engine {
     /// Approvals being answered, so the developer and the time limit
     /// cannot both answer one.
     answering: std::sync::Mutex<HashSet<String>>,
+    /// Scans whose stop is being confirmed with the plugin, so a second
+    /// Cancel waits for the first.
+    stopping_scans: std::sync::Mutex<HashSet<String>>,
     /// The ChatGPT account the usage meter belongs to, so a reconnect as
     /// another account, or with an API key, clears the old numbers.
     usage_account: std::sync::Mutex<Option<String>>,
@@ -211,7 +214,7 @@ impl Engine {
             }
         }
         for scan in &mut state.scans {
-            if matches!(scan.status.as_str(), "preparing" | "running") {
+            if matches!(scan.status.as_str(), "preparing" | "running" | "cancelling") {
                 scan.status = "interrupted".into();
                 scan.finished_at = Some(now());
                 scan.error = Some(
@@ -249,6 +252,7 @@ impl Engine {
             status_sender: std::sync::Mutex::new(status::github_sender()),
             sending_statuses: std::sync::Mutex::new(HashSet::new()),
             answering: std::sync::Mutex::new(HashSet::new()),
+            stopping_scans: std::sync::Mutex::new(HashSet::new()),
             usage_account: std::sync::Mutex::new(None),
             _instance_lock: instance_lock,
         }))

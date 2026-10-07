@@ -106,6 +106,44 @@ describe("security scans", () => {
       restore();
     }
   });
+  it("shows a stopping scan, and offers to try again if it was not confirmed", async () => {
+    const snapshot = freshDemo();
+    snapshot.scans = [running({ status: "cancelling" })];
+    useOrbit.setState({ snapshot });
+    const { calls, restore } = mockActions({ cancel_scan: null });
+    try {
+      const { rerender } = render(<ScansPage />);
+      expect(screen.getByRole("button", { name: /Stopping/ })).toBeTruthy();
+      expect(screen.getByText("Stopping the Codex Security scan")).toBeTruthy();
+      expect(
+        screen.queryByRole("button", { name: /Delete acme\/orbit scan/ }),
+      ).toBeNull();
+      useOrbit.setState({
+        snapshot: {
+          ...snapshot,
+          scans: [
+            running({
+              status: "cancelling",
+              error: "Orbit could not confirm the scan stopped.",
+            }),
+          ],
+        },
+      });
+      rerender(<ScansPage />);
+      expect(screen.getByText(/could not confirm/)).toBeTruthy();
+      fireEvent.click(
+        screen.getByRole("button", { name: "Try stopping again" }),
+      );
+      await waitFor(() =>
+        expect(calls).toContainEqual([
+          "cancel_scan",
+          { scanId: "scan-running" },
+        ]),
+      );
+    } finally {
+      restore();
+    }
+  });
   it("asks before deleting a scan", async () => {
     const snapshot = freshDemo();
     useOrbit.setState({ snapshot });

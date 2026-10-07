@@ -42,6 +42,7 @@ import { useNow } from "./Usage";
 export const scanStatusLabels: Record<ScanStatus, string> = {
   preparing: "Preparing",
   running: "Running",
+  cancelling: "Stopping",
   importing: "Importing findings",
   completed: "Completed",
   failed: "Failed",
@@ -54,6 +55,7 @@ const scanStatusColors: Record<
 > = {
   preparing: "blue",
   running: "blue",
+  cancelling: "orange",
   importing: "blue",
   completed: "green",
   failed: "red",
@@ -78,6 +80,10 @@ export function progressLabel(scan: SecurityScan): string {
   if (scan.status === "preparing")
     return "Copying the repository at its latest commit";
   if (scan.status === "importing") return "Importing findings";
+  if (scan.status === "cancelling")
+    return scan.error
+      ? "Not confirmed stopped yet"
+      : "Stopping the Codex Security scan";
   const p: ScanProgress | null | undefined = scan.progress;
   if (!p?.phase) return "Starting the Codex Security scan";
   const phase = phaseLabels[p.phase] ?? p.phase.replaceAll("_", " ");
@@ -391,11 +397,19 @@ function ScanRow({
           {active ? (
             scan.status !== "importing" && (
               <Button
-                label="Cancel scan"
+                label={
+                  scan.status !== "cancelling"
+                    ? "Cancel scan"
+                    : scan.error
+                      ? "Try stopping again"
+                      : "Stopping"
+                }
                 size="sm"
                 variant="ghost"
                 icon={<Square />}
-                isLoading={cancelling}
+                isLoading={
+                  cancelling || (scan.status === "cancelling" && !scan.error)
+                }
                 onClick={async () => {
                   setCancelling(true);
                   await action("cancel_scan", { scanId: scan.id });

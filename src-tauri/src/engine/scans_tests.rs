@@ -11,11 +11,16 @@ fn plugin_list(installed: bool) -> Value {
         {"id": "codex-security@openai-curated", "name": "codex-security", "installed": installed, "version": "0.1.24"}
     ]}]})
 }
-fn plugin_read() -> Value {
-    json!({"plugin": {"skills": [
-        {"name": "codex-security:security-scan", "path": "/p/skills/security-scan/SKILL.md"},
-        {"name": "codex-security:deep-security-scan", "path": "/p/skills/deep-security-scan/SKILL.md"},
-    ]}})
+/// Shaped like Codex's `skills/list`: the plugin's skills carry its id, and
+/// a skill of the same name from elsewhere does not.
+fn skills_list() -> Value {
+    json!({"data": [{"cwd": "/", "errors": [], "skills": [
+        {"name": "security-scan", "path": "/elsewhere/security-scan/SKILL.md", "scope": "user", "enabled": true},
+        {"name": "codex-security:security-scan", "path": "/p/skills/security-scan/SKILL.md",
+         "scope": "user", "enabled": true, "pluginId": "codex-security@openai-curated"},
+        {"name": "codex-security:deep-security-scan", "path": "/p/skills/deep-security-scan/SKILL.md",
+         "scope": "user", "enabled": true, "pluginId": "codex-security@openai-curated"},
+    ]}]})
 }
 async fn fixture() -> (tempfile::TempDir, Arc<Engine>, Arc<Rpc>) {
     let dir = tempfile::tempdir().unwrap();
@@ -134,11 +139,62 @@ async fn checks_and_installs_the_plugin_only_when_asked() {
 }
 
 #[tokio::test]
+async fn uses_a_plugin_from_a_remote_marketplace_by_its_remote_id() {
+    let (_d, e, rpc) = fixture().await;
+    let remote = |installed: bool| {
+        json!({"marketplaces": [{"name": "openai-curated", "path": null, "plugins": [
+            {"id": "codex-security@openai-curated", "remotePluginId": "plugin_6f1c2a", "name": "codex-security",
+             "installed": installed, "version": "0.1.24"}
+        ]}]})
+    };
+    configure(&rpc, json!({"responses": {"plugin/list": remote(false)}})).await;
+    e.install_scan_plugin().await.unwrap();
+    let install = requests(&rpc)
+        .await
+        .into_iter()
+        .find(|r| r["method"] == "plugin/install")
+        .unwrap();
+    assert_eq!(
+        install["params"],
+        json!({"remoteMarketplaceName": "openai-curated", "pluginName": "plugin_6f1c2a"})
+    );
+    // Its skills have no path in plugin/read, so they come from skills/list,
+    // where Codex loads them from its local copy.
+    configure(
+        &rpc,
+        json!({"responses": {"plugin/list": remote(true), "skills/list": skills_list(),
+            "plugin/read": {"plugin": {"skills": [{"name": "codex-security:security-scan", "path": null}]}}}}),
+    )
+    .await;
+    let id = e.start_scan("a/b", "standard").await.unwrap();
+    assert!(id.starts_with("scan-"));
+    let list = requests(&rpc)
+        .await
+        .into_iter()
+        .find(|r| r["method"] == "skills/list")
+        .unwrap();
+    assert_eq!(list["params"], json!({"cwds": [], "forceReload": true}));
+    wait_for(&e, |s| !scan_active(&s.scans[0].status)).await;
+    // Without the plugin's own skill, no scan starts.
+    e.update(|s| s.scans.clear()).await;
+    let mut other = skills_list();
+    other["data"][0]["skills"] = json!([other["data"][0]["skills"][0]]);
+    configure(
+        &rpc,
+        json!({"responses": {"plugin/list": remote(true), "skills/list": other}}),
+    )
+    .await;
+    let error = e.start_scan("a/b", "standard").await.unwrap_err();
+    assert!(error.contains("scan skill"), "{error}");
+    assert!(e.snapshot().await.scans.is_empty());
+}
+
+#[tokio::test]
 async fn runs_one_scan_at_a_time_and_reports_a_checkout_problem() {
     let (_d, e, rpc) = fixture().await;
     configure(
         &rpc,
-        json!({"responses": {"plugin/list": plugin_list(true), "plugin/read": plugin_read()}}),
+        json!({"responses": {"plugin/list": plugin_list(true), "skills/list": skills_list()}}),
     )
     .await;
     assert!(e.start_scan("a/b", "diff").await.is_err());
@@ -336,45 +392,207 @@ async fn a_scan_without_results_or_with_a_failed_turn_fails() {
     assert_eq!(s.scans[1].status, "running");
 }
 
+/// A `list_codex_security_scans` reply with one plugin scan on scan-1's copy.
+fn plugin_scan(status: &str) -> Value {
+    json!({"content": [], "structuredContent": {"scans": [
+        {"scanId": "deep-1", "targetPath": "/o/scan-worktrees/scan-1", "progress": {"status": status}},
+        {"scanId": "other", "targetPath": "/o/scan-worktrees/scan-2", "progress": {"status": "running"}},
+    ]}})
+}
+fn tool_calls(requests: &[Value]) -> Vec<Value> {
+    requests
+        .iter()
+        .filter(|r| r["method"] == "mcpServer/tool/call")
+        .map(|r| r["params"].clone())
+        .collect()
+}
+async fn wait_releasing(e: &Engine, rpc: &Rpc, done: impl Fn(&Snapshot) -> bool) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !done(&e.snapshot().await) {
+            rpc.request("fixture/release", json!({})).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("timed out");
+}
+
 #[tokio::test]
-async fn cancelling_interrupts_and_asks_the_plugin_to_stop() {
+async fn cancelling_waits_until_the_plugin_confirms_its_scan_stopped() {
     let (_d, e, rpc) = fixture().await;
-    let mut scan = running("scan-1", None);
-    scan.plugin_scan_id = Some("plugin-id".into());
-    e.update(|s| s.scans.push(scan)).await;
+    configure(
+        &rpc,
+        json!({
+            "holdMethod": "mcpServer/tool/call",
+            "responses": {"plugin/list": plugin_list(true), "skills/list": skills_list()},
+            "toolResponses": {"list_codex_security_scans": [plugin_scan("running"), plugin_scan("canceled")]},
+        }),
+    )
+    .await;
+    e.update(|s| s.scans.push(running("scan-1", None))).await;
     e.cancel_scan("scan-1").await.unwrap();
-    let requests = requests(&rpc).await;
-    let interrupt = requests
-        .iter()
-        .find(|r| r["method"] == "turn/interrupt")
-        .unwrap();
-    assert_eq!(
-        interrupt["params"],
-        json!({"threadId": "scan-thread", "turnId": "scan-turn"})
-    );
-    let cancel = requests
-        .iter()
-        .find(|r| r["method"] == "turn/start")
-        .unwrap();
-    assert!(cancel["params"]["input"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("cancel_codex_security_scan"));
-    assert!(cancel["params"]["input"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("plugin-id"));
-    let s = e.snapshot().await;
-    assert_eq!(s.scans[0].status, "cancelled");
-    assert!(e.cancel_scan("scan-1").await.is_err());
-    // Events from the cancelled scan's thread are ignored.
+    assert_eq!(e.snapshot().await.scans[0].status, "cancelling");
+    // While the plugin has not confirmed, the scan keeps its slot and files.
+    let error = e.start_scan("a/b", "standard").await.unwrap_err();
+    assert!(error.contains("already running"), "{error}");
+    let error = e.delete_scan("scan-1").await.unwrap_err();
+    assert!(error.contains("still stopping"), "{error}");
+    // A second Cancel waits for the first.
+    e.cancel_scan("scan-1").await.unwrap();
+    // The interrupted turn ending does not end the scan, and its progress
+    // is still followed.
     e.event(notification(
         "turn/completed",
         json!({"threadId": "scan-thread", "turn": {"id": "scan-turn", "status": "interrupted"}}),
     ))
     .await;
-    assert_eq!(e.snapshot().await.scans[0].status, "cancelled");
-    assert!(e.delete_scan("scan-1").await.is_ok());
+    e.event(notification(
+        "item/completed",
+        json!({"threadId": "scan-thread", "turnId": "scan-turn", "item": tool_item(
+            "update_codex_security_scan_progress",
+            json!({"phase": "validation", "reviewItemsCompleted": 4, "reviewItemsTotal": 9}),
+            json!({}),
+        )}),
+    ))
+    .await;
+    let s = e.snapshot().await;
+    assert_eq!(s.scans[0].status, "cancelling");
+    assert_eq!(s.scans[0].progress.as_ref().unwrap().completed, Some(4));
+
+    wait_releasing(&e, &rpc, |s| s.scans[0].status == "cancelled").await;
+    let requests = requests(&rpc).await;
+    let interrupts: Vec<_> = requests
+        .iter()
+        .filter(|r| r["method"] == "turn/interrupt")
+        .collect();
+    assert_eq!(interrupts.len(), 1);
+    assert_eq!(
+        interrupts[0]["params"],
+        json!({"threadId": "scan-thread", "turnId": "scan-turn"})
+    );
+    // No message asks the model to cancel; Orbit calls the plugin itself on
+    // the scan's thread, cancels only this scan's plugin scan, and checks.
+    assert!(!requests.iter().any(|r| r["method"] == "turn/start"));
+    let calls = tool_calls(&requests);
+    let tools: Vec<_> = calls.iter().map(|c| c["tool"].as_str().unwrap()).collect();
+    assert_eq!(
+        tools,
+        [
+            "list_codex_security_scans",
+            "cancel_codex_security_scan",
+            "list_codex_security_scans"
+        ]
+    );
+    assert_eq!(
+        calls[0],
+        json!({"threadId": "scan-thread", "server": "codex-security",
+            "tool": "list_codex_security_scans", "arguments": {"query": "scan-1"}})
+    );
+    assert_eq!(calls[1]["arguments"], json!({"scanId": "deep-1"}));
+    let scan = e.snapshot().await.scans[0].clone();
+    assert_eq!(scan.plugin_scan_id.as_deref(), Some("deep-1"));
+    assert!(scan.finished_at.is_some() && scan.error.is_none());
+    assert!(e.cancel_scan("scan-1").await.is_err());
+    e.delete_scan("scan-1").await.unwrap();
+}
+
+#[tokio::test]
+async fn a_cancel_the_plugin_does_not_confirm_stays_pending_and_can_be_retried() {
+    let (_d, e, rpc) = fixture().await;
+    e.update(|s| s.scans.push(running("scan-1", None))).await;
+    let error_after_cancel = |e: Arc<Engine>| async move {
+        e.cancel_scan("scan-1").await.unwrap();
+        wait_for(&e, |s| s.scans[0].error.is_some()).await;
+        let scan = e.snapshot().await.scans[0].clone();
+        assert_eq!(scan.status, "cancelling");
+        assert!(scan.finished_at.is_none());
+        scan.error.unwrap()
+    };
+
+    // Codex does not stop the turn.
+    configure(&rpc, json!({"failMethod": "turn/interrupt"})).await;
+    let error = error_after_cancel(e.clone()).await;
+    assert!(
+        error.contains("could not confirm") && error.contains("fixture failure"),
+        "{error}"
+    );
+    assert!(tool_calls(&requests(&rpc).await).is_empty());
+    assert!(e.delete_scan("scan-1").await.is_err());
+
+    // The plugin refuses to cancel.
+    configure(
+        &rpc,
+        json!({
+            "errors": {"turn/interrupt": "no active turn to interrupt"},
+            "toolResponses": {
+                "list_codex_security_scans": plugin_scan("running"),
+                "cancel_codex_security_scan": {"isError": true, "content": [{"type": "text", "text": "Scan is owned by another thread."}]},
+            },
+        }),
+    )
+    .await;
+    let error = error_after_cancel(e.clone()).await;
+    assert!(error.contains("owned by another thread"), "{error}");
+
+    // The plugin accepts, but still reports its scan running.
+    configure(
+        &rpc,
+        json!({
+            "errors": {"turn/interrupt": "no active turn to interrupt"},
+            "toolResponses": {"list_codex_security_scans": plugin_scan("running")},
+        }),
+    )
+    .await;
+    let error = error_after_cancel(e.clone()).await;
+    assert!(error.contains("still reports its scan deep-1"), "{error}");
+
+    // Listing fails.
+    configure(
+        &rpc,
+        json!({
+            "errors": {"turn/interrupt": "no active turn to interrupt"},
+            "toolResponses": {"list_codex_security_scans": {"error": "tool server stopped"}},
+        }),
+    )
+    .await;
+    let error = error_after_cancel(e.clone()).await;
+    assert!(error.contains("tool server stopped"), "{error}");
+
+    // Once the plugin reports its scan stopped, the cancel completes.
+    configure(
+        &rpc,
+        json!({
+            "errors": {"turn/interrupt": "no active turn to interrupt"},
+            "toolResponses": {"list_codex_security_scans": plugin_scan("complete")},
+        }),
+    )
+    .await;
+    e.cancel_scan("scan-1").await.unwrap();
+    wait_for(&e, |s| s.scans[0].status == "cancelled").await;
+    assert!(e.snapshot().await.scans[0].error.is_none());
+    let tools: Vec<_> = tool_calls(&requests(&rpc).await)
+        .iter()
+        .map(|c| c["tool"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        tools,
+        ["list_codex_security_scans", "list_codex_security_scans"]
+    );
+}
+
+#[tokio::test]
+async fn cancelling_a_scan_being_prepared_stops_it_at_once() {
+    let (_d, e, rpc) = fixture().await;
+    let mut scan = running("scan-1", None);
+    scan.status = "preparing".into();
+    scan.thread_id = None;
+    scan.turn_id = None;
+    e.update(|s| s.scans.push(scan)).await;
+    e.cancel_scan("scan-1").await.unwrap();
+    let scan = e.snapshot().await.scans[0].clone();
+    assert_eq!(scan.status, "cancelled");
+    assert!(scan.finished_at.is_some());
+    assert!(requests(&rpc).await.is_empty());
 }
 
 #[tokio::test]
@@ -384,6 +602,9 @@ async fn a_restart_or_disconnect_interrupts_running_scans() {
         let e = Engine::new(d.path().into(), |_| {}).unwrap();
         e.update(|s| {
             s.scans.push(running("scan-1", None));
+            let mut stopping = running("scan-4", None);
+            stopping.status = "cancelling".into();
+            s.scans.push(stopping);
             let mut done = running("scan-2", None);
             done.status = "completed".into();
             s.scans.push(done);
@@ -399,13 +620,14 @@ async fn a_restart_or_disconnect_interrupts_running_scans() {
         .as_deref()
         .unwrap()
         .contains("Orbit closed"));
-    assert_eq!(s.scans[1].status, "completed");
+    assert_eq!(s.scans[1].status, "interrupted");
+    assert_eq!(s.scans[2].status, "completed");
 
     e.update(|s| s.scans.push(running("scan-3", None))).await;
     e.disconnected().await;
     let s = e.snapshot().await;
-    assert_eq!(s.scans[2].status, "interrupted");
-    assert!(s.scans[2]
+    assert_eq!(s.scans[3].status, "interrupted");
+    assert!(s.scans[3]
         .error
         .as_deref()
         .unwrap()

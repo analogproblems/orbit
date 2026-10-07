@@ -222,7 +222,7 @@ impl Engine {
             }
             s.approvals.clear();
             for scan in &mut s.scans {
-                if matches!(scan.status.as_str(), "preparing" | "running") {
+                if matches!(scan.status.as_str(), "preparing" | "running" | "cancelling") {
                     scan.status = "interrupted".into();
                     scan.finished_at = Some(now());
                     scan.error =
