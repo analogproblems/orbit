@@ -31,6 +31,7 @@ fn repository(approval_minutes: u32) -> Repository {
         network_access: false,
         round_limit: 4,
         approval_minutes,
+        keep_updated: false,
     }
 }
 fn run(automatic: bool, status: &str) -> Review {

@@ -775,6 +775,62 @@ describe("initial loading and repository errors", () => {
     expect(screen.getByRole("dialog")).toBe(dialog);
     expect(useOrbit.getState().error).toBeNull();
   });
+  it("fills the checkout path from the folder picker", async () => {
+    invoke.mockImplementation((cmd, args) =>
+      cmd === "choose_checkout"
+        ? Promise.resolve("/Users/jason/Projects/orbit")
+        : backend(cmd, args),
+    );
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Repositories" }));
+    await user().click(
+      await screen.findByRole("button", { name: "Configure acme/orbit" }),
+    );
+    const dialog = screen.getByRole("dialog");
+    await user().click(within(dialog).getByRole("button", { name: "Browse…" }));
+    expect(invoke).toHaveBeenCalledWith("choose_checkout", {
+      current: snapshot.settings.repositories[0].path,
+    });
+    expect(
+      within(dialog).getByRole("textbox", { name: /Local checkout path/ }),
+    ).toHaveProperty("value", "/Users/jason/Projects/orbit");
+  });
+  it("saves keeping a clone up to date and shows its latest update", async () => {
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Repositories" }));
+    await user().click(
+      await screen.findByRole("button", { name: "Configure acme/orbit" }),
+    );
+    const dialog = screen.getByRole("dialog");
+    await user().click(
+      within(dialog).getByRole("switch", {
+        name: "Keep this clone up to date",
+      }),
+    );
+    await user().click(
+      within(dialog).getByRole("button", { name: "Save repository" }),
+    );
+    const saved = invoke.mock.calls.find(([cmd]) => cmd === "save_repository");
+    expect(
+      (saved?.[1] as { repository: { keepUpdated: boolean } }).repository
+        .keepUpdated,
+    ).toBe(true);
+    act(() => {
+      snapshot.settings.repositories[0].keepUpdated = true;
+      snapshot.cloneUpdates = [
+        {
+          repo: "acme/orbit",
+          state: "skipped",
+          message: "Not updated: main has uncommitted changes.",
+          at: new Date().toISOString(),
+        },
+      ];
+      emit();
+    });
+    expect(
+      await screen.findByText("Not updated: main has uncommitted changes."),
+    ).toBeTruthy();
+  });
 });
 
 describe("storage and export", () => {

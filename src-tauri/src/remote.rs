@@ -63,12 +63,14 @@ pub const COMMANDS: &[&str] = &[
     "list_repositories",
 ];
 /// Desktop commands a browser cannot run: opening links starts a program on
-/// the host, and the remote access controls stay with the desktop window.
+/// the host, the folder picker opens on the host's screen, and the remote
+/// access controls stay with the desktop window.
 pub const DESKTOP_ONLY: &[&str] = &[
     "open_github",
     "get_remote_access",
     "set_remote_access",
     "reset_remote_link",
+    "choose_checkout",
 ];
 /// How often an idle event stream sends an empty line, so the browser can
 /// tell a quiet workspace from a dropped connection.
@@ -252,7 +254,11 @@ async fn dispatch(e: &Arc<Engine>, name: &str, a: &Value) -> Result<Value, Strin
             let (file_name, text) = e.export_report(&arg::<String>(a, "reviewId")?).await?;
             Ok(json!({ "fileName": file_name, "text": text }))
         }
-        "poll_now" => out(e.poll().await?),
+        "poll_now" => {
+            e.poll().await?;
+            e.update_clones_soon();
+            out(())
+        }
         "connect_services" => {
             e.connect().await?;
             out(e.poll().await?)
