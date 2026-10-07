@@ -138,9 +138,20 @@ pub(super) async fn catch_up(cwd: &Path) -> Result<(CloneUpdateState, String), S
             "Not updated: {branch} has uncommitted changes. Commit or stash them and Orbit will catch it up."
         ));
     }
-    git(&cwd, &["merge", "--ff-only", "--quiet", "@{upstream}"])
-        .await
-        .map_err(|e| format!("Could not fast-forward {branch}: {e}"))?;
+    // Git overwrites ignored files that the upstream starts tracking unless
+    // told not to; those can hold local configuration.
+    git(
+        &cwd,
+        &[
+            "merge",
+            "--ff-only",
+            "--no-overwrite-ignore",
+            "--quiet",
+            "@{upstream}",
+        ],
+    )
+    .await
+    .map_err(|e| format!("Could not fast-forward {branch}: {e}"))?;
     Ok((
         CloneUpdateState::Updated,
         format!(

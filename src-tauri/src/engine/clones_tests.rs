@@ -69,6 +69,21 @@ async fn untracked_files_do_not_block_an_update() {
     );
 }
 #[tokio::test]
+async fn never_overwrites_an_ignored_local_file() {
+    let (_d, upstream, clone) = cloned().await;
+    std::fs::write(clone.join(".git/info/exclude"), "settings.local\n").unwrap();
+    std::fs::write(clone.join("settings.local"), "mine").unwrap();
+    commit(&upstream, "settings.local").await;
+    let before = head(&clone).await;
+    let error = catch_up(&clone).await.unwrap_err();
+    assert!(error.contains("Could not fast-forward"), "{error}");
+    assert_eq!(head(&clone).await, before);
+    assert_eq!(
+        std::fs::read_to_string(clone.join("settings.local")).unwrap(),
+        "mine"
+    );
+}
+#[tokio::test]
 async fn leaves_local_commits_alone() {
     let (_d, upstream, clone) = cloned().await;
     commit(&upstream, "theirs").await;

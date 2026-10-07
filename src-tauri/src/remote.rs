@@ -63,12 +63,14 @@ pub const COMMANDS: &[&str] = &[
     "list_repositories",
 ];
 /// Desktop commands a browser cannot run: opening links starts a program on
-/// the host, and the remote access controls stay with the desktop window.
+/// the host, the folder picker opens on the host's screen, and the remote
+/// access controls stay with the desktop window.
 pub const DESKTOP_ONLY: &[&str] = &[
     "open_github",
     "get_remote_access",
     "set_remote_access",
     "reset_remote_link",
+    "choose_checkout",
 ];
 /// How often an idle event stream sends an empty line, so the browser can
 /// tell a quiet workspace from a dropped connection.
