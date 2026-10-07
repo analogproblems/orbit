@@ -32,6 +32,7 @@ import {
 import {
   Activity,
   BellRing,
+  Bug,
   FolderGit2,
   GitPullRequest,
   Inbox as InboxIcon,
@@ -60,6 +61,9 @@ import { PublishPreview } from "./PublishPreview";
 import { UsageMeter } from "./Usage";
 
 const Live = lazy(() => import("./Live").then((m) => ({ default: m.Live })));
+const FindingsPage = lazy(() =>
+  import("./FindingsPage").then((m) => ({ default: m.FindingsPage })),
+);
 const Loops = lazy(() => import("./Loops").then((m) => ({ default: m.Loops })));
 const SettingsPage = lazy(() =>
   import("./Settings").then((m) => ({ default: m.SettingsPage })),
@@ -68,7 +72,8 @@ const Repositories = lazy(() =>
   import("./Repositories").then((m) => ({ default: m.Repositories })),
 );
 
-type Page = "inbox" | "live" | "loops" | "repositories" | "settings";
+type Page =
+  "inbox" | "live" | "loops" | "findings" | "repositories" | "settings";
 export default function App() {
   const {
     snapshot: s,
@@ -83,6 +88,8 @@ export default function App() {
   const [page, setPage] = useState<Page>("inbox");
   // The loop whose rounds are open on the loops page.
   const [loop, setLoop] = useState<string | null>(null);
+  // The finding whose page is open on the findings page.
+  const [finding, setFinding] = useState<string | null>(null);
   const openLoops = () => {
     setLoop(null);
     setPage("loops");
@@ -234,6 +241,7 @@ export default function App() {
     inbox: "All pull requests",
     live: "Live",
     loops: "Review loops",
+    findings: "Findings",
     repositories: "Repositories",
     settings: "Settings",
   };
@@ -337,6 +345,15 @@ export default function App() {
                   active.length ? <Badge label={active.length} /> : undefined
                 }
                 onClick={openLoops}
+              />
+              <SideNavItem
+                label="Findings"
+                icon={<Bug />}
+                isSelected={page === "findings"}
+                onClick={() => {
+                  setFinding(null);
+                  setPage("findings");
+                }}
               />
               <SideNavItem
                 label="All pull requests"
@@ -523,6 +540,12 @@ export default function App() {
                     <Live {...handlers} />
                   ) : page === "loops" ? (
                     <Loops {...handlers} selected={loop} onSelect={setLoop} />
+                  ) : page === "findings" ? (
+                    <FindingsPage
+                      selected={finding}
+                      onSelect={setFinding}
+                      onChoose={choose}
+                    />
                   ) : page === "repositories" ? (
                     <Repositories />
                   ) : (
