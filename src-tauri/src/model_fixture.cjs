@@ -96,7 +96,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
         return send(m.id, { turn: { id: "fixture-turn" } });
       }
       default:
-        return send(m.id, {});
+        return send(m.id, options.responses?.[m.method] ?? {});
     }
   };
   if (m.method === options.holdMethod) held.push(handle);

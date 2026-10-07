@@ -7,6 +7,9 @@ import {
   demoFindings,
   demoReport,
   demoRepositories,
+  demoScan,
+  demoScanFindings,
+  demoScanReport,
   resolveDemoModelSelection,
 } from "./demo";
 import { call, download, follow, lostConnection, readToken } from "./remote";
@@ -21,6 +24,10 @@ import {
   activeStatuses,
   sameRepo,
   trustedSource,
+  scanActive,
+  type ScanMode,
+  type ScanPluginStatus,
+  type SecurityScan,
   type Snapshot,
   type Settings,
   type ChangedFile,
@@ -496,6 +503,89 @@ async function demoAction(
           '@@ -0,0 +1,4 @@\n+it("persists repository configuration", async () => {\n+  await saveConfig(configuration);\n+  expect(await readConfig()).toEqual(configuration);\n+});',
       },
     ] satisfies ChangedFile[];
+  if (command === "get_scan_plugin" || command === "install_scan_plugin")
+    return {
+      available: true,
+      installed: true,
+      version: "0.1.24",
+    } satisfies ScanPluginStatus;
+  if (command === "start_scan") {
+    demo.scans ??= [];
+    if (demo.scans.some(scanActive))
+      throw Error(
+        "A security scan is already running. Wait for it or cancel it.",
+      );
+    const scan: SecurityScan = {
+      ...demoScan(args.repo as string, 0),
+      id: `scan-${crypto.randomUUID()}`,
+      mode: args.mode as ScanMode,
+      status: "running",
+      finishedAt: null,
+      findings: [],
+      hasReport: false,
+      diskBytes: null,
+      progress: { phase: "preflight", updatedAt: new Date().toISOString() },
+    };
+    demo.scans.unshift(scan);
+    commit();
+    // A demo scan moves through its phases in seconds rather than hours.
+    const phases = ["threat_model", "discovery", "validation", "reporting"];
+    const step = (index: number) => {
+      const current = demo.scans?.find(
+        (s) => s.id === scan.id && s.status === "running",
+      );
+      if (!current) return;
+      if (index < phases.length) {
+        current.progress = {
+          phase: phases[index],
+          completed: phases[index] === "discovery" ? 3 : null,
+          total: phases[index] === "discovery" ? 8 : null,
+          unit: "reviews",
+          updatedAt: new Date().toISOString(),
+        };
+        timers.set(
+          scan.id,
+          setTimeout(() => step(index + 1), 2500),
+        );
+      } else {
+        Object.assign(current, {
+          status: "completed",
+          finishedAt: new Date().toISOString(),
+          findings: demoScanFindings(scan.id),
+          hasReport: true,
+          diskBytes: 3.2 * 1024 * 1024,
+          progress: null,
+        });
+        timers.delete(scan.id);
+      }
+      commit();
+    };
+    timers.set(
+      scan.id,
+      setTimeout(() => step(0), 2500),
+    );
+    return scan.id;
+  }
+  if (command === "cancel_scan") {
+    const scan = demo.scans?.find((s) => s.id === args.scanId);
+    if (!scan || !scanActive(scan)) throw Error("This scan is not running.");
+    clearTimeout(timers.get(scan.id));
+    timers.delete(scan.id);
+    scan.status = "cancelled";
+    scan.finishedAt = new Date().toISOString();
+    commit();
+    return;
+  }
+  if (command === "delete_scan") {
+    demo.scans = demo.scans?.filter((s) => s.id !== args.scanId);
+    commit();
+    return;
+  }
+  if (command === "get_scan_report") {
+    if (!demo.scans?.some((s) => s.id === args.scanId && s.hasReport))
+      throw Error("This scan has no report.");
+    return demoScanReport;
+  }
   if (command === "list_repositories") return demoRepositories;
   if (command === "connect_services") {
     resolveDemoSelection();

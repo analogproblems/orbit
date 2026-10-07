@@ -38,6 +38,7 @@ import {
   FolderOpen,
   Plus,
   RefreshCw,
+  ShieldCheck,
   SlidersHorizontal,
   Trash2,
 } from "lucide-react";
@@ -49,6 +50,7 @@ import {
   type RepositorySummary,
 } from "./types";
 import { SaveFeedback } from "./SaveFeedback";
+import { ScanDialog } from "./Scans";
 
 // Loaded once per session; explicit refresh picks up new GitHub repositories.
 let repositoryCache: RepositorySummary[] | null = null;
@@ -232,8 +234,9 @@ function CloneUpdateStatus({ update }: { update?: CloneUpdate }) {
     </HStack>
   );
 }
-export function Repositories() {
+export function Repositories({ onScans }: { onScans?: () => void } = {}) {
   const formId = useId();
+  const [scanning, setScanning] = useState<string | null>(null);
   const { snapshot: s, action, mutate, saves } = useOrbit();
   const [repoError, setRepoError] = useState<string | null>(null);
   const [editing, setEditing] = useState<Repository | null>(null);
@@ -300,15 +303,23 @@ export function Repositories() {
             label={repo.name}
             startContent={<FolderGit2 />}
             endContent={
-              <IconButton
-                label={`Configure ${repo.name}`}
-                icon={<SlidersHorizontal />}
-                onClick={() => {
-                  setRepoError(null);
-                  setEditing({ ...repo });
-                  setOriginal(repo.name);
-                }}
-              />
+              <HStack gap={2}>
+                <IconButton
+                  label={`Run security scan of ${repo.name}`}
+                  tooltip="Run security scan"
+                  icon={<ShieldCheck />}
+                  onClick={() => setScanning(repo.name)}
+                />
+                <IconButton
+                  label={`Configure ${repo.name}`}
+                  icon={<SlidersHorizontal />}
+                  onClick={() => {
+                    setRepoError(null);
+                    setEditing({ ...repo });
+                    setOriginal(repo.name);
+                  }}
+                />
+              </HStack>
             }
             description={
               <VStack gap={3} paddingBlock={2}>
@@ -367,6 +378,12 @@ export function Repositories() {
         status="info"
         title="Familiar tools. A separate workspace."
         description="Orbit creates a detached Git worktree at the exact PR commit. Reviews use your host’s installed runtimes and the setup command you configure, with writes confined by the Codex sandbox. The worktree stays available for follow-up conversations."
+      />
+      <ScanDialog
+        isOpen={!!scanning}
+        onOpenChange={(open) => !open && setScanning(null)}
+        repo={scanning ?? undefined}
+        onStarted={onScans}
       />
       <Dialog
         isOpen={!!editing}

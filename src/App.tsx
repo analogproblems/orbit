@@ -39,6 +39,7 @@ import {
   Repeat,
   Send,
   Settings2,
+  ShieldCheck,
   SlidersHorizontal,
 } from "lucide-react";
 import { useOrbit, desktop, live } from "./store";
@@ -50,6 +51,7 @@ import {
   canPublish,
   latestReview,
   publishTarget,
+  scanActive,
   type Attention,
   type PullRequest,
   type Review,
@@ -65,6 +67,9 @@ const FindingsPage = lazy(() =>
   import("./FindingsPage").then((m) => ({ default: m.FindingsPage })),
 );
 const Loops = lazy(() => import("./Loops").then((m) => ({ default: m.Loops })));
+const ScansPage = lazy(() =>
+  import("./Scans").then((m) => ({ default: m.ScansPage })),
+);
 const SettingsPage = lazy(() =>
   import("./Settings").then((m) => ({ default: m.SettingsPage })),
 );
@@ -73,7 +78,13 @@ const Repositories = lazy(() =>
 );
 
 type Page =
-  "inbox" | "live" | "loops" | "findings" | "repositories" | "settings";
+  | "inbox"
+  | "live"
+  | "loops"
+  | "findings"
+  | "scans"
+  | "repositories"
+  | "settings";
 export default function App() {
   const {
     snapshot: s,
@@ -242,6 +253,7 @@ export default function App() {
     live: "Live",
     loops: "Review loops",
     findings: "Findings",
+    scans: "Security scans",
     repositories: "Repositories",
     settings: "Settings",
   };
@@ -354,6 +366,17 @@ export default function App() {
                   setFinding(null);
                   setPage("findings");
                 }}
+              />
+              <SideNavItem
+                label="Security scans"
+                icon={<ShieldCheck />}
+                isSelected={page === "scans"}
+                endContent={
+                  s.scans?.some(scanActive) ? (
+                    <StatusDot variant="accent" label="Scanning" isPulsing />
+                  ) : undefined
+                }
+                onClick={() => setPage("scans")}
               />
               <SideNavItem
                 label="All pull requests"
@@ -546,8 +569,15 @@ export default function App() {
                       onSelect={setFinding}
                       onChoose={choose}
                     />
+                  ) : page === "scans" ? (
+                    <ScansPage
+                      onFindings={() => {
+                        setFinding(null);
+                        setPage("findings");
+                      }}
+                    />
                   ) : page === "repositories" ? (
-                    <Repositories />
+                    <Repositories onScans={() => setPage("scans")} />
                   ) : (
                     <SettingsPage />
                   )}

@@ -63,14 +63,63 @@ describe("findings page", () => {
     ).toBeGreaterThan(0);
     expect(filterFindings(rows, { ...noFilters, search: "zzzz" })).toEqual([]);
     expect(filterFindings(rows, { ...noFilters, pr: "closed" })).toEqual(
-      rows.filter((r) => !r.prOpen),
+      rows.filter((r) => r.source === "review" && !r.prOpen),
+    );
+    const scanned = filterFindings(rows, { ...noFilters, source: "scan" });
+    expect(scanned.length).toBeGreaterThan(0);
+    expect(scanned.every((r) => r.scan && !r.pr)).toBe(true);
+    expect(filterFindings(rows, { ...noFilters, pr: "open" })).toEqual(
+      rows.filter((r) => r.prOpen),
     );
   });
   it("explains an empty page", () => {
     const snapshot = freshDemo();
     snapshot.reviews = [];
+    snapshot.scans = [];
     useOrbit.setState({ snapshot });
     render(<Page onChoose={vi.fn()} />);
     expect(screen.getByText("No findings yet")).toBeTruthy();
+  });
+  it("shows a security scan's finding with its report", async () => {
+    const snapshot = freshDemo();
+    snapshot.reviews = [];
+    useOrbit.setState({ snapshot });
+    render(<Page onChoose={vi.fn()} />);
+    const scan = snapshot.scans![0];
+    const finding = scan.findings[0];
+    expect(screen.getAllByText(`Security scan · ${scan.repo} ·`).length).toBe(
+      scan.findings.length,
+    );
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: (name) => name.includes(finding.title),
+      }),
+    );
+    expect(
+      screen.getByText(
+        `Security scan of ${scan.repo} at ${scan.commit!.slice(0, 7)}`,
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText("Scanned commit")).toBeTruthy();
+    expect(screen.queryByText("History")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Open review chat" }),
+    ).toBeNull();
+    const action = useOrbit.getState().action;
+    const read = vi.fn(async () => ({ ok: true, data: "# Scan report" }));
+    useOrbit.setState({ action: read as unknown as typeof action });
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "Read scan report" }));
+      expect(
+        await screen.findByRole("heading", { name: "Scan report" }),
+      ).toBeTruthy();
+      expect(read).toHaveBeenCalledWith(
+        "get_scan_report",
+        { scanId: scan.id },
+        { quiet: true },
+      );
+    } finally {
+      useOrbit.setState({ action });
+    }
   });
 });

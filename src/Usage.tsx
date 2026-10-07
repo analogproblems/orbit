@@ -77,7 +77,7 @@ const capitalize = (text: string) =>
   text.charAt(0).toUpperCase() + text.slice(1);
 
 /** The current time, refreshed each minute so reset times stay right. */
-function useNow(fixed?: number): number {
+export function useNow(fixed?: number): number {
   const [clock, setClock] = useState(() => Date.now());
   useEffect(() => {
     if (fixed !== undefined) return;

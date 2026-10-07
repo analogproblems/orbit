@@ -21,7 +21,9 @@ impl Engine {
             rpc
         } else {
             let (tx, rx) = mpsc::channel(2048);
-            let rpc = match Rpc::start(tx).await {
+            let scan_root = self.scan_root();
+            let _ = std::fs::create_dir_all(&scan_root);
+            let rpc = match Rpc::start(tx, &scan_root).await {
                 Ok(rpc) => rpc,
                 Err(err) => {
                     self.update(|s| {
@@ -219,6 +221,14 @@ impl Engine {
                 s.codex_error = Some("Codex disconnected. Reconnect in Settings.".into());
             }
             s.approvals.clear();
+            for scan in &mut s.scans {
+                if matches!(scan.status.as_str(), "preparing" | "running") {
+                    scan.status = "interrupted".into();
+                    scan.finished_at = Some(now());
+                    scan.error =
+                        Some("Codex disconnected while this scan was running. Run a new scan to start over.".into());
+                }
+            }
             for r in &mut s.reviews {
                 if !active(&r.status)
                     || r.end_follow_up(Some("Codex disconnected during the follow-up.".into()))

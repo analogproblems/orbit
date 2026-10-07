@@ -22,7 +22,7 @@ import {
   proportional,
   type TableColumn,
 } from "@astryxdesign/core/Table";
-import { ArrowLeft, ArrowUpRight, Bug, Search } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Bug, FileText, Search } from "lucide-react";
 import { desktop, useOrbit } from "./store";
 import {
   findingLocation,
@@ -34,12 +34,15 @@ import {
   findingCommentUrl,
   findingFileUrl,
   findingStatusColors,
+  findingSourceLabels,
   findingStatusLabels,
   type FindingRow,
+  type FindingSource,
   type FindingStatus,
 } from "./findingIndex";
 import { priorityColors } from "./Findings";
 import { SafeMarkdown } from "./SafeMarkdown";
+import { ScanReportDialog } from "./Scans";
 
 const statuses = Object.keys(findingStatusLabels) as FindingStatus[];
 const PAGE = 100;
@@ -52,6 +55,8 @@ export interface FindingFilters {
   status: string;
   /** "all", "open" or "closed": whether the PR is still in the inbox. */
   pr: string;
+  /** "all", or where findings came from: "review" or "scan". */
+  source: string;
 }
 export const noFilters: FindingFilters = {
   search: "",
@@ -59,6 +64,7 @@ export const noFilters: FindingFilters = {
   severity: "all",
   status: "all",
   pr: "all",
+  source: "all",
 };
 
 export function filterFindings(rows: FindingRow[], f: FindingFilters) {
@@ -69,13 +75,16 @@ export function filterFindings(rows: FindingRow[], f: FindingFilters) {
     if (f.severity !== "all" && row.finding.priority !== Number(f.severity))
       return false;
     if (f.status !== "all" && row.status !== f.status) return false;
+    if (f.source !== "all" && row.source !== f.source) return false;
+    // A scan's finding has no pull request, open or closed.
     if (f.pr === "open" && !row.prOpen) return false;
-    if (f.pr === "closed" && row.prOpen) return false;
+    if (f.pr === "closed" && (row.prOpen || row.source !== "review"))
+      return false;
     const text = [
       row.finding.title,
       row.finding.body,
       row.finding.path ?? "",
-      row.prId,
+      row.prId ?? "",
       row.pr?.title ?? "",
     ]
       .join(" ")
@@ -210,6 +219,19 @@ function Filters({
           ]}
         />
         <Selector
+          label="Source"
+          isLabelHidden
+          size="sm"
+          value={filters.source}
+          onChange={set("source")}
+          options={[
+            { value: "all", label: "Reviews and scans" },
+            ...(Object.keys(findingSourceLabels) as FindingSource[]).map(
+              (s) => ({ value: s, label: findingSourceLabels[s] }),
+            ),
+          ]}
+        />
+        <Selector
           label="Pull request"
           isLabelHidden
           size="sm"
@@ -240,10 +262,12 @@ function FindingDetail({
   const f = row.finding;
   const fileUrl = findingFileUrl(row);
   const commentUrl = findingCommentUrl(row);
+  const [report, setReport] = useState(false);
   const openReview = (id: string) => {
     const review = s.reviews.find((r) => r.id === id);
     if (row.pr && review) onChoose(row.pr, review);
   };
+  const commit = row.commit?.slice(0, 7);
   return (
     <VStack gap={4}>
       <HStack>
@@ -262,7 +286,11 @@ function FindingDetail({
         </HStack>
         <Heading level={2}>{f.title}</Heading>
         <Text color="secondary">
-          {row.pr ? `${row.pr.title} · ${row.prId}` : row.prId}
+          {row.scan
+            ? `Security scan of ${row.repo}${commit ? ` at ${commit}` : ""}`
+            : row.pr
+              ? `${row.pr.title} · ${row.prId}`
+              : row.prId}
         </Text>
       </VStack>
       <SafeMarkdown>{f.body}</SafeMarkdown>
@@ -270,28 +298,46 @@ function FindingDetail({
         <MetadataListItem label="Location">
           <Text type="code">{findingLocation(f)}</Text>
         </MetadataListItem>
-        <MetadataListItem label="Reviewed commit">
-          <Text type="code">{row.review.headSha.slice(0, 7)}</Text>
-        </MetadataListItem>
+        {commit && (
+          <MetadataListItem
+            label={row.scan ? "Scanned commit" : "Reviewed commit"}
+          >
+            <Text type="code">{commit}</Text>
+          </MetadataListItem>
+        )}
         <MetadataListItem label="Found">
           <HStack gap={1} vAlign="center">
-            <Text>Round {row.round} ·</Text>
-            <Timestamp value={row.review.createdAt} format="relative_short" />
+            <Text>
+              {row.scan
+                ? `${row.scan.mode === "deep" ? "Deep" : "Standard"} security scan ·`
+                : `Round ${row.round} ·`}
+            </Text>
+            <Timestamp value={row.foundAt} format="relative_short" />
           </HStack>
         </MetadataListItem>
         <MetadataListItem label="Confidence">
           {`${Math.round(f.confidence * 100)}%`}
         </MetadataListItem>
-        <MetadataListItem label="Pull request">
-          {row.prOpen ? "In your inbox" : "Left the inbox"}
-        </MetadataListItem>
+        {row.source === "review" && (
+          <MetadataListItem label="Pull request">
+            {row.prOpen ? "In your inbox" : "Left the inbox"}
+          </MetadataListItem>
+        )}
       </MetadataList>
       <HStack gap={2} wrap="wrap">
-        {row.pr && (
+        {row.pr && row.review && (
           <Button
             label="Open review chat"
             size="sm"
-            onClick={() => openReview(row.review.id)}
+            onClick={() => openReview(row.review!.id)}
+          />
+        )}
+        {row.scan?.hasReport && (
+          <Button
+            label="Read scan report"
+            size="sm"
+            icon={<FileText />}
+            onClick={() => setReport(true)}
           />
         )}
         {fileUrl && (
@@ -322,23 +368,29 @@ function FindingDetail({
           />
         )}
       </HStack>
-      <List hasDividers header={<Heading level={3}>History</Heading>}>
-        {row.history.map((event) => (
-          <ListItem
-            key={event.reviewId}
-            label={`Round ${event.round}: ${
-              event.status ? priorStatusLabels[event.status] : "found"
-            }`}
-            onClick={row.pr ? () => openReview(event.reviewId) : undefined}
-            description={
-              <VStack gap={1}>
-                {event.note && <Text>{event.note}</Text>}
-                <Timestamp value={event.at} format="relative_short" />
-              </VStack>
-            }
-          />
-        ))}
-      </List>
+      {row.source === "review" && (
+        <List hasDividers header={<Heading level={3}>History</Heading>}>
+          {row.history.map((event) => (
+            <ListItem
+              key={event.reviewId}
+              label={`Round ${event.round}: ${
+                event.status ? priorStatusLabels[event.status] : "found"
+              }`}
+              onClick={row.pr ? () => openReview(event.reviewId) : undefined}
+              description={
+                <VStack gap={1}>
+                  {event.note && <Text>{event.note}</Text>}
+                  <Timestamp value={event.at} format="relative_short" />
+                </VStack>
+              }
+            />
+          ))}
+        </List>
+      )}
+      <ScanReportDialog
+        scan={report ? (row.scan ?? null) : null}
+        onClose={() => setReport(false)}
+      />
     </VStack>
   );
 }
@@ -374,16 +426,16 @@ export function FindingsPage({
       <VStack gap={2}>
         <Heading level={2}>Findings</Heading>
         <Text color="secondary">
-          Every finding from Orbit’s reviews, across pull requests and
-          repositories. A finding stays open until a later round marks it fixed
-          or declined.
+          Every finding from Orbit’s pull request reviews and security scans,
+          across repositories. A review’s finding stays open until a later round
+          marks it fixed or declined.
         </Text>
       </VStack>
       {rows.length === 0 ? (
         <EmptyState
           icon={<Bug />}
           title="No findings yet"
-          description="Findings from finished reviews will be collected here."
+          description="Findings from finished reviews and security scans will be collected here."
         />
       ) : (
         <>
@@ -411,12 +463,11 @@ export function FindingsPage({
                   description={
                     <HStack gap={1} vAlign="center" wrap="wrap">
                       <Text color="secondary">
-                        {r.prId} · Round {r.round} ·
+                        {r.scan
+                          ? `Security scan · ${r.repo} ·`
+                          : `${r.prId} · Round ${r.round} ·`}
                       </Text>
-                      <Timestamp
-                        value={r.review.createdAt}
-                        format="relative_short"
-                      />
+                      <Timestamp value={r.foundAt} format="relative_short" />
                     </HStack>
                   }
                 />

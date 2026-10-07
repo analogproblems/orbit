@@ -22,9 +22,15 @@ pub struct Rpc {
     pub alive: Arc<AtomicBool>,
 }
 impl Rpc {
-    pub async fn start(events: mpsc::Sender<Value>) -> Result<Arc<Self>, String> {
+    /// Starts Codex. `scan_root` is where the Codex Security plugin keeps the
+    /// scans Orbit runs, instead of the system's temporary folder.
+    pub async fn start(
+        events: mpsc::Sender<Value>,
+        scan_root: &std::path::Path,
+    ) -> Result<Arc<Self>, String> {
         let mut cmd = Command::new("codex");
         cmd.args(["app-server", "--listen", "stdio://"]);
+        cmd.env("CODEX_SECURITY_SCAN_ROOT", scan_root);
         Self::from_command(cmd, events).await
     }
     pub(crate) async fn from_command(

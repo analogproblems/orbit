@@ -5,6 +5,7 @@ pub mod models;
 pub mod remote;
 pub mod review_loop;
 pub mod rpc;
+pub mod scans;
 pub mod storage;
 pub mod types;
 pub mod usage;
@@ -204,6 +205,39 @@ mod desktop {
         engine.decide(id, accept).await
     }
     #[tauri::command]
+    async fn get_scan_plugin(engine: State<'_, AppState>) -> Result<scans::PluginStatus, String> {
+        engine.scan_plugin().await
+    }
+    #[tauri::command]
+    async fn install_scan_plugin(
+        engine: State<'_, AppState>,
+    ) -> Result<scans::PluginStatus, String> {
+        engine.install_scan_plugin().await
+    }
+    #[tauri::command]
+    async fn start_scan(
+        engine: State<'_, AppState>,
+        repo: String,
+        mode: String,
+    ) -> Result<String, String> {
+        engine.start_scan(&repo, &mode).await
+    }
+    #[tauri::command]
+    async fn cancel_scan(engine: State<'_, AppState>, scan_id: String) -> Result<(), String> {
+        engine.cancel_scan(&scan_id).await
+    }
+    #[tauri::command]
+    async fn delete_scan(engine: State<'_, AppState>, scan_id: String) -> Result<(), String> {
+        engine.delete_scan(&scan_id).await
+    }
+    #[tauri::command]
+    async fn get_scan_report(
+        engine: State<'_, AppState>,
+        scan_id: String,
+    ) -> Result<String, String> {
+        engine.scan_report(&scan_id).await
+    }
+    #[tauri::command]
     async fn get_files(engine: State<'_, AppState>, pr_id: String) -> Result<Value, String> {
         engine.files(&pr_id).await
     }
@@ -330,6 +364,12 @@ mod desktop {
                 set_legacy_chat_model,
                 answer_approval,
                 get_files,
+                get_scan_plugin,
+                install_scan_plugin,
+                start_scan,
+                cancel_scan,
+                delete_scan,
+                get_scan_report,
                 list_repositories,
                 open_github,
                 get_remote_access,

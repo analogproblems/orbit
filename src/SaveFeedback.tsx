@@ -17,6 +17,7 @@ export function SaveFeedback({ saveKey }: { saveKey?: string }) {
       settlePushes: "Wait for pushes to settle",
       commitStatus: "GitHub status check",
       notify: "Notifications",
+      keepScanArtifacts: "Keep scan working files",
     };
     return Object.entries(patch)
       .map(([key, value]) => {

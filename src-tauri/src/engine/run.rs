@@ -501,6 +501,13 @@ impl Engine {
             return;
         }
         let thread = p["threadId"].as_str();
+        // A scan's requests are declined below, like any a review does not own.
+        if event.get("id").is_none() {
+            if let Some(scan) = self.scan_for_thread(thread).await {
+                self.scan_event(&scan, method, p).await;
+                return;
+            }
+        }
         let review_id = {
             let s = self.state.lock().await;
             s.reviews

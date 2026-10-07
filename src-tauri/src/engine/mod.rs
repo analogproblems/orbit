@@ -20,6 +20,7 @@ mod publish;
 mod queue;
 mod rounds;
 mod run;
+mod scans;
 mod settings;
 mod status;
 mod worktrees;
@@ -52,6 +53,8 @@ mod rounds_tests;
 #[cfg(test)]
 mod run_tests;
 #[cfg(test)]
+mod scans_tests;
+#[cfg(test)]
 mod settings_tests;
 #[cfg(test)]
 mod state_tests;
@@ -64,8 +67,8 @@ type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// Orbit's review engine. Its methods are split by area: `connection` (Codex),
 /// `settings` (workspace settings and checkouts), `queue` (sync and scheduling),
 /// `run` (preparing and running reviews, Codex events), `chat` (follow-ups),
-/// `publish` (GitHub comments), `worktrees` (cleanup) and `clones` (keeping
-/// users' clones up to date).
+/// `publish` (GitHub comments), `worktrees` (cleanup), `clones` (keeping
+/// users' clones up to date) and `scans` (repository security scans).
 ///
 /// # Locks
 ///
@@ -203,6 +206,16 @@ impl Engine {
                 r.status = "ready".into();
                 r.error = Some(
                     "Publication was interrupted. Retry publishing to reconcile the existing GitHub comment."
+                        .into(),
+                );
+            }
+        }
+        for scan in &mut state.scans {
+            if matches!(scan.status.as_str(), "preparing" | "running") {
+                scan.status = "interrupted".into();
+                scan.finished_at = Some(now());
+                scan.error = Some(
+                    "Orbit closed while this scan was running. Run a new scan to start over."
                         .into(),
                 );
             }
@@ -348,6 +361,10 @@ impl Engine {
         let e = self.clone();
         tokio::spawn(async move {
             e.resume_cleanup().await;
+        });
+        let e = self.clone();
+        tokio::spawn(async move {
+            e.resume_scans().await;
         });
         let e = self.clone();
         tokio::spawn(async move {
