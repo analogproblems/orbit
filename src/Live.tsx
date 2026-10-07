@@ -44,17 +44,42 @@ export function repoOf(prId: string) {
   const i = prId.lastIndexOf("#");
   return i < 0 ? prId : prId.slice(0, i);
 }
-function startOf(unit: Unit, t: number) {
+/** The start of the local hour containing `t`, found in elapsed time with the
+ * offset in force at `t`, so the second 1 AM of a fall-back night keeps its
+ * own hour instead of folding into the first. */
+function hourStart(t: number) {
+  const offset = new Date(t).getTimezoneOffset() * 60_000;
+  return t - ((((t - offset) % HOUR) + HOUR) % HOUR);
+}
+function dayStart(t: number) {
   const d = new Date(t);
-  d.setMinutes(0, 0, 0);
-  if (unit === "day") d.setHours(0);
+  d.setHours(0, 0, 0, 0);
   return d.getTime();
 }
-function next(unit: Unit, t: number) {
-  const d = new Date(t);
-  if (unit === "hour") d.setHours(d.getHours() + 1);
-  else d.setDate(d.getDate() + 1);
-  return d.getTime();
+/** Bucket starts, oldest first. Hours step in elapsed time, since a local
+ * wall-clock hour can be skipped or repeated across a clock change; days
+ * step by calendar date, so a 23- or 25-hour day is still one day. */
+function bucketStarts(unit: Unit, now: number) {
+  if (unit === "hour") {
+    const last = hourStart(now);
+    return Array.from(
+      { length: spans.hour },
+      (_, i) => last - (spans.hour - 1 - i) * HOUR,
+    );
+  }
+  const starts = [dayStart(now)];
+  while (starts.length < spans.day) {
+    const d = new Date(starts[0]);
+    d.setDate(d.getDate() - 1);
+    starts.unshift(dayStart(d.getTime()));
+  }
+  return starts;
+}
+function bucketEnd(unit: Unit, start: number) {
+  if (unit === "hour") return start + HOUR;
+  const d = new Date(start);
+  d.setDate(d.getDate() + 1);
+  return dayStart(d.getTime());
 }
 /** Reviews started per hour (last 24) or per day (last 14), by repository. */
 export function activity(
@@ -63,20 +88,14 @@ export function activity(
   measure: Measure,
   now = Date.now(),
 ): Bucket[] {
-  const starts: number[] = [startOf(unit, now)];
-  while (starts.length < spans[unit]) {
-    const d = new Date(starts[0]);
-    if (unit === "hour") d.setHours(d.getHours() - 1);
-    else d.setDate(d.getDate() - 1);
-    starts.unshift(startOf(unit, d.getTime()));
-  }
+  const starts = bucketStarts(unit, now);
   const buckets = starts.map((start) => ({
     start,
     seen: new Set<string>(),
     counts: {} as Record<string, number>,
     total: 0,
   }));
-  const end = next(unit, starts.at(-1)!);
+  const end = bucketEnd(unit, starts.at(-1)!);
   for (const r of reviews) {
     if (r.isReview === false) continue;
     const t = Date.parse(r.createdAt);

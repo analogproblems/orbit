@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "./test-setup";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   cleanup,
   fireEvent,
@@ -64,6 +64,71 @@ describe("activity", () => {
     expect(days).toHaveLength(14);
     expect(days.at(-1)?.total).toBe(2);
     expect(days.at(-2)?.counts).toEqual({ "acme/api": 1 });
+  });
+});
+
+describe("activity across clock changes", () => {
+  // Node applies a changed TZ to later Date calls.
+  beforeEach(() => {
+    vi.stubEnv("TZ", "America/New_York");
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+  const utc = (iso: string) => Date.parse(iso);
+  function steady(starts: number[], step = 3600_000) {
+    expect(new Set(starts).size).toBe(starts.length);
+    starts.slice(1).forEach((t, i) => expect(t - starts[i]).toBe(step));
+  }
+  it("keeps 24 distinct hours when the clocks spring forward", () => {
+    // 2026-03-08: 2 AM EST jumps to 3 AM EDT (07:00Z).
+    const now = utc("2026-03-08T16:30:00Z");
+    const before = review("a", "acme/orbit#1", "2026-03-08T06:30:00Z");
+    const after = review("b", "acme/orbit#1", "2026-03-08T07:30:00Z");
+    const old = review("c", "acme/orbit#1", "2026-03-07T16:59:00Z");
+    const buckets = activity([before, after, old], "hour", "reviews", now);
+    expect(buckets).toHaveLength(24);
+    steady(buckets.map((b) => b.start));
+    expect(buckets.at(-1)!.start).toBe(utc("2026-03-08T16:00:00Z"));
+    expect(buckets[0].start).toBe(utc("2026-03-07T17:00:00Z"));
+    const hit = buckets.filter((b) => b.total);
+    expect(hit.map((b) => b.start)).toEqual([
+      utc("2026-03-08T06:00:00Z"),
+      utc("2026-03-08T07:00:00Z"),
+    ]);
+  });
+  it("keeps the repeated hour when the clocks fall back", () => {
+    // 2026-11-01: 2 AM EDT falls back to 1 AM EST (06:00Z); now is the
+    // second 1:30 AM.
+    const now = utc("2026-11-01T06:30:00Z");
+    const first = review("a", "acme/orbit#1", "2026-11-01T05:15:00Z");
+    const second = review("b", "acme/api#2", "2026-11-01T06:15:00Z");
+    const buckets = activity([first, second], "hour", "reviews", now);
+    steady(buckets.map((b) => b.start));
+    expect(buckets.at(-1)).toMatchObject({
+      start: utc("2026-11-01T06:00:00Z"),
+      counts: { "acme/api": 1 },
+    });
+    expect(buckets.at(-2)).toMatchObject({
+      start: utc("2026-11-01T05:00:00Z"),
+      counts: { "acme/orbit": 1 },
+    });
+  });
+  it("counts a short or long day as one day", () => {
+    for (const iso of ["2026-03-15T12:00:00Z", "2026-11-08T12:00:00Z"]) {
+      const starts = activity([], "day", "reviews", utc(iso)).map(
+        (b) => b.start,
+      );
+      expect(starts).toHaveLength(14);
+      expect(new Set(starts.map((t) => new Date(t).getHours()))).toEqual(
+        new Set([0]),
+      );
+      starts
+        .slice(1)
+        .forEach((t, i) =>
+          expect(new Date(t).getDate()).not.toBe(new Date(starts[i]).getDate()),
+        );
+    }
   });
 });
 
