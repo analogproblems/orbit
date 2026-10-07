@@ -60,9 +60,11 @@ export function repoOfPr(prId: string) {
   return i < 0 ? prId : prId.slice(0, i);
 }
 
-/** A review whose findings count: structured, and a real round of its PR. */
+/** A review whose findings count: structured, and a real round of its PR.
+ * `isReview` is not checked: a follow-up question in a review's chat clears
+ * it but keeps the review's findings and decisions, which still count. */
 function counted(r: Review) {
-  return r.isReview !== false && !!r.findings && !r.superseded;
+  return !!r.findings && !r.superseded;
 }
 
 /** Every finding Orbit has collected, newest first, with its current status.

@@ -272,7 +272,7 @@ Select a loop to see its rounds in order. Each round shows the commits it covere
 - **Fixed**, **Declined (accepted)** or **Declined (disputed)** once a later round says so (a round that says "still open" keeps it **Open**);
 - **PR closed** for a finding still open when its PR left the inbox.
 
-Search matches the title, explanation, file, and PR. Filters narrow by repository, severity, status, and whether the PR is still in the inbox, and the table at the top counts the matching findings by severity and status. Select a finding to read its full explanation, its location and confidence, and its history round by round with each round's note. Buttons open the review's chat, the lines on GitHub at the reviewed commit, the PR, and the published comment. Status comes from the review loop only; you can't set it by hand. Runs replaced by a newer commit while queued or running, chats, and unstructured runs aren't listed. The same status now shows in each review's findings table.
+Search matches the title, explanation, file, and PR. Filters narrow by repository, severity, status, and whether the PR is still in the inbox, and the table at the top counts the matching findings by severity and status. Select a finding to read its full explanation, its location and confidence, and its history round by round with each round's note. Buttons open the review's chat, the lines on GitHub at the reviewed commit, the PR, and the published comment. Status comes from the review loop only; you can't set it by hand. Runs replaced by a newer commit while queued or running, and unstructured runs, aren’t listed. Asking a follow-up question in a review’s chat keeps its findings. The same status now shows in each review's findings table.
 
 ### What needs you
 

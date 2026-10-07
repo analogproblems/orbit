@@ -97,14 +97,44 @@ describe("collecting findings", () => {
     expect(rows.find((r) => r.finding.id === "r1-1")!.status).toBe("fixed");
     expect(rows.every((r) => !r.prOpen && r.pr)).toBe(true);
   });
-  it("leaves out superseded runs, chats and unstructured reviews", () => {
+  it("leaves out superseded and unstructured runs", () => {
     const s = snapshot();
     round(s, "r1", 1, [finding("r1-0")], [], { superseded: true });
-    round(s, "r2", 2, [finding("r2-0")], [], { isReview: false });
-    round(s, "r3", 3, [], [], { findings: null });
-    round(s, "r4", 4, [finding("r4-0")]);
+    round(s, "r2", 2, [], [], { findings: null });
+    round(s, "r3", 3, [finding("r3-0")]);
     const rows = collectFindings(s);
-    expect(rows.map((r) => [r.finding.id, r.round])).toEqual([["r4-0", 1]]);
+    expect(rows.map((r) => [r.finding.id, r.round])).toEqual([["r3-0", 1]]);
+  });
+  it("keeps findings and decisions through follow-up questions", () => {
+    const s = snapshot();
+    const first = round(s, "r1", 1, [finding("r1-0"), finding("r1-1")]);
+    const second = round(
+      s,
+      "r2",
+      2,
+      [finding("r2-0")],
+      [{ id: "r1-0", status: "fixed", note: "Fixed in abc" }],
+    );
+    const before = collectFindings(s);
+    const summary = (rows: ReturnType<typeof collectFindings>) =>
+      rows.map((r) => [r.finding.id, r.round, r.status, r.history.length]);
+    expect(summary(before)).toEqual([
+      ["r2-0", 2, "open", 1],
+      ["r1-0", 1, "fixed", 2],
+      ["r1-1", 1, "open", 1],
+    ]);
+    // A follow-up in each review's chat: running, then finished. The engine
+    // clears isReview and keeps the findings and decisions.
+    for (const r of [first, second]) {
+      Object.assign(r, {
+        isReview: false,
+        status: "reviewing",
+        beforeFollowUp: { status: "posted", error: null },
+      });
+      expect(summary(collectFindings(s))).toEqual(summary(before));
+      Object.assign(r, { status: "posted", beforeFollowUp: null });
+      expect(summary(collectFindings(s))).toEqual(summary(before));
+    }
   });
   it("links the lines at the reviewed commit and the published comment", () => {
     const s = snapshot();
