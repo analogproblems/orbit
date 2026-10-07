@@ -35,12 +35,13 @@ import {
 } from "@astryxdesign/core";
 import {
   FolderGit2,
+  FolderOpen,
   Plus,
   RefreshCw,
   SlidersHorizontal,
   Trash2,
 } from "lucide-react";
-import { useOrbit } from "./store";
+import { desktop, useOrbit } from "./store";
 import {
   sameRepo,
   type CloneUpdate,
@@ -399,15 +400,37 @@ export function Repositories() {
                     isDisabled={busy}
                   />
                   <FormLayout>
-                    <TextInput
-                      label="Local checkout path"
-                      isRequired
-                      placeholder="/Users/you/Projects/repository"
-                      description="Use an absolute path to an existing clone whose origin is this repository. It does not need to be up to date: reviews fetch the commits they need."
-                      value={editing.path}
-                      isDisabled={busy}
-                      onChange={(path) => setEditing({ ...editing, path })}
-                    />
+                    <HStack gap={2} vAlign="end">
+                      <TextInput
+                        label="Local checkout path"
+                        width="100%"
+                        isRequired
+                        placeholder="/Users/you/Projects/repository"
+                        description="Use an absolute path to an existing clone whose origin is this repository. It does not need to be up to date: reviews fetch the commits they need."
+                        value={editing.path}
+                        isDisabled={busy}
+                        onChange={(path) => setEditing({ ...editing, path })}
+                      />
+                      {desktop && (
+                        <Button
+                          label="Browse…"
+                          icon={<FolderOpen />}
+                          isDisabled={busy}
+                          onClick={async () => {
+                            const picked = await action<string | null>(
+                              "choose_checkout",
+                              { current: editing.path.trim() || null },
+                              { quiet: true },
+                            );
+                            if (!picked.ok) setRepoError(picked.error);
+                            else if (picked.data)
+                              setEditing((e) =>
+                                e ? { ...e, path: picked.data as string } : e,
+                              );
+                          }}
+                        />
+                      )}
+                    </HStack>
                     <Switch
                       label="Keep this clone up to date"
                       value={editing.keepUpdated ?? false}

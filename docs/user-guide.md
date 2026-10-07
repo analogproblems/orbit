@@ -62,16 +62,16 @@ Orbit uses Astryx’s neutral dark theme and system fonts, including in dropdown
 
 In **Repositories**, click **Add repository** or **Connect a repository**.
 
-| Field or control                 | How to use it                                                                                                                |
-| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| **GitHub repository**            | Search repository names or descriptions, then select a result. Private/public labels describe GitHub visibility.             |
-| **Refresh repositories**         | Reload the picker after gaining access to a repository or creating one. The list otherwise stays cached for the session.     |
-| **Use owner/name**               | Type a complete repository name to connect one not shown in the picker. This does not grant access.                          |
-| **Local checkout path**          | Enter an absolute path to an existing clone. Orbit does not clone it for you. A literal `~` is not an absolute path.         |
-| **Keep this clone up to date**   | Fast-forwards the clone's checked-out branch to GitHub on each sync. Off by default. See below.                              |
-| **Environment setup**            | Optional shell command to prepare each new review worktree. Leave blank when host tools and checked-in files are sufficient. |
-| **Allow sandbox network access** | Allows network access for setup and the new review's agent environment. Off by default.                                      |
-| **Include in automatic reviews** | Makes this repository eligible when workspace Autopilot is also on. Off by default.                                          |
+| Field or control                 | How to use it                                                                                                                                                                    |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **GitHub repository**            | Search repository names or descriptions, then select a result. Private/public labels describe GitHub visibility.                                                                 |
+| **Refresh repositories**         | Reload the picker after gaining access to a repository or creating one. The list otherwise stays cached for the session.                                                         |
+| **Use owner/name**               | Type a complete repository name to connect one not shown in the picker. This does not grant access.                                                                              |
+| **Local checkout path**          | Enter an absolute path to an existing clone, or click **Browse…** in the desktop app to pick its folder. Orbit does not clone it for you. A literal `~` is not an absolute path. |
+| **Keep this clone up to date**   | Fast-forwards the clone's checked-out branch to GitHub on each sync. Off by default. See below.                                                                                  |
+| **Environment setup**            | Optional shell command to prepare each new review worktree. Leave blank when host tools and checked-in files are sufficient.                                                     |
+| **Allow sandbox network access** | Allows network access for setup and the new review's agent environment. Off by default.                                                                                          |
+| **Include in automatic reviews** | Makes this repository eligible when workspace Autopilot is also on. Off by default.                                                                                              |
 
 Click **Save repository**. Saving a new repository or changing its name/path verifies an existing Git working tree and a matching supported GitHub `origin`, then stores the canonical checkout root. Validation does not fetch or run setup. Errors stay in the dialog so you can correct the configuration. Saving starts an inbox sync. Review preparation checks the checkout again because it may have changed. An unavailable existing checkout does not prevent disabling automation, disconnecting it, or changing unrelated Settings.
 
