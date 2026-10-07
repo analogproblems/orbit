@@ -30,6 +30,7 @@ import {
   VStack,
 } from "@astryxdesign/core";
 import {
+  Activity,
   BellRing,
   FolderGit2,
   GitPullRequest,
@@ -57,6 +58,7 @@ import { Detail, type DetailTab } from "./Detail";
 import { SaveFeedback } from "./SaveFeedback";
 import { PublishPreview } from "./PublishPreview";
 
+const Live = lazy(() => import("./Live").then((m) => ({ default: m.Live })));
 const Loops = lazy(() => import("./Loops").then((m) => ({ default: m.Loops })));
 const SettingsPage = lazy(() =>
   import("./Settings").then((m) => ({ default: m.SettingsPage })),
@@ -65,7 +67,7 @@ const Repositories = lazy(() =>
   import("./Repositories").then((m) => ({ default: m.Repositories })),
 );
 
-type Page = "inbox" | "loops" | "repositories" | "settings";
+type Page = "inbox" | "live" | "loops" | "repositories" | "settings";
 export default function App() {
   const {
     snapshot: s,
@@ -123,9 +125,9 @@ export default function App() {
     void init().then((f) => {
       if (gone) return f();
       off = f;
-      // Loops is the first page under autopilot; the inbox otherwise.
+      // Live is the first page under autopilot; the inbox otherwise.
       if (useOrbit.getState().snapshot.settings.automatic)
-        setPage((p) => (p === "inbox" ? "loops" : p));
+        setPage((p) => (p === "inbox" ? "live" : p));
     });
     return () => {
       gone = true;
@@ -168,6 +170,7 @@ export default function App() {
       ? s.reviews.find((r) => r.id === selectedReview && r.prId === pr?.id)
       : undefined) ?? latestReview(s.reviews, pr?.id ?? "");
   const active = s.reviews.filter((r) => activeStatuses.includes(r.status));
+  const running = active.filter((r) => r.status !== "queued").length;
   const publishRun = s.reviews.find((r) => r.id === publish?.id);
   const publishPr = knownPrs.find((p) => p.id === publishRun?.prId);
   const publishEligible =
@@ -228,6 +231,7 @@ export default function App() {
   };
   const titles: Record<Page, string> = {
     inbox: "All pull requests",
+    live: "Live",
     loops: "Review loops",
     repositories: "Repositories",
     settings: "Settings",
@@ -308,6 +312,21 @@ export default function App() {
                   onClick={openLoops}
                 />
               )}
+              <SideNavItem
+                label="Live"
+                icon={<Activity />}
+                isSelected={page === "live"}
+                endContent={
+                  running > 0 ? (
+                    <StatusDot
+                      variant="accent"
+                      label={`${running} running`}
+                      isPulsing
+                    />
+                  ) : undefined
+                }
+                onClick={() => setPage("live")}
+              />
               <SideNavItem
                 label="Review loops"
                 icon={<Repeat />}
@@ -498,7 +517,9 @@ export default function App() {
             ) : (
               <LayoutContent padding={0}>
                 <Suspense fallback={<Spinner label="Loading page…" />}>
-                  {page === "loops" ? (
+                  {page === "live" ? (
+                    <Live {...handlers} />
+                  ) : page === "loops" ? (
                     <Loops {...handlers} selected={loop} onSelect={setLoop} />
                   ) : page === "repositories" ? (
                     <Repositories />

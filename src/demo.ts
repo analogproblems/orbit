@@ -310,6 +310,71 @@ function demoLoop(pr: PullRequest, blocking: number[], minutesAgo: number) {
   );
   return rounds.reverse();
 }
+/** Two weeks of finished automatic reviews on PRs that have since merged, so
+ * the Live page's charts have something to show. Deterministic. */
+function demoHistory(): { prs: PullRequest[]; reviews: Review[] } {
+  let seed = 7;
+  const rand = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const repos = ["orbit", "api", "dashboard"];
+  const prs: PullRequest[] = [];
+  const reviews: Review[] = [];
+  // Minutes ago, newest first; busier in recent days and in working hours.
+  for (let minutes = 7 * 60; minutes < 14 * 24 * 60;) {
+    const hour = new Date(Date.now() - minutes * 60000).getHours();
+    const busy = hour >= 9 && hour < 19;
+    minutes += Math.round((busy ? 40 : 180) + rand() * (busy ? 120 : 300));
+    const repo = repos[Math.floor(rand() * rand() * repos.length * 1.6) % 3];
+    const number = 900 - prs.length;
+    const pr: PullRequest = {
+      id: `acme/${repo}#${number}`,
+      repo: `acme/${repo}`,
+      number,
+      title: `Earlier change #${number}`,
+      author: "alex",
+      body: "",
+      url: `https://github.com/acme/${repo}/pull/${number}`,
+      headSha: `fed${String(number % 10).repeat(37)}`,
+      baseSha: "def" + "0".repeat(37),
+      headRef: `change/${number}`,
+      baseRef: "main",
+      updatedAt: ago(minutes),
+      draft: false,
+      additions: 20,
+      deletions: 5,
+      changedFiles: 2,
+      reviewRequested: false,
+      labels: [],
+      headRepo: `acme/${repo}`,
+      authorAssociation: "MEMBER",
+    };
+    prs.push(pr);
+    const rounds = 1 + Math.floor(rand() * 3);
+    for (let i = 0; i < rounds; i++) {
+      const at = minutes + (rounds - 1 - i) * 35;
+      const failed = minutes < 24 * 60 && prs.length === 3 && i === 0;
+      reviews.push({
+        id: `demo-history-${number}-${i + 1}`,
+        prId: pr.id,
+        headSha: pr.headSha,
+        baseSha: pr.baseSha,
+        status: failed ? "failed" : "posted",
+        error: failed ? "Codex stopped responding." : undefined,
+        model: "demo-review-model",
+        effort: "high",
+        createdAt: ago(at + 4),
+        updatedAt: ago(at),
+        messages: [],
+        report: failed ? "" : "Illustrative report in demo mode.",
+        automatic: true,
+        isReview: true,
+        findings: failed ? null : [],
+        blocking: failed ? null : 0,
+        orbitVerdict: failed ? null : "clean",
+      });
+    }
+  }
+  return { prs, reviews };
+}
 export function freshDemo(): Snapshot {
   const prs: PullRequest[] = data.map((d, i) => ({
     id: `acme/${d[0]}#${d[1]}`,
@@ -465,4 +530,12 @@ export function freshDemo(): Snapshot {
     polling: false,
     lastPoll: ago(0),
   };
+}
+/** The browser demo: the fresh workspace plus two weeks of history. */
+export function demoWorkspace(): Snapshot {
+  const s = freshDemo();
+  const history = demoHistory();
+  s.historyPrs = history.prs;
+  s.reviews.push(...history.reviews);
+  return s;
 }

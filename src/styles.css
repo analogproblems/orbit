@@ -86,3 +86,58 @@ body {
   inset-inline: 0;
   bottom: 100%;
 }
+
+/* The Live page's activity chart, the other raw-element exception (see
+   ActivityChart in Live.tsx). Bars grow from the baseline on arrival. */
+.live-chart {
+  display: block;
+  width: 100%;
+  overflow: visible;
+}
+.live-chart text {
+  fill: var(--color-text-secondary);
+  font-family: var(--font-family-body);
+  font-size: var(--font-size-sm);
+}
+.live-chart-grid {
+  stroke: var(--color-border);
+  stroke-dasharray: 2 4;
+}
+.live-chart-hit {
+  fill: transparent;
+  outline: none;
+}
+.live-bar {
+  transform-box: fill-box;
+  transform-origin: bottom;
+  animation: live-bar-grow var(--duration-slow) var(--ease-standard) both;
+  transition: opacity var(--duration-fast) var(--ease-standard);
+}
+.live-bar[data-dim] {
+  opacity: 0.35;
+}
+.live-swatch {
+  width: var(--spacing-3);
+  height: var(--spacing-3);
+}
+/* A slow red glow so a problem catches the eye from across the room. */
+.live-alert {
+  animation: live-alert-glow calc(var(--duration-slow) * 6) var(--ease-standard)
+    infinite;
+}
+@keyframes live-bar-grow {
+  from {
+    transform: scaleY(0);
+  }
+}
+@keyframes live-alert-glow {
+  50% {
+    box-shadow: 0 0 0 var(--spacing-1) var(--color-border-red);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .live-bar,
+  .live-alert {
+    animation: none;
+  }
+}
