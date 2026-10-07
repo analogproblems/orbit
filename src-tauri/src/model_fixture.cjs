@@ -33,7 +33,16 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   const handle = () => {
     switch (m.method) {
       case "account/read":
-        return send(m.id, { account: { type: "chatgpt" } });
+        return send(m.id, { account: options.account ?? { type: "chatgpt" } });
+      case "account/rateLimits/read":
+        if (options.rateLimitsError)
+          return process.stdout.write(
+            JSON.stringify({
+              id: m.id,
+              error: { code: -32600, message: options.rateLimitsError },
+            }) + "\n",
+          );
+        return send(m.id, options.rateLimits ?? {});
       case "model/list":
         return send(m.id, { data: options.catalog ?? [], nextCursor: null });
       case "config/read":

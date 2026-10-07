@@ -1089,3 +1089,111 @@ async fn first_reviews_target_the_base_and_re_reviews_carry_custom_instructions(
         rpc.shutdown().await;
     }
 }
+#[tokio::test]
+async fn reads_the_usage_meter_and_hides_it_without_usage_windows() {
+    let (_d, e, rpc, _) = fixture().await;
+    let window = json!({"usedPercent":42,"windowDurationMins":10080,"resetsAt":1_800_000_000});
+    configure(
+        &rpc,
+        json!({"rateLimits":{"rateLimits":{"limitId":"codex","secondary":window,"planType":"pro"}}}),
+    )
+    .await;
+    e.clone().read_usage().await;
+    let usage = e.snapshot().await.usage.unwrap();
+    assert_eq!(usage.rate_limits.plan_type.as_deref(), Some("pro"));
+    let read = requests(&rpc).await;
+    assert_eq!(read[0]["method"], "account/rateLimits/read");
+    assert_eq!(read[0]["params"]["excludeResetCreditDetails"], true);
+    // An API key login has no usage windows.
+    configure(&rpc, json!({"rateLimits":{"rateLimits":{"limitId":null}}})).await;
+    e.clone().read_usage().await;
+    assert!(e.snapshot().await.usage.is_none());
+    // A failed read keeps the last numbers instead of blanking the meter.
+    e.update_live(|s| {
+        s.usage = crate::usage::Usage::from_read(&json!({"rateLimits":{"secondary":window}}), now())
+    })
+    .await;
+    configure(&rpc, json!({"failMethod":"account/rateLimits/read"})).await;
+    e.clone().read_usage().await;
+    assert!(e.snapshot().await.usage.is_some());
+    rpc.shutdown().await;
+}
+#[tokio::test]
+async fn reconnecting_with_an_api_key_or_another_account_clears_the_meter() {
+    let (_d, e, rpc, _) = fixture().await;
+    let window = json!({"usedPercent":42,"windowDurationMins":10080,"resetsAt":1_800_000_000});
+    let signed_in = |email: &str, extra: Value| {
+        let mut options = json!({
+            "catalog": catalog(),
+            "account": {"type":"chatgpt","email":email,"planType":"pro"},
+        });
+        options
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        options
+    };
+    configure(
+        &rpc,
+        signed_in("a@example.com", json!({"rateLimits":{"rateLimits":{"limitId":"codex","secondary":window,"planType":"pro"}}})),
+    )
+    .await;
+    let _ = e.connect().await;
+    e.clone().read_usage().await;
+    assert!(e.snapshot().await.usage.is_some());
+    // The same account keeps its numbers through a failed read.
+    let failing = json!({"rateLimitsError":"temporarily unavailable"});
+    configure(&rpc, signed_in("a@example.com", failing.clone())).await;
+    let _ = e.connect().await;
+    e.clone().read_usage().await;
+    assert!(e.snapshot().await.usage.is_some());
+    // A different ChatGPT account starts from nothing.
+    configure(&rpc, signed_in("b@example.com", failing)).await;
+    let _ = e.connect().await;
+    e.clone().read_usage().await;
+    assert!(e.snapshot().await.usage.is_none());
+    // So does an API key login, which Codex answers with an error.
+    configure(
+        &rpc,
+        signed_in(
+            "a@example.com",
+            json!({"rateLimits":{"rateLimits":{"limitId":"codex","secondary":window}}}),
+        ),
+    )
+    .await;
+    let _ = e.connect().await;
+    e.clone().read_usage().await;
+    assert!(e.snapshot().await.usage.is_some());
+    configure(
+        &rpc,
+        json!({
+            "catalog": catalog(),
+            "account": {"type":"apiKey"},
+            "rateLimitsError": "chatgpt authentication required to read rate limits",
+        }),
+    )
+    .await;
+    let _ = e.connect().await;
+    e.clone().read_usage().await;
+    assert!(e.snapshot().await.usage.is_none());
+    rpc.shutdown().await;
+}
+#[tokio::test]
+async fn usage_is_shown_but_never_saved() {
+    let (d, e, rpc, _) = fixture().await;
+    let window = json!({"usedPercent":42,"windowDurationMins":10080,"resetsAt":1_800_000_000});
+    let read = json!({"rateLimits":{"secondary":window,"planType":"pro","credits":{"hasCredits":true,"unlimited":false,"balance":"9"}}});
+    e.update_live(|s| s.usage = crate::usage::Usage::from_read(&read, now()))
+        .await;
+    // An ordinary change saves the state afterwards.
+    e.update(|s| s.polling = !s.polling).await;
+    e.flush().await.unwrap();
+    let saved = std::fs::read_to_string(d.path().join("state.json")).unwrap();
+    assert!(
+        !saved.contains("usage") && !saved.contains("credits"),
+        "{saved}"
+    );
+    let shown = serde_json::to_value(e.shown_snapshot().await).unwrap();
+    assert_eq!(shown["usage"]["rateLimits"]["planType"], "pro");
+    rpc.shutdown().await;
+}

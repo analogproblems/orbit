@@ -57,6 +57,7 @@ import { Inbox } from "./Inbox";
 import { Detail, type DetailTab } from "./Detail";
 import { SaveFeedback } from "./SaveFeedback";
 import { PublishPreview } from "./PublishPreview";
+import { UsageMeter } from "./Usage";
 
 const Live = lazy(() => import("./Live").then((m) => ({ default: m.Live })));
 const Loops = lazy(() => import("./Loops").then((m) => ({ default: m.Loops })));
@@ -262,6 +263,7 @@ export default function App() {
               <VStack gap={3} padding={3}>
                 {!collapsed && (
                   <>
+                    <UsageMeter usage={s.usage} />
                     <HStack gap={2} vAlign="center">
                       <StatusDot
                         variant={s.codexReady ? "success" : "warning"}
