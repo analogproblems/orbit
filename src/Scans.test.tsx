@@ -108,13 +108,21 @@ describe("security scans", () => {
   });
   it("shows a stopping scan, and offers to try again if it was not confirmed", async () => {
     const snapshot = freshDemo();
-    snapshot.scans = [running({ status: "cancelling" })];
+    snapshot.scans = [
+      running({
+        status: "cancelling",
+        stopReason: "The scan's Codex turn was interrupted.",
+      }),
+    ];
     useOrbit.setState({ snapshot });
     const { calls, restore } = mockActions({ cancel_scan: null });
     try {
       const { rerender } = render(<ScansPage />);
       expect(screen.getByRole("button", { name: /Stopping/ })).toBeTruthy();
       expect(screen.getByText("Stopping the Codex Security scan")).toBeTruthy();
+      expect(
+        screen.getByText("The scan's Codex turn was interrupted."),
+      ).toBeTruthy();
       expect(
         screen.queryByRole("button", { name: /Delete acme\/orbit scan/ }),
       ).toBeNull();

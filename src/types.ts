@@ -409,6 +409,8 @@ export interface SecurityScan {
   repo: string;
   mode: ScanMode;
   status: ScanStatus;
+  /** While stopping, the reason the scan is being stopped, if not a cancel. */
+  stopReason?: string | null;
   createdAt: string;
   finishedAt?: string | null;
   /** The default branch and commit scanned, once fetched. */

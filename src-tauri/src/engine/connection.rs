@@ -74,6 +74,7 @@ impl Engine {
         .await;
         let _ = self.flush().await;
         tokio::spawn(self.clone().read_usage());
+        self.retry_scan_stops(&self.snapshot().await.scans);
         let discovery = async {
             let mut models = vec![];
             let mut cursor = Value::Null;
@@ -222,11 +223,21 @@ impl Engine {
             }
             s.approvals.clear();
             for scan in &mut s.scans {
-                if matches!(scan.status.as_str(), "preparing" | "running" | "cancelling") {
-                    scan.status = "interrupted".into();
-                    scan.finished_at = Some(now());
-                    scan.error =
-                        Some("Codex disconnected while this scan was running. Run a new scan to start over.".into());
+                const DISCONNECTED: &str =
+                    "Codex disconnected while this scan was running. Run a new scan to start over.";
+                match scan.status.as_str() {
+                    "preparing" => {
+                        scan.status = "interrupted".into();
+                        scan.finished_at = Some(now());
+                        scan.error = Some(DISCONNECTED.into());
+                    }
+                    // Stopped once Codex reconnects, before the scan ends.
+                    "running" | "cancelling" => super::scans::begin_stop(
+                        scan,
+                        Some("interrupted"),
+                        Some(DISCONNECTED.into()),
+                    ),
+                    _ => {}
                 }
             }
             for r in &mut s.reviews {

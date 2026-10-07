@@ -505,12 +505,12 @@ pub fn completion(dir: &Path, expected: &Expected) -> Result<String, String> {
             return Err(format!("its manifest is for commit {revision}"));
         }
     }
-    if scan["findingsRef"] != "findings.json" {
-        return Err("its manifest does not point at findings.json".into());
+    if scan["findingsRef"] != "findings.json" || scan["coverageRef"] != "coverage.json" {
+        return Err("its manifest does not point at findings.json and coverage.json".into());
     }
     let artifacts = scan["artifacts"].as_array().filter(|a| !a.is_empty());
     let artifacts = artifacts.ok_or("its manifest lists no sealed files")?;
-    let mut sealed_findings = false;
+    let mut sealed = vec![];
     for artifact in artifacts {
         let path = artifact["path"].as_str().unwrap_or_default();
         let relative =
@@ -520,10 +520,23 @@ pub fn completion(dir: &Path, expected: &Expected) -> Result<String, String> {
         if artifact["sha256"].as_str() != Some(sha256_hex(&contents).as_str()) {
             return Err(format!("its sealed {relative} has changed"));
         }
-        sealed_findings |= relative == "findings.json";
+        sealed.push((relative, contents));
     }
-    if !sealed_findings {
-        return Err("its manifest does not seal findings.json".into());
+    // The plugin seals its findings and coverage together, each naming the
+    // scan it belongs to.
+    for (name, kind) in [
+        ("findings.json", "codex-security.findings"),
+        ("coverage.json", "codex-security.coverage"),
+    ] {
+        let (_, contents) = sealed
+            .iter()
+            .find(|(path, _)| path == name)
+            .ok_or_else(|| format!("its manifest does not seal {name}"))?;
+        let doc: Value = serde_json::from_slice(contents)
+            .map_err(|_| format!("its sealed {name} is not valid JSON"))?;
+        if doc["documentType"] != kind || doc["scanId"] != id {
+            return Err(format!("its sealed {name} is not this scan's"));
+        }
     }
     Ok(status.into())
 }
@@ -593,6 +606,17 @@ pub fn report(kept: &Path) -> Result<String, String> {
 /// Writes a sealed manifest the way the plugin does when a scan ends.
 #[cfg(test)]
 pub(crate) fn seal(dir: &Path, plugin_scan_id: &str, commit: &str, status: &str) {
+    // The plugin's findings and coverage name the scan they belong to.
+    if let Ok(bytes) = std::fs::read(dir.join("findings.json")) {
+        if let Ok(mut doc) = serde_json::from_slice::<Value>(&bytes) {
+            doc["documentType"] = "codex-security.findings".into();
+            doc["scanId"] = plugin_scan_id.into();
+            std::fs::write(dir.join("findings.json"), doc.to_string()).unwrap();
+        }
+    }
+    let coverage = serde_json::json!({"documentType": "codex-security.coverage", "schemaVersion": "1.0",
+        "scanId": plugin_scan_id, "mode": "standard", "completeness": "complete"});
+    std::fs::write(dir.join("coverage.json"), coverage.to_string()).unwrap();
     let artifacts: Vec<Value> = ["findings.json", "coverage.json"]
         .iter()
         .filter_map(|name| {
@@ -867,7 +891,7 @@ mod tests {
         assert!(!dir.join("artifacts").exists());
         assert!(kept.join("findings.json").is_file());
         assert!(kept.join("scan-manifest.json").is_file());
-        assert!(!kept.join("coverage.json").exists());
+        assert!(kept.join("coverage.json").is_file());
         assert_eq!(report(&kept).unwrap(), "# Report");
 
         // Kept when asked, and never deleted outside Orbit's folder.
@@ -945,6 +969,24 @@ mod tests {
         refused("findings.json has changed");
         std::fs::remove_file(dir.join("findings.json")).unwrap();
         refused("findings.json is missing");
+        // Findings or coverage from another scan, even when sealed.
+        std::fs::write(dir.join("findings.json"), EXAMPLE).unwrap();
+        seal(&dir, "p-1", "abc123", "completed");
+        let manifest = std::fs::read_to_string(dir.join("scan-manifest.json")).unwrap();
+        std::fs::write(
+            dir.join("coverage.json"),
+            r#"{"documentType": "codex-security.coverage", "scanId": "p-2"}"#,
+        )
+        .unwrap();
+        let digest = sha256_hex(&std::fs::read(dir.join("coverage.json")).unwrap());
+        let mut resealed: Value = serde_json::from_str(&manifest).unwrap();
+        for artifact in resealed["scan"]["artifacts"].as_array_mut().unwrap() {
+            if artifact["path"] == "coverage.json" {
+                artifact["sha256"] = digest.clone().into();
+            }
+        }
+        std::fs::write(dir.join("scan-manifest.json"), resealed.to_string()).unwrap();
+        refused("coverage.json is not this scan's");
         // Without knowing the plugin's scan, nothing can be trusted.
         std::fs::write(dir.join("findings.json"), EXAMPLE).unwrap();
         seal(&dir, "p-1", "abc123", "completed");

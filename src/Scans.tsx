@@ -495,6 +495,9 @@ function ScanRow({
               <Text color="secondary">{progressLabel(scan)}</Text>
             </VStack>
           )}
+          {scan.status === "cancelling" && scan.stopReason && (
+            <Text color="secondary">{scan.stopReason}</Text>
+          )}
           {warning && <Banner status="warning" title={warning} />}
           {scan.error && <Banner status="error" title={scan.error} />}
           {scan.warnings.map((w) => (

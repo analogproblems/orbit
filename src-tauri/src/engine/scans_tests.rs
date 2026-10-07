@@ -22,15 +22,33 @@ fn skills_list() -> Value {
          "scope": "user", "enabled": true, "pluginId": "codex-security@openai-curated"},
     ]}]})
 }
-async fn fixture() -> (tempfile::TempDir, Arc<Engine>, Arc<Rpc>) {
-    let dir = tempfile::tempdir().unwrap();
-    let e = Engine::new(dir.path().join("state"), |_| {}).unwrap();
+/// Connects an engine to the fixture Codex.
+async fn attach(e: &Arc<Engine>) -> Arc<Rpc> {
     let (tx, rx) = mpsc::channel(64);
     let mut cmd = tokio::process::Command::new("node");
     cmd.args(["-e", include_str!("../model_fixture.cjs")]);
     let rpc = Rpc::from_command(cmd, tx).await.unwrap();
     *e.rpc.lock().await = Some(rpc.clone());
     tokio::spawn(e.clone().pump(rpc.clone(), rx));
+    rpc
+}
+/// A real worktree of a fresh repository at a scan's copy.
+async fn scan_copy(e: &Engine, id: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    let (repo_dir, repo) = git_repo().await;
+    let worktree = e.scan_worktree(id);
+    std::fs::create_dir_all(worktree.parent().unwrap()).unwrap();
+    super::worktrees::git(
+        &repo,
+        &["worktree", "add", "--detach", worktree.to_str().unwrap()],
+    )
+    .await
+    .unwrap();
+    (repo_dir, worktree)
+}
+async fn fixture() -> (tempfile::TempDir, Arc<Engine>, Arc<Rpc>) {
+    let dir = tempfile::tempdir().unwrap();
+    let e = Engine::new(dir.path().join("state"), |_| {}).unwrap();
+    let rpc = attach(&e).await;
     let checkout = dir.path().to_string_lossy().into_owned();
     e.update(|s| {
         s.settings.model = "model-a".into();
@@ -378,11 +396,18 @@ async fn a_scan_without_results_or_with_a_failed_turn_fails() {
     s.scans.push(running("scan-2", None));
     let limit = json!({"turn": {"id": "scan-turn", "status": "failed",
         "error": {"message": "limit", "codexErrorInfo": "usageLimitExceeded"}}});
+    // A failed turn first stops the plugin's scan, then fails.
     assert_eq!(
         apply_scan_notification(&mut s, "scan-2", "turn/completed", &limit).as_deref(),
-        Some("failed")
+        Some("stop")
     );
-    assert!(s.scans[0].error.as_deref().unwrap().contains("usage limit"));
+    assert_eq!(s.scans[0].status, "cancelling");
+    assert_eq!(s.scans[0].stop_outcome.as_deref(), Some("failed"));
+    assert!(s.scans[0]
+        .stop_reason
+        .as_deref()
+        .unwrap()
+        .contains("usage limit"));
     // Another turn on the thread does not end the scan.
     s.scans.push(running("scan-3", None));
     let other = json!({"turn": {"id": "cancel-turn", "status": "completed"}});
@@ -651,40 +676,135 @@ async fn cancelling_a_scan_being_prepared_stops_it_at_once() {
 }
 
 #[tokio::test]
-async fn a_restart_or_disconnect_interrupts_running_scans() {
+async fn a_turn_that_ends_while_the_plugin_still_runs_keeps_the_copy_until_it_stops() {
+    let (_d, e, rpc) = fixture().await;
+    let (_repo, worktree) = scan_copy(&e, "scan-1").await;
+    e.update(|s| s.scans.push(running("scan-1", Some(&worktree))))
+        .await;
+    configure(
+        &rpc,
+        json!({
+            "holdMethod": "mcpServer/tool/call",
+            "responses": {"plugin/list": plugin_list(true), "skills/list": skills_list()},
+            "toolResponses": {"list_codex_security_scans": [
+                plugin_scan("running"), plugin_scan("running"), plugin_scan("canceled"),
+            ]},
+        }),
+    )
+    .await;
+    // The turn ends without a sealed manifest while the plugin's deep scan
+    // still runs on the copy.
+    e.event(notification(
+        "turn/completed",
+        json!({"threadId": "scan-thread", "turn": {"id": "scan-turn", "status": "completed"}}),
+    ))
+    .await;
+    wait_releasing(&e, &rpc, |s| s.scans[0].status == "cancelling").await;
+    let scan = e.snapshot().await.scans[0].clone();
+    assert!(scan.stop_reason.unwrap().contains("deep-1 as running"));
+    assert!(worktree.exists() && scan.worktree.is_some());
+    let error = e.start_scan("a/b", "standard").await.unwrap_err();
+    assert!(error.contains("already running"), "{error}");
+    assert!(e.delete_scan("scan-1").await.is_err());
+    assert!(worktree.exists());
+
+    // Only once the plugin confirms its scan stopped does the scan fail and
+    // its copy go.
+    wait_releasing(&e, &rpc, |s| {
+        s.scans[0].status == "failed" && s.scans[0].worktree.is_none()
+    })
+    .await;
+    let scan = e.snapshot().await.scans[0].clone();
+    assert!(scan.error.unwrap().contains("deep-1 as running"));
+    assert!(scan.worktree.is_none() && !worktree.exists());
+    let tools: Vec<_> = tool_calls(&requests(&rpc).await)
+        .iter()
+        .map(|c| c["tool"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        tools,
+        [
+            "list_codex_security_scans",
+            "list_codex_security_scans",
+            "cancel_codex_security_scan",
+            "list_codex_security_scans"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_restart_or_disconnect_stops_running_scans_before_ending_them() {
     let d = tempfile::tempdir().unwrap();
+    let state = d.path().join("state");
+    let repo;
+    let worktree;
     {
-        let e = Engine::new(d.path().into(), |_| {}).unwrap();
+        let e = Engine::new(state.clone(), |_| {}).unwrap();
+        (repo, worktree) = scan_copy(&e, "scan-1").await;
         e.update(|s| {
-            s.scans.push(running("scan-1", None));
-            let mut stopping = running("scan-4", None);
-            stopping.status = "cancelling".into();
-            s.scans.push(stopping);
-            let mut done = running("scan-2", None);
+            s.scans.push(running("scan-1", Some(&worktree)));
+            let mut preparing = running("scan-2", None);
+            preparing.status = "preparing".into();
+            preparing.thread_id = None;
+            preparing.turn_id = None;
+            s.scans.push(preparing);
+            let mut done = running("scan-3", None);
             done.status = "completed".into();
             s.scans.push(done);
         })
         .await;
         e.flush().await.unwrap();
     }
-    let e = Engine::new(d.path().into(), |_| {}).unwrap();
+    let e = Engine::new(state, |_| {}).unwrap();
     let s = e.snapshot().await;
-    assert_eq!(s.scans[0].status, "interrupted");
-    assert!(s.scans[0]
+    // The plugin's scan may outlive Orbit, so the scan keeps its slot and
+    // copy until it is stopped.
+    assert_eq!(s.scans[0].status, "cancelling");
+    assert_eq!(s.scans[0].stop_outcome.as_deref(), Some("interrupted"));
+    assert_eq!(s.scans[1].status, "interrupted");
+    assert!(s.scans[1]
         .error
         .as_deref()
         .unwrap()
         .contains("Orbit closed"));
-    assert_eq!(s.scans[1].status, "interrupted");
     assert_eq!(s.scans[2].status, "completed");
+    e.resume_scans().await;
+    assert!(worktree.exists());
 
-    e.update(|s| s.scans.push(running("scan-3", None))).await;
+    // Once Codex connects, the old thread is reopened to stop the scan.
+    let rpc = attach(&e).await;
+    configure(
+        &rpc,
+        json!({
+            "errors": {"turn/interrupt": "thread not found: scan-thread"},
+            "toolResponses": {"list_codex_security_scans": [plugin_scan("running"), plugin_scan("canceled")]},
+        }),
+    )
+    .await;
+    e.retry_scan_stops(&e.snapshot().await.scans);
+    wait_for(&e, |s| {
+        s.scans[0].status == "interrupted" && s.scans[0].worktree.is_none()
+    })
+    .await;
+    let scan = e.snapshot().await.scans[0].clone();
+    assert!(scan.error.as_deref().unwrap().contains("Orbit closed"));
+    assert!(!worktree.exists());
+    let requests = requests(&rpc).await;
+    let methods: Vec<_> = requests
+        .iter()
+        .map(|r| r["method"].as_str().unwrap())
+        .collect();
+    assert_eq!(&methods[..2], ["turn/interrupt", "thread/resume"]);
+    assert_eq!(requests[1]["params"]["threadId"], "scan-thread");
+
+    e.update(|s| s.scans.push(running("scan-4", None))).await;
     e.disconnected().await;
     let s = e.snapshot().await;
-    assert_eq!(s.scans[3].status, "interrupted");
+    assert_eq!(s.scans[3].status, "cancelling");
     assert!(s.scans[3]
-        .error
+        .stop_reason
         .as_deref()
         .unwrap()
         .contains("Codex disconnected"));
+    drop(repo);
 }

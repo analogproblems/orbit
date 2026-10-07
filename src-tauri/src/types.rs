@@ -727,10 +727,14 @@ pub struct SecurityScan {
     pub repo: String,
     /// "standard" or "deep".
     pub mode: String,
-    /// preparing, running, cancelling (waiting for the plugin to confirm it
-    /// stopped), importing, completed, failed, cancelled or interrupted
-    /// (Orbit or Codex stopped while it ran).
+    /// preparing, running, cancelling (stopping: waiting for the plugin to
+    /// confirm its scan stopped), importing, completed, failed, cancelled or
+    /// interrupted (Orbit or Codex stopped while it ran).
     pub status: String,
+    /// While stopping, the status to record once the plugin confirms the
+    /// stop (cancelled when absent), and the reason to show with it.
+    pub stop_outcome: Option<String>,
+    pub stop_reason: Option<String>,
     pub created_at: String,
     pub finished_at: Option<String>,
     /// The default branch and commit scanned, once fetched.

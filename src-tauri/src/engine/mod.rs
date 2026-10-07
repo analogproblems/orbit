@@ -214,13 +214,21 @@ impl Engine {
             }
         }
         for scan in &mut state.scans {
-            if matches!(scan.status.as_str(), "preparing" | "running" | "cancelling") {
-                scan.status = "interrupted".into();
-                scan.finished_at = Some(now());
-                scan.error = Some(
-                    "Orbit closed while this scan was running. Run a new scan to start over."
-                        .into(),
-                );
+            const CLOSED: &str =
+                "Orbit closed while this scan was running. Run a new scan to start over.";
+            match scan.status.as_str() {
+                // Nothing was started in Codex yet.
+                "preparing" => {
+                    scan.status = "interrupted".into();
+                    scan.finished_at = Some(now());
+                    scan.error = Some(CLOSED.into());
+                }
+                // The plugin's work may outlive Orbit, so it is stopped once
+                // Codex connects before the scan ends.
+                "running" | "cancelling" => {
+                    scans::begin_stop(scan, Some("interrupted"), Some(CLOSED.into()))
+                }
+                _ => {}
             }
         }
         state.approvals.clear();

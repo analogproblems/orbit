@@ -63,7 +63,8 @@ impl Engine {
             .filter(|p| p.status.installed)
             .ok_or("Install the Codex Security plugin first.")?;
         // Skills Codex loads for the plugin, wherever it was installed from.
-        // No folder is passed, so a repository's own skills are never listed.
+        // With no folder, Codex lists those of its own working folder; only
+        // the plugin's skills are used, so no other skill of the same name is.
         let skills = self
             .client()
             .await?
@@ -331,6 +332,8 @@ impl Engine {
                 x.status = status.into();
                 x.error = error;
                 x.finished_at = Some(now());
+                x.stop_outcome = None;
+                x.stop_reason = None;
                 ended = true;
             }
         })
@@ -358,9 +361,8 @@ impl Engine {
         .await;
     }
     /// Cancels a scan. A scan still being prepared stops at once. A running
-    /// scan stays `cancelling`, keeping its slot and its files, until the
-    /// plugin confirms its own scan stopped: a deep scan's workers outlive an
-    /// interrupted turn. If that cannot be confirmed, Cancel can be tried again.
+    /// scan is stopped like any other (see [`Engine::stop_scan`]); Cancel
+    /// on a stopping scan tries the stop again.
     pub async fn cancel_scan(self: &Arc<Self>, id: &str) -> Result<(), String> {
         let preparing = {
             let mut s = self.state.lock().await;
@@ -376,8 +378,7 @@ impl Engine {
                     true
                 }
                 "running" | "cancelling" => {
-                    x.status = "cancelling".into();
-                    x.error = None;
+                    begin_stop(x, None, None);
                     false
                 }
                 _ => return Err("This scan is not running.".into()),
@@ -391,64 +392,107 @@ impl Engine {
             let e = self.clone();
             let id = id.to_string();
             tokio::spawn(async move { e.remove_scan_worktree(&id).await });
-        } else if self.stopping_scans.lock().unwrap().insert(id.to_string()) {
-            let e = self.clone();
-            let id = id.to_string();
-            tokio::spawn(async move {
-                let result = e.stop_scan(&id).await;
-                e.stopping_scans.lock().unwrap().remove(&id);
-                match result {
-                    Ok(()) => e.end_scan(&id, "cancelled", None).await,
-                    Err(error) => {
-                        e.update(|s| {
-                            if let Some(x) = s
-                                .scans
-                                .iter_mut()
-                                .find(|x| x.id == id && x.status == "cancelling")
-                            {
-                                x.error = Some(format!(
-                                    "Orbit could not confirm the scan stopped: {error} Try stopping it again."
-                                ));
-                            }
-                        })
-                        .await
-                    }
-                }
-            });
+        } else {
+            self.spawn_stop(id);
         }
         self.flush().await
     }
-    /// Interrupts a cancelling scan's turn, cancels the plugin's scans for it,
-    /// and checks with the plugin that none is still running.
+    /// Stops a `cancelling` scan in the background, unless a stop is already
+    /// under way. Only once the plugin confirms none of its scans for it still
+    /// runs does the scan end, with its stop outcome, and lose its copy;
+    /// otherwise it stays `cancelling` with the reason, and can be retried.
+    fn spawn_stop(self: &Arc<Self>, id: &str) {
+        if !self.stopping_scans.lock().unwrap().insert(id.to_string()) {
+            return;
+        }
+        let e = self.clone();
+        let id = id.to_string();
+        tokio::spawn(async move {
+            let result = e.stop_scan(&id).await;
+            e.stopping_scans.lock().unwrap().remove(&id);
+            let mut ending = None;
+            e.update(|s| {
+                let Some(x) = s
+                    .scans
+                    .iter_mut()
+                    .find(|x| x.id == id && x.status == "cancelling")
+                else {
+                    return;
+                };
+                match &result {
+                    Ok(()) => {
+                        ending = Some((
+                            x.stop_outcome.clone().unwrap_or_else(|| "cancelled".into()),
+                            x.stop_reason.clone(),
+                        ))
+                    }
+                    Err(error) => {
+                        x.error = Some(format!(
+                        "Orbit could not confirm the scan stopped: {error} Try stopping it again."
+                    ))
+                    }
+                }
+            })
+            .await;
+            if let Some((status, reason)) = ending {
+                e.end_scan(&id, &status, reason).await;
+            }
+        });
+    }
+    /// Retries the stop of every stopping scan, once Codex is connected.
+    pub(super) fn retry_scan_stops(self: &Arc<Self>, scans: &[SecurityScan]) {
+        for scan in scans.iter().filter(|x| x.status == "cancelling") {
+            self.spawn_stop(&scan.id);
+        }
+    }
+    /// Interrupts a stopping scan's turn, cancels the plugin's scans for it,
+    /// and checks with the plugin that none is still running. A thread Codex
+    /// no longer has loaded, after a restart or reconnect, is resumed first.
     async fn stop_scan(&self, id: &str) -> Result<(), String> {
         // A scan whose turn is still starting gets its turn id shortly.
-        let mut scan = None;
+        let mut scan = self.scan_live(id).await?;
         for _ in 0..50 {
-            let found = self.scan_live(id).await?;
-            if found.turn_id.is_some() {
-                scan = Some(found);
+            if scan.turn_id.is_some() {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            scan = self.scan_live(id).await?;
         }
-        let scan = scan.ok_or("Codex has not started the scan's turn yet.")?;
-        let (Some(thread), Some(turn)) = (&scan.thread_id, &scan.turn_id) else {
-            return Err("The scan has no Codex thread.".into());
-        };
+        let thread = scan
+            .thread_id
+            .clone()
+            .ok_or("The scan has no Codex thread.")?;
         let rpc = self.client().await?;
-        // Codex answers once the turn has stopped.
-        match rpc
-            .request_timeout(
-                "turn/interrupt",
-                json!({"threadId": thread, "turnId": turn}),
-                120,
+        let mut loaded = true;
+        if let Some(turn) = &scan.turn_id {
+            // Codex answers once the turn has stopped.
+            match rpc
+                .request_timeout(
+                    "turn/interrupt",
+                    json!({"threadId": thread, "turnId": turn}),
+                    120,
+                )
+                .await
+            {
+                Err(e) if e.contains("thread not found") => loaded = false,
+                Err(e) if !e.contains("no active turn") => {
+                    return Err(format!("Codex did not stop the scan's turn ({e})."))
+                }
+                _ => {}
+            }
+        }
+        if !loaded {
+            // A new Codex process runs no turn of the old one.
+            rpc.request(
+                "thread/resume",
+                json!({
+                    "threadId": thread,
+                    "model": scan.model,
+                    "config": {"model_reasoning_effort": scan.effort},
+                }),
             )
             .await
-        {
-            Err(e) if !e.contains("no active turn") => {
-                return Err(format!("Codex did not stop the scan's turn ({e})."))
-            }
-            _ => {}
+            .map_err(|e| format!("Codex could not reopen the scan's thread ({e})."))?;
         }
         let found = self.plugin_scans(&rpc, &scan).await?;
         let mut cancel: Vec<&String> = found
@@ -464,7 +508,7 @@ impl Engine {
         for plugin_id in &cancel {
             plugin_tool(
                 &rpc,
-                thread,
+                &thread,
                 "cancel_codex_security_scan",
                 json!({"scanId": plugin_id}),
                 300,
@@ -591,13 +635,13 @@ impl Engine {
                 let id = id.to_string();
                 tokio::spawn(async move { e.import_scan(&id).await });
             }
-            Some(_) => self.remove_scan_worktree(id).await,
+            Some(_) => self.spawn_stop(id),
             None => {}
         }
     }
     /// Reads a finished scan's findings into Orbit, keeps its report, and
     /// clears its working files.
-    pub(super) async fn import_scan(&self, id: &str) {
+    pub(super) async fn import_scan(self: &Arc<Self>, id: &str) {
         let Some(scan) = self
             .state
             .lock()
@@ -624,8 +668,13 @@ impl Engine {
             plugin_scan_ids: scan.plugin_scan_id.iter().cloned().collect(),
             commit: scan.commit.clone(),
         };
+        let mut still_running = None;
         if let Ok(rpc) = self.client().await {
             if let Ok(listed) = self.plugin_scans(&rpc, &scan).await {
+                still_running = listed
+                    .iter()
+                    .find(|(_, status)| status == "running")
+                    .map(|(plugin_id, _)| plugin_id.clone());
                 if scan.plugin_scan_id.is_none() && listed.len() == 1 {
                     let plugin_id = listed[0].0.clone();
                     self.update(|s| {
@@ -639,6 +688,16 @@ impl Engine {
                     .plugin_scan_ids
                     .extend(listed.into_iter().map(|(plugin_id, _)| plugin_id));
             }
+        }
+        // The turn ended, but the plugin's scan did not: stop it before the
+        // copy it works on goes away.
+        if let Some(plugin_id) = still_running {
+            return self
+                .stop_unfinished(
+                    id,
+                    format!("The scan's Codex turn ended while Codex Security still reported its scan {plugin_id} as running."),
+                )
+                .await;
         }
         let scan_id = id.to_string();
         let result = tokio::task::spawn_blocking(move || {
@@ -658,6 +717,12 @@ impl Engine {
             Ok(done) => done,
             Err(e) => (Err(e.to_string()), 0),
         };
+        // Without the plugin's record of how the scan ended, its work may
+        // still be running on the copy.
+        let imported = match imported {
+            Ok(imported) => imported,
+            Err(error) => return self.stop_unfinished(id, error).await,
+        };
         self.remove_scan_worktree(id).await;
         self.update(|s| {
             let Some(x) = s.scans.iter_mut().find(|x| x.id == id) else {
@@ -665,36 +730,48 @@ impl Engine {
             };
             x.finished_at = Some(now());
             x.disk_bytes = Some(bytes);
-            match imported {
-                Ok(imported) => {
-                    x.findings = imported.findings;
-                    x.has_report = imported.has_report;
-                    x.warnings.extend(imported.warnings);
-                    match imported.manifest_status.as_str() {
-                        "completed" => x.status = "completed".into(),
-                        other => {
-                            x.status = match other {
-                                "canceled" => "cancelled",
-                                "interrupted" => "interrupted",
-                                _ => "failed",
-                            }
-                            .into();
-                            x.error = Some(format!(
-                                "The Codex Security plugin recorded this scan as {other}. Its findings so far are kept."
-                            ));
-                        }
+            x.findings = imported.findings;
+            x.has_report = imported.has_report;
+            x.warnings.extend(imported.warnings);
+            match imported.manifest_status.as_str() {
+                "completed" => x.status = "completed".into(),
+                other => {
+                    x.status = match other {
+                        "canceled" => "cancelled",
+                        "interrupted" => "interrupted",
+                        _ => "failed",
                     }
-                }
-                Err(error) => {
-                    x.status = "failed".into();
-                    x.error = Some(error);
+                    .into();
+                    x.error = Some(format!(
+                        "The Codex Security plugin recorded this scan as {other}. Its findings so far are kept."
+                    ));
                 }
             }
         })
         .await;
     }
+    /// Fails a scan whose end the plugin has not confirmed, once the plugin
+    /// confirms its scans stopped; until then it keeps its slot and copy.
+    async fn stop_unfinished(self: &Arc<Self>, id: &str, reason: String) {
+        let mut stopping = false;
+        self.update(|s| {
+            if let Some(x) = s
+                .scans
+                .iter_mut()
+                .find(|x| x.id == id && x.status == "importing")
+            {
+                begin_stop(x, Some("failed"), Some(reason));
+                stopping = true;
+            }
+        })
+        .await;
+        if stopping {
+            self.spawn_stop(id);
+        }
+    }
     /// After a restart: finishes imports a restart cut short, and removes the
-    /// copies of scans that are no longer running.
+    /// copies of scans that are no longer running. Stopping scans are retried
+    /// once Codex connects.
     pub(super) async fn resume_scans(self: &Arc<Self>) {
         let scans = self.snapshot().await.scans;
         for scan in scans {
@@ -727,6 +804,17 @@ fn scan_prompt(
         scan.commit.as_deref().unwrap_or("HEAD"),
         output.display(),
     )
+}
+/// Moves a scan to `cancelling`, which keeps its slot and its copy until the
+/// plugin confirms its scans stopped. A scan already stopping keeps the
+/// outcome it was stopping for.
+pub(super) fn begin_stop(x: &mut SecurityScan, outcome: Option<&str>, reason: Option<String>) {
+    if x.status != "cancelling" {
+        x.stop_outcome = outcome.map(str::to_owned);
+        x.stop_reason = reason;
+    }
+    x.status = "cancelling".into();
+    x.error = None;
 }
 /// Calls one of the plugin's tools on a scan's thread, which the plugin
 /// needs to know the scan is the thread's own.
@@ -817,34 +905,35 @@ pub(super) fn apply_scan_notification(
                 return None;
             }
             let status = p["turn"]["status"].as_str().unwrap_or_default();
-            x.status = match status {
-                "completed" => "importing",
-                "interrupted" => "cancelled",
-                _ => "failed",
+            if status == "completed" {
+                x.status = "importing".into();
+                return Some("completed".into());
             }
-            .into();
-            if x.status == "failed" {
-                x.error = Some(
-                    if crate::usage::limit_message(&p["turn"]["error"]).is_some() {
-                        "Your Codex usage limit was reached, so this scan stopped. Run it again once \
+            // A turn that ended early is not proof the plugin's scan did:
+            // stop it first.
+            let (outcome, reason) = if status == "interrupted" {
+                (
+                    "interrupted",
+                    "The scan's Codex turn was interrupted.".to_string(),
+                )
+            } else if crate::usage::limit_message(&p["turn"]["error"]).is_some() {
+                (
+                    "failed",
+                    "Your Codex usage limit was reached, so this scan stopped. Run it again once \
                      the limit resets. The usage meter shows when."
-                        .into()
-                    } else {
-                        p["turn"]["error"]["message"]
-                            .as_str()
-                            .unwrap_or("The scan failed in Codex.")
-                            .into()
-                    },
-                );
-            }
-            if x.status != "importing" {
-                x.finished_at = Some(at);
-            }
-            Some(if status == "completed" {
-                "completed".into()
+                        .into(),
+                )
             } else {
-                x.status.clone()
-            })
+                (
+                    "failed",
+                    p["turn"]["error"]["message"]
+                        .as_str()
+                        .unwrap_or("The scan failed in Codex.")
+                        .into(),
+                )
+            };
+            begin_stop(x, Some(outcome), Some(reason));
+            Some("stop".into())
         }
         _ => None,
     }
