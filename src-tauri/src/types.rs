@@ -457,6 +457,10 @@ pub struct Repository {
     /// declines it. 0 waits for the developer however long it takes.
     #[serde(default)]
     pub approval_minutes: u32,
+    /// Fast-forward the clone's checked-out branch to its upstream on each
+    /// sync, when that loses nothing.
+    #[serde(default)]
+    pub keep_updated: bool,
 }
 pub const MAX_APPROVAL_MINUTES: u32 = 1440;
 fn default_round_limit() -> u32 {
@@ -683,6 +687,27 @@ pub struct Snapshot {
     /// Everything waiting on the developer. Derived like `loop_states`.
     #[serde(skip_deserializing, skip_serializing_if = "Vec::is_empty")]
     pub attention: Vec<Attention>,
+    /// The latest update of each clone kept up to date.
+    pub clone_updates: Vec<CloneUpdate>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloneUpdateState {
+    /// The branch was fast-forwarded.
+    Updated,
+    /// The branch already matched its upstream.
+    Current,
+    /// Updating would lose or move local work, so the clone was left alone.
+    Skipped,
+    Failed,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloneUpdate {
+    pub repo: String,
+    pub state: CloneUpdateState,
+    pub message: String,
+    pub at: String,
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -845,6 +870,7 @@ pub(crate) mod tests {
             network_access: false,
             round_limit: 4,
             approval_minutes: 0,
+            keep_updated: false,
         });
         assert!(eligible(&p, &s));
         let mut fork = p.clone();

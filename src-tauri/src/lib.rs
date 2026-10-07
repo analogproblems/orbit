@@ -99,9 +99,41 @@ mod desktop {
         .await
         .map_err(|e| e.to_string())?
     }
+    /// Opens a folder picker for a repository's checkout. The desktop app only:
+    /// a browser connected over remote access cannot see the host's dialog.
+    #[tauri::command]
+    async fn choose_checkout(
+        app: tauri::AppHandle,
+        current: Option<String>,
+    ) -> Result<Option<String>, String> {
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut dialog = app
+                .dialog()
+                .file()
+                .set_title("Choose the repository's local clone");
+            if let Some(dir) = current
+                .map(std::path::PathBuf::from)
+                .filter(|p| p.is_absolute() && p.is_dir())
+            {
+                dialog = dialog.set_directory(dir);
+            }
+            dialog
+                .blocking_pick_folder()
+                .map(|p| {
+                    p.into_path()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .map_err(|e| e.to_string())
+                })
+                .transpose()
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
     #[tauri::command]
     async fn poll_now(engine: State<'_, AppState>) -> Result<(), String> {
-        engine.poll().await
+        engine.poll().await?;
+        engine.update_clones_soon();
+        Ok(())
     }
     #[tauri::command]
     async fn connect_services(engine: State<'_, AppState>) -> Result<(), String> {
@@ -284,6 +316,7 @@ mod desktop {
                 get_storage_usage,
                 remove_worktrees,
                 export_report,
+                choose_checkout,
                 poll_now,
                 connect_services,
                 start_review,

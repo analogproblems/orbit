@@ -12,6 +12,7 @@ use std::{
 use tokio::sync::Mutex;
 
 mod chat;
+mod clones;
 mod connection;
 mod findings;
 mod inline;
@@ -27,6 +28,8 @@ pub use settings::validate_checkout;
 
 #[cfg(test)]
 mod chat_tests;
+#[cfg(test)]
+mod clones_tests;
 #[cfg(test)]
 mod connection_tests;
 #[cfg(test)]
@@ -58,7 +61,8 @@ type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// Orbit's review engine. Its methods are split by area: `connection` (Codex),
 /// `settings` (workspace settings and checkouts), `queue` (sync and scheduling),
 /// `run` (preparing and running reviews, Codex events), `chat` (follow-ups),
-/// `publish` (GitHub comments) and `worktrees` (cleanup).
+/// `publish` (GitHub comments), `worktrees` (cleanup) and `clones` (keeping
+/// users' clones up to date).
 ///
 /// # Locks
 ///
@@ -68,7 +72,8 @@ type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// | `poll_lock`    | One sync at a time; `poll` skips a round rather than wait.        |
 /// | `publish_lock` | One publication at a time.                                        |
 /// | `cleanup_lock` | One worktree removal at a time.                                   |
-/// | `git_lock`     | Git commands against users' clones (fetch, worktree add/remove).  |
+/// | `git_lock`     | Git commands against users' clones (fetch, worktree add/remove,   |
+/// |                | fast-forward).                                                    |
 /// | `rpc`          | The current Codex connection.                                     |
 /// | `state`        | The snapshot shown in the UI and saved to disk.                   |
 /// | `synced_repos` | Repositories that synced in the latest poll.                      |
@@ -105,6 +110,8 @@ pub struct Engine {
     /// State only needs to be shown, e.g. streamed text not yet worth persisting.
     changed: AtomicBool,
     stopping: AtomicBool,
+    /// An `update_clones` pass is running; another one skips rather than waits.
+    updating_clones: AtomicBool,
     /// Repositories whose open PRs synced in the latest poll; autopilot only acts on these.
     synced_repos: Mutex<HashSet<String>>,
     /// Running preparations, so Stop can end a long fetch or checkout immediately.
@@ -215,6 +222,7 @@ impl Engine {
             dirty: AtomicBool::new(true),
             changed: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
+            updating_clones: AtomicBool::new(false),
             synced_repos: Mutex::new(HashSet::new()),
             preparing: std::sync::Mutex::new(HashMap::new()),
             cleanup_lock: Mutex::new(()),
@@ -321,6 +329,7 @@ impl Engine {
         let e = self.clone();
         tokio::spawn(async move {
             let _ = e.poll().await;
+            e.update_clones().await;
             e.clean_worktrees().await;
         });
         let e = self.clone();
@@ -345,6 +354,7 @@ impl Engine {
                     let p = e.clone();
                     tokio::spawn(async move {
                         let _ = p.poll().await;
+                        p.update_clones().await;
                         p.clean_worktrees().await;
                     });
                 }

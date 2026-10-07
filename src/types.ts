@@ -168,6 +168,14 @@ export interface Repository {
   roundLimit: number;
   /** Minutes an approval on an automatic review may wait; 0 waits. */
   approvalMinutes?: number;
+  /** Fast-forward the clone's branch to its upstream on each sync. */
+  keepUpdated?: boolean;
+}
+export interface CloneUpdate {
+  repo: string;
+  state: "updated" | "current" | "skipped" | "failed";
+  message: string;
+  at: string;
 }
 export interface RepositorySummary {
   name: string;
@@ -364,6 +372,8 @@ export interface Snapshot {
   modelCatalogReady: boolean;
   modelConfigurationError?: string | null;
   modelSelectionNotice?: string | null;
+  /** The latest update of each clone kept up to date. */
+  cloneUpdates?: CloneUpdate[];
 }
 export interface ChangedFile {
   filename: string;

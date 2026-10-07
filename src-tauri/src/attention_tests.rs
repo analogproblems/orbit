@@ -15,6 +15,7 @@ fn snapshot() -> (Snapshot, PullRequest) {
         network_access: false,
         round_limit: 4,
         approval_minutes: 0,
+        keep_updated: false,
     });
     s.prs.push(p.clone());
     (s, p)

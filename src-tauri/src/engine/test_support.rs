@@ -34,6 +34,7 @@ pub(super) async fn ready_for_autopost(e: &Engine, report: &str, trusted: bool) 
             network_access: false,
             round_limit: 4,
             approval_minutes: 0,
+            keep_updated: false,
         });
         if trusted {
             s.prs[0].head_repo = "a/b".into();
@@ -105,6 +106,7 @@ pub(super) async fn autopilot_engine(pr: PullRequest) -> (tempfile::TempDir, Arc
             network_access: false,
             round_limit: 4,
             approval_minutes: 0,
+            keep_updated: false,
         });
         s.prs.push(pr);
     })
