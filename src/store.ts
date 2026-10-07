@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
+  demoWorkspace,
   freshDemo,
   demoFindings,
   demoReport,
@@ -251,7 +252,7 @@ async function demoAction(
   if (command === "reset_demo") {
     timers.forEach(clearTimeout);
     timers.clear();
-    demo = freshDemo();
+    demo = demoWorkspace();
     commit();
     return;
   }
@@ -633,7 +634,7 @@ export const useOrbit = create<Store>((set, get) => ({
       try {
         demo =
           JSON.parse(localStorage.getItem("orbit-demo-v3") || "null") ||
-          freshDemo();
+          demoWorkspace();
         demo.reviews.forEach((r) => {
           // Older demos did not record a simulated Codex thread. Backfill those
           // runs without reviving worktrees explicitly removed by current builds
@@ -648,7 +649,7 @@ export const useOrbit = create<Store>((set, get) => ({
           }
         });
       } catch {
-        demo = freshDemo();
+        demo = demoWorkspace();
       }
       resolveDemoSelection();
       commit();

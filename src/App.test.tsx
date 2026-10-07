@@ -385,11 +385,11 @@ describe("PR review regressions", () => {
     );
   });
 
-  it("opens on the loops under autopilot and keeps inbox search on Ctrl+K", async () => {
+  it("opens on Live under autopilot and keeps inbox search on Ctrl+K", async () => {
     snapshot.settings.automatic = true;
     await mount();
     expect(
-      screen.getByRole("heading", { level: 1, name: "Review loops" }),
+      screen.getByRole("heading", { level: 1, name: "Live" }),
     ).toBeTruthy();
     expect(
       screen.getByText("Autopilot · 2 loops running · 2 need you"),

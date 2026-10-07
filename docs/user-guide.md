@@ -236,9 +236,20 @@ When a PR gets new commits while an automatic round is queued or running for the
 
 While automatic publication is on, Orbit also shows each automatic round's result on the reviewed commit as the **orbit/review** status check: pending while the round is in progress, success when clean, failure when changes are requested, and error when the loop needs you. Its description gives the round and the blocking count, such as "Round 2 · 1 blocking finding". Published comments also carry a hidden line with the verdict for agents to read, such as `<!-- orbit-verdict: changes_requested round=2 blocking=1 -->`. Turn off **GitHub status check** in Settings to stop setting the check. If GitHub refuses a status, the PR detail says why; the review is not affected. Orbit never makes the check required: that is a branch protection choice in GitHub.
 
+### Live
+
+**Live** is the page to keep open while Autopilot runs, and the first page Orbit opens while Autopilot is on; otherwise it opens **All pull requests**. From top to bottom:
+
+- **Needs you**: a glowing red panel listing everything on the **Needs you** list, plus Codex or GitHub being disconnected, each with its one main action. When nothing needs you, it reads **All clear**.
+- **Headline numbers**: reviews running now, queued, reviews and PRs in the last 24 hours, and failures in the last 24 hours.
+- **Running now**: each review in progress with its PR, state, model, and a running timer. Selecting one opens its chat; a review waiting for approval offers **Approve or deny**.
+- **Activity**: reviews started per hour (last 24 hours) or per day (last 14 days), stacked by repository. Switch **Reviews** to **PRs** to count each pull request once per bar. Hover or focus a bar for its exact counts. Each repository keeps its colour; a sixth repository and beyond share **Other**.
+
+The sidebar's **Live** item shows a pulsing dot while reviews are running. Animations stop when your system asks for reduced motion.
+
 ### Review loops
 
-**Review loops** is the first page Orbit opens while Autopilot is on; otherwise it opens **All pull requests**. The header reads, for example, "Autopilot · 3 loops running · 1 needs you". The page lists:
+**Review loops** sits below **Live** in the sidebar. While Autopilot is on, the header reads, for example, "Autopilot · 3 loops running · 1 needs you". The **Review loops** page lists:
 
 - **Needs you** at the top (see below);
 - **Loops**: one row per PR that has had at least one automatic round, with its state, "Round 3 of 4", its blocking findings round by round such as "4 → 1 → 0", and when it last changed;

@@ -69,16 +69,16 @@ UI code follows [`AGENTS.md`](AGENTS.md): Astryx components and tokens only. Run
 
 ## Architecture
 
-| Area                                                    | Implementation                                                                                                                  |
-| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| UI shell and theme                                      | `src/App.tsx`, `src/main.tsx`, `src/styles.css`                                                                                 |
-| Workflow UI                                             | `src/Inbox.tsx`, `src/Detail.tsx`, `src/Chat.tsx`, `src/Files.tsx`, `src/Repositories.tsx`, `src/Settings.tsx`, `src/Loops.tsx` |
-| Typed application state and native bridge               | `src/types.ts`, `src/store.ts`                                                                                                  |
-| Separate interactive demo                               | `src/demo.ts` and the demo adapter in `src/store.ts`                                                                            |
-| Queue, worktrees, orchestration, persistence            | `src-tauri/src/engine/` (one file per area; see `engine/mod.rs`)                                                                |
-| Review loop state, verdicts, and attention items        | `src-tauri/src/review_loop.rs`, `src-tauri/src/attention.rs`                                                                    |
-| GitHub discovery, PR details, files, comments           | `src-tauri/src/github.rs`                                                                                                       |
-| Codex process and bidirectional RPC                     | `src-tauri/src/rpc.rs`                                                                                                          |
-| Storage inspection, ownership checks, report generation | `src-tauri/src/storage.rs`                                                                                                      |
-| Storage and report actions                              | `src/Storage.tsx`, `src/ReviewActions.tsx`                                                                                      |
-| Native command allowlist and lifecycle                  | `src-tauri/src/lib.rs`                                                                                                          |
+| Area                                                    | Implementation                                                                                                                                  |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| UI shell and theme                                      | `src/App.tsx`, `src/main.tsx`, `src/styles.css`                                                                                                 |
+| Workflow UI                                             | `src/Inbox.tsx`, `src/Detail.tsx`, `src/Chat.tsx`, `src/Files.tsx`, `src/Repositories.tsx`, `src/Settings.tsx`, `src/Loops.tsx`, `src/Live.tsx` |
+| Typed application state and native bridge               | `src/types.ts`, `src/store.ts`                                                                                                                  |
+| Separate interactive demo                               | `src/demo.ts` and the demo adapter in `src/store.ts`                                                                                            |
+| Queue, worktrees, orchestration, persistence            | `src-tauri/src/engine/` (one file per area; see `engine/mod.rs`)                                                                                |
+| Review loop state, verdicts, and attention items        | `src-tauri/src/review_loop.rs`, `src-tauri/src/attention.rs`                                                                                    |
+| GitHub discovery, PR details, files, comments           | `src-tauri/src/github.rs`                                                                                                                       |
+| Codex process and bidirectional RPC                     | `src-tauri/src/rpc.rs`                                                                                                                          |
+| Storage inspection, ownership checks, report generation | `src-tauri/src/storage.rs`                                                                                                                      |
+| Storage and report actions                              | `src/Storage.tsx`, `src/ReviewActions.tsx`                                                                                                      |
+| Native command allowlist and lifecycle                  | `src-tauri/src/lib.rs`                                                                                                                          |

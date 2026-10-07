@@ -75,7 +75,7 @@ function loopLabel(l: LoopState) {
 }
 
 /** The one action that resolves an item, where there is one. */
-function mainAction(
+export function mainAction(
   s: Snapshot,
   a: Attention,
   go: AttentionHandlers,
