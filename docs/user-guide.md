@@ -266,13 +266,30 @@ Select a loop to see its rounds in order. Each round shows the commits it covere
 
 ### Findings
 
-**Findings**, below **Review loops** in the sidebar, lists every finding from Orbit's structured reviews across all pull requests and repositories, newest first. Each row shows its severity, title, PR, round, when it was found, and where it stands now:
+**Findings**, below **Review loops** in the sidebar, lists every finding from Orbit's structured reviews and security scans across all pull requests and repositories, newest first. Each row shows its severity, title, PR and round (or **Security scan** and the repository), when it was found, and where it stands now:
 
 - **Open** until a later round of the same PR decides about it;
 - **Fixed**, **Declined (accepted)** or **Declined (disputed)** once a later round says so (a round that says "still open" keeps it **Open**);
 - **PR closed** for a finding still open when its PR left the inbox.
 
-Search matches the title, explanation, file, and PR. Filters narrow by repository, severity, status, and whether the PR is still in the inbox, and the table at the top counts the matching findings by severity and status. Select a finding to read its full explanation, its location and confidence, and its history round by round with each round's note. Buttons open the review's chat, the lines on GitHub at the reviewed commit, the PR, and the published comment. Status comes from the review loop only; you can't set it by hand. Runs replaced by a newer commit while queued or running, and unstructured runs, aren’t listed. Asking a follow-up question in a review’s chat keeps its findings. The same status now shows in each review's findings table.
+A security scan's findings stay **Open**: no later round decides about them, so delete an old scan to drop its findings. Search matches the title, explanation, file, and PR. Filters narrow by repository, severity, status, source (reviews or scans), and whether the PR is still in the inbox, and the table at the top counts the matching findings by severity and status. Select a finding to read its full explanation, its location and confidence, and its history round by round with each round's note. Buttons open the review's chat, the lines on GitHub at the reviewed commit, the PR, and the published comment. Status comes from the review loop only; you can't set it by hand. Runs replaced by a newer commit while queued or running, and unstructured runs, aren’t listed. Asking a follow-up question in a review’s chat keeps its findings. The same status now shows in each review's findings table.
+
+### Security scans
+
+**Security scans**, below **Findings** in the sidebar, runs a whole-repository security scan with OpenAI's **Codex Security** plugin, the same local scan the Codex desktop app runs. Start one with **Run security scan** on that page, or with the shield button next to a repository on **Repositories**, then choose:
+
+- **Standard**: one complete pass over the repository;
+- **Deep**: several independent standard passes, combined. A deep scan can take many hours and use gigabytes of disk space while it runs.
+
+If the plugin isn't installed, Orbit says so and offers **Install Codex Security**. Nothing is installed into your Codex setup unless you choose that.
+
+Each scan reads the latest commit of the repository's default branch in its own copy (a detached Git worktree under Orbit's app-data `scan-worktrees` folder), so your checkout is never touched and the results match a known commit. Scans run apart from pull request reviews and never hold up the review queue. They use the model and reasoning effort set in Settings, with the Codex sandbox's network access off. Orbit runs one scan at a time.
+
+While a scan runs, its row shows what it is doing (for example **Looking for vulnerabilities · 3 of 8 reviews**) and a **Cancel scan** button. A cancelled scan shows **Stopping** until the Codex Security plugin confirms its scan has stopped. The same happens when a scan's Codex turn ends early or without the plugin's record that it finished, and when Orbit restarts or Codex disconnects during a scan: the scan keeps its copy of the repository until its work has stopped, then shows **Failed** or **Interrupted** with the reason; if Orbit can't confirm that, the row says why and offers **Try stopping again**. A stopping scan still counts as the one running scan, and can be deleted once it has stopped. A deep scan warns when your ChatGPT account doesn't have Daybreak access, or when Codex couldn't check: the scan still runs, but some protected results may not be shown.
+
+A scan counts as finished only when the Codex Security plugin has sealed its record of the scan. Without one, the scan is stopped and shows **Failed**, and its files are left as they are, rather than showing as a completed scan with no findings. When a scan finishes, Orbit imports its findings into **Findings** as **Security scan** findings with no pull request, keeps its `findings.json`, `report.md`, manifest and coverage under `scans` in its app-data folder, and deletes the bulky `artifacts/` working folder unless **Keep security scan working files** is on in Settings. Each row lists the repository, branch and commit, type, start time, how long it ran, its status, disk use, and its findings by severity. **Report** opens the plugin's report, **Findings** opens the Findings page, and the bin button deletes the scan with its findings and files.
+
+If Orbit closes or Codex disconnects during a scan, the scan is marked **Interrupted**. Run a new scan to start over.
 
 ### What needs you
 
@@ -307,6 +324,7 @@ By default an approval waits for you however long it takes. For a repository, yo
 | Blocking findings                      | P0 to P1                           | P0 only, or P0 to P1, P2 or P3.                                                                                   |
 | Wait for pushes to settle              | On                                 | On/off.                                                                                                           |
 | GitHub status check                    | On                                 | On/off; applies while automatic publication is on.                                                                |
+| Keep security scan working files       | Off                                | On/off; when off, a scan's `artifacts/` folder is deleted once its findings are imported.                         |
 | Allow access from a browser            | Off                                | On/off and a port from 1024 to 65535; changed from the desktop app only.                                          |
 
 Settings switches and selections save immediately. Changing the model saves that model and its explicit supported default effort in the same update. **Choose a model** and **Choose an effort** are placeholders, not executable default choices. **Saving…**, **Saved**, or an error with **Retry saving** shows the result. **Saved** clears after 2.5 seconds; errors remain until resolved. After a failed write, controls return to the active values. The unapplied request is listed beside its error and **Retry saving**, and survives page navigation along with typed account input. Retry after resolving the failure. If a model change fails, effort stays disabled until you retry successfully or choose a model again; this prevents a later retry from resetting a newly selected effort.
@@ -319,7 +337,7 @@ Orbit saves both values atomically and displays a notice identifying where each 
 
 Orbit never replaces a nonempty explicit selection automatically. A missing model, unsupported effort, ambiguous catalog default, discovery failure, or failed save blocks new reviews with an explanation under **Review agent**. Codex can show **Connected** while review settings still need attention. **Reconnect** refreshes the model catalog and retries resolution even if the app-server is already connected. The last verified catalog remains usable during the refresh; an actual discovery failure blocks execution until a successful refresh. Choose valid settings to correct an unavailable selection. Unrelated settings, repository controls, and switching automation off remain available.
 
-Orbit requests explicit settings and rejects mismatched responses instead of asking for provider model fallback. It does not edit your Codex configuration. The integration is based on Codex CLI **0.156.1** and the [official app-server documentation](https://developers.openai.com/codex/app-server). The browser demo uses a simulated explicit model and the same pinning and legacy-selector workflow; it does not discover your account's models.
+Orbit requests explicit settings and rejects mismatched responses instead of asking for provider model fallback. It does not edit your Codex configuration, except to install the Codex Security plugin when you choose **Install Codex Security**. The integration is based on Codex CLI **0.156.1** and the [official app-server documentation](https://developers.openai.com/codex/app-server). The browser demo uses a simulated explicit model and the same pinning and legacy-selector workflow; it does not discover your account's models.
 
 ## Use Orbit from your phone or laptop
 

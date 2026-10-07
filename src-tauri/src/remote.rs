@@ -61,6 +61,12 @@ pub const COMMANDS: &[&str] = &[
     "answer_approval",
     "get_files",
     "list_repositories",
+    "get_scan_plugin",
+    "install_scan_plugin",
+    "start_scan",
+    "cancel_scan",
+    "delete_scan",
+    "get_scan_report",
 ];
 /// Desktop commands a browser cannot run: opening links starts a program on
 /// the host, the folder picker opens on the host's screen, and the remote
@@ -290,6 +296,14 @@ async fn dispatch(e: &Arc<Engine>, name: &str, a: &Value) -> Result<Value, Strin
         "answer_approval" => out(e.decide(arg(a, "id")?, arg(a, "accept")?).await?),
         "get_files" => out(e.files(&arg::<String>(a, "prId")?).await?),
         "list_repositories" => out(crate::github::repositories().await?),
+        "get_scan_plugin" => out(e.scan_plugin().await?),
+        "install_scan_plugin" => out(e.install_scan_plugin().await?),
+        "start_scan" => out(e
+            .start_scan(&arg::<String>(a, "repo")?, &arg::<String>(a, "mode")?)
+            .await?),
+        "cancel_scan" => out(e.cancel_scan(&arg::<String>(a, "scanId")?).await?),
+        "delete_scan" => out(e.delete_scan(&arg::<String>(a, "scanId")?).await?),
+        "get_scan_report" => out(e.scan_report(&arg::<String>(a, "scanId")?).await?),
         _ => Err("This action is not available here.".into()),
     }
 }

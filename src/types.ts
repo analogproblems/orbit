@@ -200,6 +200,8 @@ export interface Settings {
   commitStatus: boolean;
   /** Show a desktop notification when something new needs you. */
   notify: boolean;
+  /** Keep a security scan's bulky working files after its import. */
+  keepScanArtifacts?: boolean;
 }
 export interface CommitStatus {
   state: "pending" | "success" | "failure" | "error";
@@ -376,6 +378,69 @@ export interface Snapshot {
   cloneUpdates?: CloneUpdate[];
   /** The Codex account's usage limits; absent when the account has none. */
   usage?: Usage | null;
+  /** Repository security scans, newest first. */
+  scans?: SecurityScan[];
+}
+/** How far a security scan has come, as the Codex Security plugin reports it. */
+export interface ScanProgress {
+  phase?: string | null;
+  completed?: number | null;
+  total?: number | null;
+  /** What `completed` and `total` count, such as files or reviews. */
+  unit?: string | null;
+  /** Findings worth reporting so far. */
+  findings?: number | null;
+  updatedAt: string;
+}
+export type ScanMode = "standard" | "deep";
+export type ScanStatus =
+  | "preparing"
+  | "running"
+  /** Waiting for the Codex Security plugin to confirm its scan stopped. */
+  | "cancelling"
+  | "importing"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "interrupted";
+/** A whole-repository security scan with the Codex Security plugin. */
+export interface SecurityScan {
+  id: string;
+  repo: string;
+  mode: ScanMode;
+  status: ScanStatus;
+  /** While stopping, the reason the scan is being stopped, if not a cancel. */
+  stopReason?: string | null;
+  createdAt: string;
+  finishedAt?: string | null;
+  /** The default branch and commit scanned, once fetched. */
+  branch?: string | null;
+  commit?: string | null;
+  model: string;
+  effort: string;
+  threadId?: string | null;
+  progress?: ScanProgress | null;
+  /** The deep scan's Daybreak access check: granted, not_granted or unknown. */
+  daybreak?: string | null;
+  findings: Finding[];
+  hasReport: boolean;
+  /** Bytes the scan's kept files and leftover working files use. */
+  diskBytes?: number | null;
+  error?: string | null;
+  warnings: string[];
+  /** Codex's latest message in the scan thread. */
+  lastMessage?: string | null;
+}
+export const scanActive = (s: SecurityScan) =>
+  s.status === "preparing" ||
+  s.status === "running" ||
+  s.status === "cancelling" ||
+  s.status === "importing";
+/** Whether the Codex Security plugin can be used. */
+export interface ScanPluginStatus {
+  available: boolean;
+  installed: boolean;
+  version?: string | null;
 }
 /** One usage window, as Codex reports it. */
 export interface UsageWindow {
@@ -443,6 +508,7 @@ export const defaults: Settings = {
   settlePushes: true,
   commitStatus: true,
   notify: true,
+  keepScanArtifacts: false,
 };
 export function latestReview(reviews: Review[], prId: string) {
   return reviews

@@ -3,6 +3,7 @@ import type {
   PriorStatus,
   PullRequest,
   Review,
+  SecurityScan,
   Snapshot,
 } from "./types";
 
@@ -35,24 +36,36 @@ export interface FindingEvent {
   status: PriorStatus | null;
   note: string;
 }
-/** Where a finding came from. Repository scans will add another source. */
-export type FindingSource = "review";
+/** Where a finding came from: a PR review or a repository security scan. */
+export type FindingSource = "review" | "scan";
+export const findingSourceLabels: Record<FindingSource, string> = {
+  review: "Pull request review",
+  scan: "Security scan",
+};
 export interface FindingRow {
   finding: Finding;
   source: FindingSource;
-  /** The review that found it. */
-  review: Review;
+  /** The review that found it, for a review's finding. */
+  review?: Review;
+  /** The scan that found it, for a scan's finding. */
+  scan?: SecurityScan;
   pr?: PullRequest;
-  prId: string;
+  /** The pull request, for a review's finding. */
+  prId: string | null;
   repo: string;
-  /** Whether the PR is still in the inbox. */
+  /** Whether the PR is still in the inbox; false for a scan's finding. */
   prOpen: boolean;
-  /** The round, counted among the PR's structured reviews, oldest first. */
+  /** The round, counted among the PR's structured reviews, oldest first.
+   * A scan's findings are all from its one round. */
   round: number;
   status: FindingStatus;
   /** The reviewer's note with the latest decision, if any. */
   note: string;
   history: FindingEvent[];
+  /** When it was found. */
+  foundAt: string;
+  /** The commit it was found at, when known. */
+  commit: string | null;
 }
 
 export function repoOfPr(prId: string) {
@@ -124,31 +137,58 @@ export function collectFindings(s: Snapshot): FindingRow[] {
           status,
           note: last.note,
           history,
+          foundAt: review.createdAt,
+          commit: review.headSha || null,
         });
       }
     });
   }
+  // A scan's findings stay open: no later round decides them. Delete an old
+  // scan to drop its findings.
+  for (const scan of s.scans ?? []) {
+    if (scan.status !== "completed" && scan.status !== "failed") continue;
+    const foundAt = scan.finishedAt ?? scan.createdAt;
+    for (const finding of scan.findings) {
+      rows.push({
+        finding,
+        source: "scan",
+        scan,
+        prId: null,
+        repo: scan.repo,
+        prOpen: false,
+        round: 1,
+        status: "open",
+        note: "",
+        history: [
+          { reviewId: scan.id, round: 1, at: foundAt, status: null, note: "" },
+        ],
+        foundAt,
+        commit: scan.commit ?? null,
+      });
+    }
+  }
   return rows.sort(
     (a, b) =>
-      b.review.createdAt.localeCompare(a.review.createdAt) ||
+      b.foundAt.localeCompare(a.foundAt) ||
       a.finding.priority - b.finding.priority,
   );
 }
 
-/** The finding's lines on GitHub at the commit that was reviewed. */
+/** The finding's lines on GitHub at the commit that was reviewed or scanned. */
 export function findingFileUrl(row: FindingRow): string | null {
   const f = row.finding;
-  if (!f.path || !row.review.headSha) return null;
+  if (!f.path || !row.commit) return null;
   const path = f.path.split("/").map(encodeURIComponent).join("/");
   const lines =
     f.startLine === f.endLine
       ? `#L${f.startLine}`
       : `#L${f.startLine}-L${f.endLine}`;
-  return `https://github.com/${row.repo}/blob/${row.review.headSha}/${path}${lines}`;
+  return `https://github.com/${row.repo}/blob/${row.commit}/${path}${lines}`;
 }
 
 /** The inline comment the finding was published as, if it was. */
 export function findingCommentUrl(row: FindingRow): string | null {
+  if (!row.review) return null;
   const inline = row.review.inlineComments?.find(
     (c) => c.findingId === row.finding.id,
   );

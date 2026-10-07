@@ -376,6 +376,21 @@ export function SettingsPage() {
             />
             <SaveFeedback saveKey="notify" />
           </VStack>
+          <VStack gap={2}>
+            <Switch
+              label="Keep security scan working files"
+              labelPosition="start"
+              labelSpacing="spread"
+              width="100%"
+              value={draft.keepScanArtifacts ?? false}
+              isDisabled={pending("keepScanArtifacts")}
+              onChange={(keepScanArtifacts) =>
+                void updateSettings({ keepScanArtifacts })
+              }
+              description="A scan’s working files can take gigabytes. When off, Orbit deletes them once the findings are imported and keeps only the findings and report."
+            />
+            <SaveFeedback saveKey="keepScanArtifacts" />
+          </VStack>
           <FormLayout>
             <VStack gap={2}>
               <Selector

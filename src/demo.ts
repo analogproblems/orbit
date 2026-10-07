@@ -8,6 +8,7 @@ import {
   type PullRequest,
   type Review,
   type RepositorySummary,
+  type SecurityScan,
 } from "./types";
 
 // Simulated config/read values, independent of the demo workspace's settings.
@@ -189,6 +190,63 @@ export function demoFindings(reviewId: string): Finding[] {
       confidence: 0.7,
     },
   ];
+}
+/** Illustrative findings of a demo security scan. */
+export function demoScanFindings(scanId: string): Finding[] {
+  return [
+    {
+      id: `${scanId}:csf_demo_0`,
+      title: "Search query is built from request text",
+      priority: 1,
+      path: "server/db/search.ts",
+      startLine: 30,
+      endLine: 33,
+      body: "The search handler joins the request's query string into SQL, so a crafted search can read other users' rows.\n\n**Severity:** High (CVSS:3.1 8.6) · **Weakness:** CWE-89 · **Confidence:** High\n\n**Suggested fix:** Pass the search text as a bound parameter.",
+      confidence: 0.9,
+    },
+    {
+      id: `${scanId}:csf_demo_1`,
+      title: "Webhook signature is compared in variable time",
+      priority: 2,
+      path: "server/webhooks/verify.ts",
+      startLine: 18,
+      endLine: 18,
+      body: "The signature check uses `===`, which can leak how many leading bytes matched.\n\n**Severity:** Medium · **Weakness:** CWE-208 · **Confidence:** Medium\n\n**Suggested fix:** Compare with `crypto.timingSafeEqual`.",
+      confidence: 0.6,
+    },
+    {
+      id: `${scanId}:csf_demo_2`,
+      title: "Debug route is reachable in production builds",
+      priority: 3,
+      path: "server/routes/debug.ts",
+      startLine: 4,
+      endLine: 9,
+      body: "The `/debug/state` route is registered whatever the environment.\n\n**Severity:** Low · **Weakness:** CWE-489 · **Confidence:** High\n\n**Suggested fix:** Register it only in development.",
+      confidence: 0.9,
+    },
+  ];
+}
+export const demoScanReport =
+  "# Codex Security scan\n\nThis is an illustrative report in demo mode. In the desktop app, the Codex Security plugin writes this report when a scan finishes.\n\n## Findings\n\n1. **High** · Search query is built from request text\n2. **Medium** · Webhook signature is compared in variable time\n3. **Low** · Debug route is reachable in production builds\n";
+/** A finished demo scan of `repo`. */
+export function demoScan(repo: string, minutesAgo: number): SecurityScan {
+  const id = `scan-demo-${repo.split("/")[1]}`;
+  return {
+    id,
+    repo,
+    mode: "standard",
+    status: "completed",
+    createdAt: ago(minutesAgo),
+    finishedAt: ago(minutesAgo - 74),
+    branch: "main",
+    commit: "4be2f7a91c0d3e56b7a8f9012c3d4e5f6a7b8c9d",
+    model: "demo-review-model",
+    effort: "medium",
+    findings: demoScanFindings(id),
+    hasReport: true,
+    diskBytes: 3.2 * 1024 * 1024,
+    warnings: [],
+  };
 }
 /** One published automatic round with `blocking` findings left open. Later
  * rounds find nothing new and carry the earlier findings forward. */
@@ -547,6 +605,7 @@ export function freshDemo(): Snapshot {
       otherLimits: [],
       updatedAt: ago(0),
     },
+    scans: [demoScan("acme/api", 26 * 60)],
   };
 }
 /** The browser demo: the fresh workspace plus two weeks of history. */

@@ -70,7 +70,7 @@ pub fn worktree_path(root: &Path, id: &str, recorded: &str) -> Result<PathBuf, S
 
 /// Logical file sizes, not allocated disk blocks. Symlinks are deliberately
 /// excluded, so repository links cannot make the scan traverse host files.
-fn bytes(path: &Path, errors: &mut Vec<String>) -> u64 {
+pub(crate) fn bytes(path: &Path, errors: &mut Vec<String>) -> u64 {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return 0,

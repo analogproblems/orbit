@@ -4,7 +4,7 @@ import {
   findingCommentUrl,
   findingFileUrl,
 } from "./findingIndex";
-import { freshDemo } from "./demo";
+import { demoScan, freshDemo } from "./demo";
 import type { Finding, PriorFinding, Review, Snapshot } from "./types";
 
 const finding = (id: string, priority = 1): Finding => ({
@@ -21,6 +21,7 @@ function snapshot(): Snapshot {
   const s = freshDemo();
   s.reviews = [];
   s.historyPrs = [];
+  s.scans = [];
   return s;
 }
 function round(
@@ -135,6 +136,34 @@ describe("collecting findings", () => {
       Object.assign(r, { status: "posted", beforeFollowUp: null });
       expect(summary(collectFindings(s))).toEqual(summary(before));
     }
+  });
+  it("adds the findings of finished security scans", () => {
+    const s = snapshot();
+    const done = demoScan("acme/api", 60);
+    const running = {
+      ...demoScan("acme/orbit", 5),
+      id: "scan-running",
+      status: "running" as const,
+    };
+    s.scans = [running, done];
+    round(s, "r1", 1, [finding("r1-0")]);
+    const rows = collectFindings(s);
+    const scanned = rows.filter((r) => r.source === "scan");
+    expect(scanned.map((r) => r.finding.id)).toEqual(
+      done.findings.map((f) => f.id),
+    );
+    expect(scanned[0]).toMatchObject({
+      prId: null,
+      repo: "acme/api",
+      prOpen: false,
+      status: "open",
+      commit: done.commit,
+      foundAt: done.finishedAt,
+    });
+    expect(findingFileUrl(scanned[0])).toBe(
+      `https://github.com/acme/api/blob/${done.commit}/server/db/search.ts#L30-L33`,
+    );
+    expect(findingCommentUrl(scanned[0])).toBeNull();
   });
   it("links the lines at the reviewed commit and the published comment", () => {
     const s = snapshot();

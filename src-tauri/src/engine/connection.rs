@@ -21,7 +21,9 @@ impl Engine {
             rpc
         } else {
             let (tx, rx) = mpsc::channel(2048);
-            let rpc = match Rpc::start(tx).await {
+            let scan_root = self.scan_root();
+            let _ = std::fs::create_dir_all(&scan_root);
+            let rpc = match Rpc::start(tx, &scan_root).await {
                 Ok(rpc) => rpc,
                 Err(err) => {
                     self.update(|s| {
@@ -72,6 +74,7 @@ impl Engine {
         .await;
         let _ = self.flush().await;
         tokio::spawn(self.clone().read_usage());
+        self.retry_scan_stops(&self.snapshot().await.scans);
         let discovery = async {
             let mut models = vec![];
             let mut cursor = Value::Null;
@@ -219,6 +222,24 @@ impl Engine {
                 s.codex_error = Some("Codex disconnected. Reconnect in Settings.".into());
             }
             s.approvals.clear();
+            for scan in &mut s.scans {
+                const DISCONNECTED: &str =
+                    "Codex disconnected while this scan was running. Run a new scan to start over.";
+                match scan.status.as_str() {
+                    "preparing" => {
+                        scan.status = "interrupted".into();
+                        scan.finished_at = Some(now());
+                        scan.error = Some(DISCONNECTED.into());
+                    }
+                    // Stopped once Codex reconnects, before the scan ends.
+                    "running" | "cancelling" => super::scans::begin_stop(
+                        scan,
+                        Some("interrupted"),
+                        Some(DISCONNECTED.into()),
+                    ),
+                    _ => {}
+                }
+            }
             for r in &mut s.reviews {
                 if !active(&r.status)
                     || r.end_follow_up(Some("Codex disconnected during the follow-up.".into()))

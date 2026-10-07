@@ -20,6 +20,7 @@ mod publish;
 mod queue;
 mod rounds;
 mod run;
+mod scans;
 mod settings;
 mod status;
 mod worktrees;
@@ -52,6 +53,8 @@ mod rounds_tests;
 #[cfg(test)]
 mod run_tests;
 #[cfg(test)]
+mod scans_tests;
+#[cfg(test)]
 mod settings_tests;
 #[cfg(test)]
 mod state_tests;
@@ -64,8 +67,8 @@ type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// Orbit's review engine. Its methods are split by area: `connection` (Codex),
 /// `settings` (workspace settings and checkouts), `queue` (sync and scheduling),
 /// `run` (preparing and running reviews, Codex events), `chat` (follow-ups),
-/// `publish` (GitHub comments), `worktrees` (cleanup) and `clones` (keeping
-/// users' clones up to date).
+/// `publish` (GitHub comments), `worktrees` (cleanup), `clones` (keeping
+/// users' clones up to date) and `scans` (repository security scans).
 ///
 /// # Locks
 ///
@@ -89,9 +92,9 @@ type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// `items` via `retire_dead_connection` → `disconnected`); `poll_lock` →
 /// `state` and `synced_repos` (one at a time); `publish_lock` → `state`;
 /// `cleanup_lock` → `git_lock` → `state`; `state` → `synced_repos`
-/// (`schedule`). `preparing`, `recovered_publications`, `status_sender` and
-/// `sending_statuses` (`std` mutexes, like `preparing`) are only taken on
-/// their own.
+/// (`schedule`). `preparing`, `recovered_publications`, `status_sender`,
+/// `sending_statuses` and `stopping_scans` (`std` mutexes, like `preparing`)
+/// are only taken on their own.
 ///
 /// Known exception: `clean_worktrees_with` briefly holds a `git_lock` try-lock
 /// guard while it try-locks `cleanup_lock`, the reverse of `cleanup_lock` →
@@ -130,6 +133,9 @@ pub struct Engine {
     /// Approvals being answered, so the developer and the time limit
     /// cannot both answer one.
     answering: std::sync::Mutex<HashSet<String>>,
+    /// Scans whose stop is being confirmed with the plugin, so a second
+    /// Cancel waits for the first.
+    stopping_scans: std::sync::Mutex<HashSet<String>>,
     /// The ChatGPT account the usage meter belongs to, so a reconnect as
     /// another account, or with an API key, clears the old numbers.
     usage_account: std::sync::Mutex<Option<String>>,
@@ -207,6 +213,24 @@ impl Engine {
                 );
             }
         }
+        for scan in &mut state.scans {
+            const CLOSED: &str =
+                "Orbit closed while this scan was running. Run a new scan to start over.";
+            match scan.status.as_str() {
+                // Nothing was started in Codex yet.
+                "preparing" => {
+                    scan.status = "interrupted".into();
+                    scan.finished_at = Some(now());
+                    scan.error = Some(CLOSED.into());
+                }
+                // The plugin's work may outlive Orbit, so it is stopped once
+                // Codex connects before the scan ends.
+                "running" | "cancelling" => {
+                    scans::begin_stop(scan, Some("interrupted"), Some(CLOSED.into()))
+                }
+                _ => {}
+            }
+        }
         state.approvals.clear();
         state.polling = false;
         state.codex_ready = false;
@@ -236,6 +260,7 @@ impl Engine {
             status_sender: std::sync::Mutex::new(status::github_sender()),
             sending_statuses: std::sync::Mutex::new(HashSet::new()),
             answering: std::sync::Mutex::new(HashSet::new()),
+            stopping_scans: std::sync::Mutex::new(HashSet::new()),
             usage_account: std::sync::Mutex::new(None),
             _instance_lock: instance_lock,
         }))
@@ -348,6 +373,10 @@ impl Engine {
         let e = self.clone();
         tokio::spawn(async move {
             e.resume_cleanup().await;
+        });
+        let e = self.clone();
+        tokio::spawn(async move {
+            e.resume_scans().await;
         });
         let e = self.clone();
         tokio::spawn(async move {

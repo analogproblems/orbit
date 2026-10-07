@@ -488,6 +488,9 @@ pub struct Settings {
     pub commit_status: bool,
     /// Show a desktop notification when something new needs the developer.
     pub notify: bool,
+    /// Keep a security scan's bulky working files (`artifacts/`) after its
+    /// findings are imported.
+    pub keep_scan_artifacts: bool,
 }
 /// Only supplied fields change. Repository mutations have separate commands.
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -504,6 +507,7 @@ pub struct SettingsPatch {
     pub settle_pushes: Option<bool>,
     pub commit_status: Option<bool>,
     pub notify: Option<bool>,
+    pub keep_scan_artifacts: Option<bool>,
 }
 impl SettingsPatch {
     pub fn apply(self, settings: &mut Settings) {
@@ -540,6 +544,9 @@ impl SettingsPatch {
         if let Some(v) = self.notify {
             settings.notify = v;
         }
+        if let Some(v) = self.keep_scan_artifacts {
+            settings.keep_scan_artifacts = v;
+        }
     }
 }
 impl Default for Settings {
@@ -557,6 +564,7 @@ impl Default for Settings {
             settle_pushes: true,
             commit_status: true,
             notify: true,
+            keep_scan_artifacts: false,
         }
     }
 }
@@ -693,6 +701,68 @@ pub struct Snapshot {
     /// while Orbit runs; shown in the app but never saved (see `persist`).
     #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub usage: Option<crate::usage::Usage>,
+    /// Repository security scans, newest first.
+    pub scans: Vec<SecurityScan>,
+}
+/// How far a security scan has come, as the Codex Security plugin reports it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ScanProgress {
+    /// preflight, threat_model, discovery, validation, attack_path or reporting.
+    pub phase: Option<String>,
+    pub completed: Option<u64>,
+    pub total: Option<u64>,
+    /// What `completed` and `total` count, such as files or reviews.
+    pub unit: Option<String>,
+    /// Findings worth reporting so far.
+    pub findings: Option<u64>,
+    pub updated_at: String,
+}
+/// A whole-repository security scan with the Codex Security plugin, run on a
+/// detached worktree at one commit of the repository's default branch.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SecurityScan {
+    pub id: String,
+    pub repo: String,
+    /// "standard" or "deep".
+    pub mode: String,
+    /// preparing, running, cancelling (stopping: waiting for the plugin to
+    /// confirm its scan stopped), importing, completed, failed, cancelled or
+    /// interrupted (Orbit or Codex stopped while it ran).
+    pub status: String,
+    /// While stopping, the status to record once the plugin confirms the
+    /// stop (cancelled when absent), and the reason to show with it.
+    pub stop_outcome: Option<String>,
+    pub stop_reason: Option<String>,
+    pub created_at: String,
+    pub finished_at: Option<String>,
+    /// The default branch and commit scanned, once fetched.
+    pub branch: Option<String>,
+    pub commit: Option<String>,
+    pub model: String,
+    pub effort: String,
+    pub thread_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub worktree: Option<String>,
+    /// The plugin's own ID and folder for the scan, once its tools report them.
+    pub plugin_scan_id: Option<String>,
+    pub scan_dir: Option<String>,
+    pub progress: Option<ScanProgress>,
+    /// The deep scan's Daybreak access check: granted, not_granted or unknown.
+    pub daybreak: Option<String>,
+    pub findings: Vec<Finding>,
+    pub has_report: bool,
+    /// Bytes the scan's kept files and leftover working files use.
+    pub disk_bytes: Option<u64>,
+    pub error: Option<String>,
+    /// Problems that did not fail the scan, such as files left behind.
+    pub warnings: Vec<String>,
+    /// Codex's latest message in the scan thread.
+    pub last_message: Option<String>,
+}
+pub fn scan_active(status: &str) -> bool {
+    matches!(status, "preparing" | "running" | "cancelling" | "importing")
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
