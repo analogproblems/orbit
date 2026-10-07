@@ -294,6 +294,7 @@ async fn follows_progress_and_imports_the_finished_scan() {
     .unwrap();
     std::fs::write(plugin_dir.join("findings.json"), FINDINGS).unwrap();
     std::fs::write(plugin_dir.join("report.md"), "# Scan report").unwrap();
+    crate::scans::seal(&plugin_dir, "plugin-id", &"a".repeat(40), "completed");
     let thread = json!({"threadId": "scan-thread", "turnId": "scan-turn"});
     let item = |item: Value| {
         let mut p = thread.clone();
@@ -371,7 +372,7 @@ async fn a_scan_without_results_or_with_a_failed_turn_fails() {
         .error
         .as_deref()
         .unwrap()
-        .contains("without writing findings.json"));
+        .contains("did not record this scan as finished: it wrote no scan-manifest.json"));
 
     let mut s = Snapshot::default();
     s.scans.push(running("scan-2", None));
@@ -494,6 +495,60 @@ async fn cancelling_waits_until_the_plugin_confirms_its_scan_stopped() {
     assert!(scan.finished_at.is_some() && scan.error.is_none());
     assert!(e.cancel_scan("scan-1").await.is_err());
     e.delete_scan("scan-1").await.unwrap();
+}
+
+#[tokio::test]
+async fn a_scan_counts_as_completed_only_with_the_plugins_sealed_record() {
+    let (_d, e, rpc) = fixture().await;
+    configure(
+        &rpc,
+        json!({"toolResponses": {"list_codex_security_scans": plugin_scan("complete")}}),
+    )
+    .await;
+    let plugin_dir = e.scan_root().join("deep");
+    std::fs::create_dir_all(plugin_dir.join("artifacts")).unwrap();
+    let mut scan = running("scan-1", None);
+    scan.mode = "deep".into();
+    scan.scan_dir = Some(plugin_dir.to_string_lossy().into());
+    e.update(|s| s.scans.push(scan)).await;
+    let done = notification(
+        "turn/completed",
+        json!({"threadId": "scan-thread", "turn": {"id": "scan-turn", "status": "completed"}}),
+    );
+
+    // A turn that ended after writing only an empty draft is not a
+    // completed scan with no findings.
+    std::fs::write(plugin_dir.join("findings.json"), r#"{"findings": []}"#).unwrap();
+    e.event(done.clone()).await;
+    wait_for(&e, |s| !scan_active(&s.scans[0].status)).await;
+    let scan = e.snapshot().await.scans[0].clone();
+    assert_eq!(scan.status, "failed");
+    assert!(scan
+        .error
+        .unwrap()
+        .contains("did not record this scan as finished"));
+    assert!(plugin_dir.join("artifacts").exists());
+
+    // A deep scan's id comes from the plugin's own list of scans on the copy,
+    // and only its sealed manifest counts.
+    std::fs::write(plugin_dir.join("findings.json"), FINDINGS).unwrap();
+    crate::scans::seal(&plugin_dir, "deep-1", &"a".repeat(40), "completed");
+    e.update(|s| {
+        s.scans[0].status = "running".into();
+        s.scans[0].error = None;
+    })
+    .await;
+    e.event(done).await;
+    wait_for(&e, |s| s.scans[0].status == "completed").await;
+    let scan = e.snapshot().await.scans[0].clone();
+    assert_eq!(scan.plugin_scan_id.as_deref(), Some("deep-1"));
+    assert_eq!(scan.findings.len(), 1);
+    assert!(!plugin_dir.join("artifacts").exists());
+    let list = tool_calls(&requests(&rpc).await);
+    assert_eq!(
+        list.last().unwrap()["arguments"],
+        json!({"query": "scan-1"})
+    );
 }
 
 #[tokio::test]

@@ -428,8 +428,9 @@ pub fn parse_findings(doc: &Value, scan_id: &str) -> Result<Vec<Finding>, String
 pub struct Imported {
     pub findings: Vec<Finding>,
     pub has_report: bool,
-    /// The scan's status in its manifest, such as `completed` or `failed`.
-    pub manifest_status: Option<String>,
+    /// How the plugin's sealed manifest says the scan ended: `completed`,
+    /// `failed`, `canceled` or `interrupted`.
+    pub manifest_status: String,
     /// Problems that did not stop the import, such as artifacts left behind.
     pub warnings: Vec<String>,
 }
@@ -453,30 +454,109 @@ fn read_limited(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     }
     std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
 }
+/// The plugin scans an Orbit scan may be, and the commit it scanned, so a
+/// manifest from any other scan is refused.
+#[derive(Debug, Default)]
+pub struct Expected {
+    pub plugin_scan_ids: Vec<String>,
+    pub commit: Option<String>,
+}
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+/// Checks the plugin's completion record, `scan-manifest.json`: it must be
+/// the plugin's sealed manifest for one of the expected scans and commit,
+/// with every sealed file unchanged. A turn that ended is not proof the
+/// scan finished: the plugin seals the manifest only when it completes,
+/// fails or is cancelled, so a draft or missing manifest is refused. Returns
+/// the status the manifest records.
+pub fn completion(dir: &Path, expected: &Expected) -> Result<String, String> {
+    let bytes = read_limited(&dir.join("scan-manifest.json"), MAX_FINDINGS_BYTES)
+        .map_err(|_| "it wrote no scan-manifest.json".to_string())?;
+    let manifest: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| "its scan-manifest.json is not valid JSON".to_string())?;
+    if manifest["documentType"] != "codex-security.scan-manifest" {
+        return Err("its scan-manifest.json is not a Codex Security manifest".into());
+    }
+    let scan = &manifest["scan"];
+    let status = scan["status"].as_str().unwrap_or_default();
+    if !matches!(status, "completed" | "failed" | "canceled" | "interrupted") {
+        return Err("its manifest records no finished status".into());
+    }
+    let sealed = scan["sealedAt"].as_str().filter(|t| !t.is_empty());
+    if sealed.is_none() || sealed != scan["completedAt"].as_str() {
+        return Err("its manifest was never sealed".into());
+    }
+    let id = scan["id"].as_str().unwrap_or_default();
+    if !expected.plugin_scan_ids.iter().any(|x| x == id) {
+        return Err(if expected.plugin_scan_ids.is_empty() {
+            "Orbit could not tell which Codex Security scan was this one".into()
+        } else {
+            format!("its manifest belongs to another scan ({id})")
+        });
+    }
+    if let (Some(commit), Some(revision)) = (&expected.commit, scan["target"]["revision"].as_str())
+    {
+        if revision != commit {
+            return Err(format!("its manifest is for commit {revision}"));
+        }
+    }
+    if scan["findingsRef"] != "findings.json" {
+        return Err("its manifest does not point at findings.json".into());
+    }
+    let artifacts = scan["artifacts"].as_array().filter(|a| !a.is_empty());
+    let artifacts = artifacts.ok_or("its manifest lists no sealed files")?;
+    let mut sealed_findings = false;
+    for artifact in artifacts {
+        let path = artifact["path"].as_str().unwrap_or_default();
+        let relative =
+            repository_path(path).ok_or("its manifest lists a file outside its folder")?;
+        let contents = read_limited(&dir.join(&relative), MAX_FINDINGS_BYTES)
+            .map_err(|_| format!("its sealed {relative} is missing"))?;
+        if artifact["sha256"].as_str() != Some(sha256_hex(&contents).as_str()) {
+            return Err(format!("its sealed {relative} has changed"));
+        }
+        sealed_findings |= relative == "findings.json";
+    }
+    if !sealed_findings {
+        return Err("its manifest does not seal findings.json".into());
+    }
+    Ok(status.into())
+}
 /// Imports a finished scan from the plugin's folder `dir`: reads its findings,
 /// copies the files worth keeping to `kept`, and, unless `keep_artifacts`,
 /// deletes the bulky `artifacts/` folder. Only a folder inside `scan_root`
 /// (where Orbit asks the plugin to work) is ever deleted from.
+///
+/// Nothing is imported or deleted unless the plugin's sealed manifest checks
+/// out ([`completion`]), and working files are deleted only after a scan the
+/// plugin records as completed.
 pub fn import(
     dir: &Path,
     kept: &Path,
     scan_root: &Path,
     scan_id: &str,
+    expected: &Expected,
     keep_artifacts: bool,
 ) -> Result<Imported, String> {
-    let findings_path = dir.join("findings.json");
-    if !findings_path.is_file() {
-        return Err(format!(
-            "The scan finished without writing findings.json in {}.",
+    let status = completion(dir, expected).map_err(|reason| {
+        format!(
+            "Codex Security did not record this scan as finished: {reason}. Its files are kept in {}.",
             dir.display()
-        ));
-    }
+        )
+    })?;
+    let findings_path = dir.join("findings.json");
     let doc: Value = serde_json::from_slice(&read_limited(&findings_path, MAX_FINDINGS_BYTES)?)
         .map_err(|e| format!("findings.json is not valid JSON: {e}"))?;
     let findings = parse_findings(&doc, scan_id)?;
     std::fs::create_dir_all(kept).map_err(|e| e.to_string())?;
     let mut imported = Imported {
         findings,
+        manifest_status: status,
         ..Imported::default()
     };
     for name in KEPT_FILES {
@@ -486,13 +566,8 @@ pub fn import(
             imported.has_report |= name == "report.md";
         }
     }
-    if let Ok(manifest) = std::fs::read(dir.join("scan-manifest.json")) {
-        imported.manifest_status = serde_json::from_slice::<Value>(&manifest)
-            .ok()
-            .and_then(|m| m["scan"]["status"].as_str().map(str::to_owned));
-    }
     let artifacts = dir.join("artifacts");
-    if !keep_artifacts && artifacts.exists() {
+    if !keep_artifacts && imported.manifest_status == "completed" && artifacts.exists() {
         if owned_dir(scan_root, dir) && owned_dir(scan_root, &artifacts) {
             if let Err(e) = std::fs::remove_dir_all(&artifacts) {
                 imported
@@ -513,6 +588,32 @@ pub fn report(kept: &Path) -> Result<String, String> {
     let bytes = read_limited(&kept.join("report.md"), MAX_REPORT_BYTES)
         .map_err(|_| "This scan has no report.".to_string())?;
     String::from_utf8(bytes).map_err(|_| "The report is not valid text.".into())
+}
+
+/// Writes a sealed manifest the way the plugin does when a scan ends.
+#[cfg(test)]
+pub(crate) fn seal(dir: &Path, plugin_scan_id: &str, commit: &str, status: &str) {
+    let artifacts: Vec<Value> = ["findings.json", "coverage.json"]
+        .iter()
+        .filter_map(|name| {
+            let bytes = std::fs::read(dir.join(name)).ok()?;
+            Some(serde_json::json!({"path": name, "sha256": sha256_hex(&bytes), "mediaType": "application/json"}))
+        })
+        .collect();
+    let manifest = serde_json::json!({
+        "documentType": "codex-security.scan-manifest",
+        "schemaVersion": "1.0",
+        "scan": {
+            "id": plugin_scan_id, "status": status,
+            "producer": {"name": "codex-security-plugin", "version": "0.1.24"},
+            "startedAt": "2026-10-07T00:00:00Z", "completedAt": "2026-10-07T01:00:00Z", "sealedAt": "2026-10-07T01:00:00Z",
+            "target": {"kind": "git_worktree", "targetId": "t", "displayName": "a/b", "revision": commit},
+            "scope": {"includePaths": ["."], "excludePaths": []},
+            "coverageRef": "coverage.json", "findingsRef": "findings.json",
+            "artifacts": artifacts,
+        },
+    });
+    std::fs::write(dir.join("scan-manifest.json"), manifest.to_string()).unwrap();
 }
 
 #[cfg(test)]
@@ -752,40 +853,103 @@ mod tests {
         std::fs::write(dir.join("artifacts/01_context/big.json"), "{}").unwrap();
         std::fs::write(dir.join("findings.json"), EXAMPLE).unwrap();
         std::fs::write(dir.join("report.md"), "# Report").unwrap();
-        std::fs::write(
-            dir.join("scan-manifest.json"),
-            r#"{"scan":{"status":"completed"}}"#,
-        )
-        .unwrap();
+        seal(&dir, "p-1", "abc123", "completed");
+        let expected = Expected {
+            plugin_scan_ids: vec!["p-1".into()],
+            commit: Some("abc123".into()),
+        };
         let kept = d.path().join("scans/scan-1");
-        let imported = import(&dir, &kept, &root, "scan-1", false).unwrap();
+        let imported = import(&dir, &kept, &root, "scan-1", &expected, false).unwrap();
         assert_eq!(imported.findings.len(), 1);
         assert!(imported.has_report);
-        assert_eq!(imported.manifest_status.as_deref(), Some("completed"));
+        assert_eq!(imported.manifest_status, "completed");
         assert!(imported.warnings.is_empty());
         assert!(!dir.join("artifacts").exists());
         assert!(kept.join("findings.json").is_file());
+        assert!(kept.join("scan-manifest.json").is_file());
         assert!(!kept.join("coverage.json").exists());
         assert_eq!(report(&kept).unwrap(), "# Report");
 
         // Kept when asked, and never deleted outside Orbit's folder.
         std::fs::create_dir_all(dir.join("artifacts")).unwrap();
-        import(&dir, &kept, &root, "scan-1", true).unwrap();
+        import(&dir, &kept, &root, "scan-1", &expected, true).unwrap();
         assert!(dir.join("artifacts").exists());
         let elsewhere = d.path().join("tmp-scan");
         std::fs::create_dir_all(elsewhere.join("artifacts")).unwrap();
         std::fs::write(elsewhere.join("findings.json"), EXAMPLE).unwrap();
-        let imported = import(&elsewhere, &kept, &root, "scan-1", false).unwrap();
+        seal(&elsewhere, "p-1", "abc123", "completed");
+        let imported = import(&elsewhere, &kept, &root, "scan-1", &expected, false).unwrap();
         assert!(elsewhere.join("artifacts").exists());
         assert_eq!(imported.warnings.len(), 1);
-        assert!(!imported.has_report || kept.join("report.md").exists());
 
-        let empty = root.join("empty");
-        std::fs::create_dir_all(&empty).unwrap();
-        assert!(import(&empty, &kept, &root, "scan-1", false)
-            .unwrap_err()
-            .contains("without writing findings.json"));
+        // A scan the plugin ended another way keeps its findings so far and
+        // its working files.
+        seal(&dir, "p-1", "abc123", "interrupted");
+        let imported = import(&dir, &kept, &root, "scan-1", &expected, false).unwrap();
+        assert_eq!(imported.manifest_status, "interrupted");
+        assert!(dir.join("artifacts").exists());
         assert!(!owned_dir(&root, &root));
         assert!(report(&d.path().join("missing")).is_err());
+    }
+
+    #[test]
+    fn refuses_a_scan_the_plugin_did_not_record_as_finished() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("scan-output");
+        let dir = root.join("abc");
+        std::fs::create_dir_all(dir.join("artifacts")).unwrap();
+        let kept = d.path().join("scans/scan-1");
+        let expected = Expected {
+            plugin_scan_ids: vec!["p-1".into()],
+            commit: Some("abc123".into()),
+        };
+        let refused = |why: &str| {
+            let error = import(&dir, &kept, &root, "scan-1", &expected, false).unwrap_err();
+            assert!(
+                error.contains("did not record this scan as finished"),
+                "{error}"
+            );
+            assert!(error.contains(why), "{error}");
+            // Nothing is imported and no working file is deleted.
+            assert!(dir.join("artifacts").exists());
+            assert!(!kept.exists());
+        };
+        // An empty draft list of findings, without a manifest.
+        std::fs::write(dir.join("findings.json"), r#"{"findings": []}"#).unwrap();
+        refused("no scan-manifest.json");
+        std::fs::write(dir.join("scan-manifest.json"), "{not json").unwrap();
+        refused("not valid JSON");
+        std::fs::write(
+            dir.join("scan-manifest.json"),
+            r#"{"scan": {"status": "completed"}}"#,
+        )
+        .unwrap();
+        refused("not a Codex Security manifest");
+        // A draft the plugin has not sealed.
+        seal(&dir, "p-1", "abc123", "completed");
+        let mut draft: Value =
+            serde_json::from_slice(&std::fs::read(dir.join("scan-manifest.json")).unwrap())
+                .unwrap();
+        draft["scan"].as_object_mut().unwrap().remove("sealedAt");
+        std::fs::write(dir.join("scan-manifest.json"), draft.to_string()).unwrap();
+        refused("never sealed");
+        seal(&dir, "p-1", "abc123", "running");
+        refused("no finished status");
+        seal(&dir, "p-2", "abc123", "completed");
+        refused("another scan (p-2)");
+        seal(&dir, "p-1", "def456", "completed");
+        refused("for commit def456");
+        // findings.json changed after the plugin sealed it.
+        seal(&dir, "p-1", "abc123", "completed");
+        std::fs::write(dir.join("findings.json"), EXAMPLE).unwrap();
+        refused("findings.json has changed");
+        std::fs::remove_file(dir.join("findings.json")).unwrap();
+        refused("findings.json is missing");
+        // Without knowing the plugin's scan, nothing can be trusted.
+        std::fs::write(dir.join("findings.json"), EXAMPLE).unwrap();
+        seal(&dir, "p-1", "abc123", "completed");
+        let error = import(&dir, &kept, &root, "scan-1", &Expected::default(), false).unwrap_err();
+        assert!(error.contains("could not tell which"), "{error}");
+        assert!(import(&dir, &kept, &root, "scan-1", &expected, false).is_ok());
     }
 }

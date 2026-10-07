@@ -617,9 +617,33 @@ impl Engine {
             .unwrap_or_else(|| scan_root.join(id));
         let kept = self.scan_results(id);
         let keep_artifacts = self.state.lock().await.settings.keep_scan_artifacts;
+        // The plugin's own record of which scans ran on this copy, so only
+        // their completion manifest is trusted. A deep scan's id is only
+        // known this way.
+        let mut expected = scans::Expected {
+            plugin_scan_ids: scan.plugin_scan_id.iter().cloned().collect(),
+            commit: scan.commit.clone(),
+        };
+        if let Ok(rpc) = self.client().await {
+            if let Ok(listed) = self.plugin_scans(&rpc, &scan).await {
+                if scan.plugin_scan_id.is_none() && listed.len() == 1 {
+                    let plugin_id = listed[0].0.clone();
+                    self.update(|s| {
+                        if let Some(x) = s.scans.iter_mut().find(|x| x.id == id) {
+                            x.plugin_scan_id = Some(plugin_id);
+                        }
+                    })
+                    .await;
+                }
+                expected
+                    .plugin_scan_ids
+                    .extend(listed.into_iter().map(|(plugin_id, _)| plugin_id));
+            }
+        }
         let scan_id = id.to_string();
         let result = tokio::task::spawn_blocking(move || {
-            let imported = scans::import(&dir, &kept, &scan_root, &scan_id, keep_artifacts);
+            let imported =
+                scans::import(&dir, &kept, &scan_root, &scan_id, &expected, keep_artifacts);
             let mut errors = vec![];
             let bytes = crate::storage::bytes(&kept, &mut errors)
                 + if scans::owned_dir(&scan_root, &dir) {
@@ -646,12 +670,17 @@ impl Engine {
                     x.findings = imported.findings;
                     x.has_report = imported.has_report;
                     x.warnings.extend(imported.warnings);
-                    match imported.manifest_status.as_deref() {
-                        None | Some("completed") => x.status = "completed".into(),
-                        Some(other) => {
-                            x.status = "failed".into();
+                    match imported.manifest_status.as_str() {
+                        "completed" => x.status = "completed".into(),
+                        other => {
+                            x.status = match other {
+                                "canceled" => "cancelled",
+                                "interrupted" => "interrupted",
+                                _ => "failed",
+                            }
+                            .into();
                             x.error = Some(format!(
-                                "The Codex Security plugin marked this scan {other}. Its findings so far are kept."
+                                "The Codex Security plugin recorded this scan as {other}. Its findings so far are kept."
                             ));
                         }
                     }
