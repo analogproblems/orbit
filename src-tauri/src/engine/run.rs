@@ -1,7 +1,7 @@
 use super::{
     findings, settings::matches_origin, worktrees::git, worktrees::prune_orbit_refs, Engine,
 };
-use crate::{rpc::Rpc, types::*};
+use crate::{rpc::Rpc, types::*, usage::Usage};
 use serde_json::{json, Value};
 use std::{
     path::Path,
@@ -495,6 +495,11 @@ impl Engine {
             self.disconnected().await;
             return;
         }
+        if method == "account/rateLimits/updated" {
+            self.update_live(|s| s.usage = Usage::apply_update(s.usage.take(), p, now()))
+                .await;
+            return;
+        }
         let thread = p["threadId"].as_str();
         let review_id = {
             let s = self.state.lock().await;
@@ -794,10 +799,12 @@ pub(super) fn apply_notification(s: &mut Snapshot, id: &str, method: &str, p: &V
                     _ => {
                         r.status = "failed".into();
                         r.error = Some(
-                            p["turn"]["error"]["message"]
-                                .as_str()
-                                .unwrap_or("Codex review failed.")
-                                .into(),
+                            crate::usage::limit_message(&p["turn"]["error"]).unwrap_or_else(|| {
+                                p["turn"]["error"]["message"]
+                                    .as_str()
+                                    .unwrap_or("Codex review failed.")
+                                    .into()
+                            }),
                         );
                     }
                 }

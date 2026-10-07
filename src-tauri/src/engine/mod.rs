@@ -26,6 +26,9 @@ mod worktrees;
 
 pub use settings::validate_checkout;
 
+/// How often the usage meter is read in full while Codex is connected.
+const USAGE_REFRESH: Duration = Duration::from_secs(5 * 60);
+
 #[cfg(test)]
 mod chat_tests;
 #[cfg(test)]
@@ -340,6 +343,7 @@ impl Engine {
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_millis(200));
             let mut last_poll = std::time::Instant::now();
+            let mut last_usage = std::time::Instant::now();
             while !e.stopping.load(Ordering::SeqCst) {
                 tick.tick().await;
                 if e.flush().await.is_err() {
@@ -357,6 +361,12 @@ impl Engine {
                         p.update_clones().await;
                         p.clean_worktrees().await;
                     });
+                }
+                // Updates arrive as Codex works; a gentle full read catches
+                // windows that reset while Orbit sat idle.
+                if codex_ready && last_usage.elapsed() >= USAGE_REFRESH {
+                    last_usage = std::time::Instant::now();
+                    tokio::spawn(e.clone().read_usage());
                 }
                 e.tick(codex_ready).await;
             }

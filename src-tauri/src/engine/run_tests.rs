@@ -145,3 +145,27 @@ async fn abandoned_preparations_do_not_claim_to_have_a_saved_report() {
         );
     }
 }
+#[tokio::test]
+async fn a_review_stopped_by_the_usage_limit_says_so() {
+    let (_d, e, _) = running_engine().await;
+    let error =
+        json!({"message":"You've hit your usage limit.","codexErrorInfo":"usageLimitExceeded"});
+    e.event(json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"failed","error":error}}})).await;
+    let r = &e.snapshot().await.reviews[0];
+    assert_eq!(r.status, "failed");
+    assert!(r
+        .error
+        .as_deref()
+        .unwrap()
+        .contains("usage limit was reached"));
+}
+#[tokio::test]
+async fn usage_updates_from_codex_reach_the_meter() {
+    let (_d, e, _) = running_engine().await;
+    let window = json!({"usedPercent":42,"windowDurationMins":10080,"resetsAt":1_800_000_000});
+    e.event(json!({"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"codex","secondary":window}}})).await;
+    let usage = e.shown_snapshot().await.usage.unwrap();
+    assert_eq!(usage.rate_limits.secondary.unwrap().used_percent, 42.0);
+    // The review the update arrived during is untouched.
+    assert_eq!(e.snapshot().await.reviews[0].status, "reviewing");
+}

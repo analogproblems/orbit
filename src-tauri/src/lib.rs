@@ -7,6 +7,7 @@ pub mod review_loop;
 pub mod rpc;
 pub mod storage;
 pub mod types;
+pub mod usage;
 
 #[cfg(feature = "desktop")]
 mod desktop {

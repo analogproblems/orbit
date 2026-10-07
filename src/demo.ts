@@ -529,6 +529,24 @@ export function freshDemo(): Snapshot {
     modelCatalogReady: true,
     polling: false,
     lastPoll: ago(0),
+    usage: {
+      rateLimits: {
+        limitId: "codex",
+        primary: {
+          usedPercent: 10,
+          windowDurationMins: 300,
+          resetsAt: Math.floor(Date.now() / 1000) + 3 * 3600,
+        },
+        secondary: {
+          usedPercent: 42,
+          windowDurationMins: 10080,
+          resetsAt: Math.floor(Date.now() / 1000) + 4 * 86400,
+        },
+        planType: "pro",
+      },
+      otherLimits: [],
+      updatedAt: ago(0),
+    },
   };
 }
 /** The browser demo: the fresh workspace plus two weeks of history. */

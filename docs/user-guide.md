@@ -39,6 +39,12 @@ codex login
 
 Then use **Settings → Reconnect**. That action connects Codex and, if the connection succeeds, syncs GitHub. The inbox refresh button can sync GitHub separately. If launching through a desktop shortcut cannot find the CLIs or their sign-ins (some desktops give GUI apps a different `PATH` or keyring environment), launch the executable from the terminal where they work.
 
+### Codex usage
+
+At the bottom of the side navigation, a small meter shows how much of your Codex allowance is used, such as **Week 42% · resets Mon** and **5h 10%**. Each window is named by its length, and the bar follows the longest one. The gauge button next to it opens the details: your plan, each window with its reset time, limits tied to particular models, and credits if your account has them. The numbers match Codex's own usage view. Orbit reads them when it connects, updates them as Codex reports usage during reviews, and reads them again every five minutes.
+
+When a limit is reached, the meter says **Limit reached**, and a review that stops because of it says so instead of looking broken. Start it again after the limit resets. An API key login has no usage windows, so the meter is hidden.
+
 GitHub integration is fixed to **github.com**. There is no GitHub Enterprise hostname setting. Git fetches use the clone's `origin`, so Git must also be able to authenticate to that remote without an interactive prompt.
 
 For development, run these commands from the Orbit checkout:

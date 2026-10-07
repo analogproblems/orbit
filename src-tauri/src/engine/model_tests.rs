@@ -1089,3 +1089,32 @@ async fn first_reviews_target_the_base_and_re_reviews_carry_custom_instructions(
         rpc.shutdown().await;
     }
 }
+#[tokio::test]
+async fn reads_the_usage_meter_and_hides_it_without_usage_windows() {
+    let (_d, e, rpc, _) = fixture().await;
+    let window = json!({"usedPercent":42,"windowDurationMins":10080,"resetsAt":1_800_000_000});
+    configure(
+        &rpc,
+        json!({"rateLimits":{"rateLimits":{"limitId":"codex","secondary":window,"planType":"pro"}}}),
+    )
+    .await;
+    e.clone().read_usage().await;
+    let usage = e.snapshot().await.usage.unwrap();
+    assert_eq!(usage.rate_limits.plan_type.as_deref(), Some("pro"));
+    let read = requests(&rpc).await;
+    assert_eq!(read[0]["method"], "account/rateLimits/read");
+    assert_eq!(read[0]["params"]["excludeResetCreditDetails"], true);
+    // An API key login has no usage windows.
+    configure(&rpc, json!({"rateLimits":{"rateLimits":{"limitId":null}}})).await;
+    e.clone().read_usage().await;
+    assert!(e.snapshot().await.usage.is_none());
+    // A failed read keeps the last numbers instead of blanking the meter.
+    e.update_live(|s| {
+        s.usage = crate::usage::Usage::from_read(&json!({"rateLimits":{"secondary":window}}), now())
+    })
+    .await;
+    configure(&rpc, json!({"failMethod":"account/rateLimits/read"})).await;
+    e.clone().read_usage().await;
+    assert!(e.snapshot().await.usage.is_some());
+    rpc.shutdown().await;
+}

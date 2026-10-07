@@ -34,6 +34,8 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     switch (m.method) {
       case "account/read":
         return send(m.id, { account: { type: "chatgpt" } });
+      case "account/rateLimits/read":
+        return send(m.id, options.rateLimits ?? {});
       case "model/list":
         return send(m.id, { data: options.catalog ?? [], nextCursor: null });
       case "config/read":

@@ -1,5 +1,5 @@
 use super::Engine;
-use crate::{models, rpc::Rpc, types::*};
+use crate::{models, rpc::Rpc, types::*, usage::Usage};
 use serde_json::{json, Value};
 use std::{
     collections::HashSet,
@@ -68,6 +68,7 @@ impl Engine {
         })
         .await;
         let _ = self.flush().await;
+        tokio::spawn(self.clone().read_usage());
         let discovery = async {
             let mut models = vec![];
             let mut cursor = Value::Null;
@@ -117,6 +118,22 @@ impl Engine {
             Ok(Value::Null)
         };
         self.apply_model_discovery(models, config).await
+    }
+    /// Reads the account's usage limits for the meter. A failed read keeps the
+    /// last numbers; an account without usage windows hides the meter.
+    pub(super) async fn read_usage(self: Arc<Self>) {
+        let Ok(rpc) = self.client().await else { return };
+        let Ok(response) = rpc
+            .request(
+                "account/rateLimits/read",
+                json!({"excludeResetCreditDetails":true}),
+            )
+            .await
+        else {
+            return;
+        };
+        self.update_live(|s| s.usage = Usage::from_read(&response, now()))
+            .await;
     }
     pub(super) async fn apply_model_discovery(
         &self,

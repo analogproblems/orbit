@@ -12,6 +12,7 @@ Orbit uses the `gh`, `git`, and `codex` executables installed on your `PATH` rat
 
 - Codex uses newline-delimited app-server messages over stdio: `initialize` → client `initialized` → `thread/start` → `review/start`; follow-ups use `thread/resume` and `turn/start`. Streaming and final review items are routed by thread and turn IDs.
 - The environment setup command runs in the new worktree through Codex's sandboxed `command/exec`, with a five-minute timeout.
+- The usage meter reads `account/rateLimits/read` (with `excludeResetCreditDetails`) on connect and every five minutes, and merges each sparse `account/rateLimits/updated` notification into the last read (`src-tauri/src/usage.rs`). It is shown only, never saved, and never holds back a review.
 - Approvals are routed to the user explicitly (`approvalsReviewer: "user"`), even when a different reviewer is configured globally in Codex. Command and file-change escalation requests are displayed for a person to approve or deny; unknown interactive requests are not automatically granted.
 - The compatibility baseline is Codex CLI **0.156.1** and the [official app-server protocol](https://developers.openai.com/codex/app-server). Re-reviews use Codex's `custom` review target, because review mode at 0.156.1 runs with no thread history and no turn-level developer instructions, so the previous round has to go in the target itself (see `src-tauri/src/engine/rounds.rs`).
 

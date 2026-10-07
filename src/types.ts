@@ -374,6 +374,37 @@ export interface Snapshot {
   modelSelectionNotice?: string | null;
   /** The latest update of each clone kept up to date. */
   cloneUpdates?: CloneUpdate[];
+  /** The Codex account's usage limits; absent when the account has none. */
+  usage?: Usage | null;
+}
+/** One usage window, as Codex reports it. */
+export interface UsageWindow {
+  usedPercent: number;
+  windowDurationMins?: number | null;
+  /** Unix seconds. */
+  resetsAt?: number | null;
+}
+export interface UsageLimit {
+  limitId?: string | null;
+  limitName?: string | null;
+  /** The model this limit belongs to, for a limit tied to one model. */
+  normalModelSlug?: string | null;
+  /** The short window, such as 5 hours. */
+  primary?: UsageWindow | null;
+  /** The long window, usually a week. */
+  secondary?: UsageWindow | null;
+  credits?: {
+    hasCredits: boolean;
+    unlimited: boolean;
+    balance?: string | null;
+  } | null;
+  planType?: string | null;
+  rateLimitReachedType?: string | null;
+}
+export interface Usage {
+  rateLimits: UsageLimit;
+  otherLimits: UsageLimit[];
+  updatedAt: string;
 }
 export interface ChangedFile {
   filename: string;
