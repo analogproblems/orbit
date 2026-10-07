@@ -252,7 +252,11 @@ async fn dispatch(e: &Arc<Engine>, name: &str, a: &Value) -> Result<Value, Strin
             let (file_name, text) = e.export_report(&arg::<String>(a, "reviewId")?).await?;
             Ok(json!({ "fileName": file_name, "text": text }))
         }
-        "poll_now" => out(e.poll().await?),
+        "poll_now" => {
+            e.poll().await?;
+            e.update_clones_soon();
+            out(())
+        }
         "connect_services" => {
             e.connect().await?;
             out(e.poll().await?)

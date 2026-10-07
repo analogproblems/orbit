@@ -24,6 +24,7 @@ import {
   ListItem,
   Selector,
   Spinner,
+  StatusDot,
   Switch,
   Text,
   TextArea,
@@ -40,7 +41,12 @@ import {
   Trash2,
 } from "lucide-react";
 import { useOrbit } from "./store";
-import { type Repository, type RepositorySummary } from "./types";
+import {
+  sameRepo,
+  type CloneUpdate,
+  type Repository,
+  type RepositorySummary,
+} from "./types";
 import { SaveFeedback } from "./SaveFeedback";
 
 // Loaded once per session; explicit refresh picks up new GitHub repositories.
@@ -206,6 +212,25 @@ function RepoPicker({
     </VStack>
   );
 }
+const cloneDot = {
+  updated: "success",
+  current: "success",
+  skipped: "warning",
+  failed: "error",
+} as const;
+function CloneUpdateStatus({ update }: { update?: CloneUpdate }) {
+  return (
+    <HStack gap={2} vAlign="center">
+      <StatusDot
+        variant={update ? cloneDot[update.state] : "neutral"}
+        label="Clone update"
+      />
+      <Text type="supporting" color="secondary">
+        {update ? update.message : "Orbit updates this clone on the next sync."}
+      </Text>
+    </HStack>
+  );
+}
 export function Repositories() {
   const formId = useId();
   const { snapshot: s, action, mutate, saves } = useOrbit();
@@ -224,6 +249,7 @@ export function Repositories() {
       networkAccess: false,
       roundLimit: 4,
       approvalMinutes: 0,
+      keepUpdated: false,
     });
   };
   const save = async (e: FormEvent) => {
@@ -286,6 +312,13 @@ export function Repositories() {
             description={
               <VStack gap={3} paddingBlock={2}>
                 <Code>{repo.path}</Code>
+                {repo.keepUpdated && (
+                  <CloneUpdateStatus
+                    update={s.cloneUpdates?.find((u) =>
+                      sameRepo(u.repo, repo.name),
+                    )}
+                  />
+                )}
                 <Text color="secondary">
                   {repo.setupCommand
                     ? "Custom environment setup"
@@ -370,10 +403,19 @@ export function Repositories() {
                       label="Local checkout path"
                       isRequired
                       placeholder="/Users/you/Projects/repository"
-                      description="Use an absolute path to an existing clone with a matching origin."
+                      description="Use an absolute path to an existing clone whose origin is this repository. It does not need to be up to date: reviews fetch the commits they need."
                       value={editing.path}
                       isDisabled={busy}
                       onChange={(path) => setEditing({ ...editing, path })}
+                    />
+                    <Switch
+                      label="Keep this clone up to date"
+                      value={editing.keepUpdated ?? false}
+                      isDisabled={busy}
+                      onChange={(keepUpdated) =>
+                        setEditing({ ...editing, keepUpdated })
+                      }
+                      description="On each sync, Orbit fetches from GitHub and fast-forwards the checked-out branch when it is behind. It never touches a branch with uncommitted changes or local commits; the repository shows why instead."
                     />
                     <TextArea
                       label="Environment setup"

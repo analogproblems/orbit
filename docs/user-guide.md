@@ -68,6 +68,7 @@ In **Repositories**, click **Add repository** or **Connect a repository**.
 | **Refresh repositories**         | Reload the picker after gaining access to a repository or creating one. The list otherwise stays cached for the session.     |
 | **Use owner/name**               | Type a complete repository name to connect one not shown in the picker. This does not grant access.                          |
 | **Local checkout path**          | Enter an absolute path to an existing clone. Orbit does not clone it for you. A literal `~` is not an absolute path.         |
+| **Keep this clone up to date**   | Fast-forwards the clone's checked-out branch to GitHub on each sync. Off by default. See below.                              |
 | **Environment setup**            | Optional shell command to prepare each new review worktree. Leave blank when host tools and checked-in files are sufficient. |
 | **Allow sandbox network access** | Allows network access for setup and the new review's agent environment. Off by default.                                      |
 | **Include in automatic reviews** | Makes this repository eligible when workspace Autopilot is also on. Off by default.                                          |
@@ -79,6 +80,14 @@ Filesystem validation runs outside the async workers, with a ten-second wait lim
 The picker loads up to 1,000 accessible repository entries and omits archived repositories. It displays up to 50 unconnected search matches at a time and shows the total when more matches exist; narrow the search or enter `owner/name` directly. Repository names are treated case-insensitively and cannot be connected twice.
 
 The clone's `origin` must match the configured GitHub repository. Accepted forms include `https://github.com/owner/name`, `git@github.com:owner/name`, and `ssh://git@github.com/owner/name`, with an optional `.git` suffix. Custom SSH host aliases do not match these forms.
+
+The clone does not need to be up to date. Each review fetches the PR head and base commit it needs into the clone, whatever branch is checked out.
+
+### Keep the clone up to date
+
+Turn on **Keep this clone up to date** when the clone on disk drifts behind GitHub, for example because you mostly work elsewhere. After each sync (on the poll interval and after **Sync now**), Orbit runs `git fetch origin` in the clone and, when the checked-out branch is only behind the branch it tracks, fast-forwards it with `git merge --ff-only`. Git hooks are disabled for these commands.
+
+Orbit never discards or rewrites your work. It leaves the clone unchanged and says why on the repository when the clone is not on a branch, the branch tracks no remote branch, the branch has local commits that GitHub does not, or tracked files have uncommitted changes. Untracked files do not block an update unless Git would have to overwrite one, in which case the update fails and the repository shows Git's error. Only the checked-out branch is moved; other local branches are left alone.
 
 ### Set up the review environment
 

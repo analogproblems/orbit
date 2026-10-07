@@ -101,7 +101,9 @@ mod desktop {
     }
     #[tauri::command]
     async fn poll_now(engine: State<'_, AppState>) -> Result<(), String> {
-        engine.poll().await
+        engine.poll().await?;
+        engine.update_clones_soon();
+        Ok(())
     }
     #[tauri::command]
     async fn connect_services(engine: State<'_, AppState>) -> Result<(), String> {
