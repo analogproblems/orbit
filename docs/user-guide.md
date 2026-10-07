@@ -238,7 +238,7 @@ While automatic publication is on, Orbit also shows each automatic round's resul
 
 ### Live
 
-**Live** is the page to keep open while Autopilot runs. From top to bottom:
+**Live** is the page to keep open while Autopilot runs, and the first page Orbit opens while Autopilot is on; otherwise it opens **All pull requests**. From top to bottom:
 
 - **Needs you**: a glowing red panel listing everything on the **Needs you** list, plus Codex or GitHub being disconnected, each with its one main action. When nothing needs you, it reads **All clear**.
 - **Headline numbers**: reviews running now, queued, reviews and PRs in the last 24 hours, and failures in the last 24 hours.
@@ -249,7 +249,7 @@ The sidebar's **Live** item shows a pulsing dot while reviews are running. Anima
 
 ### Review loops
 
-**Live** is the first page Orbit opens while Autopilot is on; otherwise it opens **All pull requests**. **Review loops** is one click below it in the sidebar. The header reads, for example, "Autopilot · 3 loops running · 1 needs you". The page lists:
+**Review loops** sits below **Live** in the sidebar. While Autopilot is on, the header reads, for example, "Autopilot · 3 loops running · 1 needs you". The **Review loops** page lists:
 
 - **Needs you** at the top (see below);
 - **Loops**: one row per PR that has had at least one automatic round, with its state, "Round 3 of 4", its blocking findings round by round such as "4 → 1 → 0", and when it last changed;
