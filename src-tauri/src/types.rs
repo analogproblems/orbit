@@ -690,7 +690,7 @@ pub struct Snapshot {
     /// The latest update of each clone kept up to date.
     pub clone_updates: Vec<CloneUpdate>,
     /// The Codex account's usage limits, when it has any. Read from Codex
-    /// while Orbit runs; never loaded from saved state.
+    /// while Orbit runs; shown in the app but never saved (see `persist`).
     #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub usage: Option<crate::usage::Usage>,
 }

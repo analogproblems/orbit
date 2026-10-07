@@ -130,6 +130,9 @@ pub struct Engine {
     /// Approvals being answered, so the developer and the time limit
     /// cannot both answer one.
     answering: std::sync::Mutex<HashSet<String>>,
+    /// The ChatGPT account the usage meter belongs to, so a reconnect as
+    /// another account, or with an API key, clears the old numbers.
+    usage_account: std::sync::Mutex<Option<String>>,
     _instance_lock: std::fs::File,
 }
 impl Engine {
@@ -233,6 +236,7 @@ impl Engine {
             status_sender: std::sync::Mutex::new(status::github_sender()),
             sending_statuses: std::sync::Mutex::new(HashSet::new()),
             answering: std::sync::Mutex::new(HashSet::new()),
+            usage_account: std::sync::Mutex::new(None),
             _instance_lock: instance_lock,
         }))
     }
@@ -293,7 +297,13 @@ impl Engine {
         result
     }
     fn persist(&self, s: &Snapshot) -> Result<(), String> {
-        let data = serde_json::to_vec(s).map_err(|e| e.to_string())?;
+        let mut saved = serde_json::to_value(s).map_err(|e| e.to_string())?;
+        // Usage describes the signed-in account right now, so it is shown but
+        // never saved.
+        if let Some(saved) = saved.as_object_mut() {
+            saved.remove("usage");
+        }
+        let data = serde_json::to_vec(&saved).map_err(|e| e.to_string())?;
         let temp = self.root.join("state.json.tmp");
         use std::io::Write;
         let mut options = std::fs::OpenOptions::new();

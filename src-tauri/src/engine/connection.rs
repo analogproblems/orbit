@@ -39,6 +39,9 @@ impl Engine {
         let account = rpc
             .request("account/read", json!({"refreshToken":false}))
             .await;
+        if let Ok(account) = &account {
+            self.switch_usage_account(&account["account"]).await;
+        }
         let account_error = match account {
             Err(error) => Some(error),
             Ok(account)
@@ -119,8 +122,19 @@ impl Engine {
         };
         self.apply_model_discovery(models, config).await
     }
+    /// Clears the meter when Codex is now signed in as a different account,
+    /// or with an API key, whose usage Codex does not report.
+    pub(super) async fn switch_usage_account(&self, account: &Value) {
+        let current = (account["type"] == "chatgpt")
+            .then(|| format!("chatgpt:{}", account["email"].as_str().unwrap_or_default()));
+        let previous = std::mem::replace(&mut *self.usage_account.lock().unwrap(), current.clone());
+        if current.is_none() || current != previous {
+            self.update_live(|s| s.usage = None).await;
+        }
+    }
     /// Reads the account's usage limits for the meter. A failed read keeps the
-    /// last numbers; an account without usage windows hides the meter.
+    /// last numbers, since a reconnect as another account clears them first;
+    /// an account without usage windows hides the meter.
     pub(super) async fn read_usage(self: Arc<Self>) {
         let Ok(rpc) = self.client().await else { return };
         let Ok(response) = rpc
