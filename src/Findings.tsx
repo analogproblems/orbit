@@ -5,7 +5,14 @@ import {
   proportional,
   type TableColumn,
 } from "@astryxdesign/core/Table";
+import { useMemo } from "react";
 import { useOrbit } from "./store";
+import {
+  collectFindings,
+  findingStatusColors,
+  findingStatusLabels,
+  type FindingStatus,
+} from "./findingIndex";
 import {
   findingLocation,
   findingReviewId,
@@ -17,7 +24,9 @@ import {
 
 export const priorityColors = ["red", "orange", "yellow", "gray"] as const;
 
-const columns: TableColumn<Finding>[] = [
+const columns = (
+  statusOf: (f: Finding) => FindingStatus,
+): TableColumn<Finding>[] => [
   {
     key: "priority",
     header: "Severity",
@@ -50,9 +59,15 @@ const columns: TableColumn<Finding>[] = [
   {
     key: "status",
     header: "Status",
-    width: pixel(88),
-    // Every finding is open until later rounds track what was decided.
-    renderCell: () => <Text type="supporting">Open</Text>,
+    width: pixel(150),
+    // Open until a later round marks it fixed or declined.
+    renderCell: (f) => (
+      <Token
+        label={findingStatusLabels[statusOf(f)]}
+        color={findingStatusColors[statusOf(f)]}
+        size="sm"
+      />
+    ),
   },
 ];
 
@@ -179,6 +194,11 @@ export function Findings({
   /** Shows an earlier review whose finding this re-review checked. */
   onOpenReview?: (id: string) => void;
 }) {
+  const s = useOrbit((state) => state.snapshot);
+  const statuses = useMemo(
+    () => new Map(collectFindings(s).map((r) => [r.finding.id, r.status])),
+    [s],
+  );
   if (
     review.extracting ||
     !["ready", "publishing", "posted"].includes(review.status)
@@ -216,7 +236,7 @@ export function Findings({
       {review.findings.length > 0 && (
         <Table
           data={review.findings}
-          columns={columns}
+          columns={columns((f) => statuses.get(f.id) ?? "open")}
           idKey="id"
           density="compact"
           verticalAlign="top"

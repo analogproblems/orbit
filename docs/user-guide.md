@@ -264,6 +264,16 @@ The sidebar's **Live** item shows a pulsing dot while reviews are running. Anima
 
 Select a loop to see its rounds in order. Each round shows the commits it covered, its verdict, its findings by priority, what happened since the last round (fixed, still open, declined), **View comment on GitHub** once published, and a button to open that round's chat. **All loops** goes back.
 
+### Findings
+
+**Findings**, below **Review loops** in the sidebar, lists every finding from Orbit's structured reviews across all pull requests and repositories, newest first. Each row shows its severity, title, PR, round, when it was found, and where it stands now:
+
+- **Open** until a later round of the same PR decides about it;
+- **Fixed**, **Declined (accepted)** or **Declined (disputed)** once a later round says so (a round that says "still open" keeps it **Open**);
+- **PR closed** for a finding still open when its PR left the inbox.
+
+Search matches the title, explanation, file, and PR. Filters narrow by repository, severity, status, and whether the PR is still in the inbox, and the table at the top counts the matching findings by severity and status. Select a finding to read its full explanation, its location and confidence, and its history round by round with each round's note. Buttons open the review's chat, the lines on GitHub at the reviewed commit, the PR, and the published comment. Status comes from the review loop only; you can't set it by hand. Runs replaced by a newer commit while queued or running, chats, and unstructured runs aren't listed. The same status now shows in each review's findings table.
+
 ### What needs you
 
 When something can only move forward with you, the sidebar shows **Needs you** with a count, and the **Review loops** page lists each item at the top with its reason and one main action: **Approve or deny** for an approval, **Publish** for a held report or one waiting for you, **Continue loop** when the round limit is reached, **Open repositories** or **Open settings** for sync and save problems, and **Open chat** otherwise. Selecting the item itself opens where it is resolved: the review's chat, the PR, **Repositories**, or **Settings**. An approval item opens that exact request. An item appears when:
