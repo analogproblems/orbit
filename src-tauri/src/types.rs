@@ -88,6 +88,21 @@ impl Message {
         }
     }
 }
+/// Who reviews a repository's pull requests.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Provider {
+    #[default]
+    Codex,
+}
+impl Provider {
+    /// The reviewer's name in messages.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Codex => "Codex",
+        }
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Review {
@@ -96,6 +111,9 @@ pub struct Review {
     pub head_sha: String,
     pub base_sha: String,
     pub status: String,
+    /// Who runs this review. Older state was always Codex.
+    #[serde(default)]
+    pub provider: Provider,
     pub model: String,
     pub effort: String,
     #[serde(default)]
@@ -321,6 +339,11 @@ impl Review {
             head_sha: pr.head_sha.clone(),
             base_sha: pr.base_sha.clone(),
             status: "queued".into(),
+            provider: settings
+                .repositories
+                .iter()
+                .find(|r| same_repo(&r.name, &pr.repo))
+                .map_or_else(Provider::default, |r| r.provider),
             model: settings.model.clone(),
             effort: settings.effort.clone(),
             confirmed_review_selection: None,
@@ -396,9 +419,12 @@ impl Review {
         }
         self.extracting = false;
         let error = error.or_else(|| {
-            self.findings
-                .is_none()
-                .then(|| "Codex did not restate its findings in the expected format.".into())
+            self.findings.is_none().then(|| {
+                format!(
+                    "{} did not restate its findings in the expected format.",
+                    self.provider.label()
+                )
+            })
         });
         if let Some(error) = error {
             self.findings = None;
@@ -461,6 +487,9 @@ pub struct Repository {
     /// sync, when that loses nothing.
     #[serde(default)]
     pub keep_updated: bool,
+    /// Who reviews this repository's pull requests.
+    #[serde(default)]
+    pub provider: Provider,
 }
 pub const MAX_APPROVAL_MINUTES: u32 = 1440;
 fn default_round_limit() -> u32 {
@@ -945,6 +974,7 @@ pub(crate) mod tests {
             round_limit: 4,
             approval_minutes: 0,
             keep_updated: false,
+            provider: Default::default(),
         });
         assert!(eligible(&p, &s));
         let mut fork = p.clone();

@@ -35,6 +35,7 @@ fn snapshot() -> (Snapshot, PullRequest) {
         round_limit: 4,
         approval_minutes: 0,
         keep_updated: false,
+        provider: Default::default(),
     });
     s.prs.push(p.clone());
     (s, p)

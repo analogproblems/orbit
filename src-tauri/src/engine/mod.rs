@@ -14,6 +14,7 @@ use tokio::sync::Mutex;
 mod chat;
 mod clones;
 mod connection;
+mod events;
 mod findings;
 mod inline;
 mod publish;
@@ -66,7 +67,8 @@ mod worktrees_tests;
 type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// Orbit's review engine. Its methods are split by area: `connection` (Codex),
 /// `settings` (workspace settings and checkouts), `queue` (sync and scheduling),
-/// `run` (preparing and running reviews, Codex events), `chat` (follow-ups),
+/// `run` (preparing and running reviews, Codex events), `events` (what a
+/// reviewer reports, in Orbit's own terms), `chat` (follow-ups),
 /// `publish` (GitHub comments), `worktrees` (cleanup), `clones` (keeping
 /// users' clones up to date) and `scans` (repository security scans).
 ///

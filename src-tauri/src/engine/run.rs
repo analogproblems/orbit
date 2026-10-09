@@ -1,5 +1,10 @@
 use super::{
-    findings, settings::matches_origin, worktrees::git, worktrees::prune_orbit_refs, Engine,
+    events::{ReviewEvent, TurnEnd},
+    findings,
+    settings::matches_origin,
+    worktrees::git,
+    worktrees::prune_orbit_refs,
+    Engine,
 };
 use crate::{rpc::Rpc, types::*, usage::Usage};
 use serde_json::{json, Value};
@@ -655,13 +660,17 @@ pub(super) enum Next {
     /// The review turn produced a report; restate its findings as data.
     Extract,
 }
-/// Applies a notification to the review it belongs to.
+/// Applies a Codex notification to the review it belongs to.
 pub(super) fn apply_notification(s: &mut Snapshot, id: &str, method: &str, p: &Value) -> Next {
+    apply_event(s, id, ReviewEvent::from_codex(method, p))
+}
+/// Applies a reviewer's event to the review it belongs to.
+pub(super) fn apply_event(s: &mut Snapshot, id: &str, event: ReviewEvent) -> Next {
     let mut next = Next::Nothing;
-    if method == "serverRequest/resolved" {
-        s.approvals.retain(|a| a.id != p["requestId"]);
+    if let ReviewEvent::RequestResolved(request) = &event {
+        s.approvals.retain(|a| &a.id != request);
     }
-    if method == "turn/completed" {
+    if let ReviewEvent::TurnDone(_) = &event {
         s.approvals.retain(|a| a.review_id != id);
     }
     let blocking_priority = s.settings.blocking_priority;
@@ -669,92 +678,74 @@ pub(super) fn apply_notification(s: &mut Snapshot, id: &str, method: &str, p: &V
         return Next::Nothing;
     };
     r.updated_at = now();
-    match method {
-        "turn/started" => r.turn_id = p["turn"]["id"].as_str().map(str::to_owned),
+    let reviewer = r.provider.label();
+    match event {
+        ReviewEvent::TurnStarted(turn) => r.turn_id = turn,
         // The extraction turn's JSON answer is data, not chat.
-        "item/agentMessage/delta" if r.extracting => {}
-        "item/agentMessage/delta" => {
-            let item = p["itemId"].as_str().unwrap_or("");
-            let delta = p["delta"].as_str().unwrap_or("");
+        ReviewEvent::TextDelta { .. } if r.extracting => {}
+        ReviewEvent::TextDelta { item, delta } => {
             if let Some(m) = r.messages.iter_mut().find(|m| m.id == item) {
-                m.text.push_str(delta)
+                m.text.push_str(&delta)
             } else {
                 r.messages.push(Message {
                     confirmed_selection: None,
                     delivery: None,
-                    id: item.into(),
+                    id: item,
                     role: "agent".into(),
-                    text: delta.into(),
+                    text: delta,
                     created_at: now(),
                 })
             }
         }
-        "item/started" => {
-            if p["item"]["type"] == "commandExecution" {
+        ReviewEvent::CommandStarted(command) => {
+            r.messages
+                .push(Message::new("system", format!("Running: {command}")));
+        }
+        ReviewEvent::Text { text, .. } if r.extracting => {
+            if let Ok(extracted) = findings::parse(
+                &text,
+                &r.id,
+                r.worktree.as_deref(),
+                r.previous_round.as_ref(),
+            ) {
+                extracted.store(r);
+            }
+        }
+        ReviewEvent::Text { item, text } => {
+            if let Some(m) = r.messages.iter_mut().find(|m| m.id == item) {
+                m.text = text
+            } else {
+                r.messages.push(Message {
+                    confirmed_selection: None,
+                    delivery: None,
+                    id: item,
+                    role: "agent".into(),
+                    text,
+                    created_at: now(),
+                });
+            }
+        }
+        ReviewEvent::Report(report) => {
+            r.report = report;
+            r.sensitive = r.credential_scan();
+            if !r.report.is_empty() {
+                r.messages.push(Message::new("agent", r.report.clone()));
+            }
+        }
+        ReviewEvent::CommandOutput(output) => {
+            if !output.is_empty() {
                 r.messages.push(Message::new(
                     "system",
-                    format!(
-                        "Running: {}",
-                        p["item"]["command"].as_str().unwrap_or("command")
-                    ),
+                    output.chars().take(16000).collect::<String>(),
                 ));
             }
         }
-        "item/completed" => {
-            let item = &p["item"];
-            let item_id = item["id"].as_str().unwrap_or("");
-            match item["type"].as_str().unwrap_or("") {
-                "agentMessage" if r.extracting => {
-                    let text = item["text"].as_str().unwrap_or("");
-                    if let Ok(extracted) = findings::parse(
-                        text,
-                        &r.id,
-                        r.worktree.as_deref(),
-                        r.previous_round.as_ref(),
-                    ) {
-                        extracted.store(r);
-                    }
-                }
-                "agentMessage" => {
-                    let text = item["text"].as_str().unwrap_or("");
-                    if let Some(m) = r.messages.iter_mut().find(|m| m.id == item_id) {
-                        m.text = text.into()
-                    } else {
-                        r.messages.push(Message {
-                            confirmed_selection: None,
-                            delivery: None,
-                            id: item_id.into(),
-                            role: "agent".into(),
-                            text: text.into(),
-                            created_at: now(),
-                        });
-                    }
-                }
-                "exitedReviewMode" => {
-                    r.report = item["review"].as_str().unwrap_or("").into();
-                    r.sensitive = r.credential_scan();
-                    if !r.report.is_empty() {
-                        r.messages.push(Message::new("agent", r.report.clone()));
-                    }
-                }
-                "commandExecution" => {
-                    let output = item["aggregatedOutput"].as_str().unwrap_or("");
-                    if !output.is_empty() {
-                        r.messages.push(Message::new(
-                            "system",
-                            output.chars().take(16000).collect::<String>(),
-                        ));
-                    }
-                }
-                _ => {}
-            }
-        }
-        "turn/completed" if r.extracting => {
-            let error = match p["turn"]["status"].as_str().unwrap_or("") {
-                "completed" => None,
-                "interrupted" => Some("The extraction turn was interrupted.".to_string()),
-                _ => Some(
-                    p["turn"]["error"]["message"]
+        ReviewEvent::TurnDone(end) if r.extracting => {
+            let error = match end {
+                TurnEnd::Completed => None,
+                TurnEnd::Interrupted => Some("The extraction turn was interrupted.".to_string()),
+                TurnEnd::Failed(error) => Some(
+                    error["message"]
                         .as_str()
                         .map_or("The extraction turn failed.".into(), |m| {
                             format!("The extraction turn failed: {m}")
@@ -767,13 +758,12 @@ pub(super) fn apply_notification(s: &mut Snapshot, id: &str, method: &str, p: &V
                 next = Next::Publish;
             }
         }
-        "turn/completed" => {
-            let turn_status = p["turn"]["status"].as_str().unwrap_or("");
-            let follow_up_error = match turn_status {
-                "completed" => None,
-                "interrupted" => Some("The follow-up was interrupted.".to_string()),
-                _ => Some(
-                    p["turn"]["error"]["message"]
+        ReviewEvent::TurnDone(end) => {
+            let follow_up_error = match &end {
+                TurnEnd::Completed => None,
+                TurnEnd::Interrupted => Some("The follow-up was interrupted.".to_string()),
+                TurnEnd::Failed(error) => Some(
+                    error["message"]
                         .as_str()
                         .map_or("The follow-up failed.".into(), |m| {
                             format!("The follow-up failed: {m}")
@@ -781,14 +771,13 @@ pub(super) fn apply_notification(s: &mut Snapshot, id: &str, method: &str, p: &V
                 ),
             };
             if !r.end_follow_up(follow_up_error) {
-                match turn_status {
-                    "completed" => {
+                match end {
+                    TurnEnd::Completed => {
                         if r.is_review && r.report.trim().is_empty() {
                             r.status = "failed".into();
-                            r.error = Some(
-                                        "Codex completed without a review report. No comment was published."
-                                            .into(),
-                                    );
+                            r.error = Some(format!(
+                                "{reviewer} completed without a review report. No comment was published."
+                            ));
                         } else if r.is_review {
                             // Stays active until the findings are extracted.
                             r.extracting = true;
@@ -802,22 +791,19 @@ pub(super) fn apply_notification(s: &mut Snapshot, id: &str, method: &str, p: &V
                             .into();
                         }
                     }
-                    "interrupted" => r.status = "cancelled".into(),
-                    _ => {
+                    TurnEnd::Interrupted => r.status = "cancelled".into(),
+                    TurnEnd::Failed(error) => {
                         r.status = "failed".into();
-                        r.error = Some(
-                            crate::usage::limit_message(&p["turn"]["error"]).unwrap_or_else(|| {
-                                p["turn"]["error"]["message"]
-                                    .as_str()
-                                    .unwrap_or("Codex review failed.")
-                                    .into()
-                            }),
-                        );
+                        r.error = Some(crate::usage::limit_message(&error).unwrap_or_else(|| {
+                            error["message"]
+                                .as_str()
+                                .map_or_else(|| format!("{reviewer} review failed."), str::to_owned)
+                        }));
                     }
                 }
             }
         }
-        _ => {}
+        ReviewEvent::RequestResolved(_) | ReviewEvent::Activity => {}
     }
     next
 }

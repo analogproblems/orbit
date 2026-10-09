@@ -140,6 +140,7 @@ async fn queued_selection_is_immutable_and_confirmation_is_durable_before_review
             round_limit: 4,
             approval_minutes: 0,
             keep_updated: false,
+            provider: Default::default(),
         });
     })
     .await;
@@ -551,6 +552,7 @@ async fn rejected_settings_and_queue_writes_do_not_activate_unsaved_selections_o
             round_limit: 4,
             approval_minutes: 0,
             keep_updated: false,
+            provider: Default::default(),
         });
     })
     .await;

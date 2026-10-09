@@ -244,6 +244,7 @@ async fn recovered_cleanup_removes_real_worktree_and_still_deduplicates_automati
             round_limit: 4,
             approval_minutes: 0,
             keep_updated: false,
+            provider: Default::default(),
         });
         let r = &mut s.reviews[0];
         r.status = "ready".into();
@@ -283,6 +284,7 @@ async fn recovery_rechecks_automatic_cleanup_but_honors_confirmed_manual_removal
                 round_limit: 4,
                 approval_minutes: 0,
                 keep_updated: false,
+                provider: Default::default(),
             });
             let r = &mut s.reviews[0];
             r.status = "ready".into();
@@ -499,6 +501,7 @@ async fn busy_sweeps_make_no_github_requests_and_recheck_open_prs_before_deletio
             round_limit: 4,
             approval_minutes: 0,
             keep_updated: false,
+            provider: Default::default(),
         });
         s.reviews[0].status = "ready".into();
         s.reviews[0].worktree = Some(path.to_string_lossy().into());

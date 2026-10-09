@@ -139,6 +139,7 @@ async fn records_updates_only_for_repositories_kept_up_to_date() {
         round_limit: 4,
         approval_minutes: 0,
         keep_updated,
+        provider: Default::default(),
     };
     e.update(|s| {
         s.settings.repositories = vec![repository("a/b", true), repository("c/d", false)];

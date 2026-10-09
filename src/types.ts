@@ -45,12 +45,16 @@ export interface Message {
   text: string;
   createdAt: string;
 }
+/** Who reviews a repository's pull requests. */
+export type Provider = "codex";
 export interface Review {
   id: string;
   prId: string;
   headSha: string;
   baseSha: string;
   status: Status;
+  /** Who runs this review; older state is always Codex. */
+  provider?: Provider;
   model: string;
   effort: string;
   confirmedReviewSelection?: ModelSelection | null;
@@ -170,6 +174,8 @@ export interface Repository {
   approvalMinutes?: number;
   /** Fast-forward the clone's branch to its upstream on each sync. */
   keepUpdated?: boolean;
+  /** Who reviews this repository's pull requests. */
+  provider?: Provider;
 }
 export interface CloneUpdate {
   repo: string;
