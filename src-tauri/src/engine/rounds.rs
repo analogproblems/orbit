@@ -188,8 +188,7 @@ pub(super) fn trusted_comments(
         });
     }
     // Conversation and diff comments arrive as two lists; the newest are kept.
-    out.kept
-        .sort_by(|a, b| time(&a.created_at).cmp(&time(&b.created_at)));
+    out.kept.sort_by_key(|a| time(&a.created_at));
     if out.kept.len() > MAX_COMMENTS {
         out.trimmed = out.kept.len() - MAX_COMMENTS;
         out.kept.drain(..out.trimmed);

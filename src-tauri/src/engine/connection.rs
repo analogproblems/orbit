@@ -240,7 +240,12 @@ impl Engine {
                     _ => {}
                 }
             }
-            for r in &mut s.reviews {
+            // Other providers' reviews never ran on this connection.
+            for r in s
+                .reviews
+                .iter_mut()
+                .filter(|r| r.provider == Provider::Codex)
+            {
                 if !active(&r.status)
                     || r.end_follow_up(Some("Codex disconnected during the follow-up.".into()))
                 {

@@ -32,6 +32,7 @@ fn repository(approval_minutes: u32) -> Repository {
         round_limit: 4,
         approval_minutes,
         keep_updated: false,
+        provider: Default::default(),
     }
 }
 fn run(automatic: bool, status: &str) -> Review {
