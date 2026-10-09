@@ -156,7 +156,10 @@ impl Turn {
             json!({"sandbox": {
                 "enabled": true,
                 "failIfUnavailable": true,
-                "autoAllowBashIfSandboxed": true,
+                // Sandboxed commands still need the allow list: auto-allowing
+                // them would let any command run, writes to the worktree
+                // included.
+                "autoAllowBashIfSandboxed": false,
                 "allowUnsandboxedCommands": false,
             }})
             .to_string(),
@@ -609,6 +612,7 @@ pub(crate) mod tests {
         let settings: Value = serde_json::from_str(&after("--settings")).unwrap();
         assert_eq!(settings["sandbox"]["enabled"], true);
         assert_eq!(settings["sandbox"]["failIfUnavailable"], true);
+        assert_eq!(settings["sandbox"]["autoAllowBashIfSandboxed"], false);
         assert_eq!(settings["sandbox"]["allowUnsandboxedCommands"], false);
         let tools = after("--tools");
         assert!(

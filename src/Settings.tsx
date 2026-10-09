@@ -291,8 +291,8 @@ export function SettingsPage() {
             <Heading level={3}>Claude reviews</Heading>
             <Text color="secondary">
               Used by repositories whose reviewer is Claude. Claude reviews with
-              its own code review rules, can only read the checkout, and has no
-              network access.
+              its own code review rules, runs only a short list of Git and text
+              commands inside its sandbox, and has no network access.
             </Text>
           </VStack>
           {claudeBlocked && (

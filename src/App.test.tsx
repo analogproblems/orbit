@@ -795,6 +795,44 @@ describe("initial loading and repository errors", () => {
       within(dialog).getByRole("textbox", { name: /Local checkout path/ }),
     ).toHaveProperty("value", "/Users/jason/Projects/orbit");
   });
+  it("switches a repository with a setup command to Claude only once the command is cleared", async () => {
+    snapshot.settings.repositories[0].setupCommand = "npm ci";
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Repositories" }));
+    await user().click(
+      await screen.findByRole("button", { name: "Configure acme/orbit" }),
+    );
+    const dialog = screen.getByRole("dialog");
+    await chooseOption(
+      within(dialog).getByRole("combobox", { name: "Reviewer" }),
+      "Claude",
+    );
+    // Codex-only options go; the setup command stays, flagged, until cleared.
+    expect(
+      within(dialog).queryByRole("switch", {
+        name: "Allow sandbox network access",
+      }),
+    ).toBeNull();
+    expect(
+      within(dialog).getByText(
+        "Claude reviews can't run a setup command. Clear it to save.",
+      ),
+    ).toBeTruthy();
+    await user().clear(
+      within(dialog).getByRole("textbox", { name: /Environment setup/ }),
+    );
+    expect(
+      within(dialog).queryByRole("textbox", { name: /Environment setup/ }),
+    ).toBeNull();
+    await user().click(
+      within(dialog).getByRole("button", { name: "Save repository" }),
+    );
+    const saved = invoke.mock.calls.find(([cmd]) => cmd === "save_repository");
+    expect(
+      (saved?.[1] as { repository: { provider: string; setupCommand: string } })
+        .repository,
+    ).toMatchObject({ provider: "claude", setupCommand: "" });
+  });
   it("saves keeping a clone up to date and shows its latest update", async () => {
     await mount();
     await user().click(screen.getByRole("button", { name: "Repositories" }));

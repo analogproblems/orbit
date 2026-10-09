@@ -33,6 +33,8 @@ import {
   sameRepo,
   sameRepository,
   trustedSource,
+  claudeSelection,
+  providerLabels,
   reviewerSelectionUnavailable,
   repoProvider,
   type PullRequest,
@@ -69,10 +71,8 @@ export function Detail({
   onRepositories: () => void;
 }) {
   const { snapshot: s, action, updateSettings } = useOrbit();
-  const reviewBlocked = reviewerSelectionUnavailable(
-    s,
-    repoProvider(s, pr.repo),
-  );
+  const provider = repoProvider(s, pr.repo);
+  const reviewBlocked = reviewerSelectionUnavailable(s, provider);
   const autoSkipped =
     s.settings.automatic &&
     !pr.draft &&
@@ -140,7 +140,8 @@ export function Detail({
                   </HStack>
                 ) : (
                   <Text color="secondary">
-                    Let Codex trace the changes and find what matters.
+                    Let {providerLabels[provider]} trace the changes and find
+                    what matters.
                   </Text>
                 )}
               </VStack>
@@ -303,15 +304,29 @@ export function Detail({
                     <Grid columns={{ minWidth: 170 }} gap={4}>
                       {[
                         ["Workspace", "Isolated worktree"],
-                        ["Execution", "Codex sandbox"],
+                        ["Execution", `${providerLabels[provider]} sandbox`],
+                        provider === "claude"
+                          ? [
+                              "Model",
+                              s.claudeModels?.find(
+                                (m) => m.model === claudeSelection(s).model,
+                              )?.displayName ||
+                                claudeSelection(s).model ||
+                                "Choose a model",
+                            ]
+                          : [
+                              "Model",
+                              s.models.find((m) => m.model === s.settings.model)
+                                ?.displayName ||
+                                s.settings.model ||
+                                "Choose a model",
+                            ],
                         [
-                          "Model",
-                          s.models.find((m) => m.model === s.settings.model)
-                            ?.displayName ||
-                            s.settings.model ||
-                            "Choose a model",
+                          "Reasoning",
+                          (provider === "claude"
+                            ? claudeSelection(s).effort
+                            : s.settings.effort) || "Choose an effort",
                         ],
-                        ["Reasoning", s.settings.effort || "Choose an effort"],
                       ].map(([label, value]) => (
                         <VStack gap={1} key={label}>
                           <Text type="supporting" color="secondary">

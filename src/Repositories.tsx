@@ -484,7 +484,7 @@ export function Repositories({ onScans }: { onScans?: () => void } = {}) {
                       ]}
                       description={
                         claudeReviewer
-                          ? "Claude reviews with its own code review rules, using the model and effort in Settings. It can only read the worktree and run read-only Git commands, has no network access, and declines anything else on its own, so it never waits for your approval."
+                          ? "Claude reviews with its own code review rules, using the model and effort in Settings. It can read files and run a short list of Git and text commands, all inside Claude's sandbox with no network access, and declines anything else on its own, so it never waits for your approval. Like Codex's sandbox, this is not a full read boundary, and a Git diff driver configured in your clone can still run inside it and write to the worktree."
                           : "Codex reviews in its sandbox, using the model and effort in Settings."
                       }
                     />
