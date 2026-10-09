@@ -1,5 +1,6 @@
 // A fake `claude` for tests. Usage: node claude_fixture.cjs <mode>[@log] <claude args...>
-// Modes: ok, signed-out, wrong-model, crash, slow, denied, schema-fail, incomplete.
+// Modes: ok, signed-out, wrong-model, crash, slow, denied, schema-fail, incomplete,
+// no-sandbox.
 const fs = require("node:fs");
 const [modeArg, ...args] = process.argv.slice(2);
 const [mode, log] = modeArg.split("@");
@@ -24,6 +25,26 @@ const session = args.includes("--resume")
   ? after("--resume")
   : after("--session-id");
 const model = mode === "wrong-model" ? "claude-other" : after("--model");
+if (mode === "no-sandbox") {
+  // Like the real CLI on a computer without bubblewrap: it refuses to start
+  // when the sandbox is required, and otherwise runs commands unsandboxed,
+  // which here stands for a diff driver from the pull request running.
+  const settings = JSON.parse(after("--settings") || "{}");
+  if (settings.sandbox?.failIfUnavailable) {
+    process.stderr.write(
+      "\nError: sandbox required but unavailable: sandbox is enabled but dependencies are missing: bubblewrap (bwrap) not installed\n  sandbox.failIfUnavailable is set — refusing to start without a working sandbox.\n",
+    );
+    send({
+      type: "result",
+      subtype: "error_during_execution",
+      is_error: true,
+      errors: ["Sandbox required but unavailable"],
+    });
+    process.exit(1);
+  }
+  process.stderr.write("Sandbox disabled\n");
+  if (log) fs.writeFileSync(`${log}.unsandboxed`, "ran");
+}
 send({ type: "system", subtype: "task_started", session_id: session });
 send({
   type: "system",
@@ -37,6 +58,11 @@ if (mode === "crash") {
   process.exit(3);
 }
 if (mode === "slow") {
+  // A command still running, as a review's git command would be.
+  const child = require("node:child_process").spawn("sleep", ["30"], {
+    stdio: "ignore",
+  });
+  if (log) fs.writeFileSync(`${log}.child`, String(child.pid));
   setTimeout(() => {}, 30000);
   return;
 }

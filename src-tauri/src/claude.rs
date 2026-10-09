@@ -17,8 +17,8 @@ use tokio::{
 
 /// The tools a review may use. None of them edits files.
 const REVIEW_TOOLS: &str = "Bash,Read,Grep,Glob,Task";
-/// Commands that run without a sandbox. They only read the repository, or
-/// filter what a git command printed.
+/// Commands that run without asking, always inside Claude's sandbox. They
+/// only read the repository, or filter what a git command printed.
 const ALLOWED: [&str; 14] = [
     "Read",
     "Grep",
@@ -35,7 +35,9 @@ const ALLOWED: [&str; 14] = [
     "Bash(grep:*)",
     "Bash(wc:*)",
 ];
-/// Options of the allowed git commands that write files or run programs.
+/// Options of the allowed git commands that write files or run programs. Git
+/// can still run a diff driver the clone configures, which is why reviews
+/// never run without the sandbox.
 const DENIED: [&str; 3] = [
     "Bash(*--output*)",
     "Bash(*--ext-diff*)",
@@ -147,8 +149,13 @@ impl Turn {
             "".into(),
             "--strict-mcp-config".into(),
             "--settings".into(),
+            // Without the sandbox, an allowed `git diff` could run a program
+            // the pull request controls (a configured textconv driver
+            // pointing at a script in the repository), so Claude must refuse
+            // to start rather than fall back to running commands unsandboxed.
             json!({"sandbox": {
                 "enabled": true,
+                "failIfUnavailable": true,
                 "autoAllowBashIfSandboxed": true,
                 "allowUnsandboxedCommands": false,
             }})
@@ -219,7 +226,6 @@ pub struct Init {
 /// A running turn. Dropping it kills the process.
 pub struct Running {
     stop: Mutex<Option<oneshot::Sender<()>>>,
-    pub sandbox_unavailable: Arc<std::sync::atomic::AtomicBool>,
 }
 impl Running {
     /// Kills the process and the commands it started.
@@ -283,19 +289,22 @@ pub fn start(launcher: &Launcher, turn: &Turn) -> Result<Started, String> {
     let stdout = child.stdout.take().ok_or("Missing Claude stdout")?;
     let stderr = child.stderr.take().ok_or("Missing Claude stderr")?;
     let tail = Arc::new(Mutex::new(VecDeque::new()));
-    let sandbox_unavailable = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let no_sandbox = Arc::new(Mutex::new(None::<String>));
     let (init_tx, init_rx) = oneshot::channel();
     let (tx, rx) = mpsc::channel(256);
     let (stop, stopped) = oneshot::channel();
     let exited = tokio::spawn(wait(child, stopped));
     {
         let tail = tail.clone();
-        let sandbox = sandbox_unavailable.clone();
+        let no_sandbox = no_sandbox.clone();
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                if line.contains("Sandbox disabled") {
-                    sandbox.store(true, std::sync::atomic::Ordering::SeqCst);
+                if line
+                    .to_lowercase()
+                    .contains("sandbox required but unavailable")
+                {
+                    no_sandbox.lock().unwrap().get_or_insert(line.clone());
                 }
                 let mut tail = tail.lock().unwrap();
                 tail.push_back(line);
@@ -342,7 +351,13 @@ pub fn start(launcher: &Launcher, turn: &Turn) -> Result<Started, String> {
                     .cloned()
                     .unwrap_or(status)
             };
-            let reason = format!("Claude stopped before finishing: {detail}");
+            let reason = match no_sandbox.lock().unwrap().take() {
+                Some(line) => format!(
+                    "Claude reviews only run inside Claude's sandbox, and it can't start on this computer, so the review didn't run. Install what Claude names, or review this repository with Codex. Claude said: {}",
+                    line.trim().trim_start_matches("Error: ")
+                ),
+                None => format!("Claude stopped before finishing: {detail}"),
+            };
             if let Some(init) = init.take() {
                 let _ = init.send(Err(reason.clone()));
             }
@@ -354,7 +369,6 @@ pub fn start(launcher: &Launcher, turn: &Turn) -> Result<Started, String> {
     Ok((
         Running {
             stop: Mutex::new(Some(stop)),
-            sandbox_unavailable,
         },
         init_rx,
         rx,
@@ -592,6 +606,10 @@ pub(crate) mod tests {
         assert_eq!(after("--permission-mode"), "dontAsk");
         assert_eq!(after("--session-id"), "s");
         assert!(args.contains(&"--strict-mcp-config".to_string()));
+        let settings: Value = serde_json::from_str(&after("--settings")).unwrap();
+        assert_eq!(settings["sandbox"]["enabled"], true);
+        assert_eq!(settings["sandbox"]["failIfUnavailable"], true);
+        assert_eq!(settings["sandbox"]["allowUnsandboxedCommands"], false);
         let tools = after("--tools");
         assert!(
             !tools.contains("Edit") && !tools.contains("Write"),

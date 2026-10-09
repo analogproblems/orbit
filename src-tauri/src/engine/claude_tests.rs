@@ -167,12 +167,40 @@ async fn a_crash_fails_the_review_with_claudes_reason() {
 
 #[tokio::test]
 async fn stop_kills_the_running_turn() {
-    let (_d, e, id, worktree) = claude_review("slow").await;
+    let logs = tempfile::tempdir().unwrap();
+    let log = logs.path().join("calls");
+    let (_d, e, id, worktree) = claude_review(&format!("slow@{}", log.display())).await;
     e.start_claude_review(&id, &worktree).await.unwrap();
     assert_eq!(e.snapshot().await.reviews[0].status, "reviewing");
     assert_eq!(e.claude_turns.lock().unwrap().len(), 1);
+    let child = log.with_extension("child");
+    let pid = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(pid) = std::fs::read_to_string(&child) {
+                return pid;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
     e.cancel(&id).await.unwrap();
     assert!(e.claude_turns.lock().unwrap().is_empty());
+    // The command Claude started goes with it.
+    let alive = || {
+        std::process::Command::new("kill")
+            .args(["-0", &pid])
+            .status()
+            .unwrap()
+            .success()
+    };
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while alive() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the turn's command outlived it");
     // The killed process's end does not touch the stopped review.
     tokio::time::sleep(Duration::from_millis(300)).await;
     let r = e.snapshot().await.reviews[0].clone();
@@ -351,4 +379,26 @@ async fn state_saved_before_providers_restores_as_codex() {
         (claude.model.as_str(), claude.effort.as_str()),
         ("claude-opus-5-5", "high")
     );
+}
+
+#[tokio::test]
+async fn refuses_to_review_without_claudes_sandbox() {
+    let logs = tempfile::tempdir().unwrap();
+    let log = logs.path().join("calls");
+    let (_d, e, id, worktree) = claude_review(&format!("no-sandbox@{}", log.display())).await;
+    let error = e.start_claude_review(&id, &worktree).await.unwrap_err();
+    assert!(
+        error.contains("only run inside Claude's sandbox") && error.contains("bubblewrap"),
+        "{error}"
+    );
+    // Nothing ran unsandboxed, and the review did not go on.
+    assert!(!log.with_extension("unsandboxed").exists());
+    let r = e.snapshot().await.reviews[0].clone();
+    assert!(r.report.is_empty() && r.confirmed_review_selection.is_none());
+    let turns = calls(&log)
+        .into_iter()
+        .filter(|c| c.contains(&"-p".to_string()))
+        .count();
+    assert_eq!(turns, 1);
+    assert!(e.claude_turns.lock().unwrap().is_empty());
 }

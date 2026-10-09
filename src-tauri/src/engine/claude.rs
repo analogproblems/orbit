@@ -22,8 +22,6 @@ use tokio::sync::mpsc;
 /// How long Claude may take to start a session before Orbit gives up.
 const START_TIMEOUT: Duration = Duration::from_secs(120);
 
-const SANDBOX_UNAVAILABLE: &str = "Claude's sandbox isn't available on this computer (on Linux it needs bubblewrap and socat), so the reviewer could only run read-only git commands.";
-
 const EXTRACTION_PROMPT: &str = "Restate the findings from the review you just completed as JSON matching the output schema. \
     Do not run commands, read files, or review the code again. \
     Include every finding you reported, with a short title, the file path relative to the repository root, the line range, \
@@ -256,7 +254,7 @@ impl Engine {
         let e = self.clone();
         let id = id.to_string();
         tokio::spawn(async move {
-            e.pump_claude(&id, &turn_id, &turn, &running, outputs).await;
+            e.pump_claude(&id, &turn_id, &turn, outputs).await;
             e.forget_claude_turn(&id, &running);
         });
         Ok(())
@@ -273,7 +271,6 @@ impl Engine {
         id: &str,
         turn_id: &str,
         turn: &Turn,
-        running: &Running,
         mut outputs: mpsc::Receiver<Output>,
     ) {
         while let Some(output) = outputs.recv().await {
@@ -300,9 +297,6 @@ impl Engine {
                     if ok {
                         match turn.kind {
                             TurnKind::Review => {
-                                if running.sandbox_unavailable.load(Ordering::SeqCst) {
-                                    events.push(ReviewEvent::Notice(SANDBOX_UNAVAILABLE.into()));
-                                }
                                 events.push(ReviewEvent::Report(claude::report(&text)));
                                 if let Some(changed) = changed_files(&turn.cwd).await {
                                     events.push(ReviewEvent::Notice(format!(
