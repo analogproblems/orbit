@@ -275,8 +275,8 @@ impl Engine {
             .iter()
             .find(|r| r.id == id)
             .ok_or("Unknown review")?;
-        if r.provider == Provider::Claude {
-            return self.start_claude_extraction(id).await;
+        if r.provider != Provider::Codex {
+            return self.start_cli_extraction(id).await;
         }
         let selection = ModelSelection::requested(r);
         selection.validate_execution(&s)?;

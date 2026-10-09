@@ -12,7 +12,7 @@ use std::{
 use tokio::sync::Mutex;
 
 mod chat;
-mod claude;
+mod cli_review;
 mod clones;
 mod connection;
 mod events;
@@ -33,9 +33,11 @@ pub use settings::validate_checkout;
 const USAGE_REFRESH: Duration = Duration::from_secs(5 * 60);
 
 #[cfg(test)]
+mod antigravity_tests;
+#[cfg(test)]
 mod chat_tests;
 #[cfg(test)]
-mod claude_tests;
+mod cli_review_tests;
 #[cfg(test)]
 mod clones_tests;
 #[cfg(test)]
@@ -145,9 +147,12 @@ pub struct Engine {
     /// another account, or with an API key, clears the old numbers.
     usage_account: std::sync::Mutex<Option<String>>,
     /// How Claude is started; tests start a fake.
-    claude_launcher: std::sync::Mutex<crate::claude::Launcher>,
-    /// Each review's running Claude turn, so Stop can end it.
-    claude_turns: std::sync::Mutex<HashMap<String, Arc<crate::claude::Running>>>,
+    claude_launcher: std::sync::Mutex<crate::cli::Launcher>,
+    /// How Antigravity is started and where its settings are; tests use a
+    /// fake.
+    antigravity: std::sync::Mutex<crate::antigravity::Setup>,
+    /// Each review's running Claude or Antigravity turn, so Stop can end it.
+    cli_turns: std::sync::Mutex<HashMap<String, Arc<crate::cli::Running>>>,
     _instance_lock: std::fs::File,
 }
 impl Engine {
@@ -246,8 +251,9 @@ impl Engine {
         state.model_catalog_ready = false;
         state.model_configuration_error = None;
         state.models.clear();
-        state.claude = ClaudeStatus::default();
+        state.claude = CliStatus::default();
         state.claude_models = crate::claude::catalog();
+        state.antigravity = CliStatus::default();
         Ok(Arc::new(Self {
             state: Mutex::new(state),
             rpc: Mutex::new(None),
@@ -273,8 +279,9 @@ impl Engine {
             answering: std::sync::Mutex::new(HashSet::new()),
             stopping_scans: std::sync::Mutex::new(HashSet::new()),
             usage_account: std::sync::Mutex::new(None),
-            claude_launcher: std::sync::Mutex::new(crate::claude::Launcher::default()),
-            claude_turns: std::sync::Mutex::new(HashMap::new()),
+            claude_launcher: std::sync::Mutex::new(crate::claude::launcher()),
+            antigravity: std::sync::Mutex::new(crate::antigravity::Setup::default()),
+            cli_turns: std::sync::Mutex::new(HashMap::new()),
             _instance_lock: instance_lock,
         }))
     }
@@ -379,7 +386,7 @@ impl Engine {
         });
         let e = self.clone();
         tokio::spawn(async move {
-            let _ = e.check_claude().await;
+            e.check_reviewers().await;
         });
         let e = self.clone();
         tokio::spawn(async move {
@@ -405,9 +412,13 @@ impl Engine {
                 if e.flush().await.is_err() {
                     continue;
                 }
-                let (poll_seconds, codex_ready, claude_ready) = {
+                let (poll_seconds, codex_ready, cli_ready) = {
                     let s = e.state.lock().await;
-                    (s.settings.poll_seconds, s.codex_ready, s.claude.ready)
+                    (
+                        s.settings.poll_seconds,
+                        s.codex_ready,
+                        s.claude.ready || s.antigravity.ready,
+                    )
                 };
                 if last_poll.elapsed().as_secs() >= poll_seconds {
                     last_poll = std::time::Instant::now();
@@ -424,7 +435,7 @@ impl Engine {
                     last_usage = std::time::Instant::now();
                     tokio::spawn(e.clone().read_usage());
                 }
-                e.tick(codex_ready || claude_ready).await;
+                e.tick(codex_ready || cli_ready).await;
             }
         });
     }
@@ -467,7 +478,7 @@ impl Engine {
         if let Some(rpc) = self.rpc.lock().await.as_ref() {
             rpc.shutdown().await;
         }
-        self.stop_all_claude().await;
+        self.stop_all_cli_turns().await;
         let _ = self.flush().await;
     }
 }

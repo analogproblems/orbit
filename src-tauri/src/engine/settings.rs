@@ -19,6 +19,23 @@ impl Engine {
         {
             settings.selection(Provider::Claude).validate_claude()?;
         }
+        let effort = &settings.antigravity_effort;
+        if !effort.is_empty() && !crate::antigravity::EFFORTS.contains(&effort.as_str()) {
+            return Err(format!(
+                "Antigravity doesn't support effort '{effort}'. Choose low, medium or high."
+            ));
+        }
+        // Antigravity's models are known once it was checked; until then a
+        // model is checked when a review starts.
+        if (settings.antigravity_model != s.settings.antigravity_model
+            || settings.antigravity_effort != s.settings.antigravity_effort)
+            && !settings.antigravity_model.is_empty()
+            && !s.antigravity_models.is_empty()
+        {
+            settings
+                .selection(Provider::Antigravity)
+                .validate_antigravity(&s.antigravity_models)?;
+        }
         let mut next = s.clone();
         // Turning autopilot back on acknowledges a failed save that paused it.
         if settings.automatic {

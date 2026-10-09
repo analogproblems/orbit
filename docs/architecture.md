@@ -21,10 +21,28 @@ Orbit uses the `gh`, `git`, `codex`, and (optionally) `claude` executables insta
 
 A repository can choose Claude as its reviewer (`Provider` in `src-tauri/src/types.rs`). Both reviewers feed the same engine through `ReviewEvent` (`src-tauri/src/engine/events.rs`), so rounds, findings, publishing and the loop do not depend on who reviewed.
 
-- Each turn is one `claude -p` process (`src-tauri/src/claude.rs`) with `--output-format stream-json`. The review turn runs `/code-review <effort> <base>...HEAD` under a new `--session-id`; the findings turn resumes that session with `--json-schema` (Orbit's findings schema plus a `completed` flag) and reads `structured_output`. A later round's earlier findings and replies go into the findings turn. Follow-ups resume the same session.
+- Each turn is one `claude -p` process (`src-tauri/src/claude.rs`, started and read by the plumbing it shares with Antigravity in `src-tauri/src/cli.rs` and `src-tauri/src/engine/cli_review.rs`) with `--output-format stream-json`. The review turn runs `/code-review <effort> <base>...HEAD` under a new `--session-id`; the findings turn resumes that session with `--json-schema` (Orbit's findings schema plus a `completed` flag) and reads `structured_output`. A later round's earlier findings and replies go into the findings turn. Follow-ups resume the same session.
 - Every turn passes `--model` and `--effort`, and Orbit checks the model the `init` event reports before saving the confirmation. Claude does not echo effort back.
 - Isolation: `--setting-sources ""` and `--strict-mcp-config` switch off the user's settings, hooks, plugins and MCP servers; `--permission-mode dontAsk` declines anything not allowed instead of asking; `--tools` and `--allowedTools` allow only Read, Grep, Glob, Task and a short list of Git and text commands, with Git's `--output`, `--ext-diff` and `--textconv` denied; `--settings` turns Claude's sandbox on with `autoAllowBashIfSandboxed` off, so sandboxed commands still need the allow list, and with `failIfUnavailable`, so Claude refuses to start rather than run commands unsandboxed. That matters because an allowed `git diff` can still run a diff driver the clone configures, pointing at a script the pull request controls. Declined calls (`permission_denials`) are noted in the report, and a findings turn that reports `completed: false` fails instead of looking clean. Like Codex's, the sandbox is not a full read boundary.
 - `claude auth status` checks the sign-in on connect. Reviews of repositories that use Codex never start `claude`.
+
+## Antigravity CLI
+
+A repository can also choose Antigravity (`agy`) as its reviewer. Antigravity has no review mode, so Orbit gives it Orbit's own review instructions (`src-tauri/src/review_instructions.rs`).
+
+- Each turn is one headless `agy` process (`src-tauri/src/antigravity.rs`) with `--output-format stream-json --input-format stream-json`. The prompt goes in on standard input, which then closes, so the process ends after one turn. The review turn's prompt is Orbit's instructions plus the change. Orbit computes the change itself with `git diff --no-ext-diff --no-textconv <base>...HEAD`, so no diff driver the clone configures runs. A diff over 200 KB is written whole to `.orbit-change.diff` in the worktree for Antigravity to read in parts. Orbit refuses the review if the pull request already has a file there, and doesn't count the file as a change the reviewer made. The findings turn and follow-ups continue the conversation with `--conversation <id>`. The id comes from the review turn's `init` event. The findings turn uses `--json-schema` with the same schema and `completed` flag as Claude's.
+- Every turn passes `--model`, `--effort` and `--sandbox`. A process that answers but doesn't exit is killed with the commands it started, and the turn fails. It never passes `--dangerously-skip-permissions`. Orbit stops the turn before saving anything unless `init` reports all three of:
+  - the requested model,
+  - the expected conversation,
+  - a permission mode that asks for approval (`request-review` or `strict`).
+  With no one to approve, Antigravity soft-denies what needs approval: shell commands by default. The denials it prints on standard error are noted in the report. A standard-error line saying the sandbox couldn't start kills the process.
+- Orbit reads Antigravity's global settings (`~/.gemini/antigravity-cli/settings.json`) but never changes them. Before every check and turn, Orbit refuses to review if the settings would let a pull request reach past the sandbox:
+  - allow rules for `unsandboxed`, `read_url`, `execute_url`, `mcp`, `read_file` or `write_file`. Inside the worktree, files need no rule, so file grants only reach outside it.
+  - a `toolPermission` other than `request-review` or `strict`,
+  - `allowNonWorkspaceAccess`.
+  Commands the developer allowed with `command(...)` rules run inside the sandbox, with the worktree writable and no network. Like Codex with `AGENTS.md`, Antigravity reads the repository's own `AGENTS.md` and `.agents/` rules, which the pull request controls.
+- `agy models` checks the CLI on connect. It confirms the CLI is installed and signed in, and lists the models Settings offers. Antigravity has no default model in Orbit, so its reviews need a model chosen in Settings.
+- Built from Antigravity's published headless documentation and tested against a fake `agy` (`src-tauri/src/agy_fixture.cjs`). It has not yet been run against the real CLI.
 
 ### Model pinning
 
