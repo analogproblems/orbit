@@ -1,7 +1,10 @@
 use super::Engine;
 use crate::types::*;
 use serde_json::json;
-use std::{path::Path, sync::atomic::Ordering};
+use std::{
+    path::Path,
+    sync::{atomic::Ordering, Arc},
+};
 
 impl Engine {
     pub(super) fn chat_available(r: &Review) -> Result<(), String> {
@@ -17,7 +20,10 @@ impl Engine {
             );
         }
         if r.thread_id.is_none() {
-            return Err("Start a review first to create its Codex chat.".into());
+            return Err(format!(
+                "Start a review first to create its {} chat.",
+                r.provider.label()
+            ));
         }
         if !r.worktree.as_deref().is_some_and(|w| Path::new(w).is_dir()) {
             return Err("This review's worktree is unavailable. Start a new review of an open pull request to continue.".into());
@@ -38,7 +44,7 @@ impl Engine {
             .find(|r| r.id == id)
             .ok_or("Unknown review")?;
         Self::chat_available(r)?;
-        selection.validate_execution(&s)?;
+        selection.validate_for(r.provider, &s)?;
         if ModelSelection::requested(r).complete() {
             return Err("This chat already has its original model and effort pinned.".into());
         }
@@ -73,7 +79,7 @@ impl Engine {
             Err("Follow-up was stopped.".into())
         }
     }
-    pub async fn message(&self, id: &str, text: &str) -> Result<(), String> {
+    pub async fn message(self: &Arc<Self>, id: &str, text: &str) -> Result<(), String> {
         if text.trim().is_empty() || text.chars().count() > 32000 {
             return Err("Enter a message between 1 and 32,000 characters.".into());
         }
@@ -86,7 +92,7 @@ impl Engine {
                 .ok_or("Unknown review")?;
             Self::chat_available(r)?;
             let selection = ModelSelection::chat(r)?;
-            selection.validate_execution(&s)?;
+            selection.validate_for(r.provider, &s)?;
             if s.reviews
                 .iter()
                 .filter(|r| active(&r.status) && r.status != "queued")
@@ -113,6 +119,10 @@ impl Engine {
         };
         let result = async {
             self.flush().await.map_err(|e| format!("Could not save the pending question; no message was sent: {e}"))?;
+            if r.provider == Provider::Claude {
+                self.pending_message(id, &message_id).await?;
+                return self.send_claude_follow_up(&r, &selection, &message_id, text).await;
+            }
             let rpc = self.client().await?;
             let thread = r.thread_id.as_ref().unwrap();
             // v0.156.1 applies changed overrides to an idle loaded thread only

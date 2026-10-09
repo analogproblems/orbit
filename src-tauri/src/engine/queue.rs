@@ -104,13 +104,7 @@ impl Engine {
             .find(|p| p.id == pr_id)
             .cloned()
             .ok_or("Pull request is no longer in the inbox. Sync first.")?;
-        if !s.codex_ready {
-            return Err("Connect Codex in Settings before starting a review.".into());
-        }
-        ModelSelection::workspace(&s.settings).validate_execution(&s)?;
-        if let Some(error) = &s.model_configuration_error {
-            return Err(error.clone());
-        }
+        reviewer_ready(&s, s.settings.provider(&pr.repo))?;
         if s.reviews
             .iter()
             .any(|r| r.pr_id == pr_id && active(&r.status))
@@ -146,15 +140,14 @@ impl Engine {
         let candidates: Vec<String> = {
             let s = self.state.lock().await;
             let synced = self.synced_repos.lock().await;
-            if s.settings.automatic
-                && s.model_configuration_error.is_none()
-                && ModelSelection::workspace(&s.settings)
-                    .validate_execution(&s)
-                    .is_ok()
-            {
+            if s.settings.automatic {
                 s.prs
                     .iter()
-                    .filter(|p| synced.contains(&p.repo.to_ascii_lowercase()) && eligible(p, &s))
+                    .filter(|p| {
+                        synced.contains(&p.repo.to_ascii_lowercase())
+                            && reviewer_ready(&s, s.settings.provider(&p.repo)).is_ok()
+                            && eligible(p, &s)
+                    })
                     .map(|p| p.id.clone())
                     .collect()
             } else {
@@ -188,11 +181,18 @@ impl Engine {
                         })
                         .map(|p| p.id.clone())
                         .collect();
+                    // A queued review waits while its reviewer is unavailable.
+                    let (codex_ready, claude_ready) = (s.codex_ready, s.claude.ready);
                     s.reviews
                         .iter_mut()
                         .rev()
                         .find(|r| {
-                            r.status == "queued" && (!r.automatic || enabled.contains(&r.pr_id))
+                            r.status == "queued"
+                                && (!r.automatic || enabled.contains(&r.pr_id))
+                                && match r.provider {
+                                    Provider::Codex => codex_ready,
+                                    Provider::Claude => claude_ready,
+                                }
                         })
                         .map(|r| {
                             r.status = "preparing".into();
@@ -356,4 +356,25 @@ pub(super) fn reuse_stats(pr: &mut PullRequest, previous: &[PullRequest]) -> boo
     pr.deletions = known.deletions;
     pr.changed_files = known.changed_files;
     true
+}
+
+/// Whether a review by `provider` can be queued now, with the workspace's
+/// model and effort for it.
+fn reviewer_ready(s: &Snapshot, provider: Provider) -> Result<(), String> {
+    match provider {
+        Provider::Codex => {
+            if !s.codex_ready {
+                return Err("Connect Codex in Settings before starting a review.".into());
+            }
+            ModelSelection::workspace(&s.settings).validate_execution(s)?;
+            match &s.model_configuration_error {
+                Some(error) => Err(error.clone()),
+                None => Ok(()),
+            }
+        }
+        Provider::Claude => s
+            .settings
+            .selection(Provider::Claude)
+            .validate_for(Provider::Claude, s),
+    }
 }

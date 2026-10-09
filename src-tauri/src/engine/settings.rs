@@ -14,6 +14,11 @@ impl Engine {
         if changed {
             ModelSelection::workspace(&settings).validate_execution(s)?;
         }
+        if settings.claude_model != s.settings.claude_model
+            || settings.claude_effort != s.settings.claude_effort
+        {
+            settings.selection(Provider::Claude).validate_claude()?;
+        }
         let mut next = s.clone();
         // Turning autopilot back on acknowledges a failed save that paused it.
         if settings.automatic {
