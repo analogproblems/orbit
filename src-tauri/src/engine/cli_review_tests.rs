@@ -68,7 +68,7 @@ async fn reviews_with_code_review_then_extracts_findings_on_the_same_session() {
     let (d, e, id, worktree) = claude_review("ok").await;
     let log = d.path().join("calls.log");
     e.use_claude(fake(&format!("ok@{}", log.display())));
-    e.start_claude_review(&id, &worktree).await.unwrap();
+    e.start_cli_review(&id, &worktree).await.unwrap();
     let r = wait_until(&e, |r| r.status == "ready").await;
     assert_eq!(r.provider, Provider::Claude);
     assert!(
@@ -113,7 +113,7 @@ async fn reviews_with_code_review_then_extracts_findings_on_the_same_session() {
     assert_eq!(schema["required"][2], "findings");
     // The finished turn is forgotten once its process has gone.
     tokio::time::timeout(Duration::from_secs(5), async {
-        while !e.claude_turns.lock().unwrap().is_empty() {
+        while !e.cli_turns.lock().unwrap().is_empty() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
@@ -131,7 +131,7 @@ async fn a_later_round_classifies_earlier_findings_with_read_only_tools() {
             Some("<orbit-previous-round-x>F1</orbit-previous-round-x>".into())
     })
     .await;
-    e.start_claude_review(&id, &worktree).await.unwrap();
+    e.start_cli_review(&id, &worktree).await.unwrap();
     wait_until(&e, |r| r.status == "ready").await;
     let extraction = &calls(&log)[1];
     assert!(
@@ -144,7 +144,7 @@ async fn a_later_round_classifies_earlier_findings_with_read_only_tools() {
 #[tokio::test]
 async fn refuses_a_run_on_another_model() {
     let (_d, e, id, worktree) = claude_review("wrong-model").await;
-    let error = e.start_claude_review(&id, &worktree).await.unwrap_err();
+    let error = e.start_cli_review(&id, &worktree).await.unwrap_err();
     assert!(
         error.contains("did not confirm the requested model 'claude-opus-5-5'"),
         "{error}"
@@ -153,13 +153,13 @@ async fn refuses_a_run_on_another_model() {
     let r = e.snapshot().await.reviews[0].clone();
     assert_eq!(r.status, "preparing");
     assert!(r.thread_id.is_none() && r.confirmed_review_selection.is_none());
-    assert!(e.claude_turns.lock().unwrap().is_empty());
+    assert!(e.cli_turns.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
 async fn a_crash_fails_the_review_with_claudes_reason() {
     let (_d, e, id, worktree) = claude_review("crash").await;
-    e.start_claude_review(&id, &worktree).await.unwrap();
+    e.start_cli_review(&id, &worktree).await.unwrap();
     let r = wait_until(&e, |r| r.status == "failed").await;
     let error = r.error.unwrap();
     assert!(error.contains("fixture crashed"), "{error}");
@@ -170,9 +170,9 @@ async fn stop_kills_the_running_turn() {
     let logs = tempfile::tempdir().unwrap();
     let log = logs.path().join("calls");
     let (_d, e, id, worktree) = claude_review(&format!("slow@{}", log.display())).await;
-    e.start_claude_review(&id, &worktree).await.unwrap();
+    e.start_cli_review(&id, &worktree).await.unwrap();
     assert_eq!(e.snapshot().await.reviews[0].status, "reviewing");
-    assert_eq!(e.claude_turns.lock().unwrap().len(), 1);
+    assert_eq!(e.cli_turns.lock().unwrap().len(), 1);
     let child = log.with_extension("child");
     let pid = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -185,7 +185,7 @@ async fn stop_kills_the_running_turn() {
     .await
     .unwrap();
     e.cancel(&id).await.unwrap();
-    assert!(e.claude_turns.lock().unwrap().is_empty());
+    assert!(e.cli_turns.lock().unwrap().is_empty());
     // The command Claude started goes with it.
     let alive = || {
         std::process::Command::new("kill")
@@ -211,7 +211,7 @@ async fn stop_kills_the_running_turn() {
 #[tokio::test]
 async fn records_commands_claude_was_refused() {
     let (_d, e, id, worktree) = claude_review("denied").await;
-    e.start_claude_review(&id, &worktree).await.unwrap();
+    e.start_cli_review(&id, &worktree).await.unwrap();
     let r = wait_until(&e, |r| r.status == "ready").await;
     assert_eq!(r.declined_approvals.len(), 2, "{:?}", r.declined_approvals);
     assert!(r.declined_approvals[0].contains("`cargo test`"));
@@ -221,7 +221,7 @@ async fn records_commands_claude_was_refused() {
 #[tokio::test]
 async fn a_schema_failure_keeps_the_report_unstructured() {
     let (_d, e, id, worktree) = claude_review("schema-fail").await;
-    e.start_claude_review(&id, &worktree).await.unwrap();
+    e.start_cli_review(&id, &worktree).await.unwrap();
     let r = wait_until(&e, |r| r.status == "ready").await;
     assert!(r.findings.is_none() && !r.report.is_empty());
     let error = r.error.unwrap();
@@ -234,7 +234,7 @@ async fn a_schema_failure_keeps_the_report_unstructured() {
 #[tokio::test]
 async fn a_review_that_could_not_read_the_change_fails() {
     let (_d, e, id, worktree) = claude_review("incomplete").await;
-    e.start_claude_review(&id, &worktree).await.unwrap();
+    e.start_cli_review(&id, &worktree).await.unwrap();
     let r = wait_until(&e, |r| r.status == "failed").await;
     assert!(!r.extracting);
     let error = r.error.unwrap();
@@ -248,7 +248,7 @@ async fn a_review_that_could_not_read_the_change_fails() {
 async fn flags_files_the_reviewer_changed() {
     let (_d, e, id, worktree) = claude_review("ok").await;
     std::fs::write(worktree.join("stray.txt"), "x").unwrap();
-    e.start_claude_review(&id, &worktree).await.unwrap();
+    e.start_cli_review(&id, &worktree).await.unwrap();
     let r = wait_until(&e, |r| r.status == "ready").await;
     assert!(r
         .messages
@@ -261,7 +261,7 @@ async fn answers_follow_ups_on_the_review_session() {
     let (d, e, id, worktree) = claude_review("ok").await;
     let log = d.path().join("calls.log");
     e.use_claude(fake(&format!("ok@{}", log.display())));
-    e.start_claude_review(&id, &worktree).await.unwrap();
+    e.start_cli_review(&id, &worktree).await.unwrap();
     let r = wait_until(&e, |r| r.status == "ready").await;
     e.message(&id, "Why?").await.unwrap();
     let r2 = wait_until(&e, |r| {
@@ -281,14 +281,14 @@ async fn reports_a_signed_out_claude() {
     let s = e.snapshot().await;
     assert!(!s.claude.ready);
     assert!(s.claude.error.unwrap().contains("not signed in"));
-    let error = e.start_claude_review(&id, &worktree).await.unwrap_err();
+    let error = e.start_cli_review(&id, &worktree).await.unwrap_err();
     assert!(error.contains("not signed in"), "{error}");
 }
 
 #[tokio::test]
 async fn a_codex_disconnect_leaves_claude_reviews_running() {
     let (_d, e, id, worktree) = claude_review("slow").await;
-    e.start_claude_review(&id, &worktree).await.unwrap();
+    e.start_cli_review(&id, &worktree).await.unwrap();
     e.event(json!({"method":"orbit/disconnected"})).await;
     assert_eq!(e.snapshot().await.reviews[0].status, "reviewing");
     e.cancel(&id).await.unwrap();
@@ -386,7 +386,7 @@ async fn refuses_to_review_without_claudes_sandbox() {
     let logs = tempfile::tempdir().unwrap();
     let log = logs.path().join("calls");
     let (_d, e, id, worktree) = claude_review(&format!("no-sandbox@{}", log.display())).await;
-    let error = e.start_claude_review(&id, &worktree).await.unwrap_err();
+    let error = e.start_cli_review(&id, &worktree).await.unwrap_err();
     assert!(
         error.contains("only run inside Claude's sandbox") && error.contains("bubblewrap"),
         "{error}"
@@ -400,5 +400,5 @@ async fn refuses_to_review_without_claudes_sandbox() {
         .filter(|c| c.contains(&"-p".to_string()))
         .count();
     assert_eq!(turns, 1);
-    assert!(e.claude_turns.lock().unwrap().is_empty());
+    assert!(e.cli_turns.lock().unwrap().is_empty());
 }

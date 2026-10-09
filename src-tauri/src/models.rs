@@ -130,7 +130,34 @@ impl ModelSelection {
                 }
                 self.validate_claude()
             }
+            Provider::Antigravity => {
+                if !state.antigravity.ready {
+                    return Err(state.antigravity.error.clone().unwrap_or_else(|| {
+                        "Antigravity isn't ready. Check it in Settings.".into()
+                    }));
+                }
+                self.validate_antigravity(&state.antigravity_models)
+            }
         }
+    }
+    /// Checks the selection against the models Antigravity offered.
+    pub fn validate_antigravity(&self, catalog: &[Value]) -> Result<(), String> {
+        if self.model.is_empty() {
+            return Err("Choose an Antigravity model in Settings.".into());
+        }
+        if !crate::antigravity::EFFORTS.contains(&self.effort.as_str()) {
+            return Err(format!(
+                "Antigravity doesn't support effort '{}'. Choose low, medium or high in Settings.",
+                self.effort
+            ));
+        }
+        if !catalog.iter().any(|m| m["model"] == self.model) {
+            return Err(format!(
+                "Antigravity doesn't offer model '{}'. Choose an Antigravity model in Settings.",
+                self.model
+            ));
+        }
+        Ok(())
     }
     /// Checks the selection against the Claude models Orbit offers.
     pub fn validate_claude(&self) -> Result<(), String> {
@@ -182,6 +209,19 @@ pub fn claude_selection(settings: &Settings) -> ModelSelection {
         settings.claude_effort.clone()
     };
     ModelSelection { model, effort }
+}
+
+/// The Antigravity model and effort new Antigravity reviews use. Antigravity
+/// lists its models only when asked, so there is no default model.
+pub fn antigravity_selection(settings: &Settings) -> ModelSelection {
+    ModelSelection {
+        model: settings.antigravity_model.clone(),
+        effort: if settings.antigravity_effort.is_empty() {
+            "high".into()
+        } else {
+            settings.antigravity_effort.clone()
+        },
+    }
 }
 
 #[derive(Debug)]

@@ -283,9 +283,9 @@ pub(super) fn review_prompt(
     out
 }
 
-/// The previous round for a Claude review, which reviews the change with
-/// `/code-review` and classifies the earlier findings afterwards.
-pub(super) fn claude_round_notes(
+/// The previous round for a Claude or Antigravity review, which reviews the
+/// change first and classifies the earlier findings afterwards.
+pub(super) fn cli_round_notes(
     round: &PreviousRound,
     comments: &Result<Comments, String>,
     since: &Result<(String, String), String>,
@@ -485,7 +485,7 @@ impl Engine {
         };
         let prompt = match r.provider {
             Provider::Codex => review_prompt(r, &merge_base, &round, &comments, &since),
-            Provider::Claude => claude_round_notes(&round, &comments, &since),
+            Provider::Claude | Provider::Antigravity => cli_round_notes(&round, &comments, &since),
         };
         let mut note = format!(
             "Re-review: checking {} earlier {} from the review of {}. ",

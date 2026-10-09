@@ -1,9 +1,12 @@
+pub mod antigravity;
 pub mod attention;
 pub mod claude;
+pub mod cli;
 pub mod engine;
 pub mod github;
 pub mod models;
 pub mod remote;
+pub mod review_instructions;
 pub mod review_loop;
 pub mod rpc;
 pub mod scans;
@@ -140,8 +143,7 @@ mod desktop {
     }
     #[tauri::command]
     async fn connect_services(engine: State<'_, AppState>) -> Result<(), String> {
-        // Claude is optional; its status shows in Settings either way.
-        let _ = engine.check_claude().await;
+        engine.check_reviewers().await;
         engine.connect().await?;
         engine.poll().await
     }

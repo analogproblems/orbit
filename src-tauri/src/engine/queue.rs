@@ -182,7 +182,8 @@ impl Engine {
                         .map(|p| p.id.clone())
                         .collect();
                     // A queued review waits while its reviewer is unavailable.
-                    let (codex_ready, claude_ready) = (s.codex_ready, s.claude.ready);
+                    let (codex_ready, claude_ready, antigravity_ready) =
+                        (s.codex_ready, s.claude.ready, s.antigravity.ready);
                     s.reviews
                         .iter_mut()
                         .rev()
@@ -192,6 +193,7 @@ impl Engine {
                                 && match r.provider {
                                     Provider::Codex => codex_ready,
                                     Provider::Claude => claude_ready,
+                                    Provider::Antigravity => antigravity_ready,
                                 }
                         })
                         .map(|r| {
@@ -372,9 +374,6 @@ fn reviewer_ready(s: &Snapshot, provider: Provider) -> Result<(), String> {
                 None => Ok(()),
             }
         }
-        Provider::Claude => s
-            .settings
-            .selection(Provider::Claude)
-            .validate_for(Provider::Claude, s),
+        provider => s.settings.selection(provider).validate_for(provider, s),
     }
 }

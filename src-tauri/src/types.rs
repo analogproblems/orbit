@@ -96,6 +96,9 @@ pub enum Provider {
     Codex,
     /// The `claude` CLI, signed in with the developer's own Claude plan.
     Claude,
+    /// The Antigravity CLI (`agy`), signed in with the developer's own
+    /// Google account.
+    Antigravity,
 }
 impl Provider {
     /// The reviewer's name in messages.
@@ -103,13 +106,15 @@ impl Provider {
         match self {
             Self::Codex => "Codex",
             Self::Claude => "Claude",
+            Self::Antigravity => "Antigravity",
         }
     }
 }
-/// Whether Orbit can start Claude reviews, from the latest check of the CLI.
+/// Whether Orbit can start a CLI reviewer's reviews, from the latest check
+/// of the CLI.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
-pub struct ClaudeStatus {
+pub struct CliStatus {
     pub ready: bool,
     pub error: Option<String>,
     pub version: Option<String>,
@@ -177,8 +182,9 @@ pub struct Review {
     /// review of the PR.
     #[serde(default)]
     pub previous_round: Option<PreviousRound>,
-    /// Custom review instructions carrying the previous round (for Claude,
-    /// the notes its extraction turn classifies the earlier findings with).
+    /// Custom review instructions carrying the previous round (for Claude
+    /// and Antigravity, the notes their extraction turn classifies the
+    /// earlier findings with).
     /// None reviews against the base exactly as a first round does.
     #[serde(default)]
     pub review_prompt: Option<String>,
@@ -522,6 +528,10 @@ pub struct Settings {
     /// The model and effort of Claude reviews. Empty uses Claude's default.
     pub claude_model: String,
     pub claude_effort: String,
+    /// The model and effort of Antigravity reviews. The model must be
+    /// chosen; an empty effort uses high.
+    pub antigravity_model: String,
+    pub antigravity_effort: String,
     pub repositories: Vec<Repository>,
     /// Extra GitHub logins, such as bots acting for the user, whose same-repository
     /// PRs are trusted like those of owners, members, and collaborators.
@@ -551,6 +561,8 @@ pub struct SettingsPatch {
     pub effort: Option<String>,
     pub claude_model: Option<String>,
     pub claude_effort: Option<String>,
+    pub antigravity_model: Option<String>,
+    pub antigravity_effort: Option<String>,
     pub trusted_authors: Option<Vec<String>>,
     pub blocking_priority: Option<u8>,
     pub settle_pushes: Option<bool>,
@@ -584,6 +596,12 @@ impl SettingsPatch {
         if let Some(v) = self.claude_effort {
             settings.claude_effort = v;
         }
+        if let Some(v) = self.antigravity_model {
+            settings.antigravity_model = v;
+        }
+        if let Some(v) = self.antigravity_effort {
+            settings.antigravity_effort = v;
+        }
         if let Some(v) = self.trusted_authors {
             settings.trusted_authors = v;
         }
@@ -615,6 +633,8 @@ impl Default for Settings {
             effort: String::new(),
             claude_model: String::new(),
             claude_effort: String::new(),
+            antigravity_model: String::new(),
+            antigravity_effort: String::new(),
             repositories: vec![],
             trusted_authors: vec![],
             blocking_priority: 1,
@@ -631,6 +651,7 @@ impl Settings {
         match provider {
             Provider::Codex => ModelSelection::workspace(self),
             Provider::Claude => crate::models::claude_selection(self),
+            Provider::Antigravity => crate::models::antigravity_selection(self),
         }
     }
     /// Who reviews a repository's pull requests.
@@ -674,9 +695,10 @@ impl Settings {
             if repo.setup_command.len() > 10000 {
                 return Err("Setup command is too long.".into());
             }
-            if repo.provider == Provider::Claude && !repo.setup_command.trim().is_empty() {
+            if repo.provider != Provider::Codex && !repo.setup_command.trim().is_empty() {
                 return Err(format!(
-                    "Claude reviews can't run a setup command. Clear the setup command for {} or review it with Codex.",
+                    "{} reviews can't run a setup command. Clear the setup command for {} or review it with Codex.",
+                    repo.provider.label(),
                     repo.name
                 ));
             }
@@ -752,9 +774,14 @@ pub struct Snapshot {
     pub model_configuration_error: Option<String>,
     pub model_selection_notice: Option<String>,
     /// The Claude CLI, as last checked.
-    pub claude: ClaudeStatus,
+    pub claude: CliStatus,
     /// The Claude models Orbit offers, in the shape of `models`.
     pub claude_models: Vec<Value>,
+    /// The Antigravity CLI, as last checked.
+    pub antigravity: CliStatus,
+    /// The models Antigravity offered when last checked, in the shape of
+    /// `models`.
+    pub antigravity_models: Vec<Value>,
     /// Per-PR controls of the automatic review loop.
     pub loops: Vec<LoopControl>,
     /// Commit statuses Orbit has set, so each is sent only when it changes

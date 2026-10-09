@@ -1,0 +1,157 @@
+// A fake `agy` for tests, following Antigravity's documented headless
+// stream. Usage: node agy_fixture.cjs <mode>[@log] <agy args...>
+// Modes: ok, signed-out, wrong-model, always-proceed, wrong-conversation,
+// crash, slow, denied, incomplete, no-sandbox.
+// With a log, each call's arguments and prompt are appended to it as JSON.
+const fs = require("node:fs");
+const [modeArg, ...args] = process.argv.slice(2);
+const [mode, log] = modeArg.split("@");
+const send = (value) => process.stdout.write(JSON.stringify(value) + "\n");
+const after = (flag) =>
+  args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined;
+if (args[0] === "models") {
+  if (log) fs.appendFileSync(log, JSON.stringify({ args, prompt: null }) + "\n");
+  if (mode === "signed-out") {
+    process.stderr.write("Error: authentication required. Run agy to sign in.\n");
+    process.exit(1);
+  }
+  console.log(
+    "gemini-3.1-pro-high (Gemini 3.1 Pro (High))\ngemini-3.8-flash-medium (Gemini 3.8 Flash (Medium))",
+  );
+  process.exit(0);
+}
+let input = "";
+process.stdin.on("data", (chunk) => (input += chunk));
+process.stdin.on("end", () => {
+  const prompt = input
+    .split("\n")
+    .filter((l) => l.trim())
+    .map((l) => JSON.parse(l))
+    .filter((e) => e.event === "user")
+    .map((e) => e.message.content)
+    .join("\n");
+  if (log) fs.appendFileSync(log, JSON.stringify({ args, prompt }) + "\n");
+  run(prompt);
+});
+
+function run(prompt) {
+  if (mode === "signed-out") {
+    process.stderr.write("Error: authentication required\n");
+    process.exit(1);
+  }
+  const resumed = after("--conversation");
+  const conversation =
+    mode === "wrong-conversation" && resumed ? "conv-other" : resumed || "conv-1";
+  const model = mode === "wrong-model" ? "gemini-other" : after("--model");
+  if (mode === "no-sandbox") {
+    if (args.includes("--sandbox")) {
+      // What a sandbox that cannot start might look like; Orbit must stop
+      // the run rather than let it go on unsandboxed.
+      process.stderr.write(
+        "Error: terminal sandbox unavailable: user namespaces are disabled\n",
+      );
+      if (log) {
+        setTimeout(() => fs.writeFileSync(`${log}.unsandboxed`, "ran"), 500);
+      }
+      setTimeout(() => {}, 30000);
+      return;
+    }
+    if (log) fs.writeFileSync(`${log}.unsandboxed`, "ran");
+  }
+  send({
+    event: "init",
+    conversation_id: conversation,
+    init: {
+      cwd: process.cwd(),
+      tools: ["view_file", "run_command"],
+      permission_mode:
+        mode === "always-proceed" ? "always-proceed" : "request-review",
+      model,
+      ...(args.includes("--json-schema")
+        ? { json_schema: JSON.parse(after("--json-schema")) }
+        : {}),
+    },
+  });
+  if (mode === "crash") {
+    process.stderr.write("fixture crashed\n");
+    process.exit(3);
+  }
+  if (mode === "slow") {
+    const child = require("node:child_process").spawn("sleep", ["30"], {
+      stdio: "ignore",
+    });
+    if (log) fs.writeFileSync(`${log}.child`, String(child.pid));
+    setTimeout(() => {}, 30000);
+    return;
+  }
+  let step = 0;
+  const update = (fields) =>
+    send({
+      event: "step_update",
+      step_update: { conversation_id: conversation, step_index: step, ...fields },
+    });
+  const say = (text) => {
+    step += 1;
+    const half = Math.ceil(text.length / 2);
+    update({ state: "ACTIVE", step_type: "agent_response", text_delta: text.slice(0, half) });
+    update({ state: "DONE", step_type: "agent_response", text_delta: text.slice(half) });
+  };
+  const result = (fields) =>
+    send({
+      event: "result",
+      result: {
+        conversation_id: conversation,
+        status: "SUCCESS",
+        duration_seconds: 1,
+        num_turns: 1,
+        ...fields,
+      },
+    });
+  if (prompt.startsWith("You are reviewing a pull request.")) {
+    step += 1;
+    const tool = {
+      name: "view_file",
+      parameters: { AbsolutePath: `${process.cwd()}/src/lib.rs` },
+    };
+    update({ state: "ACTIVE", step_type: "tool", tool_name: "view_file", tool_info: tool });
+    update({
+      state: "DONE",
+      step_type: "tool",
+      tool_name: "view_file",
+      tool_info: { ...tool, output: "fn first() {}" },
+    });
+    if (mode === "denied") {
+      step += 1;
+      process.stderr.write(
+        "Permission denied (soft): run_command `cargo test` needs approval\n",
+      );
+    }
+    const report =
+      "Not ready to merge.\n\n1. **Off by one** (`src/lib.rs:3`): first() returns the second item.";
+    say(report);
+    result({ response: report });
+  } else if (args.includes("--json-schema")) {
+    const structured = {
+      verdict: "changes_requested",
+      summary: mode === "incomplete" ? "The diff was missing." : "One bug.",
+      completed: mode !== "incomplete",
+      testsNotRun: [],
+      priorFindings: [],
+      findings: [
+        {
+          title: "Off by one",
+          priority: 1,
+          path: "src/lib.rs",
+          startLine: 3,
+          endLine: 3,
+          body: "first() returns the second item.",
+          confidence: 0.9,
+        },
+      ],
+    };
+    result({ response: JSON.stringify(structured), structured_output: structured });
+  } else {
+    say(`Answer: ${prompt}`);
+    result({ response: `Answer: ${prompt}` });
+  }
+}

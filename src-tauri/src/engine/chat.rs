@@ -119,9 +119,9 @@ impl Engine {
         };
         let result = async {
             self.flush().await.map_err(|e| format!("Could not save the pending question; no message was sent: {e}"))?;
-            if r.provider == Provider::Claude {
+            if r.provider != Provider::Codex {
                 self.pending_message(id, &message_id).await?;
-                return self.send_claude_follow_up(&r, &selection, &message_id, text).await;
+                return self.send_cli_follow_up(&r, &selection, &message_id, text).await;
             }
             let rpc = self.client().await?;
             let thread = r.thread_id.as_ref().unwrap();

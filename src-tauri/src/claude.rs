@@ -1,19 +1,9 @@
 //! Runs the `claude` CLI in print mode, one process per turn, and reads its
 //! `stream-json` output. Orbit never reads or stores Claude credentials: the
 //! CLI uses the sign-in of whoever runs Orbit.
+use crate::cli::{self, Dialect, Init, Launcher, Line, Output, Started, Stderr, Turn, TurnKind};
 use serde_json::{json, Value};
-use std::{
-    collections::{HashMap, VecDeque},
-    path::PathBuf,
-    process::Stdio,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
-use tokio::{
-    io::{AsyncBufReadExt, BufReader},
-    process::{Child, Command},
-    sync::{mpsc, oneshot},
-};
+use std::collections::HashMap;
 
 /// The tools a review may use. None of them edits files.
 const REVIEW_TOOLS: &str = "Bash,Read,Grep,Glob,Task";
@@ -43,339 +33,111 @@ const DENIED: [&str; 3] = [
     "Bash(*--ext-diff*)",
     "Bash(*--textconv*)",
 ];
-/// Lines of standard error kept to explain a failed run.
-const STDERR_LINES: usize = 20;
+const MISSING: &str = "Cannot start Claude. Install Claude Code, then run claude once to sign in.";
 
-/// How to start `claude`; tests start a fake.
-#[derive(Clone, Debug)]
-pub struct Launcher {
-    pub program: PathBuf,
-    pub prefix: Vec<String>,
-}
-impl Default for Launcher {
-    fn default() -> Self {
-        Self {
-            program: "claude".into(),
-            prefix: vec![],
-        }
-    }
-}
-impl Launcher {
-    fn command(&self) -> Command {
-        let mut cmd = Command::new(&self.program);
-        cmd.args(&self.prefix);
-        cmd
-    }
-    /// Runs a short command, such as `--version`, and returns its output.
-    async fn output(&self, args: &[&str]) -> Result<String, String> {
-        let mut cmd = self.command();
-        cmd.args(args).stdin(Stdio::null()).kill_on_drop(true);
-        let out = tokio::time::timeout(Duration::from_secs(30), cmd.output())
-            .await
-            .map_err(|_| format!("claude {} timed out.", args.join(" ")))?
-            .map_err(|e| format!("Cannot start Claude. Install Claude Code, then run claude once to sign in. {e}"))?;
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            return Err(format!(
-                "claude {} failed: {}",
-                args.join(" "),
-                stderr.trim()
-            ));
-        }
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-    }
-    /// The CLI's version, after checking it is signed in.
-    pub async fn check(&self) -> Result<String, String> {
-        let version = self.output(&["--version"]).await?;
-        let status = self.output(&["auth", "status"]).await?;
-        let status: Value = serde_json::from_str(&status)
-            .map_err(|_| "Claude reported its sign-in in an unexpected format.".to_string())?;
-        if status["loggedIn"] != true {
-            return Err("Claude is not signed in. Run claude once to sign in, then check again in Settings.".into());
-        }
-        Ok(version
-            .split_whitespace()
-            .next()
-            .unwrap_or(&version)
-            .to_string())
-    }
+/// How Orbit starts `claude`.
+pub fn launcher() -> Launcher {
+    Launcher::new("claude")
 }
 
-/// What a turn is for, which decides its tools and how its output is read.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TurnKind {
-    /// The review itself; its result is the report.
-    Review,
-    /// Restating the review as findings data.
-    Extraction,
-    /// Restating the findings and classifying the previous round's, which
-    /// may need a look at the code.
-    ExtractionWithTools,
-    /// A developer's question.
-    FollowUp,
-}
-
-#[derive(Clone, Debug)]
-pub struct Turn {
-    pub kind: TurnKind,
-    pub cwd: PathBuf,
-    /// The session, created by the first turn and resumed by later ones.
-    pub session: String,
-    pub resume: bool,
-    pub model: String,
-    pub effort: String,
-    pub prompt: String,
-    pub schema: Option<Value>,
-}
-impl Turn {
-    pub fn args(&self) -> Vec<String> {
-        let mut args: Vec<String> = vec![
-            "-p".into(),
-            self.prompt.clone(),
-            "--output-format".into(),
-            "stream-json".into(),
-            "--verbose".into(),
-            "--model".into(),
-            self.model.clone(),
-            "--effort".into(),
-            self.effort.clone(),
-            // Anything that would ask is refused; nobody is there to answer.
-            "--permission-mode".into(),
-            "dontAsk".into(),
-            // No settings file loads: not the pull request's own, whose hooks
-            // and MCP servers would run its code, and not the developer's,
-            // whose permission rules were written for their own work.
-            "--setting-sources".into(),
-            "".into(),
-            "--strict-mcp-config".into(),
-            "--settings".into(),
-            // Without the sandbox, an allowed `git diff` could run a program
-            // the pull request controls (a configured textconv driver
-            // pointing at a script in the repository), so Claude must refuse
-            // to start rather than fall back to running commands unsandboxed.
-            json!({"sandbox": {
-                "enabled": true,
-                "failIfUnavailable": true,
-                // Sandboxed commands still need the allow list: auto-allowing
-                // them would let any command run, writes to the worktree
-                // included.
-                "autoAllowBashIfSandboxed": false,
-                "allowUnsandboxedCommands": false,
-            }})
-            .to_string(),
-        ];
-        args.push(
-            if self.resume {
-                "--resume"
-            } else {
-                "--session-id"
-            }
-            .into(),
+/// The CLI's version, after checking it is signed in.
+pub async fn check(launcher: &Launcher) -> Result<String, String> {
+    let version = launcher.output(&["--version"], "claude", MISSING).await?;
+    let status = launcher
+        .output(&["auth", "status"], "claude", MISSING)
+        .await?;
+    let status: Value = serde_json::from_str(&status)
+        .map_err(|_| "Claude reported its sign-in in an unexpected format.".to_string())?;
+    if status["loggedIn"] != true {
+        return Err(
+            "Claude is not signed in. Run claude once to sign in, then check again in Settings."
+                .into(),
         );
-        args.push(self.session.clone());
-        args.push("--tools".into());
-        args.push(
-            match self.kind {
-                TurnKind::Extraction => "",
-                _ => REVIEW_TOOLS,
-            }
-            .into(),
-        );
-        if self.kind != TurnKind::Extraction {
-            args.push("--allowedTools".into());
-            args.extend(ALLOWED.iter().map(|s| s.to_string()));
-            args.push("--disallowedTools".into());
-            args.extend(DENIED.iter().map(|s| s.to_string()));
-        }
-        if let Some(schema) = &self.schema {
-            args.push("--json-schema".into());
-            args.push(schema.to_string());
-        }
-        args
     }
+    Ok(version
+        .split_whitespace()
+        .next()
+        .unwrap_or(&version)
+        .to_string())
 }
 
-/// What one turn's process reported, in the order it happened.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Output {
-    /// A finished message from the reviewer itself (not a sub-agent).
-    Text {
-        item: String,
-        text: String,
-    },
-    CommandStarted {
-        tool: String,
-        command: String,
-    },
-    CommandOutput(String),
-    /// The turn finished. `text` is its final answer, `structured` the
-    /// answer to a schema, and `denials` the tool calls that were refused.
-    Result {
-        ok: bool,
-        text: String,
-        structured: Option<Value>,
-        denials: Vec<String>,
-    },
-    /// The process ended without a result.
-    Exited(String),
-}
-
-/// The session's start, as Claude reported it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Init {
-    pub model: String,
-}
-
-/// A running turn. Dropping it kills the process.
-pub struct Running {
-    stop: Mutex<Option<oneshot::Sender<()>>>,
-}
-impl Running {
-    /// Kills the process and the commands it started.
-    pub async fn kill(&self) {
-        if let Some(stop) = self.stop.lock().unwrap().take() {
-            let _ = stop.send(());
+/// The arguments of a Claude turn.
+pub fn args(turn: &Turn) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "-p".into(),
+        turn.prompt.clone(),
+        "--output-format".into(),
+        "stream-json".into(),
+        "--verbose".into(),
+        "--model".into(),
+        turn.model.clone(),
+        "--effort".into(),
+        turn.effort.clone(),
+        // Anything that would ask is refused; nobody is there to answer.
+        "--permission-mode".into(),
+        "dontAsk".into(),
+        // No settings file loads: not the pull request's own, whose hooks
+        // and MCP servers would run its code, and not the developer's,
+        // whose permission rules were written for their own work.
+        "--setting-sources".into(),
+        "".into(),
+        "--strict-mcp-config".into(),
+        "--settings".into(),
+        // Without the sandbox, an allowed `git diff` could run a program
+        // the pull request controls (a configured textconv driver
+        // pointing at a script in the repository), so Claude must refuse
+        // to start rather than fall back to running commands unsandboxed.
+        json!({"sandbox": {
+            "enabled": true,
+            "failIfUnavailable": true,
+            // Sandboxed commands still need the allow list: auto-allowing
+            // them would let any command run, writes to the worktree
+            // included.
+            "autoAllowBashIfSandboxed": false,
+            "allowUnsandboxedCommands": false,
+        }})
+        .to_string(),
+    ];
+    args.push(
+        if turn.resume {
+            "--resume"
+        } else {
+            "--session-id"
         }
-    }
-}
-impl Drop for Running {
-    fn drop(&mut self) {
-        if let Some(stop) = self.stop.get_mut().unwrap().take() {
-            let _ = stop.send(());
+        .into(),
+    );
+    args.push(turn.session.clone());
+    args.push("--tools".into());
+    args.push(
+        match turn.kind {
+            TurnKind::Extraction => "",
+            _ => REVIEW_TOOLS,
         }
+        .into(),
+    );
+    if turn.kind != TurnKind::Extraction {
+        args.push("--allowedTools".into());
+        args.extend(ALLOWED.iter().map(|s| s.to_string()));
+        args.push("--disallowedTools".into());
+        args.extend(DENIED.iter().map(|s| s.to_string()));
     }
-}
-/// Owns the process until it exits or is told to stop, so the process
-/// group is only signalled while the process has not been reaped.
-async fn wait(mut child: Child, stop: oneshot::Receiver<()>) -> String {
-    let status = tokio::select! {
-        status = child.wait() => status,
-        _ = stop => {
-            #[cfg(unix)]
-            if let Some(id) = child.id() {
-                unsafe {
-                    libc::kill(-(id as i32), libc::SIGKILL);
-                }
-            }
-            let _ = child.kill().await;
-            child.wait().await
-        }
-    };
-    match status {
-        Ok(s) => format!("it exited with {s}"),
-        Err(e) => e.to_string(),
+    if let Some(schema) = &turn.schema {
+        args.push("--json-schema".into());
+        args.push(schema.to_string());
     }
+    args
 }
 
-/// A started turn: its process, the session's start, and the rest.
-pub type Started = (
-    Running,
-    oneshot::Receiver<Result<Init, String>>,
-    mpsc::Receiver<Output>,
-);
-
-/// Starts a turn. The first value from `init` is the session's start, or
-/// the reason it never started; the rest of the turn arrives on the channel.
+/// Starts a Claude turn; see `cli::spawn`.
 pub fn start(launcher: &Launcher, turn: &Turn) -> Result<Started, String> {
-    let mut cmd = launcher.command();
-    cmd.args(turn.args())
-        .current_dir(&turn.cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    #[cfg(unix)]
-    cmd.process_group(0);
-    let mut child = cmd.spawn().map_err(|e| {
-        format!("Cannot start Claude. Install Claude Code, then run claude once to sign in. {e}")
-    })?;
-    let stdout = child.stdout.take().ok_or("Missing Claude stdout")?;
-    let stderr = child.stderr.take().ok_or("Missing Claude stderr")?;
-    let tail = Arc::new(Mutex::new(VecDeque::new()));
-    let no_sandbox = Arc::new(Mutex::new(None::<String>));
-    let (init_tx, init_rx) = oneshot::channel();
-    let (tx, rx) = mpsc::channel(256);
-    let (stop, stopped) = oneshot::channel();
-    let exited = tokio::spawn(wait(child, stopped));
-    {
-        let tail = tail.clone();
-        let no_sandbox = no_sandbox.clone();
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if line
-                    .to_lowercase()
-                    .contains("sandbox required but unavailable")
-                {
-                    no_sandbox.lock().unwrap().get_or_insert(line.clone());
-                }
-                let mut tail = tail.lock().unwrap();
-                tail.push_back(line);
-                if tail.len() > STDERR_LINES {
-                    tail.pop_front();
-                }
-            }
-        });
-    }
-    {
-        tokio::spawn(async move {
-            let mut init = Some(init_tx);
-            let mut reader = Reader::default();
-            let mut lines = BufReader::new(stdout).lines();
-            let mut finished = false;
-            while let Ok(Some(line)) = lines.next_line().await {
-                let Ok(message) = serde_json::from_str::<Value>(&line) else {
-                    continue;
-                };
-                if message["type"] == "system" && message["subtype"] == "init" {
-                    if let Some(init) = init.take() {
-                        let model = message["model"].as_str().unwrap_or("").to_string();
-                        let _ = init.send(Ok(Init { model }));
-                    }
-                    continue;
-                }
-                for output in reader.read(&message) {
-                    finished |= matches!(output, Output::Result { .. });
-                    if tx.send(output).await.is_err() {
-                        return;
-                    }
-                }
-            }
-            let status = exited
-                .await
-                .unwrap_or_else(|e| format!("Orbit lost track of it: {e}"));
-            // Standard error is read to its end once the process is gone.
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            let detail = {
-                let tail = tail.lock().unwrap();
-                tail.iter()
-                    .rev()
-                    .find(|l| !l.trim().is_empty())
-                    .cloned()
-                    .unwrap_or(status)
-            };
-            let reason = match no_sandbox.lock().unwrap().take() {
-                Some(line) => format!(
-                    "Claude reviews only run inside Claude's sandbox, and it can't start on this computer, so the review didn't run. Install what Claude names, or review this repository with Codex. Claude said: {}",
-                    line.trim().trim_start_matches("Error: ")
-                ),
-                None => format!("Claude stopped before finishing: {detail}"),
-            };
-            if let Some(init) = init.take() {
-                let _ = init.send(Err(reason.clone()));
-            }
-            if !finished {
-                let _ = tx.send(Output::Exited(reason)).await;
-            }
-        });
-    }
-    Ok((
-        Running {
-            stop: Mutex::new(Some(stop)),
-        },
-        init_rx,
-        rx,
-    ))
+    cli::spawn(
+        launcher,
+        args(turn),
+        &turn.cwd,
+        None,
+        Reader::default(),
+        MISSING,
+    )
 }
 
 /// Turns `stream-json` messages into outputs, remembering which tool each
@@ -384,8 +146,37 @@ pub fn start(launcher: &Launcher, turn: &Turn) -> Result<Started, String> {
 struct Reader {
     tools: HashMap<String, String>,
 }
+impl Dialect for Reader {
+    const NAME: &'static str = "Claude";
+    fn read(&mut self, message: &Value) -> Vec<Line> {
+        if message["type"] == "system" && message["subtype"] == "init" {
+            let text = |key: &str| message[key].as_str().map(str::to_owned);
+            return vec![Line::Init(Init {
+                model: text("model").unwrap_or_default(),
+                session: text("session_id"),
+                permission_mode: text("permissionMode"),
+            })];
+        }
+        self.outputs(message)
+            .into_iter()
+            .map(Line::Output)
+            .collect()
+    }
+    fn stderr(line: &str) -> Stderr {
+        if line
+            .to_lowercase()
+            .contains("sandbox required but unavailable")
+        {
+            return Stderr::Fatal(format!(
+                "Claude reviews only run inside Claude's sandbox, and it can't start on this computer, so the review didn't run. Install what Claude names, or review this repository with Codex. Claude said: {}",
+                line.trim().trim_start_matches("Error: ")
+            ));
+        }
+        Stderr::Plain
+    }
+}
 impl Reader {
-    fn read(&mut self, message: &Value) -> Vec<Output> {
+    fn outputs(&mut self, message: &Value) -> Vec<Output> {
         let mut out = vec![];
         // Sub-agents' own words are working notes; their tool calls are shown.
         let top_level = message["parent_tool_use_id"].is_null();
@@ -422,7 +213,7 @@ impl Reader {
                     if block["type"] == "tool_result"
                         && self.tools.get(id).map(String::as_str) == Some("Bash")
                     {
-                        out.push(Output::CommandOutput(result_text(&block["content"])));
+                        out.push(Output::CommandOutput(cli::result_text(&block["content"])));
                     }
                 }
             }
@@ -480,17 +271,6 @@ fn describe(tool: &str, input: &Value) -> Option<String> {
             .map(|d| format!("start a helper: {d}")),
         "StructuredOutput" => None,
         other => Some(other.to_string()),
-    }
-}
-fn result_text(content: &Value) -> String {
-    match content {
-        Value::String(text) => text.clone(),
-        Value::Array(parts) => parts
-            .iter()
-            .filter_map(|p| p["text"].as_str())
-            .collect::<Vec<_>>()
-            .join("\n"),
-        _ => String::new(),
     }
 }
 
@@ -602,7 +382,7 @@ pub(crate) mod tests {
             prompt: review_command("high", "abc"),
             schema: None,
         };
-        let args = turn.args();
+        let args = args(&turn);
         let after = |flag: &str| args[args.iter().position(|a| a == flag).unwrap() + 1].clone();
         assert_eq!(after("-p"), "/code-review high abc...HEAD");
         assert_eq!(after("--setting-sources"), "");
@@ -626,7 +406,7 @@ pub(crate) mod tests {
             schema: Some(json!({"type":"object"})),
             ..turn
         };
-        let args = extraction.args();
+        let args = super::args(&extraction);
         let after = |flag: &str| args[args.iter().position(|a| a == flag).unwrap() + 1].clone();
         assert_eq!(after("--resume"), "s");
         assert_eq!(after("--tools"), "");
@@ -653,7 +433,7 @@ pub(crate) mod tests {
             {"type":"tool_use","id":"t1","name":"Bash","input":{"command":"git diff a...HEAD"}},
             {"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"/w/m.py"}}]}});
         assert_eq!(
-            reader.read(&call),
+            reader.outputs(&call),
             vec![
                 Output::CommandStarted {
                     tool: "Bash".into(),
@@ -669,13 +449,13 @@ pub(crate) mod tests {
             {"type":"tool_result","tool_use_id":"t1","content":"diff --git"},
             {"type":"tool_result","tool_use_id":"t2","content":"file contents"}]}});
         assert_eq!(
-            reader.read(&results),
+            reader.outputs(&results),
             vec![Output::CommandOutput("diff --git".into())]
         );
         let done = json!({"type":"result","subtype":"success","is_error":false,"result":"Done",
             "permission_denials":[{"tool_name":"Bash","tool_input":{"command":"cargo test"}}]});
         assert_eq!(
-            reader.read(&done),
+            reader.outputs(&done),
             vec![Output::Result {
                 ok: true,
                 text: "Done".into(),
@@ -694,18 +474,12 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn checks_version_and_sign_in() {
-        assert_eq!(fake("ok").check().await.unwrap(), "2.1.295");
-        assert!(fake("signed-out")
-            .check()
+        assert_eq!(check(&fake("ok")).await.unwrap(), "2.1.295");
+        assert!(check(&fake("signed-out"))
             .await
             .unwrap_err()
             .contains("not signed in"));
-        let missing = Launcher {
-            program: "orbit-no-such-claude".into(),
-            prefix: vec![],
-        };
-        assert!(missing
-            .check()
+        assert!(check(&Launcher::new("orbit-no-such-claude"))
             .await
             .unwrap_err()
             .contains("Install Claude Code"));

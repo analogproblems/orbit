@@ -82,12 +82,12 @@ impl Engine {
             .find(|c| same_repo(&c.name, &pr.repo))
             .ok_or("Repository configuration was removed")?
             .clone();
-        if r.provider == Provider::Claude && !repo.setup_command.trim().is_empty() {
-            return Err("This repository's setup command runs in the Codex sandbox, which Claude reviews can't use. Clear the setup command or review this repository with Codex.".into());
+        if r.provider != Provider::Codex && !repo.setup_command.trim().is_empty() {
+            return Err(format!("This repository's setup command runs in the Codex sandbox, which {} reviews can't use. Clear the setup command or review this repository with Codex.", r.provider.label()));
         }
         let rpc = match r.provider {
             Provider::Codex => Some(self.client().await?),
-            Provider::Claude => None,
+            Provider::Claude | Provider::Antigravity => None,
         };
         let cwd = std::fs::canonicalize(&repo.path)
             .map_err(|e| format!("Cannot access checkout: {e}"))?;
@@ -160,7 +160,7 @@ impl Engine {
         self.carry_previous_round(id, &pr, &worktree).await?;
         self.live(id).await?;
         let Some(rpc) = rpc else {
-            return self.start_claude_review(id, &worktree).await;
+            return self.start_cli_review(id, &worktree).await;
         };
         let policy = json!({
             "type": "workspaceWrite",
@@ -390,8 +390,8 @@ impl Engine {
             let task = self.preparing.lock().unwrap().remove(id);
             task.map(|task| task.abort()).is_some()
         };
-        if r.provider == Provider::Claude {
-            self.stop_claude(id).await;
+        if r.provider != Provider::Codex {
+            self.stop_cli_turn(id).await;
         } else if let Ok(rpc) = self.client().await {
             if let (Some(thread), Some(turn)) = (r.thread_id, r.turn_id) {
                 let _ = rpc
