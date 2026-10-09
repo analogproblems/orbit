@@ -35,12 +35,12 @@ A repository can also choose Antigravity (`agy`) as its reviewer. Antigravity ha
   - the requested model,
   - the expected conversation,
   - a permission mode that asks for approval (`request-review` or `strict`).
-  With no one to approve, Antigravity soft-denies what needs approval: shell commands by default. The denials it prints on standard error are noted in the report. A standard-error line saying the sandbox couldn't start kills the process.
+    With no one to approve, Antigravity soft-denies what needs approval: shell commands by default. The denials it prints on standard error are noted in the report. A standard-error line saying the sandbox couldn't start kills the process.
 - Orbit reads Antigravity's global settings (`~/.gemini/antigravity-cli/settings.json`) but never changes them. Before every check and turn, Orbit refuses to review if the settings would let a pull request reach past the sandbox:
   - allow rules for `unsandboxed`, `read_url`, `execute_url`, `mcp`, `read_file` or `write_file`. Inside the worktree, files need no rule, so file grants only reach outside it.
   - a `toolPermission` other than `request-review` or `strict`,
   - `allowNonWorkspaceAccess`.
-  Commands the developer allowed with `command(...)` rules run inside the sandbox, with the worktree writable and no network. Like Codex with `AGENTS.md`, Antigravity reads the repository's own `AGENTS.md` and `.agents/` rules, which the pull request controls.
+    Commands the developer allowed with `command(...)` rules run inside the sandbox, with the worktree writable and no network. Like Codex with `AGENTS.md`, Antigravity reads the repository's own `AGENTS.md` and `.agents/` rules, which the pull request controls.
 - `agy models` checks the CLI on connect. It confirms the CLI is installed and signed in, and lists the models Settings offers. Antigravity has no default model in Orbit, so its reviews need a model chosen in Settings.
 - Built from Antigravity's published headless documentation and tested against a fake `agy` (`src-tauri/src/agy_fixture.cjs`). It has not yet been run against the real CLI.
 

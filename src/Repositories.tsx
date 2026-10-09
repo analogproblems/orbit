@@ -44,6 +44,8 @@ import {
 } from "lucide-react";
 import { desktop, useOrbit } from "./store";
 import {
+  cliStatus,
+  providerLabels,
   sameRepo,
   type CloneUpdate,
   type Provider,
@@ -277,7 +279,8 @@ export function Repositories({ onScans }: { onScans?: () => void } = {}) {
       void action("poll_now");
     } else setRepoError(result.error);
   };
-  const claudeReviewer = editing?.provider === "claude";
+  const reviewer = editing?.provider ?? "codex";
+  const cliReviewer = reviewer !== "codex";
   const close = (open: boolean) => {
     if (!open && !busy) setEditing(null);
   };
@@ -334,8 +337,8 @@ export function Repositories({ onScans }: { onScans?: () => void } = {}) {
                   />
                 )}
                 <Text color="secondary">
-                  {repo.provider === "claude"
-                    ? "Reviewed by Claude · Sandboxed worktree · No network"
+                  {repo.provider && repo.provider !== "codex"
+                    ? `Reviewed by ${providerLabels[repo.provider]} · Sandboxed worktree · No network`
                     : `Reviewed by Codex · ${
                         repo.setupCommand
                           ? "Custom environment setup"
@@ -475,20 +478,24 @@ export function Repositories({ onScans }: { onScans?: () => void } = {}) {
                       }
                       options={[
                         { value: "codex", label: "Codex" },
-                        {
-                          value: "claude",
-                          label: s.claude?.ready
-                            ? "Claude"
-                            : "Claude (not connected)",
-                        },
+                        ...(["claude", "antigravity"] as const).map(
+                          (provider) => ({
+                            value: provider,
+                            label: cliStatus(s, provider)?.ready
+                              ? providerLabels[provider]
+                              : `${providerLabels[provider]} (not connected)`,
+                          }),
+                        ),
                       ]}
                       description={
-                        claudeReviewer
-                          ? "Claude reviews with its own code review rules, using the model and effort in Settings. It can read files and run a short list of Git and text commands, all inside Claude's sandbox with no network access, and declines anything else on its own, so it never waits for your approval. Like Codex's sandbox, this is not a full read boundary, and a Git diff driver configured in your clone can still run inside it and write to the worktree."
-                          : "Codex reviews in its sandbox, using the model and effort in Settings."
+                        reviewer === "antigravity"
+                          ? "Antigravity follows Orbit's review instructions, using the model and effort in Settings. Orbit gives it the change; it can read files in the worktree, and anything else that needs approval is declined, so it never waits for you. Commands you allowed in Antigravity's own settings run inside its sandbox with no network access and can write to the worktree. Orbit won't start a review if those settings would let a pull request reach past the sandbox, and never changes them."
+                          : reviewer === "claude"
+                            ? "Claude reviews with its own code review rules, using the model and effort in Settings. It can read files and run a short list of Git and text commands, all inside Claude's sandbox with no network access, and declines anything else on its own, so it never waits for your approval. Like Codex's sandbox, this is not a full read boundary, and a Git diff driver configured in your clone can still run inside it and write to the worktree."
+                            : "Codex reviews in its sandbox, using the model and effort in Settings."
                       }
                     />
-                    {(!claudeReviewer || editing.setupCommand) && (
+                    {(!cliReviewer || editing.setupCommand) && (
                       <TextArea
                         label="Environment setup"
                         isOptional
@@ -500,17 +507,16 @@ export function Repositories({ onScans }: { onScans?: () => void } = {}) {
                         }
                         description="Runs in the new worktree, inside the Codex sandbox. Uses /bin/sh on Unix or PowerShell on Windows. Five-minute timeout. Setup can run code from the pull request, such as package install scripts; prefer options like --ignore-scripts."
                         status={
-                          claudeReviewer
+                          cliReviewer
                             ? {
                                 type: "error",
-                                message:
-                                  "Claude reviews can't run a setup command. Clear it to save.",
+                                message: `${providerLabels[reviewer]} reviews can't run a setup command. Clear it to save.`,
                               }
                             : undefined
                         }
                       />
                     )}
-                    {!claudeReviewer && (
+                    {!cliReviewer && (
                       <Switch
                         label="Allow sandbox network access"
                         value={editing.networkAccess}
@@ -534,7 +540,7 @@ export function Repositories({ onScans }: { onScans?: () => void } = {}) {
                       }))}
                       description="After this many automatic reviews of a pull request, the loop stops and needs you. Review again always works."
                     />
-                    {!claudeReviewer && (
+                    {!cliReviewer && (
                       <Selector
                         label="Approval time limit for automatic reviews"
                         value={String(editing.approvalMinutes ?? 0)}

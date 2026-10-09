@@ -12,6 +12,8 @@ export function SaveFeedback({ saveKey }: { saveKey?: string }) {
       effort: "Reasoning effort",
       claudeModel: "Claude model",
       claudeEffort: "Claude effort",
+      antigravityModel: "Antigravity model",
+      antigravityEffort: "Antigravity effort",
       concurrency: "Concurrent reviews",
       pollSeconds: "Poll interval",
       trustedAuthors: "Trusted accounts",

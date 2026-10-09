@@ -35,5 +35,15 @@
       "effort": "high"
     },
     "label": "Reviewer: Claude · Model: claude-opus-5-5 (confirmed) · Effort: high (confirmed)"
+  },
+  {
+    "provider": "antigravity",
+    "model": "gemini-3.1-pro-high",
+    "effort": "high",
+    "confirmedReviewSelection": {
+      "model": "gemini-3.1-pro-high",
+      "effort": "high"
+    },
+    "label": "Reviewer: Antigravity · Model: gemini-3.1-pro-high (confirmed) · Effort: high (confirmed)"
   }
 ]

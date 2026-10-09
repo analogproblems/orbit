@@ -46,10 +46,13 @@ export interface Message {
   createdAt: string;
 }
 /** Who reviews a repository's pull requests. */
-export type Provider = "codex" | "claude";
+export type Provider = "codex" | "claude" | "antigravity";
+/** The reviewers that run as a CLI on this computer. */
+export type CliProvider = Exclude<Provider, "codex">;
 export const providerLabels: Record<Provider, string> = {
   codex: "Codex",
   claude: "Claude",
+  antigravity: "Antigravity",
 };
 export interface Review {
   id: string;
@@ -203,6 +206,10 @@ export interface Settings {
   /** The model and effort of Claude reviews; empty uses Claude's default. */
   claudeModel?: string;
   claudeEffort?: string;
+  /** The model and effort of Antigravity reviews; the model must be chosen,
+   * and an empty effort uses high. */
+  antigravityModel?: string;
+  antigravityEffort?: string;
   repositories: Repository[];
   trustedAuthors: string[];
   /** Findings at this priority or more severe (0 = P0) block a clean verdict. */
@@ -365,7 +372,7 @@ export function autopilotSummary(s: Snapshot) {
 export function loopState(s: Snapshot, prId: string) {
   return s.loopStates?.find((l) => l.prId === prId);
 }
-export interface ClaudeStatus {
+export interface CliStatus {
   ready: boolean;
   error?: string | null;
   version?: string | null;
@@ -390,9 +397,13 @@ export interface Snapshot {
   polling: boolean;
   codexReady: boolean;
   /** The Claude CLI, as last checked. */
-  claude?: ClaudeStatus;
+  claude?: CliStatus;
   /** The Claude models Orbit offers. */
   claudeModels?: Model[];
+  /** The Antigravity CLI, as last checked. */
+  antigravity?: CliStatus;
+  /** The models Antigravity offered when last checked. */
+  antigravityModels?: Model[];
   modelCatalogReady: boolean;
   modelConfigurationError?: string | null;
   modelSelectionNotice?: string | null;
@@ -526,6 +537,8 @@ export const defaults: Settings = {
   effort: "",
   claudeModel: "",
   claudeEffort: "",
+  antigravityModel: "",
+  antigravityEffort: "",
   repositories: [],
   trustedAuthors: [],
   blockingPriority: 1,
@@ -588,12 +601,14 @@ export function selectionError(
   selection: ModelSelection,
   provider: Provider = "codex",
 ): string | null {
+  if (provider === "antigravity" && !selection.model)
+    return "Choose an Antigravity model in Settings.";
   if (!selection.model || !selection.effort)
     return "Choose an explicit model and reasoning effort in Settings.";
   const matches = models.filter((m) => m.model === selection.model);
   if (matches.length !== 1)
-    return provider === "claude"
-      ? `Claude model '${selection.model}' is unavailable. Choose an available model in Settings.`
+    return provider !== "codex"
+      ? `${providerLabels[provider]} model '${selection.model}' is unavailable. Choose an available model in Settings.`
       : `Model '${selection.model}' is unavailable. Reconnect Codex or choose an available model in Settings.`;
   if (
     !matches[0].supportedReasoningEfforts.some(
@@ -637,15 +652,43 @@ export function claudeSelection(s: Snapshot): ModelSelection {
     "";
   return { model, effort };
 }
+// Mirrors models::antigravity_selection in src-tauri/src/models.rs.
+export function antigravitySelection(s: Snapshot): ModelSelection {
+  return {
+    model: s.settings.antigravityModel || "",
+    effort: s.settings.antigravityEffort || "high",
+  };
+}
+/** A CLI reviewer's status, as last checked. */
+export function cliStatus(s: Snapshot, provider: CliProvider) {
+  return provider === "claude" ? s.claude : s.antigravity;
+}
+/** The models a reviewer offers. */
+export function providerModels(s: Snapshot, provider: Provider): Model[] {
+  if (provider === "claude") return s.claudeModels ?? [];
+  if (provider === "antigravity") return s.antigravityModels ?? [];
+  return s.models;
+}
+/** The model and effort new reviews by `provider` use. */
+export function providerSelection(
+  s: Snapshot,
+  provider: Provider,
+): ModelSelection {
+  if (provider === "claude") return claudeSelection(s);
+  if (provider === "antigravity") return antigravitySelection(s);
+  return s.settings;
+}
 /** Why a reviewer can't take new work now, if it can't. */
 export function reviewerUnavailable(
   s: Snapshot,
   provider: Provider,
 ): string | null {
   if (provider === "codex") return catalogUnavailable(s);
-  if (!s.claude?.ready)
+  const status = cliStatus(s, provider);
+  if (!status?.ready)
     return (
-      s.claude?.error || "Claude is not connected. Check it again in Settings."
+      status?.error ||
+      `${providerLabels[provider]} is not connected. Check it again in Settings.`
     );
   return null;
 }
@@ -657,7 +700,11 @@ export function reviewerSelectionUnavailable(
   if (provider === "codex") return workspaceSelectionUnavailable(s);
   return (
     reviewerUnavailable(s, provider) ||
-    selectionError(s.claudeModels ?? [], claudeSelection(s), provider)
+    selectionError(
+      providerModels(s, provider),
+      providerSelection(s, provider),
+      provider,
+    )
   );
 }
 export function defaultEffort(model: Model): string | undefined {
@@ -703,8 +750,11 @@ export function followUpUnavailable(s: Snapshot, r: Review): string | null {
   if (!selection)
     return "Choose a chat model and effort before sending a follow-up.";
   const provider = r.provider ?? "codex";
-  const models = provider === "claude" ? (s.claudeModels ?? []) : s.models;
-  const error = selectionError(models, selection, provider);
+  const error = selectionError(
+    providerModels(s, provider),
+    selection,
+    provider,
+  );
   if (error)
     return `${error} This chat's selection is pinned; start a new review to use different settings.`;
   if (

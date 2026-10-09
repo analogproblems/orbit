@@ -37,7 +37,7 @@ gh auth login
 codex login
 ```
 
-To review a repository with Claude, install [Claude Code](https://code.claude.com/docs) and run `claude` once to sign in. Claude is optional: Codex reviews work without it.
+To review a repository with Claude, install [Claude Code](https://code.claude.com/docs) and run `claude` once to sign in. To review with Antigravity, install the [Antigravity CLI](https://antigravity.google/docs/cli/install/) and run `agy` once to sign in. Both are optional: Codex reviews work without them.
 
 Then use **Settings → Reconnect**. That action connects Codex and, if the connection succeeds, syncs GitHub. The inbox refresh button can sync GitHub separately. If launching through a desktop shortcut cannot find the CLIs or their sign-ins (some desktops give GUI apps a different `PATH` or keyring environment), launch the executable from the terminal where they work.
 
@@ -99,11 +99,15 @@ Orbit never discards or rewrites your work. It leaves the clone unchanged and sa
 
 ### Choose the reviewer
 
-Each repository has a **Reviewer**: **Codex** (the default) or **Claude**. Claude reviews use the Claude Code CLI with your own Claude sign-in, and the **Claude reviews** model and effort in Settings. Claude reviews with its own built-in code review rules, then Orbit asks it, on the same conversation, to list its findings in Orbit's format. Later rounds, the review loop, publishing, inline comments and follow-up chat work the same as with Codex.
+Each repository has a **Reviewer**: **Codex** (the default), **Claude**, or **Antigravity**. Claude reviews use the Claude Code CLI with your own Claude sign-in, and the **Claude reviews** model and effort in Settings. Claude reviews with its own built-in code review rules, then Orbit asks it, on the same conversation, to list its findings in Orbit's format. Later rounds, the review loop, publishing, inline comments and follow-up chat work the same as with Codex.
 
 Orbit starts `claude` with your Claude settings, plugins and connectors switched off, its sandbox on, and only file reading, search, and a short list of Git and text commands (`git diff`, `log`, `show`, `status`, `blame`, `merge-base`, and `head`, `tail`, `grep`, `wc`) allowed, each inside the sandbox. Anything else, such as editing files or running tests, is declined on its own and noted in the report, so a Claude review never waits for your approval. This is an allow list, not a read-only guarantee: like Codex's, the sandbox can write to the worktree and is not a full read boundary, and a Git diff driver configured in your clone still runs when Claude shows a diff. Claude reviews have no network access and can't run a setup command: clear the repository's setup command before choosing Claude. They only run inside Claude's sandbox; where it can't start (on Linux it needs `bubblewrap` and `socat`; native Windows has none), the review fails and says why. If a review changes the worktree, the chat says so.
 
-**Settings → Connections** shows whether Claude is connected. Repositories reviewed by Claude wait while it isn't, and **Live** lists it under what needs you.
+Antigravity reviews use the Antigravity CLI (`agy`) with your own sign-in, and the **Antigravity reviews** model and effort in Settings. Antigravity has no review mode of its own, so Orbit gives it Orbit's own review instructions together with the change, which Orbit works out with Git (with diff drivers off). A change over 200 KB goes, whole, into a file named `.orbit-change.diff` in the review's worktree for Antigravity to read. Then, in the same conversation, Orbit asks for the findings in Orbit's format. Choose a model in Settings before the first Antigravity review: Orbit lists the models `agy models` offers and has no default.
+
+Orbit runs every Antigravity turn with `--sandbox` and never skips Antigravity's permission checks, so anything that needs approval, such as running a command, is declined on its own and noted in the report. Commands you allowed in Antigravity's own settings run inside its sandbox, with no network and the worktree writable. Orbit reads your Antigravity settings (`~/.gemini/antigravity-cli/settings.json`) but never changes them. It won't start a review if they allow commands outside the sandbox (`unsandboxed`), the network (`read_url`, `execute_url`), MCP tools (`mcp`), file access outside the worktree (`read_file`, `write_file`), working without asking (`toolPermission` other than request review or strict), or files outside the workspace (`allowNonWorkspaceAccess`). Change them in `agy` with `/permissions`. Antigravity reads the repository's own `AGENTS.md` and `.agents/` rules, which the pull request controls. Antigravity reviews can't run a setup command. Antigravity support was built from its documentation and hasn't yet been run against the real CLI.
+
+**Settings → Connections** shows whether Claude and Antigravity are connected. Repositories reviewed by either wait while it isn't, and **Live** lists it under what needs you.
 
 ### Set up the review environment
 
@@ -328,6 +332,8 @@ By default an approval waits for you however long it takes. For a repository, yo
 | Reasoning effort                       | Selected model’s supported default | Explicit efforts supported by the selected model. Changing the model saves its supported default effort.          |
 | Claude model                           | Claude Opus 5.5                    | Claude Opus 5.5, Fable 5.1, Sonnet 5.5, or Haiku 5.5; used by repositories reviewed by Claude.                    |
 | Claude effort                          | High                               | Low, medium, high, xhigh, or max (Haiku: low to high). Changing the model saves its default effort.               |
+| Antigravity model                      | None (choose one)                  | The models `agy models` lists; used by repositories reviewed by Antigravity.                                      |
+| Antigravity effort                     | High                               | Low, medium, or high.                                                                                             |
 | Automatically review new pull requests | Off                                | On/off; also controlled by the header.                                                                            |
 | Automatically publish findings         | Off                                | On/off; applies to automatic runs.                                                                                |
 | Concurrent reviews                     | 2                                  | 1–4 slots, shared by preparation, reviewing, approvals, and follow-ups. Lowering it does not cancel running work. |

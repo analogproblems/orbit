@@ -16,7 +16,9 @@ import { call, download, follow, lostConnection, readToken } from "./remote";
 import {
   defaults,
   selectionError,
-  claudeSelection,
+  providerLabels,
+  providerModels,
+  providerSelection,
   repoProvider,
   reviewerSelectionUnavailable,
   chatSelection,
@@ -220,8 +222,7 @@ function demoRun(prId: string, automatic = false) {
   const provider = repoProvider(demo, pr.repo);
   const unavailable = reviewerSelectionUnavailable(demo, provider);
   if (unavailable) throw Error(unavailable);
-  const selection =
-    provider === "claude" ? claudeSelection(demo) : demo.settings;
+  const selection = providerSelection(demo, provider);
   if (
     demo.reviews.some(
       (r) => r.prId === prId && activeStatuses.includes(r.status),
@@ -296,11 +297,16 @@ async function demoAction(
         const error = selectionError(demo.models, next);
         if (error) throw Error(error);
       }
-      if (patch.claudeModel !== undefined || patch.claudeEffort !== undefined) {
+      for (const provider of ["claude", "antigravity"] as const) {
+        const [model, effort] =
+          provider === "claude"
+            ? [patch.claudeModel, patch.claudeEffort]
+            : [patch.antigravityModel, patch.antigravityEffort];
+        if (model === undefined && effort === undefined) continue;
         const error = selectionError(
-          demo.claudeModels ?? [],
-          claudeSelection({ ...demo, settings: next }),
-          "claude",
+          providerModels(demo, provider),
+          providerSelection({ ...demo, settings: next }, provider),
+          provider,
         );
         if (error) throw Error(error);
       }
@@ -309,9 +315,13 @@ async function demoAction(
       const repo = args.repository as Repository;
       if (!repo.path.startsWith("/"))
         throw Error("Use an absolute checkout path.");
-      if (repo.provider === "claude" && repo.setupCommand.trim())
+      if (
+        repo.provider &&
+        repo.provider !== "codex" &&
+        repo.setupCommand.trim()
+      )
         throw Error(
-          `Claude reviews can't run a setup command. Clear the setup command for ${repo.name} or review it with Codex.`,
+          `${providerLabels[repo.provider]} reviews can't run a setup command. Clear the setup command for ${repo.name} or review it with Codex.`,
         );
       if (args.original)
         next.repositories = next.repositories.map((r) =>
