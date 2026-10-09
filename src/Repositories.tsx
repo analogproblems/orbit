@@ -335,7 +335,7 @@ export function Repositories({ onScans }: { onScans?: () => void } = {}) {
                 )}
                 <Text color="secondary">
                   {repo.provider === "claude"
-                    ? "Reviewed by Claude · Read-only worktree · No network"
+                    ? "Reviewed by Claude · Sandboxed worktree · No network"
                     : `Reviewed by Codex · ${
                         repo.setupCommand
                           ? "Custom environment setup"

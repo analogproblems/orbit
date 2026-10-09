@@ -832,6 +832,18 @@ describe("initial loading and repository errors", () => {
       (saved?.[1] as { repository: { provider: string; setupCommand: string } })
         .repository,
     ).toMatchObject({ provider: "claude", setupCommand: "" });
+    act(() => {
+      Object.assign(snapshot.settings.repositories[0], {
+        provider: "claude",
+        setupCommand: "",
+      });
+      emit();
+    });
+    expect(
+      await screen.findByText(
+        "Reviewed by Claude · Sandboxed worktree · No network",
+      ),
+    ).toBeTruthy();
   });
   it("saves keeping a clone up to date and shows its latest update", async () => {
     await mount();
