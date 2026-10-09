@@ -459,8 +459,11 @@ fn confirmed(provider: Provider, turn: &Turn, init: &Init) -> Result<String, Str
 }
 
 /// Orbit's review prompt for the change from `base` to HEAD, with the
-/// change computed by Orbit. Diff drivers the clone configures never run.
+/// change computed by Orbit. Diff drivers the clone configures never run. A
+/// diff too large for the prompt is written whole to a file in the
+/// worktree, so nothing is left out.
 async fn change_prompt(worktree: &Path, base: &str) -> Result<String, String> {
+    use review_instructions::{Change, CHANGE_FILE, MAX_DIFF_BYTES};
     let range = format!("{base}...HEAD");
     let diff = |extra: Option<&'static str>| {
         let range = range.clone();
@@ -473,7 +476,26 @@ async fn change_prompt(worktree: &Path, base: &str) -> Result<String, String> {
     };
     let stat = diff(Some("--stat")).await?;
     let patch = diff(None).await?;
-    Ok(review_instructions::review_prompt(base, &stat, &patch))
+    if patch.len() <= MAX_DIFF_BYTES {
+        return Ok(review_instructions::review_prompt(
+            base,
+            &stat,
+            Change::Inline(&patch),
+        ));
+    }
+    let file = worktree.join(CHANGE_FILE);
+    if std::fs::symlink_metadata(&file).is_ok() {
+        return Err(format!(
+            "The pull request has its own {CHANGE_FILE}, where Orbit puts a large change for the reviewer to read, so the review didn't run."
+        ));
+    }
+    std::fs::write(&file, &patch)
+        .map_err(|e| format!("Could not write the change for the reviewer: {e}"))?;
+    Ok(review_instructions::review_prompt(
+        base,
+        &stat,
+        Change::File(patch.len()),
+    ))
 }
 
 /// Files a review changed in its worktree, or None when it is unchanged or
@@ -485,6 +507,13 @@ async fn changed_files(worktree: &Path) -> Option<String> {
     )
     .await
     .ok()?;
+    // Orbit's own copy of a large change is not the reviewer's doing.
+    let ours = format!("?? {}", review_instructions::CHANGE_FILE);
+    let status = status
+        .lines()
+        .filter(|line| *line != ours)
+        .collect::<Vec<_>>()
+        .join("\n");
     let status = status.trim();
     (!status.is_empty()).then(|| status.chars().take(4000).collect())
 }

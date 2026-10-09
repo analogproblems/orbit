@@ -19,7 +19,10 @@ use tokio::{
 /// Lines of standard error kept to explain a failed run.
 const STDERR_LINES: usize = 20;
 /// How long a process may take to exit after reporting its result.
+#[cfg(not(test))]
 const EXIT_GRACE: Duration = Duration::from_secs(10);
+#[cfg(test)]
+const EXIT_GRACE: Duration = Duration::from_secs(1);
 
 /// How to start a CLI; tests start a fake.
 #[derive(Clone, Debug)]
@@ -179,7 +182,7 @@ async fn wait(
     fatal: oneshot::Receiver<()>,
 ) -> String {
     let fatal = async {
-        // A dropped sender means standard error ended without a fatal line.
+        // A dropped sender means the run can no longer be ended this way.
         if fatal.await.is_err() {
             std::future::pending::<()>().await
         }
@@ -260,22 +263,28 @@ pub fn spawn<D: Dialect>(
     let (tx, rx) = mpsc::channel(256);
     let (stop, stopped) = oneshot::channel();
     let (kill, killed) = oneshot::channel();
+    // Ends the run, with `reason` for the failed turn: kills the process
+    // group and the process, which `wait` then reaps.
+    let kill = Arc::new(Mutex::new(Some(kill)));
+    let end = {
+        let fatal = fatal.clone();
+        move |reason: String| {
+            fatal.lock().unwrap().get_or_insert(reason);
+            if let Some(kill) = kill.lock().unwrap().take() {
+                let _ = kill.send(());
+            }
+        }
+    };
     let mut exited = tokio::spawn(wait(child, stopped, killed));
     {
-        let (tail, fatal, denials) = (tail.clone(), fatal.clone(), denials.clone());
+        let (tail, denials, end) = (tail.clone(), denials.clone(), end.clone());
         tokio::spawn(async move {
-            let mut kill = Some(kill);
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 match D::stderr(&line) {
                     Stderr::Plain => {}
                     Stderr::Denied(call) => denials.lock().unwrap().push(call),
-                    Stderr::Fatal(reason) => {
-                        fatal.lock().unwrap().get_or_insert(reason);
-                        if let Some(kill) = kill.take() {
-                            let _ = kill.send(());
-                        }
-                    }
+                    Stderr::Fatal(reason) => end(reason),
                 }
                 let mut tail = tail.lock().unwrap();
                 tail.push_back(line);
@@ -313,12 +322,17 @@ pub fn spawn<D: Dialect>(
             }
         }
         let status = match tokio::time::timeout(EXIT_GRACE, &mut exited).await {
-            Ok(status) => status.unwrap_or_else(|e| format!("Orbit lost track of it: {e}")),
+            Ok(status) => status,
+            // A process still running after its result may have left a
+            // command running too, so the turn fails rather than going on.
             Err(_) => {
-                exited.abort();
-                "it did not exit".into()
+                end(format!(
+                    "{name} did not exit after its answer, so Orbit stopped it and the commands it started, and the turn failed."
+                ));
+                exited.await
             }
-        };
+        }
+        .unwrap_or_else(|e| format!("Orbit lost track of it: {e}"));
         // Standard error is read to its end once the process is gone.
         tokio::time::sleep(Duration::from_millis(50)).await;
         let fatal = fatal.lock().unwrap().take();

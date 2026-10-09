@@ -1,7 +1,7 @@
 // A fake `agy` for tests, following Antigravity's documented headless
 // stream. Usage: node agy_fixture.cjs <mode>[@log] <agy args...>
 // Modes: ok, signed-out, wrong-model, always-proceed, wrong-conversation,
-// crash, slow, denied, incomplete, no-sandbox.
+// crash, slow, linger, denied, incomplete, no-sandbox.
 // With a log, each call's arguments and prompt are appended to it as JSON.
 const fs = require("node:fs");
 const [modeArg, ...args] = process.argv.slice(2);
@@ -130,6 +130,14 @@ function run(prompt) {
       "Not ready to merge.\n\n1. **Off by one** (`src/lib.rs:3`): first() returns the second item.";
     say(report);
     result({ response: report });
+    if (mode === "linger") {
+      // Answers, then never exits, with a command still running.
+      const child = require("node:child_process").spawn("sleep", ["30"], {
+        stdio: "ignore",
+      });
+      if (log) fs.writeFileSync(`${log}.child`, String(child.pid));
+      setTimeout(() => {}, 30000);
+    }
   } else if (args.includes("--json-schema")) {
     const structured = {
       verdict: "changes_requested",

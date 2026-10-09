@@ -18,8 +18,17 @@ pub const EFFORTS: [&str; 3] = ["low", "medium", "high"];
 /// rather than run, as nobody is there to approve them.
 pub const ASKING_MODES: [&str; 2] = ["request-review", "strict"];
 /// Allow rules that reach past the sandbox: commands run on the computer
-/// itself, the network, and the developer's MCP tools.
-const UNSAFE_RULES: [&str; 4] = ["unsandboxed", "read_url", "execute_url", "mcp"];
+/// itself, the network, the developer's MCP tools, and files. Inside the
+/// review's folder reading and writing need no rule, so a file grant only
+/// ever reaches outside it, and grants also become sandbox mounts.
+const UNSAFE_RULES: [&str; 6] = [
+    "unsandboxed",
+    "read_url",
+    "execute_url",
+    "mcp",
+    "read_file",
+    "write_file",
+];
 
 /// How Orbit starts `agy`, and where it reads Antigravity's settings; tests
 /// use a fake and their own settings.
@@ -148,12 +157,12 @@ pub fn check_settings(path: Option<&Path>) -> Result<(), String> {
         .filter_map(Value::as_str)
         .filter(|rule| {
             let action = rule.split('(').next().unwrap_or("").trim();
-            UNSAFE_RULES.contains(&action)
+            UNSAFE_RULES.contains(&action.to_ascii_lowercase().as_str())
         })
         .collect();
     if !rules.is_empty() {
         problems.push(format!(
-            "the allow rules {} reach past the sandbox (commands outside it, the network, or MCP tools)",
+            "the allow rules {} reach past the sandbox (commands outside it, the network, MCP tools, or files outside the review's folder)",
             rules.join(", ")
         ));
     }
@@ -452,7 +461,7 @@ pub(crate) mod tests {
         assert!(check_settings(None).is_err());
         let write = |v: Value| std::fs::write(&path, v.to_string()).unwrap();
         write(json!({"toolPermission": "request-review",
-            "permissions": {"allow": ["command(git)", "read_file(*)"], "deny": ["unsandboxed(*)"]}}));
+            "permissions": {"allow": ["command(git)"], "deny": ["unsandboxed(*)", "read_file(/)"]}}));
         assert!(check_settings(Some(&path)).is_ok());
         for unsafe_settings in [
             json!({"toolPermission": "always-proceed"}),
@@ -461,6 +470,10 @@ pub(crate) mod tests {
             json!({"permissions": {"allow": ["unsandboxed(git push)"]}}),
             json!({"permissions": {"allow": ["read_url(example.com)"]}}),
             json!({"permissions": {"allow": ["mcp(*)"]}}),
+            json!({"permissions": {"allow": ["read_file(*)"]}}),
+            json!({"permissions": {"allow": ["read_file(~/.aws)"]}}),
+            json!({"permissions": {"allow": ["write_file(/home/user)"]}}),
+            json!({"permissions": {"allow": ["write_file(../other)"]}}),
         ] {
             write(unsafe_settings.clone());
             let error = check_settings(Some(&path)).unwrap_err();

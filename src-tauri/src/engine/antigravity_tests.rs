@@ -434,3 +434,136 @@ async fn antigravity_reviews_refuse_a_setup_command() {
     let error = t.e.prepare(&t.id).await.unwrap_err();
     assert!(error.contains("Antigravity reviews can't use"), "{error}");
 }
+
+/// Waits until the pid the fake wrote to `<log>.child` is gone.
+async fn child_ends(log: &Path) {
+    let child = log.with_extension("log.child");
+    let pid = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(pid) = std::fs::read_to_string(&child) {
+                return pid;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let alive = || {
+        std::process::Command::new("kill")
+            .args(["-0", &pid])
+            .status()
+            .unwrap()
+            .success()
+    };
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while alive() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the turn's command outlived it");
+}
+
+#[tokio::test]
+async fn a_run_that_answers_but_never_exits_fails_and_is_stopped() {
+    let t = antigravity_review("ok").await;
+    let log = logged(&t, "linger");
+    t.e.start_cli_review(&t.id, &t.worktree).await.unwrap();
+    let r = wait_until(&t.e, |r| r.status == "failed").await;
+    let error = r.error.unwrap();
+    assert!(error.contains("did not exit after its answer"), "{error}");
+    assert!(r.report.is_empty(), "the answer was not used");
+    child_ends(&log).await;
+    // Only the review turn ran; nothing went on to extraction.
+    assert_eq!(calls(&log).len(), 1);
+}
+
+#[tokio::test]
+async fn a_large_change_goes_whole_to_a_file_the_reviewer_reads() {
+    let t = antigravity_review("ok").await;
+    let log = logged(&t, "ok");
+    // A large file first, then a deleted guard that a cut diff would lose.
+    std::fs::write(t.worktree.join("guard.rs"), "fn check_admin() {}\n").unwrap();
+    let commit = |message: &'static str| {
+        let worktree = t.worktree.clone();
+        async move {
+            git(&worktree, &["add", "-A"]).await.unwrap();
+            git(
+                &worktree,
+                &[
+                    "-c",
+                    "user.name=Orbit",
+                    "-c",
+                    "user.email=orbit@example.com",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "-q",
+                    "-m",
+                    message,
+                ],
+            )
+            .await
+            .unwrap();
+        }
+    };
+    commit("add guard").await;
+    let base = git(&t.worktree, &["rev-parse", "HEAD"])
+        .await
+        .unwrap()
+        .trim()
+        .to_string();
+    t.e.update(|s| s.reviews[0].base_sha = base.clone()).await;
+    let big = "x".repeat(100) + "\n";
+    std::fs::write(t.worktree.join("a_big.txt"), big.repeat(3000)).unwrap();
+    std::fs::remove_file(t.worktree.join("guard.rs")).unwrap();
+    commit("big change").await;
+    t.e.start_cli_review(&t.id, &t.worktree).await.unwrap();
+    let r = wait_until(&t.e, |r| r.status == "ready").await;
+    let (_, prompt) = &calls(&log)[0];
+    assert!(prompt.contains(".orbit-change.diff"), "{prompt}");
+    assert!(prompt.contains("including deleted files and removed lines"));
+    assert!(prompt.len() < 100_000);
+    let file = std::fs::read_to_string(t.worktree.join(".orbit-change.diff")).unwrap();
+    assert!(
+        file.contains("-fn check_admin() {}"),
+        "the deletion is kept"
+    );
+    assert!(file.contains("+++ b/a_big.txt"));
+    // Orbit's own file is not flagged as the reviewer's change.
+    assert!(!r
+        .messages
+        .iter()
+        .any(|m| m.text.contains("left changes in its worktree")));
+}
+
+#[tokio::test]
+async fn refuses_a_large_change_whose_file_the_pull_request_already_has() {
+    let t = antigravity_review("ok").await;
+    std::fs::write(t.worktree.join(".orbit-change.diff"), "x").unwrap();
+    std::fs::write(t.worktree.join("a_big.txt"), "y".repeat(300_000)).unwrap();
+    git(&t.worktree, &["add", "-A"]).await.unwrap();
+    git(
+        &t.worktree,
+        &[
+            "-c",
+            "user.name=Orbit",
+            "-c",
+            "user.email=orbit@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "big",
+        ],
+    )
+    .await
+    .unwrap();
+    let error = t.e.start_cli_review(&t.id, &t.worktree).await.unwrap_err();
+    assert!(error.contains("has its own .orbit-change.diff"), "{error}");
+    assert_eq!(
+        std::fs::read_to_string(t.worktree.join(".orbit-change.diff")).unwrap(),
+        "x"
+    );
+}
