@@ -46,6 +46,7 @@ import { desktop, useOrbit } from "./store";
 import {
   sameRepo,
   type CloneUpdate,
+  type Provider,
   type Repository,
   type RepositorySummary,
 } from "./types";
@@ -276,6 +277,7 @@ export function Repositories({ onScans }: { onScans?: () => void } = {}) {
       void action("poll_now");
     } else setRepoError(result.error);
   };
+  const claudeReviewer = editing?.provider === "claude";
   const close = (open: boolean) => {
     if (!open && !busy) setEditing(null);
   };
@@ -332,13 +334,17 @@ export function Repositories({ onScans }: { onScans?: () => void } = {}) {
                   />
                 )}
                 <Text color="secondary">
-                  {repo.setupCommand
-                    ? "Custom environment setup"
-                    : "Host tools + isolated worktree"}{" "}
-                  ·{" "}
-                  {repo.networkAccess
-                    ? "Sandbox network enabled"
-                    : "Sandbox network disabled"}
+                  {repo.provider === "claude"
+                    ? "Reviewed by Claude · Sandboxed worktree · No network"
+                    : `Reviewed by Codex · ${
+                        repo.setupCommand
+                          ? "Custom environment setup"
+                          : "Host tools + isolated worktree"
+                      } · ${
+                        repo.networkAccess
+                          ? "Sandbox network enabled"
+                          : "Sandbox network disabled"
+                      }`}
                 </Text>
                 <Switch
                   label={`Automatic reviews for ${repo.name}`}
@@ -457,26 +463,64 @@ export function Repositories({ onScans }: { onScans?: () => void } = {}) {
                       }
                       description="On each sync, Orbit fetches from GitHub and fast-forwards the checked-out branch when it is behind. It never touches a branch with uncommitted changes or local commits; the repository shows why instead."
                     />
-                    <TextArea
-                      label="Environment setup"
-                      isOptional
-                      placeholder="e.g. npm ci --ignore-scripts"
-                      value={editing.setupCommand}
+                    <Selector
+                      label="Reviewer"
+                      value={editing.provider ?? "codex"}
                       isDisabled={busy}
-                      onChange={(setupCommand) =>
-                        setEditing({ ...editing, setupCommand })
+                      onChange={(provider) =>
+                        setEditing({
+                          ...editing,
+                          provider: provider as Provider,
+                        })
                       }
-                      description="Runs in the new worktree, inside the Codex sandbox. Uses /bin/sh on Unix or PowerShell on Windows. Five-minute timeout. Setup can run code from the pull request, such as package install scripts; prefer options like --ignore-scripts."
-                    />
-                    <Switch
-                      label="Allow sandbox network access"
-                      value={editing.networkAccess}
-                      isDisabled={busy}
-                      onChange={(networkAccess) =>
-                        setEditing({ ...editing, networkAccess })
+                      options={[
+                        { value: "codex", label: "Codex" },
+                        {
+                          value: "claude",
+                          label: s.claude?.ready
+                            ? "Claude"
+                            : "Claude (not connected)",
+                        },
+                      ]}
+                      description={
+                        claudeReviewer
+                          ? "Claude reviews with its own code review rules, using the model and effort in Settings. It can read files and run a short list of Git and text commands, all inside Claude's sandbox with no network access, and declines anything else on its own, so it never waits for your approval. Like Codex's sandbox, this is not a full read boundary, and a Git diff driver configured in your clone can still run inside it and write to the worktree."
+                          : "Codex reviews in its sandbox, using the model and effort in Settings."
                       }
-                      description="Enable when setup needs to download dependencies. Setup and the review agent can then reach the network, including code from the pull request."
                     />
+                    {(!claudeReviewer || editing.setupCommand) && (
+                      <TextArea
+                        label="Environment setup"
+                        isOptional
+                        placeholder="e.g. npm ci --ignore-scripts"
+                        value={editing.setupCommand}
+                        isDisabled={busy}
+                        onChange={(setupCommand) =>
+                          setEditing({ ...editing, setupCommand })
+                        }
+                        description="Runs in the new worktree, inside the Codex sandbox. Uses /bin/sh on Unix or PowerShell on Windows. Five-minute timeout. Setup can run code from the pull request, such as package install scripts; prefer options like --ignore-scripts."
+                        status={
+                          claudeReviewer
+                            ? {
+                                type: "error",
+                                message:
+                                  "Claude reviews can't run a setup command. Clear it to save.",
+                              }
+                            : undefined
+                        }
+                      />
+                    )}
+                    {!claudeReviewer && (
+                      <Switch
+                        label="Allow sandbox network access"
+                        value={editing.networkAccess}
+                        isDisabled={busy}
+                        onChange={(networkAccess) =>
+                          setEditing({ ...editing, networkAccess })
+                        }
+                        description="Enable when setup needs to download dependencies. Setup and the review agent can then reach the network, including code from the pull request."
+                      />
+                    )}
                     <Selector
                       label="Automatic rounds per pull request"
                       value={String(editing.roundLimit ?? 4)}
@@ -490,19 +534,23 @@ export function Repositories({ onScans }: { onScans?: () => void } = {}) {
                       }))}
                       description="After this many automatic reviews of a pull request, the loop stops and needs you. Review again always works."
                     />
-                    <Selector
-                      label="Approval time limit for automatic reviews"
-                      value={String(editing.approvalMinutes ?? 0)}
-                      isDisabled={busy}
-                      onChange={(v) =>
-                        setEditing({ ...editing, approvalMinutes: Number(v) })
-                      }
-                      options={[0, 5, 15, 30, 60, 120].map((n) => ({
-                        value: String(n),
-                        label: n ? `Decline after ${n} minutes` : "Wait for me",
-                      }))}
-                      description="When an automatic review asks to run a command or change files and no one answers in time, Orbit declines the request and notes it in the report. Declining grants nothing. Manual reviews always wait."
-                    />
+                    {!claudeReviewer && (
+                      <Selector
+                        label="Approval time limit for automatic reviews"
+                        value={String(editing.approvalMinutes ?? 0)}
+                        isDisabled={busy}
+                        onChange={(v) =>
+                          setEditing({ ...editing, approvalMinutes: Number(v) })
+                        }
+                        options={[0, 5, 15, 30, 60, 120].map((n) => ({
+                          value: String(n),
+                          label: n
+                            ? `Decline after ${n} minutes`
+                            : "Wait for me",
+                        }))}
+                        description="When an automatic review asks to run a command or change files and no one answers in time, Orbit declines the request and notes it in the report. Declining grants nothing. Manual reviews always wait."
+                      />
+                    )}
                     <Switch
                       label="Include repository in automatic reviews"
                       value={editing.automatic}

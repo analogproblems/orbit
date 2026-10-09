@@ -218,6 +218,18 @@ function problems(
       detail: s.codexError || "Reviews can't run until Codex reconnects.",
       action: { label: "Open settings", onClick: go.onSettings },
     });
+  if (
+    !s.claude?.ready &&
+    s.settings.repositories.some((r) => r.provider === "claude")
+  )
+    out.push({
+      key: "claude",
+      title: "Claude is not connected",
+      detail:
+        s.claude?.error ||
+        "Repositories reviewed by Claude can't run until Claude reconnects.",
+      action: { label: "Open settings", onClick: go.onSettings },
+    });
   if (s.githubError)
     out.push({
       key: "github",

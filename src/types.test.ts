@@ -8,6 +8,8 @@ import {
   canPublish,
   publishTarget,
   reportSelectionLabel,
+  claudeSelection,
+  type Provider,
 } from "./types";
 
 describe("derived review eligibility", () => {
@@ -144,8 +146,54 @@ it.each(reportLabelCases)(
       reportSelectionLabel({
         ...freshDemo().reviews[0],
         ...testCase,
+        provider: testCase.provider as Provider | undefined,
         legacyChatSelection: { model: "later-chat", effort: "high" },
       }),
     ).toBe(testCase.label);
   },
 );
+
+describe("Claude reviewer", () => {
+  const claudeRepo = () => {
+    const s = freshDemo();
+    const pr = s.prs.find((p) => !s.reviews.some((r) => r.prId === p.id))!;
+    s.settings.repositories = s.settings.repositories.map((r) =>
+      r.name === pr.repo ? { ...r, provider: "claude" as const } : r,
+    );
+    return { s, pr };
+  };
+  it("starts reviews on a Claude repository without Codex", () => {
+    const { s, pr } = claudeRepo();
+    s.codexReady = false;
+    expect(canStartReview(s, pr.id)).toBe(true);
+    s.claude = { ready: false, error: "Claude is not signed in." };
+    expect(canStartReview(s, pr.id)).toBe(false);
+  });
+  it("falls back to the default Claude model and its effort", () => {
+    const s = freshDemo();
+    expect(claudeSelection(s)).toEqual({
+      model: "claude-opus-5-5",
+      effort: "high",
+    });
+    s.settings.claudeModel = "claude-sonnet-5-5";
+    s.settings.claudeEffort = "low";
+    expect(claudeSelection(s)).toEqual({
+      model: "claude-sonnet-5-5",
+      effort: "low",
+    });
+  });
+  it("checks Claude follow-ups against Claude's models", () => {
+    const s = freshDemo();
+    const r = s.reviews.find((r) => r.threadId && r.worktree)!;
+    Object.assign(r, {
+      status: "ready",
+      provider: "claude",
+      model: "claude-opus-5-5",
+      effort: "high",
+    });
+    s.codexReady = false;
+    expect(followUpUnavailable(s, r)).toBeNull();
+    r.model = "demo-review-model";
+    expect(followUpUnavailable(s, r)).toMatch(/Claude model/);
+  });
+});

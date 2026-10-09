@@ -10,6 +10,8 @@ export function SaveFeedback({ saveKey }: { saveKey?: string }) {
       autoPost: "Automatic publication",
       model: "Model",
       effort: "Reasoning effort",
+      claudeModel: "Claude model",
+      claudeEffort: "Claude effort",
       concurrency: "Concurrent reviews",
       pollSeconds: "Poll interval",
       trustedAuthors: "Trusted accounts",

@@ -32,7 +32,9 @@ import {
   chatSelection,
   displayStatusLabels,
   followUpUnavailable,
+  providerLabels,
   publishTarget,
+  repoProvider,
   reportSelectionLabel,
   reviewDisplayStatus,
   statusLabels,
@@ -71,6 +73,7 @@ export function Chat({
   const running = !!review && activeStatuses.includes(review.status);
   const unavailable = review ? followUpUnavailable(s, review) : null;
   const history = s.reviews.filter((r) => r.prId === pr.id);
+  const reviewer = providerLabels[review?.provider ?? repoProvider(s, pr.repo)];
   if (!review)
     return (
       <ChatLayout
@@ -79,7 +82,7 @@ export function Chat({
           <EmptyState
             icon={<Sparkles />}
             title="Meet your review partner"
-            description="Start a review to give Codex a dedicated sandbox and a conversation about this pull request."
+            description={`Start a review to give ${reviewer} a dedicated sandbox and a conversation about this pull request.`}
             actions={
               <Button
                 label="Start review"
@@ -159,10 +162,10 @@ export function Chat({
               density="compact"
               input={
                 <ChatComposerInput
-                  label="Message Codex"
+                  label={`Message ${reviewer}`}
                   placeholder={
                     running
-                      ? "Codex is working. You can follow up when it finishes."
+                      ? `${reviewer} is working. You can follow up when it finishes.`
                       : "Ask a follow-up about this pull request…"
                   }
                   pasteAsToken={false}
@@ -253,7 +256,7 @@ export function Chat({
           emptyState={
             <EmptyState
               title="Your review is starting"
-              description="Messages will appear here as Codex works."
+              description={`Messages will appear here as ${reviewer} works.`}
               isCompact
             />
           }
@@ -282,7 +285,7 @@ export function Chat({
               <ChatMessage
                 key={m.id}
                 sender={m.role === "agent" ? "assistant" : "user"}
-                name={m.role === "agent" ? "Codex" : "You"}
+                name={m.role === "agent" ? reviewer : "You"}
                 metadata={
                   <HStack gap={2} wrap="wrap">
                     {m.delivery && m.delivery !== "sent" && (

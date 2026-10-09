@@ -1,6 +1,6 @@
 # Orbit
 
-Orbit is a local desktop app that plays the reviewer in an author/reviewer loop on your GitHub pull requests. A coding agent or a person opens a pull request. Orbit reviews its latest commit with Codex in an isolated worktree, posts the findings on the pull request, and marks the commit with a verdict. The author fixes or declines each finding and pushes again. Orbit reviews the new commit, starting from its earlier findings, and the loop repeats until the pull request is clean or something needs you.
+Orbit is a local desktop app that plays the reviewer in an author/reviewer loop on your GitHub pull requests. A coding agent or a person opens a pull request. Orbit reviews its latest commit with Codex, or with Claude if you choose it for the repository, in an isolated worktree, posts the findings on the pull request, and marks the commit with a verdict. The author fixes or declines each finding and pushes again. Orbit reviews the new commit, starting from its earlier findings, and the loop repeats until the pull request is clean or something needs you.
 
 Built with Tauri 2, Rust, React 19, TypeScript, Zustand, and the Astryx design system. See the [user guide](docs/user-guide.md) for every control and the [architecture notes](docs/architecture.md) for how it works inside.
 
@@ -8,9 +8,10 @@ Built with Tauri 2, Rust, React 19, TypeScript, Zustand, and the Astryx design s
 
 - Node.js 22.12 or newer, stable Rust (tested with 1.98), and Git.
 - The [GitHub CLI](https://cli.github.com/) (`gh`) and the Codex CLI (`codex`, tested with 0.156.1), both signed in.
+- Optional: [Claude Code](https://code.claude.com/docs) (`claude`), signed in, to review a repository with Claude instead of Codex.
 - The [Tauri native prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS.
 
-Orbit runs `gh`, `git`, and `codex` from your `PATH` and uses their own sign-ins. It never asks for or stores your tokens.
+Orbit runs `gh`, `git`, `codex`, and `claude` from your `PATH` and uses their own sign-ins. It never asks for or stores your tokens.
 
 ## Run
 
@@ -48,6 +49,7 @@ The [user guide](docs/user-guide.md#the-review-loop) has the full rules.
 
 - **Isolation, with limits.** Each review runs in its own detached Git worktree inside the Codex workspace-write sandbox, with network access off unless you enable it. This is not a VM or container: the agent can read files outside its worktree.
 - **Prompt injection.** A pull request can plant instructions that try to get local secrets quoted in the report. That is why automatic review and publication only cover pull requests from a branch in the repository by an owner, member, collaborator, or an account you trust. Drafts and forks are never reviewed automatically.
+- **Claude reviews run an allow list.** A repository reviewed by Claude runs `claude` with your own sign-in, its settings and plugins switched off, its sandbox required (on Linux, install `bubblewrap` and `socat`), and only file reading, search and a short list of Git and text commands allowed. Anything else is declined on its own and noted in the report; Claude reviews have no network access and can't run a setup command. As with Codex, the sandbox is not a full read boundary, and a Git diff driver configured in your clone can still run inside it and write to the worktree.
 - **Setup commands run pull request code**, such as install scripts. Prefer options like `--ignore-scripts`. With network access on, both setup and the agent can reach the network.
 - **Credential scan.** A report that looks like it contains a credential, such as a token or private key, is never published automatically, and publishing it yourself needs an extra confirmation. The scan is best effort and misses secrets without a recognizable format.
 - **Approvals.** Commands and file changes that need more access wait for you to approve or deny them; unknown requests are never granted automatically. A per-repository time limit can decline them on automatic reviews.

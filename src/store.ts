@@ -16,7 +16,9 @@ import { call, download, follow, lostConnection, readToken } from "./remote";
 import {
   defaults,
   selectionError,
-  workspaceSelectionUnavailable,
+  claudeSelection,
+  repoProvider,
+  reviewerSelectionUnavailable,
   chatSelection,
   chatModelUnavailable,
   reportSelectionLabel,
@@ -213,10 +215,13 @@ function demoSchedule() {
   commit();
 }
 function demoRun(prId: string, automatic = false) {
-  const unavailable = workspaceSelectionUnavailable(demo);
-  if (unavailable) throw Error(unavailable);
   const pr = demo.prs.find((p) => p.id === prId);
   if (!pr) throw Error("Unknown pull request.");
+  const provider = repoProvider(demo, pr.repo);
+  const unavailable = reviewerSelectionUnavailable(demo, provider);
+  if (unavailable) throw Error(unavailable);
+  const selection =
+    provider === "claude" ? claudeSelection(demo) : demo.settings;
   if (
     demo.reviews.some(
       (r) => r.prId === prId && activeStatuses.includes(r.status),
@@ -233,8 +238,9 @@ function demoRun(prId: string, automatic = false) {
     status: "queued",
     threadId: crypto.randomUUID(),
     worktree: "demo-worktree",
-    model: demo.settings.model,
-    effort: demo.settings.effort,
+    provider,
+    model: selection.model,
+    effort: selection.effort,
     createdAt: now,
     updatedAt: now,
     messages: [
@@ -290,11 +296,23 @@ async function demoAction(
         const error = selectionError(demo.models, next);
         if (error) throw Error(error);
       }
+      if (patch.claudeModel !== undefined || patch.claudeEffort !== undefined) {
+        const error = selectionError(
+          demo.claudeModels ?? [],
+          claudeSelection({ ...demo, settings: next }),
+          "claude",
+        );
+        if (error) throw Error(error);
+      }
     }
     if (command === "save_repository") {
       const repo = args.repository as Repository;
       if (!repo.path.startsWith("/"))
         throw Error("Use an absolute checkout path.");
+      if (repo.provider === "claude" && repo.setupCommand.trim())
+        throw Error(
+          `Claude reviews can't run a setup command. Clear the setup command for ${repo.name} or review it with Codex.`,
+        );
       if (args.original)
         next.repositories = next.repositories.map((r) =>
           sameRepo(r.name, args.original as string) ? repo : r,
@@ -327,10 +345,11 @@ async function demoAction(
     )
       demo.modelSelectionNotice = undefined;
     commit();
-    if (demo.settings.automatic && !workspaceSelectionUnavailable(demo))
+    if (demo.settings.automatic)
       for (const p of demo.prs.filter(
         (p) =>
           !p.draft &&
+          !reviewerSelectionUnavailable(demo, repoProvider(demo, p.repo)) &&
           trustedSource(p, demo.settings.trustedAuthors) &&
           demo.settings.repositories.some(
             (r) => sameRepo(r.name, p.repo) && r.automatic,

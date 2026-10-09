@@ -674,6 +674,12 @@ impl Settings {
             if repo.setup_command.len() > 10000 {
                 return Err("Setup command is too long.".into());
             }
+            if repo.provider == Provider::Claude && !repo.setup_command.trim().is_empty() {
+                return Err(format!(
+                    "Claude reviews can't run a setup command. Clear the setup command for {} or review it with Codex.",
+                    repo.name
+                ));
+            }
             if repo.approval_minutes > MAX_APPROVAL_MINUTES {
                 return Err("Approval time limits can be at most 24 hours.".into());
             }
@@ -1147,6 +1153,27 @@ pub(crate) mod tests {
         s.concurrency = 5;
         assert!(s.validate().is_err());
         s.concurrency = 2;
+        assert!(s.validate().is_ok());
+    }
+    #[test]
+    fn refuses_a_setup_command_for_claude_reviews() {
+        let mut s = Settings::default();
+        s.repositories.push(Repository {
+            name: "acme/app".into(),
+            path: "/tmp/app".into(),
+            automatic: false,
+            setup_command: "npm ci".into(),
+            network_access: false,
+            round_limit: 4,
+            approval_minutes: 0,
+            keep_updated: false,
+            provider: Provider::Claude,
+        });
+        assert!(s.validate().unwrap_err().contains("setup command"));
+        s.repositories[0].setup_command = " ".into();
+        assert!(s.validate().is_ok());
+        s.repositories[0].setup_command = "npm ci".into();
+        s.repositories[0].provider = Provider::Codex;
         assert!(s.validate().is_ok());
     }
 }

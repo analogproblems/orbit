@@ -17,9 +17,14 @@ import {
   Token,
   VStack,
 } from "@astryxdesign/core";
-import { Code2, GitBranch, RefreshCw } from "lucide-react";
+import { Bot, Code2, GitBranch, RefreshCw } from "lucide-react";
 import { useOrbit, live } from "./store";
-import { defaultEffort, workspaceSelectionUnavailable } from "./types";
+import {
+  claudeSelection,
+  defaultEffort,
+  reviewerSelectionUnavailable,
+  workspaceSelectionUnavailable,
+} from "./types";
 import { SaveFeedback } from "./SaveFeedback";
 import { Storage } from "./Storage";
 import { RemoteAccess } from "./RemoteAccess";
@@ -53,6 +58,11 @@ export function SettingsPage() {
       setNewLogin("");
   };
   const model = s.models.find((m) => m.model === draft.model);
+  const claudeModels = s.claudeModels ?? [];
+  const claude = claudeSelection({ ...s, settings: draft });
+  const claudeModel = claudeModels.find((m) => m.model === claude.model);
+  const claudeUsed = draft.repositories.some((r) => r.provider === "claude");
+  const claudeBlocked = claudeUsed && reviewerSelectionUnavailable(s, "claude");
   const pending = (key: string) => saves[key]?.state === "saving";
   return (
     <VStack gap={6} padding={6} maxWidth={760} className="content-page">
@@ -96,6 +106,35 @@ export function SettingsPage() {
                   />
                   <Text color="secondary" type="supporting">
                     {s.codexReady ? "Connected" : "Not connected"}
+                  </Text>
+                </HStack>
+              }
+            />
+            <ListItem
+              label="Claude Code CLI"
+              startContent={<Bot />}
+              description={
+                <Text color="secondary">
+                  {s.claude?.error ||
+                    (s.claude?.ready
+                      ? `Uses your Claude sign-in${s.claude.version ? ` · ${s.claude.version}` : ""}.`
+                      : "Optional. Install Claude Code and sign in to choose Claude as a repository's reviewer.")}
+                </Text>
+              }
+              endContent={
+                <HStack gap={2} vAlign="center">
+                  <StatusDot
+                    label="Claude connection"
+                    variant={
+                      s.claude?.ready
+                        ? "success"
+                        : claudeUsed
+                          ? "warning"
+                          : "neutral"
+                    }
+                  />
+                  <Text color="secondary" type="supporting">
+                    {s.claude?.ready ? "Connected" : "Not connected"}
                   </Text>
                 </HStack>
               }
@@ -152,7 +191,7 @@ export function SettingsPage() {
       </Card>
       <Card>
         <VStack gap={4}>
-          <Heading level={3}>Review agent</Heading>
+          <Heading level={3}>Codex reviews</Heading>
           {workspaceSelectionUnavailable(s) && (
             <Banner
               status="warning"
@@ -242,6 +281,104 @@ export function SettingsPage() {
                 onChange={(effort) => void updateSettings({ effort })}
               />
               <SaveFeedback saveKey="effort" />
+            </VStack>
+          </FormLayout>
+        </VStack>
+      </Card>
+      <Card>
+        <VStack gap={4}>
+          <VStack gap={2}>
+            <Heading level={3}>Claude reviews</Heading>
+            <Text color="secondary">
+              Used by repositories whose reviewer is Claude. Claude reviews with
+              its own code review rules, runs only a short list of Git and text
+              commands inside its sandbox, and has no network access.
+            </Text>
+          </VStack>
+          {claudeBlocked && (
+            <Banner
+              status="warning"
+              title={`Claude reviews are blocked: ${claudeBlocked}`}
+            />
+          )}
+          <FormLayout>
+            <VStack gap={2}>
+              <Selector
+                label="Claude model"
+                value={claude.model}
+                placeholder="Choose a model"
+                isDisabled={pending("claudeModel") || !claudeModels.length}
+                options={[
+                  ...(claude.model && !claudeModel
+                    ? [
+                        {
+                          value: claude.model,
+                          label: `${claude.model} (unavailable)`,
+                          disabled: true,
+                        },
+                      ]
+                    : []),
+                  ...claudeModels.map((m) => ({
+                    value: m.model,
+                    label: m.displayName,
+                  })),
+                ]}
+                onChange={(value) => {
+                  const selected = claudeModels.find((m) => m.model === value);
+                  if (selected && defaultEffort(selected))
+                    void updateSettings(
+                      {
+                        claudeModel: value,
+                        claudeEffort: defaultEffort(selected)!,
+                      },
+                      "claudeModel",
+                    );
+                }}
+              />
+              <SaveFeedback saveKey="claudeModel" />
+            </VStack>
+            <VStack gap={2}>
+              <Selector
+                label="Claude effort"
+                value={claude.effort}
+                placeholder="Choose an effort"
+                isDisabled={
+                  !claudeModel ||
+                  pending("claudeEffort") ||
+                  (!!saves.claudeModel && saves.claudeModel.state !== "saved")
+                }
+                description="Higher effort reviews more carefully and takes longer."
+                options={[
+                  ...(claude.effort &&
+                  !claudeModel?.supportedReasoningEfforts.some(
+                    (e) => e.reasoningEffort === claude.effort,
+                  )
+                    ? [
+                        {
+                          value: claude.effort,
+                          label: `${claude.effort} (unsupported)`,
+                          disabled: true,
+                        },
+                      ]
+                    : []),
+                  ...(claudeModel?.supportedReasoningEfforts.map((e) => ({
+                    value: e.reasoningEffort,
+                    label:
+                      e.reasoningEffort[0].toUpperCase() +
+                      e.reasoningEffort.slice(1),
+                  })) ?? []),
+                ]}
+                onChange={(claudeEffort) =>
+                  void updateSettings(
+                    {
+                      claudeModel: claude.model,
+                      claudeEffort,
+                    },
+                    "claudeEffort",
+                  )
+                }
+              />
+              <SaveFeedback saveKey="claudeEffort" />
             </VStack>
           </FormLayout>
         </VStack>

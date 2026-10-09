@@ -279,7 +279,12 @@ pub fn report_labels(review: &Review) -> (String, String) {
 }
 pub fn report_selection_label(review: &Review) -> String {
     let (model, effort) = report_labels(review);
-    format!("Model: {model} · Effort: {effort}")
+    // Codex reviews keep the original label so earlier reports read the same.
+    let reviewer = match review.provider {
+        crate::types::Provider::Codex => String::new(),
+        provider => format!("Reviewer: {} · ", provider.label()),
+    };
+    format!("{reviewer}Model: {model} · Effort: {effort}")
 }
 
 #[cfg(test)]
@@ -298,6 +303,9 @@ pub(crate) mod tests {
             r.effort = case["effort"].as_str().unwrap().into();
             r.confirmed_review_selection =
                 serde_json::from_value(case["confirmedReviewSelection"].clone()).unwrap();
+            if let Some(provider) = case.get("provider") {
+                r.provider = serde_json::from_value(provider.clone()).unwrap();
+            }
             r.legacy_chat_selection = Some(ModelSelection {
                 model: "later-chat".into(),
                 effort: "high".into(),
