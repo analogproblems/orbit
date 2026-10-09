@@ -68,7 +68,7 @@ impl Engine {
             .find(|r| r.id == id)
             .ok_or("Unknown review")?
             .clone();
-        ModelSelection::requested(&r).validate_execution(&s)?;
+        ModelSelection::requested(&r).validate_for(r.provider, &s)?;
         let pr = s
             .prs
             .iter()
@@ -82,7 +82,13 @@ impl Engine {
             .find(|c| same_repo(&c.name, &pr.repo))
             .ok_or("Repository configuration was removed")?
             .clone();
-        let rpc = self.client().await?;
+        if r.provider == Provider::Claude && !repo.setup_command.trim().is_empty() {
+            return Err("This repository's setup command runs in the Codex sandbox, which Claude reviews can't use. Clear the setup command or review this repository with Codex.".into());
+        }
+        let rpc = match r.provider {
+            Provider::Codex => Some(self.client().await?),
+            Provider::Claude => None,
+        };
         let cwd = std::fs::canonicalize(&repo.path)
             .map_err(|e| format!("Cannot access checkout: {e}"))?;
         let worktree = self.root.join("worktrees").join(id);
@@ -153,6 +159,9 @@ impl Engine {
         self.live(id).await?;
         self.carry_previous_round(id, &pr, &worktree).await?;
         self.live(id).await?;
+        let Some(rpc) = rpc else {
+            return self.start_claude_review(id, &worktree).await;
+        };
         let policy = json!({
             "type": "workspaceWrite",
             "writableRoots": [worktree],
@@ -381,7 +390,9 @@ impl Engine {
             let task = self.preparing.lock().unwrap().remove(id);
             task.map(|task| task.abort()).is_some()
         };
-        if let Ok(rpc) = self.client().await {
+        if r.provider == Provider::Claude {
+            self.stop_claude(id).await;
+        } else if let Ok(rpc) = self.client().await {
             if let (Some(thread), Some(turn)) = (r.thread_id, r.turn_id) {
                 let _ = rpc
                     .request("turn/interrupt", json!({"threadId":thread,"turnId":turn}))
@@ -616,11 +627,16 @@ impl Engine {
         } else {
             self.update_live(apply).await;
         }
+        self.follow(&id, next);
+    }
+    /// Starts what an applied event left to do.
+    pub(super) fn follow(self: &Arc<Self>, id: &str, next: Next) {
         match next {
             Next::Nothing => {}
-            Next::Publish => self.autopost(&id),
+            Next::Publish => self.autopost(id),
             Next::Extract => {
                 let e = self.clone();
+                let id = id.to_string();
                 tokio::spawn(async move { e.extract_findings(&id).await });
             }
         }
@@ -802,6 +818,21 @@ pub(super) fn apply_event(s: &mut Snapshot, id: &str, event: ReviewEvent) -> Nex
                     }
                 }
             }
+        }
+        ReviewEvent::Declined(command) => {
+            let note = format!(
+                "Declined the reviewer's command `{}` because {reviewer} reviews can't ask for approval.",
+                command.replace('`', "'")
+            );
+            r.messages.push(Message::new("system", &note));
+            r.declined_approvals.push(note);
+            r.sensitive = r.credential_scan();
+        }
+        ReviewEvent::Notice(text) => r.messages.push(Message::new("system", text)),
+        ReviewEvent::Incomplete(error) => {
+            r.extracting = false;
+            r.status = "failed".into();
+            r.error = Some(error);
         }
         ReviewEvent::RequestResolved(_) | ReviewEvent::Activity => {}
     }

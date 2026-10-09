@@ -1,6 +1,6 @@
 //! Selection policy shared by migration, settings, and execution. Catalog IDs
 //! are UI identifiers; only the `model` slug is sent to Codex.
-use crate::types::{Review, Settings, Snapshot};
+use crate::types::{Provider, Review, Settings, Snapshot};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -113,6 +113,75 @@ impl ModelSelection {
         }
         Ok(())
     }
+}
+
+impl ModelSelection {
+    /// Checks a run by `provider` can start with this selection now.
+    pub fn validate_for(&self, provider: Provider, state: &Snapshot) -> Result<(), String> {
+        match provider {
+            Provider::Codex => self.validate_execution(state),
+            Provider::Claude => {
+                if !state.claude.ready {
+                    return Err(state
+                        .claude
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "Claude isn't ready. Check it in Settings.".into()));
+                }
+                self.validate_claude()
+            }
+        }
+    }
+    /// Checks the selection against the Claude models Orbit offers.
+    pub fn validate_claude(&self) -> Result<(), String> {
+        let catalog = crate::claude::catalog();
+        let model = catalog
+            .iter()
+            .find(|m| m["model"] == self.model)
+            .ok_or_else(|| {
+                format!(
+                    "Claude model '{}' is not offered. Choose a Claude model in Settings.",
+                    self.model
+                )
+            })?;
+        if !model["supportedReasoningEfforts"]
+            .as_array()
+            .is_some_and(|efforts| efforts.iter().any(|e| e["reasoningEffort"] == self.effort))
+        {
+            return Err(format!(
+                "Claude model '{}' does not support effort '{}'. Choose a supported effort in Settings.",
+                self.model, self.effort
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// The Claude model and effort new Claude reviews use: the saved choice, or
+/// the default model and its default effort.
+pub fn claude_selection(settings: &Settings) -> ModelSelection {
+    let catalog = crate::claude::catalog();
+    let model = if settings.claude_model.is_empty() {
+        catalog
+            .iter()
+            .find(|m| m["isDefault"] == true)
+            .and_then(|m| m["model"].as_str())
+            .unwrap_or_default()
+            .to_string()
+    } else {
+        settings.claude_model.clone()
+    };
+    let effort = if settings.claude_effort.is_empty() {
+        catalog
+            .iter()
+            .find(|m| m["model"] == model)
+            .and_then(|m| m["defaultReasoningEffort"].as_str())
+            .unwrap_or("high")
+            .to_string()
+    } else {
+        settings.claude_effort.clone()
+    };
+    ModelSelection { model, effort }
 }
 
 #[derive(Debug)]

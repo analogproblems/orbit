@@ -1,4 +1,5 @@
 pub mod attention;
+pub mod claude;
 pub mod engine;
 pub mod github;
 pub mod models;
@@ -139,6 +140,8 @@ mod desktop {
     }
     #[tauri::command]
     async fn connect_services(engine: State<'_, AppState>) -> Result<(), String> {
+        // Claude is optional; its status shows in Settings either way.
+        let _ = engine.check_claude().await;
         engine.connect().await?;
         engine.poll().await
     }

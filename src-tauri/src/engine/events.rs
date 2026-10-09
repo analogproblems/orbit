@@ -36,6 +36,12 @@ pub(super) enum ReviewEvent {
     TurnDone(TurnEnd),
     /// The reviewer stopped waiting for the approval with this request id.
     RequestResolved(Value),
+    /// A command the reviewer was refused without anyone being asked.
+    Declined(String),
+    /// Something the developer should know about the run.
+    Notice(String),
+    /// The reviewer could not do the review, though its turns finished.
+    Incomplete(String),
     /// Anything else the reviewer did, which only shows the review is alive.
     Activity,
 }

@@ -23,7 +23,7 @@ const PRIOR_STATUSES: [(&str, PriorStatus); 4] = [
     ("declined_disputed", PriorStatus::DeclinedDisputed),
 ];
 
-fn output_schema() -> Value {
+pub(super) fn output_schema() -> Value {
     json!({
         "type": "object",
         "additionalProperties": false,
@@ -268,13 +268,16 @@ impl Engine {
             }
         }
     }
-    async fn start_extraction(&self, id: &str) -> Result<(), String> {
+    async fn start_extraction(self: &Arc<Self>, id: &str) -> Result<(), String> {
         let s = self.snapshot().await;
         let r = s
             .reviews
             .iter()
             .find(|r| r.id == id)
             .ok_or("Unknown review")?;
+        if r.provider == Provider::Claude {
+            return self.start_claude_extraction(id).await;
+        }
         let selection = ModelSelection::requested(r);
         selection.validate_execution(&s)?;
         let thread = r

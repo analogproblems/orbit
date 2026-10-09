@@ -266,6 +266,8 @@ async fn dispatch(e: &Arc<Engine>, name: &str, a: &Value) -> Result<Value, Strin
             out(())
         }
         "connect_services" => {
+            // Claude is optional; its status shows in Settings either way.
+            let _ = e.check_claude().await;
             e.connect().await?;
             out(e.poll().await?)
         }

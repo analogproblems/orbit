@@ -12,6 +12,7 @@ use std::{
 use tokio::sync::Mutex;
 
 mod chat;
+mod claude;
 mod clones;
 mod connection;
 mod events;
@@ -33,6 +34,8 @@ const USAGE_REFRESH: Duration = Duration::from_secs(5 * 60);
 
 #[cfg(test)]
 mod chat_tests;
+#[cfg(test)]
+mod claude_tests;
 #[cfg(test)]
 mod clones_tests;
 #[cfg(test)]
@@ -141,6 +144,10 @@ pub struct Engine {
     /// The ChatGPT account the usage meter belongs to, so a reconnect as
     /// another account, or with an API key, clears the old numbers.
     usage_account: std::sync::Mutex<Option<String>>,
+    /// How Claude is started; tests start a fake.
+    claude_launcher: std::sync::Mutex<crate::claude::Launcher>,
+    /// Each review's running Claude turn, so Stop can end it.
+    claude_turns: std::sync::Mutex<HashMap<String, Arc<crate::claude::Running>>>,
     _instance_lock: std::fs::File,
 }
 impl Engine {
@@ -239,6 +246,8 @@ impl Engine {
         state.model_catalog_ready = false;
         state.model_configuration_error = None;
         state.models.clear();
+        state.claude = ClaudeStatus::default();
+        state.claude_models = crate::claude::catalog();
         Ok(Arc::new(Self {
             state: Mutex::new(state),
             rpc: Mutex::new(None),
@@ -264,6 +273,8 @@ impl Engine {
             answering: std::sync::Mutex::new(HashSet::new()),
             stopping_scans: std::sync::Mutex::new(HashSet::new()),
             usage_account: std::sync::Mutex::new(None),
+            claude_launcher: std::sync::Mutex::new(crate::claude::Launcher::default()),
+            claude_turns: std::sync::Mutex::new(HashMap::new()),
             _instance_lock: instance_lock,
         }))
     }
@@ -368,6 +379,10 @@ impl Engine {
         });
         let e = self.clone();
         tokio::spawn(async move {
+            let _ = e.check_claude().await;
+        });
+        let e = self.clone();
+        tokio::spawn(async move {
             let _ = e.poll().await;
             e.update_clones().await;
             e.clean_worktrees().await;
@@ -390,9 +405,9 @@ impl Engine {
                 if e.flush().await.is_err() {
                     continue;
                 }
-                let (poll_seconds, codex_ready) = {
+                let (poll_seconds, codex_ready, claude_ready) = {
                     let s = e.state.lock().await;
-                    (s.settings.poll_seconds, s.codex_ready)
+                    (s.settings.poll_seconds, s.codex_ready, s.claude.ready)
                 };
                 if last_poll.elapsed().as_secs() >= poll_seconds {
                     last_poll = std::time::Instant::now();
@@ -409,14 +424,15 @@ impl Engine {
                     last_usage = std::time::Instant::now();
                     tokio::spawn(e.clone().read_usage());
                 }
-                e.tick(codex_ready).await;
+                e.tick(codex_ready || claude_ready).await;
             }
         });
     }
-    /// Work done on every tick: scheduling needs Codex, but commit statuses
-    /// only need GitHub, so a disconnect still closes the checks it failed.
-    async fn tick(self: &Arc<Self>, codex_ready: bool) {
-        if codex_ready {
+    /// Work done on every tick: scheduling needs a reviewer, but commit
+    /// statuses only need GitHub, so a disconnect still closes the checks it
+    /// failed.
+    async fn tick(self: &Arc<Self>, reviewer_ready: bool) {
+        if reviewer_ready {
             self.schedule().await;
         }
         self.expire_approvals().await;
@@ -451,6 +467,7 @@ impl Engine {
         if let Some(rpc) = self.rpc.lock().await.as_ref() {
             rpc.shutdown().await;
         }
+        self.stop_all_claude().await;
         let _ = self.flush().await;
     }
 }

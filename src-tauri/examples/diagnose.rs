@@ -5,6 +5,7 @@ async fn main() {
     let root = std::env::temp_dir().join(format!("orbit-diagnose-{}", std::process::id()));
     let engine = Engine::new(root.clone(), |_| {}).expect("Initialize temporary state");
     let codex = engine.connect().await;
+    let claude = engine.check_claude().await;
     let github = engine.poll().await;
     let snapshot = engine.snapshot().await;
     println!(
@@ -15,6 +16,17 @@ async fn main() {
             .unwrap_or_else(|e| e.clone())
     );
     println!("Available models: {}", snapshot.models.len());
+    // Claude reviews are optional, so a missing Claude is reported but not a failure.
+    println!(
+        "Claude: {}",
+        match &claude {
+            Ok(()) => format!(
+                "signed in (version {})",
+                snapshot.claude.version.as_deref().unwrap_or("unknown")
+            ),
+            Err(e) => e.clone(),
+        }
+    );
     println!(
         "GitHub: {}",
         github
