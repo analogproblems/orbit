@@ -33,7 +33,8 @@ import {
   sameRepo,
   sameRepository,
   trustedSource,
-  workspaceSelectionUnavailable,
+  reviewerSelectionUnavailable,
+  repoProvider,
   type PullRequest,
   type Review,
 } from "./types";
@@ -68,6 +69,10 @@ export function Detail({
   onRepositories: () => void;
 }) {
   const { snapshot: s, action, updateSettings } = useOrbit();
+  const reviewBlocked = reviewerSelectionUnavailable(
+    s,
+    repoProvider(s, pr.repo),
+  );
   const autoSkipped =
     s.settings.automatic &&
     !pr.draft &&
@@ -215,16 +220,15 @@ export function Detail({
         >
           {panel === tab && (
             <>
-              {(tab !== "chat" || !review) &&
-                workspaceSelectionUnavailable(s) && (
-                  <Banner
-                    status="warning"
-                    title={workspaceSelectionUnavailable(s)}
-                    endContent={
-                      <Button label="Open Settings" onClick={onSettings} />
-                    }
-                  />
-                )}
+              {(tab !== "chat" || !review) && reviewBlocked && (
+                <Banner
+                  status="warning"
+                  title={reviewBlocked}
+                  endContent={
+                    <Button label="Open Settings" onClick={onSettings} />
+                  }
+                />
+              )}
               {autoSkipped && (
                 <Banner
                   status="warning"

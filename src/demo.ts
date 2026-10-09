@@ -581,6 +581,20 @@ export function freshDemo(): Snapshot {
         isDefault: true,
       },
     ],
+    claude: { ready: true, version: "demo" },
+    claudeModels: [
+      ["claude-opus-5-5", "Claude Opus 5.5", true],
+      ["claude-sonnet-5-5", "Claude Sonnet 5.5", false],
+    ].map(([model, displayName, isDefault]) => ({
+      id: model as string,
+      model: model as string,
+      displayName: displayName as string,
+      defaultReasoningEffort: "high",
+      supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"].map(
+        (reasoningEffort) => ({ reasoningEffort, description: "" }),
+      ),
+      isDefault: isDefault as boolean,
+    })),
     approvals: [],
     githubUser: "you",
     codexReady: true,

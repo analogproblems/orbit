@@ -46,7 +46,11 @@ export interface Message {
   createdAt: string;
 }
 /** Who reviews a repository's pull requests. */
-export type Provider = "codex";
+export type Provider = "codex" | "claude";
+export const providerLabels: Record<Provider, string> = {
+  codex: "Codex",
+  claude: "Claude",
+};
 export interface Review {
   id: string;
   prId: string;
@@ -196,6 +200,9 @@ export interface Settings {
   concurrency: number;
   model: string;
   effort: string;
+  /** The model and effort of Claude reviews; empty uses Claude's default. */
+  claudeModel?: string;
+  claudeEffort?: string;
   repositories: Repository[];
   trustedAuthors: string[];
   /** Findings at this priority or more severe (0 = P0) block a clean verdict. */
@@ -358,6 +365,11 @@ export function autopilotSummary(s: Snapshot) {
 export function loopState(s: Snapshot, prId: string) {
   return s.loopStates?.find((l) => l.prId === prId);
 }
+export interface ClaudeStatus {
+  ready: boolean;
+  error?: string | null;
+  version?: string | null;
+}
 export interface Snapshot {
   loops?: LoopControl[];
   /** Derived by the app for display. */
@@ -377,6 +389,10 @@ export interface Snapshot {
   lastPoll?: string;
   polling: boolean;
   codexReady: boolean;
+  /** The Claude CLI, as last checked. */
+  claude?: ClaudeStatus;
+  /** The Claude models Orbit offers. */
+  claudeModels?: Model[];
   modelCatalogReady: boolean;
   modelConfigurationError?: string | null;
   modelSelectionNotice?: string | null;
@@ -508,6 +524,8 @@ export const defaults: Settings = {
   concurrency: 2,
   model: "",
   effort: "",
+  claudeModel: "",
+  claudeEffort: "",
   repositories: [],
   trustedAuthors: [],
   blockingPriority: 1,
@@ -568,12 +586,15 @@ export const displayStatusLabels: Record<DisplayStatus, string> = {
 export function selectionError(
   models: Model[],
   selection: ModelSelection,
+  provider: Provider = "codex",
 ): string | null {
   if (!selection.model || !selection.effort)
     return "Choose an explicit model and reasoning effort in Settings.";
   const matches = models.filter((m) => m.model === selection.model);
   if (matches.length !== 1)
-    return `Model '${selection.model}' is unavailable. Reconnect Codex or choose an available model in Settings.`;
+    return provider === "claude"
+      ? `Claude model '${selection.model}' is unavailable. Choose an available model in Settings.`
+      : `Model '${selection.model}' is unavailable. Reconnect Codex or choose an available model in Settings.`;
   if (
     !matches[0].supportedReasoningEfforts.some(
       (e) => e.reasoningEffort === selection.effort,
@@ -598,6 +619,47 @@ export function workspaceSelectionUnavailable(s: Snapshot): string | null {
     selectionError(s.models, s.settings)
   );
 }
+/** Who reviews a repository's pull requests; unconfigured ones use Codex. */
+export function repoProvider(s: Snapshot, repo: string): Provider {
+  return (
+    s.settings.repositories.find((r) => sameRepo(r.name, repo))?.provider ??
+    "codex"
+  );
+}
+// Mirrors models::claude_selection in src-tauri/src/models.rs.
+export function claudeSelection(s: Snapshot): ModelSelection {
+  const models = s.claudeModels ?? [];
+  const model =
+    s.settings.claudeModel || models.find((m) => m.isDefault)?.model || "";
+  const effort =
+    s.settings.claudeEffort ||
+    models.find((m) => m.model === model)?.defaultReasoningEffort ||
+    "";
+  return { model, effort };
+}
+/** Why a reviewer can't take new work now, if it can't. */
+export function reviewerUnavailable(
+  s: Snapshot,
+  provider: Provider,
+): string | null {
+  if (provider === "codex") return catalogUnavailable(s);
+  if (!s.claude?.ready)
+    return (
+      s.claude?.error || "Claude is not connected. Check it again in Settings."
+    );
+  return null;
+}
+/** Why a new review with this reviewer can't start, if it can't. */
+export function reviewerSelectionUnavailable(
+  s: Snapshot,
+  provider: Provider,
+): string | null {
+  if (provider === "codex") return workspaceSelectionUnavailable(s);
+  return (
+    reviewerUnavailable(s, provider) ||
+    selectionError(s.claudeModels ?? [], claudeSelection(s), provider)
+  );
+}
 export function defaultEffort(model: Model): string | undefined {
   return model.supportedReasoningEfforts.some(
     (e) => e.reasoningEffort === model.defaultReasoningEffort,
@@ -610,12 +672,18 @@ export function chatSelection(r: Review): ModelSelection | undefined {
     ? { model: r.model, effort: r.effort }
     : (r.legacyChatSelection ?? undefined);
 }
+// Mirrors models::report_selection_label in src-tauri/src/models.rs.
 export function reportSelectionLabel(r: Review): string {
+  // Codex reviews keep the original label so earlier reports read the same.
+  const reviewer =
+    r.provider && r.provider !== "codex"
+      ? `Reviewer: ${providerLabels[r.provider]} · `
+      : "";
   if (r.confirmedReviewSelection)
-    return `Model: ${r.confirmedReviewSelection.model} (confirmed) · Effort: ${r.confirmedReviewSelection.effort} (confirmed)`;
+    return `${reviewer}Model: ${r.confirmedReviewSelection.model} (confirmed) · Effort: ${r.confirmedReviewSelection.effort} (confirmed)`;
   const label = (value: string) =>
     value ? `${value} (requested, unverified)` : "not recorded";
-  return `Model: ${label(r.model)} · Effort: ${label(r.effort)}`;
+  return `${reviewer}Model: ${label(r.model)} · Effort: ${label(r.effort)}`;
 }
 export function chatModelUnavailable(s: Snapshot, r: Review): string | null {
   if (r.cleanupPending)
@@ -626,7 +694,7 @@ export function chatModelUnavailable(s: Snapshot, r: Review): string | null {
   if (!r.threadId) return "Start a review to create its chat.";
   if (!r.worktree)
     return "Chat workspace removed. Start a new review to continue.";
-  return catalogUnavailable(s);
+  return reviewerUnavailable(s, r.provider ?? "codex");
 }
 export function followUpUnavailable(s: Snapshot, r: Review): string | null {
   const unavailable = chatModelUnavailable(s, r);
@@ -634,7 +702,9 @@ export function followUpUnavailable(s: Snapshot, r: Review): string | null {
   const selection = chatSelection(r);
   if (!selection)
     return "Choose a chat model and effort before sending a follow-up.";
-  const error = selectionError(s.models, selection);
+  const provider = r.provider ?? "codex";
+  const models = provider === "claude" ? (s.claudeModels ?? []) : s.models;
+  const error = selectionError(models, selection, provider);
   if (error)
     return `${error} This chat's selection is pinned; start a new review to use different settings.`;
   if (
@@ -649,7 +719,7 @@ export function canStartReview(s: Snapshot, prId: string) {
   const pr = s.prs.find((p) => p.id === prId);
   return (
     !!pr &&
-    !workspaceSelectionUnavailable(s) &&
+    !reviewerSelectionUnavailable(s, repoProvider(s, pr.repo)) &&
     s.settings.repositories.some((r) => sameRepo(r.name, pr.repo)) &&
     !s.reviews.some((r) => r.prId === prId && activeStatuses.includes(r.status))
   );

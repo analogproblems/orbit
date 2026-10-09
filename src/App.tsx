@@ -294,6 +294,20 @@ export default function App() {
                         {s.codexReady ? "Connected" : "Not connected"}
                       </Text>
                     </HStack>
+                    {s.settings.repositories.some(
+                      (r) => r.provider === "claude",
+                    ) && (
+                      <HStack gap={2} vAlign="center">
+                        <StatusDot
+                          variant={s.claude?.ready ? "success" : "warning"}
+                          label="Claude connection"
+                        />
+                        <Text type="supporting" color="secondary">
+                          Claude ·{" "}
+                          {s.claude?.ready ? "Connected" : "Not connected"}
+                        </Text>
+                      </HStack>
+                    )}
                     <HStack gap={2} vAlign="center">
                       <StatusDot
                         variant={

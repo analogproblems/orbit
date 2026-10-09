@@ -37,6 +37,8 @@ gh auth login
 codex login
 ```
 
+To review a repository with Claude, install [Claude Code](https://code.claude.com/docs) and run `claude` once to sign in. Claude is optional: Codex reviews work without it.
+
 Then use **Settings → Reconnect**. That action connects Codex and, if the connection succeeds, syncs GitHub. The inbox refresh button can sync GitHub separately. If launching through a desktop shortcut cannot find the CLIs or their sign-ins (some desktops give GUI apps a different `PATH` or keyring environment), launch the executable from the terminal where they work.
 
 ### Codex usage
@@ -94,6 +96,14 @@ The clone does not need to be up to date. Each review fetches the PR head and ba
 Turn on **Keep this clone up to date** when the clone on disk drifts behind GitHub, for example because you mostly work elsewhere. After each sync (on the poll interval and after **Sync now**), Orbit runs `git fetch origin` in the clone and, when the checked-out branch is only behind the branch it tracks, fast-forwards it with `git merge --ff-only`. Git hooks are disabled for these commands.
 
 Orbit never discards or rewrites your work. It leaves the clone unchanged and says why on the repository when the clone is not on a branch, the branch tracks no remote branch, the branch has local commits that GitHub does not, or tracked files have uncommitted changes. Untracked files do not block an update unless Git would have to overwrite one, in which case the update fails and the repository shows Git's error. Only the checked-out branch is moved; other local branches are left alone.
+
+### Choose the reviewer
+
+Each repository has a **Reviewer**: **Codex** (the default) or **Claude**. Claude reviews use the Claude Code CLI with your own Claude sign-in, and the **Claude reviews** model and effort in Settings. Claude reviews with its own built-in code review rules, then Orbit asks it, on the same conversation, to list its findings in Orbit's format. Later rounds, the review loop, publishing, inline comments and follow-up chat work the same as with Codex.
+
+A Claude review is read-only. Orbit starts `claude` with your Claude settings, plugins and connectors switched off, its sandbox on, and only file reading, search, and read-only Git commands allowed. Anything else, such as editing files or running tests, is declined on its own and noted in the report, so a Claude review never waits for your approval. Claude reviews have no network access and can't run a setup command: clear the repository's setup command before choosing Claude. They only run inside Claude's sandbox; where it can't start (on Linux it needs `bubblewrap` and `socat`; native Windows has none), the review fails and says why. If a review changes the worktree anyway, the chat says so.
+
+**Settings → Connections** shows whether Claude is connected. Repositories reviewed by Claude wait while it isn't, and **Live** lists it under what needs you.
 
 ### Set up the review environment
 
@@ -316,6 +326,8 @@ By default an approval waits for you however long it takes. For a repository, yo
 | -------------------------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | Model                                  | Resolved on connection             | Models returned by the connected Codex app-server.                                                                |
 | Reasoning effort                       | Selected model’s supported default | Explicit efforts supported by the selected model. Changing the model saves its supported default effort.          |
+| Claude model                           | Claude Opus 5.5                    | Claude Opus 5.5, Fable 5.1, Sonnet 5.5, or Haiku 5.5; used by repositories reviewed by Claude.                    |
+| Claude effort                          | High                               | Low, medium, high, xhigh, or max (Haiku: low to high). Changing the model saves its default effort.               |
 | Automatically review new pull requests | Off                                | On/off; also controlled by the header.                                                                            |
 | Automatically publish findings         | Off                                | On/off; applies to automatic runs.                                                                                |
 | Concurrent reviews                     | 2                                  | 1–4 slots, shared by preparation, reviewing, approvals, and follow-ups. Lowering it does not cancel running work. |

@@ -20,7 +20,20 @@
   {
     "model": "requested-model",
     "effort": "high",
-    "confirmedReviewSelection": { "model": "confirmed-model", "effort": "low" },
+    "confirmedReviewSelection": {
+      "model": "confirmed-model",
+      "effort": "low"
+    },
     "label": "Model: confirmed-model (confirmed) · Effort: low (confirmed)"
+  },
+  {
+    "provider": "claude",
+    "model": "claude-opus-5-5",
+    "effort": "high",
+    "confirmedReviewSelection": {
+      "model": "claude-opus-5-5",
+      "effort": "high"
+    },
+    "label": "Reviewer: Claude · Model: claude-opus-5-5 (confirmed) · Effort: high (confirmed)"
   }
 ]
