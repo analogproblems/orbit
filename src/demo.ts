@@ -378,7 +378,24 @@ function demoRound(
           headSha: previous.headSha,
           verdict: previous.orbitVerdict ?? null,
           findings: earlier,
-          commentsIncluded: 0,
+          // The author answered each one by its short ID.
+          claims: priorFindings.map((p) => ({
+            findingId: p.id,
+            author: pr.author,
+            createdAt: ago(minutesAgo + 10),
+            kind:
+              p.status === "declined_accepted"
+                ? ("declined" as const)
+                : ("fixed" as const),
+            commit: p.status === "declined_accepted" ? null : head,
+            commitCheck:
+              p.status === "declined_accepted" ? null : ("in_change" as const),
+            reason:
+              p.status === "declined_accepted"
+                ? "The name matches the other queue constants."
+                : null,
+          })),
+          commentsIncluded: priorFindings.length,
           commentsOmitted: 0,
         }
       : null,

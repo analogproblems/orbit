@@ -22,6 +22,8 @@ import {
 } from "./findingIndex";
 import {
   categoryLabels,
+  claimSummary,
+  commitPlaceNotes,
   countNote,
   findingLocation,
   findingReviewId,
@@ -30,6 +32,7 @@ import {
   priorStatusLabels,
   providerLabels,
   shortId,
+  type AuthorClaim,
   type Finding,
   type PriorStatus,
   type Review,
@@ -187,6 +190,8 @@ const priorColors: Record<PriorStatus, "green" | "orange" | "gray" | "red"> = {
 interface EarlierFinding extends Finding {
   status: PriorStatus | null;
   note: string;
+  /** What the author said about it, when Orbit recognised a reply. */
+  claim: AuthorClaim | null;
 }
 
 /** What a re-review decided about the findings of earlier rounds. */
@@ -202,7 +207,13 @@ function SinceLastRound({
   if (!round || round.findings.length === 0) return null;
   const rows: EarlierFinding[] = round.findings.map((f) => {
     const prior = review.priorFindings?.find((p) => p.id === f.id);
-    return { ...f, status: prior?.status ?? null, note: prior?.note ?? "" };
+    const claim = round.claims?.find((c) => c.findingId === f.id) ?? null;
+    return {
+      ...f,
+      status: prior?.status ?? null,
+      note: prior?.note ?? "",
+      claim,
+    };
   });
   const counts = (Object.keys(priorStatusLabels) as PriorStatus[])
     .map((status) => {
@@ -240,6 +251,14 @@ function SinceLastRound({
           <Text weight="medium">
             {shortId(f) ? `${shortId(f)} · ` : ""}P{f.priority} · {f.title}
           </Text>
+          {f.claim && (
+            <Text type="supporting">
+              @{f.claim.author}: {claimSummary(f.claim)}.
+              {f.claim.commitCheck && commitPlaceNotes[f.claim.commitCheck]
+                ? ` ${commitPlaceNotes[f.claim.commitCheck]}`
+                : ""}
+            </Text>
+          )}
           {f.note && <Text type="supporting">{f.note}</Text>}
           <Text type="code">{findingLocation(f)}</Text>
         </VStack>

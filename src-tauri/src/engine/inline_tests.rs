@@ -208,6 +208,7 @@ fn a_clean_review_has_no_other_findings_section() {
     assert!(plan.comments.is_empty());
     assert!(plan.body.contains("Verdict: clean"));
     assert!(!plan.body.contains("Other findings"));
+    assert!(!plan.body.contains("To answer a finding"));
 }
 #[test]
 fn enforces_githubs_size_limits() {
@@ -251,6 +252,15 @@ fn the_review_holds_the_reviewers_report_and_data_for_agents() {
         head_sha: "c".repeat(40),
         verdict: None,
         findings: vec![earlier],
+        claims: vec![AuthorClaim {
+            finding_id: "old-0".into(),
+            author: "alex".into(),
+            created_at: "2026-01-02T00:00:00Z".into(),
+            kind: ClaimKind::Fixed,
+            commit: Some("abc1234def".into()),
+            commit_check: Some(CommitPlace::InChange),
+            reason: None,
+        }],
         decisions: vec![],
         comments_included: 0,
         comments_omitted: 0,
@@ -266,9 +276,13 @@ fn the_review_holds_the_reviewers_report_and_data_for_agents() {
         "{body}"
     );
     assert!(
-        body.contains("| fixed | F1 · P1 Keep overrides | Done. |"),
+        body.contains("| fixed | F1 · P1 Keep overrides | fixed in `abc1234` | Done. |"),
         "{body}"
     );
+    // How to answer, naming one of this round's findings.
+    assert!(body.contains(
+        "_To answer a finding, reply `Fixed F3 in <commit>` or `Declined F3: <reason>`, here or in its thread."
+    ));
     // The data can't end its HTML comment early, and reads back exactly.
     let hidden = body.split("<!-- orbit-data ").nth(1).unwrap();
     assert!(!hidden.split_once(" -->").unwrap().0.contains(['<', '>']));
@@ -307,7 +321,9 @@ fn the_review_holds_the_reviewers_report_and_data_for_agents() {
     assert_eq!(f["notInlineBecause"], "outside the repository");
     assert_eq!(
         v["earlierFindings"],
-        json!([{"id":"old-0","shortId":"F1","title":"Keep overrides","priority":1,"status":"fixed","note":"Done."}])
+        json!([{"id":"old-0","shortId":"F1","title":"Keep overrides","priority":1,"status":"fixed","note":"Done.",
+                 "authorSaid":{"findingId":"old-0","author":"alex","createdAt":"2026-01-02T00:00:00Z","kind":"fixed",
+                               "commit":"abc1234def","commitCheck":"in_change","reason":null}}])
     );
 }
 #[test]
@@ -385,6 +401,7 @@ fn scans_every_published_part_for_credentials() {
             title: format!("Leaks ghp_{}", "a1".repeat(18)),
             ..finding(Some("src/a.rs"), 1, 1)
         }],
+        claims: vec![],
         decisions: vec![],
         comments_included: 0,
         comments_omitted: 0,

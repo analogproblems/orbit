@@ -4,6 +4,7 @@ import reportLabelCases from "../test-fixtures/report-selection-labels.json";
 import findingCategories from "../test-fixtures/finding-categories.json";
 import {
   categoryLabels,
+  claimSummary,
   countNote,
   isBlocking,
   notChecked,
@@ -288,5 +289,22 @@ describe("findings form", () => {
     expect(countNote(held)).toBeNull();
     expect(countNote({ ...r, reportFindings: null })).toBeNull();
     expect(second.number).toBe(2);
+  });
+  it("says what the author said about an earlier finding", () => {
+    const claim = {
+      findingId: "r-0",
+      author: "alex",
+      createdAt: "",
+      kind: "fixed" as const,
+      commit: "abc1234def",
+      commitCheck: null,
+      reason: null,
+    };
+    expect(claimSummary(claim)).toBe("fixed in abc1234");
+    expect(claimSummary({ ...claim, commit: null })).toBe("fixed");
+    expect(
+      claimSummary({ ...claim, kind: "declined", reason: "intended" }),
+    ).toBe("declined: intended");
+    expect(claimSummary({ ...claim, kind: "declined" })).toBe("declined");
   });
 });

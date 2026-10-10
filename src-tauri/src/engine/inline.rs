@@ -206,6 +206,11 @@ fn data(r: &Review, round: Option<u32>, placed: &[(&Finding, Option<&str>)]) -> 
         .flat_map(|p| &p.findings)
         .map(|f| {
             let prior = r.prior_findings.iter().find(|p| p.id == f.id);
+            let claim = r
+                .previous_round
+                .iter()
+                .flat_map(|p| &p.claims)
+                .find(|c| c.finding_id == f.id);
             json!({
                 "id": f.id,
                 "shortId": f.short_id(),
@@ -213,6 +218,7 @@ fn data(r: &Review, round: Option<u32>, placed: &[(&Finding, Option<&str>)]) -> 
                 "priority": f.priority,
                 "status": prior.map(|p| p.status),
                 "note": prior.map(|p| p.note.as_str()),
+                "authorSaid": claim,
             })
         })
         .collect();
@@ -287,14 +293,19 @@ fn compose(
     }
     if let Some(previous) = &r.previous_round {
         out.push_str(&format!(
-            "### Since the last round (head `{}`)\n\n| Status | Earlier finding | Note |\n| --- | --- | --- |\n",
+            "### Since the last round (head `{}`)\n\n| Status | Earlier finding | Author said | Note |\n| --- | --- | --- | --- |\n",
             &previous.head_sha[..previous.head_sha.len().min(7)]
         ));
         for f in &previous.findings {
             let prior = r.prior_findings.iter().find(|p| p.id == f.id);
             let id = f.short_id().map(|s| format!("{s} · ")).unwrap_or_default();
+            let said = previous
+                .claims
+                .iter()
+                .find(|c| c.finding_id == f.id)
+                .map_or(String::new(), |c| cell(&c.summary()));
             out.push_str(&format!(
-                "| {} | {id}P{} {} | {} |\n",
+                "| {} | {id}P{} {} | {said} | {} |\n",
                 prior.map_or("not reported", |p| p.status.label()),
                 f.priority,
                 cell(&f.title),
@@ -317,6 +328,13 @@ fn compose(
                 explanation(f)
             ));
         }
+    }
+    // How to answer, so the next round recognises the reply.
+    if let Some(example) = placed.iter().find_map(|(f, _)| f.short_id()) {
+        out.push_str(&format!(
+            "_To answer a finding, reply `Fixed {example} in <commit>` or `Declined {example}: <reason>`, \
+             here or in its thread. The next round reads both._\n\n"
+        ));
     }
     if !r.not_checked.is_empty() {
         out.push_str(&format!("Not checked: {}\n\n", r.not_checked.join("; ")));

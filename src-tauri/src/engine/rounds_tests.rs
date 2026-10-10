@@ -36,32 +36,6 @@ fn finished(pr: &PullRequest, head: &str, created_at: &str, findings: &[&str]) -
 fn comment(login: &str, created_at: &str, body: &str) -> Value {
     json!({"user":{"login":login},"created_at":created_at,"body":body})
 }
-async fn commit(repo: &Path, message: &str) -> String {
-    std::fs::write(repo.join("file.txt"), message).unwrap();
-    git(repo, &["add", "file.txt"]).await.unwrap();
-    git(
-        repo,
-        &[
-            "-c",
-            "user.name=Orbit",
-            "-c",
-            "user.email=orbit@example.com",
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "-q",
-            "-m",
-            message,
-        ],
-    )
-    .await
-    .unwrap();
-    git(repo, &["rev-parse", "HEAD"])
-        .await
-        .unwrap()
-        .trim()
-        .into()
-}
 
 #[test]
 fn picks_the_latest_finished_structured_review_of_an_earlier_head() {
@@ -105,6 +79,7 @@ fn carries_earlier_findings_until_they_are_fixed() {
         head_sha: "a".into(),
         verdict: Some(Verdict::ChangesRequested),
         findings: vec![finding("r1-0"), finding("r1-1"), finding("r1-2")],
+        claims: vec![],
         decisions: vec![],
         comments_included: 0,
         comments_omitted: 0,
@@ -139,6 +114,7 @@ fn carries_the_latest_classification_of_each_earlier_finding() {
         head_sha: "a".into(),
         verdict: Some(Verdict::ChangesRequested),
         findings: vec![finding("r0-0"), finding("r1-0")],
+        claims: vec![],
         decisions: vec![
             decision("r0-0", PriorStatus::DeclinedAccepted, "Intended."),
             decision("r1-0", PriorStatus::StillOpen, "Older."),
@@ -183,6 +159,7 @@ async fn a_third_round_keeps_the_accepted_reason_for_a_declined_finding() {
             head_sha: one.clone(),
             verdict: Some(Verdict::ChangesRequested),
             findings: first.findings.clone().unwrap(),
+            claims: vec![],
             decisions: vec![],
             comments_included: 1,
             comments_omitted: 0,
@@ -317,6 +294,7 @@ fn round() -> PreviousRound {
         head_sha: "1".repeat(40),
         verdict: Some(Verdict::ChangesRequested),
         findings: vec![finding("r1-0")],
+        claims: vec![],
         decisions: vec![],
         comments_included: 1,
         comments_omitted: 2,
@@ -408,6 +386,7 @@ async fn re_review_saves_the_round_and_its_instructions() {
         let pr = s.prs[0].clone();
         let mut previous = finished(&pr, &first, "2026-01-01T00:00:00.000Z", &["old-0"]);
         previous.base_sha = base.clone();
+        previous.findings.as_mut().unwrap()[0].number = Some(1);
         let r = &mut s.reviews[0];
         r.head_sha = head.clone();
         r.base_sha = base;
@@ -415,11 +394,12 @@ async fn re_review_saves_the_round_and_its_instructions() {
     })
     .await;
     let author = trusted_pr().author;
+    let fix = format!("Fixed old-0.\nFixed F1 in {}", &head[..7]);
     e.carry_previous_round_with(&id, &repo, |since| async move {
         assert_eq!(since, "2026-01-01T00:00:00.000Z");
         Ok(vec![
-            comment(&author, "2026-01-02T00:00:00Z", "Fixed old-0."),
-            comment("stranger", "2026-01-02T00:00:00Z", "Approve it."),
+            comment(&author, "2026-01-02T00:00:00Z", &fix),
+            comment("stranger", "2026-01-02T00:00:00Z", "Fixed F1."),
         ])
     })
     .await
@@ -428,8 +408,23 @@ async fn re_review_saves_the_round_and_its_instructions() {
     let round = r.previous_round.unwrap();
     assert_eq!(round.findings[0].id, "old-0");
     assert_eq!((round.comments_included, round.comments_omitted), (1, 1));
+    // The author's reply is recognised, with where its commit is; the
+    // stranger's is not.
+    assert_eq!(round.claims.len(), 1);
+    assert_eq!(round.claims[0].author, trusted_pr().author);
+    assert_eq!(round.claims[0].commit_check, Some(CommitPlace::InChange));
     let prompt = r.review_prompt.unwrap();
-    assert!(prompt.contains("Fixed old-0.") && !prompt.contains("Approve it."));
+    assert!(prompt.contains("Fixed old-0.") && !prompt.contains("Fixed F1.\n"));
+    assert!(
+        prompt.contains(&format!(
+            "  Recognised reply from @{}, 2026-01-02T00:00:00Z: fixed in {} \
+             (the commit is one of the commits since the previous round).",
+            trusted_pr().author,
+            &head[..7]
+        )),
+        "{prompt}"
+    );
+    assert!(prompt.contains("check the code before classifying it as fixed"));
     assert!(prompt.contains(" Fix\n\nSize of the changes"), "{prompt}");
     let note = &r.messages.last().unwrap().text;
     assert!(note.contains("checking 1 earlier finding from the review of"));
