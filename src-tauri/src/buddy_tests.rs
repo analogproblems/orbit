@@ -159,7 +159,8 @@ fn a_failed_round_says_so_and_its_needs_you_item_follows() {
 #[test]
 fn a_follow_up_chat_on_a_finished_round_repeats_nothing() {
     // A follow-up sets the round running until it ends, then restores the
-    // round's outcome, whether the chat answered, failed or was interrupted.
+    // round's outcome, whether the chat answered or failed. Neither the
+    // round's result nor its Needs you item is told again.
     let endings = [None, Some("The follow-up failed: boom".to_string())];
     for (status, blocking, kind) in [
         ("posted", 0, NoteKind::Clean),
@@ -180,21 +181,9 @@ fn a_follow_up_chat_on_a_finished_round_repeats_nothing() {
                 error: r.error.take(),
             });
             r.is_review = false;
-            let during = step(&mut s);
+            assert_eq!(step(&mut s), [], "{status} {blocking}");
             assert!(s.reviews[0].end_follow_up(ending.clone()));
-            let after = step(&mut s);
-            for (kind, text) in during.iter().chain(&after) {
-                assert!(
-                    !matches!(
-                        kind,
-                        NoteKind::RoundStarted | NoteKind::RoundFinished | NoteKind::Clean
-                    ),
-                    "{status} {blocking} {ending:?}: {text}"
-                );
-            }
-            if status == "posted" {
-                assert!(during.is_empty() && after.is_empty(), "{after:?}");
-            }
+            assert_eq!(step(&mut s), [], "{status} {blocking} {ending:?}");
         }
     }
 }

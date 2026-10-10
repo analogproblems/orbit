@@ -83,6 +83,54 @@ fn a_failed_or_interrupted_automatic_review_is_one_item() {
     );
 }
 #[test]
+fn a_follow_up_chat_does_not_announce_its_reviews_items_again() {
+    // A failed run, a held report, and a loop at its round limit, each with
+    // a follow-up chat that ends normally or fails.
+    fn held(r: &mut Review) {
+        r.status = "ready".into();
+        r.error = Some("The report mentions a credential.".into());
+    }
+    fn at_limit(r: &mut Review) {
+        r.status = "posted".into();
+        r.findings = Some(vec![]);
+        r.orbit_verdict = Some(Verdict::ChangesRequested);
+        r.blocking = Some(1);
+    }
+    fn failed(r: &mut Review) {
+        r.status = "failed".into();
+        r.error = Some("Codex exited.".into());
+    }
+    let cases = [
+        ("failed:run-1", failed as fn(&mut Review)),
+        ("held:run-1", held),
+        ("loop:a/b#1:Round limit reached.", at_limit),
+    ];
+    for (key, make) in cases {
+        for ending in [None, Some("The follow-up failed: boom".to_string())] {
+            let (mut s, p) = snapshot();
+            s.settings.repositories[0].round_limit = 1;
+            let mut r = run(&p, "reviewing", 1);
+            make(&mut r);
+            s.reviews.push(r);
+            let (notices, _) = announce(&mut s);
+            assert!(notices.iter().any(|n| n.item.key == key), "{key}");
+            let open = notices.len();
+            let r = &mut s.reviews[0];
+            r.before_follow_up = Some(Outcome {
+                status: std::mem::replace(&mut r.status, "reviewing".into()),
+                error: r.error.take(),
+            });
+            // The list hides the item while the chat runs, but it stays
+            // announced.
+            assert!(items(&s).is_empty(), "{key}");
+            assert_eq!(announce(&mut s), (vec![], false), "{key}");
+            assert!(s.reviews[0].end_follow_up(ending.clone()));
+            assert_eq!(keys(&s).len(), open, "{key}");
+            assert_eq!(announce(&mut s), (vec![], false), "{key} {ending:?}");
+        }
+    }
+}
+#[test]
 fn manual_and_superseded_runs_are_not_items() {
     let (mut s, p) = snapshot();
     let mut manual = run(&p, "failed", 1);

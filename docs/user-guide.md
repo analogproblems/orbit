@@ -318,7 +318,7 @@ When something can only move forward with you, the sidebar shows **Needs you** w
 
 An item disappears once it is resolved. A stopped loop lists only its approvals, since you have already taken it over.
 
-Orbit also shows a desktop notification once when an item first appears, and not again while it stays open, even after a restart. When Orbit comes to the front after a notification, it opens that item. Turn off **Notify me when a review needs attention** in Settings to stop notifications; the list and count still appear.
+Orbit also shows a desktop notification once when an item first appears, and not again while it stays open, even after a restart. A follow-up chat on the review hides the item until the chat ends, and it isn't announced again afterwards. When Orbit comes to the front after a notification, it opens that item. Turn off **Notify me when a review needs attention** in Settings to stop notifications; the list and count still appear.
 
 ### Bit, your buddy
 

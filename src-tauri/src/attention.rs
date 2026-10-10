@@ -205,11 +205,27 @@ fn notice(s: &Snapshot, a: Attention) -> Notice {
         item: a,
     }
 }
+/// The snapshot as it will be once each follow-up chat ends. A follow-up
+/// runs a finished review again for a while, then restores its outcome.
+fn after_follow_ups(s: &Snapshot) -> std::borrow::Cow<'_, Snapshot> {
+    if !s.reviews.iter().any(|r| r.before_follow_up.is_some()) {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let mut s = s.clone();
+    for r in &mut s.reviews {
+        if let Some(before) = &r.before_follow_up {
+            r.status = before.status.clone();
+            r.error = before.error.clone();
+        }
+    }
+    std::borrow::Cow::Owned(s)
+}
 /// Records which open items have been announced and returns a notice for
 /// each one that is new, with whether the record changed. A resolved item
-/// leaves the record, so it is announced again if it opens again later.
+/// leaves the record, so it is announced again if it opens again later. An
+/// item a follow-up chat hides only while it runs stays in the record.
 pub fn announce(s: &mut Snapshot) -> (Vec<Notice>, bool) {
-    let open = items(s);
+    let open = items(&after_follow_ups(s));
     let keys: Vec<String> = open.iter().map(|a| a.key.clone()).collect();
     let changed = keys != s.announced;
     let fresh: Vec<Attention> = open
