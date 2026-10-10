@@ -42,6 +42,11 @@ describe("publish preview", () => {
     expect(screen.getByText("On its lines")).toBeTruthy();
     // An inline finding's text is not in the review text, so the row shows it.
     expect(screen.getByText(findings[0].body)).toBeTruthy();
+    // So does the rest of what will be posted with it.
+    expect(screen.getByText(findings[0].failureScenario!)).toBeTruthy();
+    expect(screen.getByText(findings[0].doneWhen!)).toBeTruthy();
+    expect(screen.getByText("src/settings/save.ts:21–24")).toBeTruthy();
+    expect(screen.getByText("Likely, not verified")).toBeTruthy();
     expect(
       screen.getByText("In the review text: lines not in the diff"),
     ).toBeTruthy();

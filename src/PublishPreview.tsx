@@ -6,7 +6,7 @@ import {
   type TableColumn,
 } from "@astryxdesign/core/Table";
 import { useEffect, useState } from "react";
-import { priorityColors } from "./Findings";
+import { FindingDetails, priorityColors } from "./Findings";
 import { SafeMarkdown } from "./SafeMarkdown";
 import { useOrbit } from "./store";
 import {
@@ -42,6 +42,7 @@ const columns: TableColumn<Row>[] = [
         <Text weight="medium">{f.title}</Text>
         <Text type="code">{findingLocation(f)}</Text>
         <Text type="supporting">{f.body}</Text>
+        <FindingDetails finding={f} />
       </VStack>
     ),
   },

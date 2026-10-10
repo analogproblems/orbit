@@ -27,15 +27,18 @@ const START_TIMEOUT: Duration = Duration::from_secs(120);
 
 const EXTRACTION_PROMPT: &str = "Restate the findings from the review you just completed as JSON matching the output schema. \
     Do not run commands, read files, or review the code again. \
-    Include every finding you reported, with a short title, the file path relative to the repository root, the line range, \
-    the explanation as the body, and how confident you are from 0 to 1. \
+    Include every finding you reported, with a short title. \
     Give each finding a priority: 0 for a defect that breaks the change for most users or loses data, \
     1 for a real bug that should block merging, 2 for a minor bug, 3 for a nit. \
-    Use verdict \"clean\" only when you reported no findings and no earlier finding is still_open or declined_disputed. \
-    List tests or checks you could not run in testsNotRun. \
-    Set completed to false only when the review could not read or check the change, for example because a command it needed was refused, \
-    and then say why in the summary. \
-    If no earlier findings are given below, use an empty priorFindings list.";
+    If your review rated a finding's severity in its own terms, such as high or critical, say so in reviewerNotes. ";
+
+/// The extraction prompt for a CLI reviewer.
+fn extraction_prompt() -> String {
+    format!(
+        "{EXTRACTION_PROMPT}{}If no earlier findings are given below, use an empty priorFindings list.",
+        findings::FORM_PROMPT
+    )
+}
 
 const PRIOR_PROMPT: &str = "\n\nThis pull request was reviewed before. \
     Before answering, check every earlier finding below against the current code, reading files and the diff as needed but changing nothing, \
@@ -145,9 +148,9 @@ impl Engine {
         let (kind, prompt) = match &r.review_prompt {
             Some(notes) => (
                 TurnKind::ExtractionWithTools,
-                format!("{EXTRACTION_PROMPT}{PRIOR_PROMPT}{notes}"),
+                format!("{}{PRIOR_PROMPT}{notes}", extraction_prompt()),
             ),
-            None => (TurnKind::Extraction, EXTRACTION_PROMPT.to_string()),
+            None => (TurnKind::Extraction, extraction_prompt()),
         };
         let turn = Turn {
             kind,
@@ -157,7 +160,7 @@ impl Engine {
             model: selection.model.clone(),
             effort: selection.effort.clone(),
             prompt,
-            schema: Some(extraction_schema()),
+            schema: Some(findings::output_schema()),
         };
         self.run_cli_turn(id, provider, turn, move |r, _| {
             if !r.extracting || !active(&r.status) {
@@ -516,16 +519,4 @@ async fn changed_files(worktree: &Path) -> Option<String> {
         .join("\n");
     let status = status.trim();
     (!status.is_empty()).then(|| status.chars().take(4000).collect())
-}
-
-/// Orbit's findings schema, plus whether the review could read and check
-/// the change: a review that could not would otherwise look clean.
-fn extraction_schema() -> serde_json::Value {
-    let mut schema = findings::output_schema();
-    schema["required"]
-        .as_array_mut()
-        .expect("schema lists its required fields")
-        .push("completed".into());
-    schema["properties"]["completed"] = json!({"type": "boolean"});
-    schema
 }

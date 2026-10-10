@@ -25,9 +25,11 @@ import {
 import { ArrowLeft, ArrowUpRight, Bug, FileText, Search } from "lucide-react";
 import { desktop, useOrbit } from "./store";
 import {
+  categoryLabels,
   findingLocation,
   priorStatusLabels,
   type AttentionHandlers,
+  type Category,
 } from "./types";
 import {
   collectFindings,
@@ -40,7 +42,7 @@ import {
   type FindingSource,
   type FindingStatus,
 } from "./findingIndex";
-import { priorityColors } from "./Findings";
+import { FindingKind, priorityColors } from "./Findings";
 import { SafeMarkdown } from "./SafeMarkdown";
 import { ScanReportDialog } from "./Scans";
 
@@ -52,6 +54,8 @@ export interface FindingFilters {
   repo: string;
   /** "all" or a priority, 0 to 3. */
   severity: string;
+  /** "all" or a category; older findings have none. */
+  category: string;
   status: string;
   /** "all", "open" or "closed": whether the PR is still in the inbox. */
   pr: string;
@@ -62,6 +66,7 @@ export const noFilters: FindingFilters = {
   search: "",
   repo: "all",
   severity: "all",
+  category: "all",
   status: "all",
   pr: "all",
   source: "all",
@@ -74,16 +79,25 @@ export function filterFindings(rows: FindingRow[], f: FindingFilters) {
       return false;
     if (f.severity !== "all" && row.finding.priority !== Number(f.severity))
       return false;
+    if (f.category !== "all" && row.finding.category !== f.category)
+      return false;
     if (f.status !== "all" && row.status !== f.status) return false;
     if (f.source !== "all" && row.source !== f.source) return false;
     // A scan's finding has no pull request, open or closed.
     if (f.pr === "open" && !row.prOpen) return false;
     if (f.pr === "closed" && (row.prOpen || row.source !== "review"))
       return false;
+    const g = row.finding;
     const text = [
-      row.finding.title,
-      row.finding.body,
-      row.finding.path ?? "",
+      g.title,
+      g.body,
+      g.path ?? "",
+      ...(g.otherLocations ?? []).map((l) => l.path ?? ""),
+      g.failureScenario ?? "",
+      g.evidence ?? "",
+      g.suggestedFix ?? "",
+      g.doneWhen ?? "",
+      g.reviewerNotes ?? "",
       row.prId ?? "",
       row.pr?.title ?? "",
     ]
@@ -205,6 +219,20 @@ function Filters({
           ]}
         />
         <Selector
+          label="Category"
+          isLabelHidden
+          size="sm"
+          value={filters.category}
+          onChange={set("category")}
+          options={[
+            { value: "all", label: "All categories" },
+            ...(Object.keys(categoryLabels) as Category[]).map((c) => ({
+              value: c,
+              label: categoryLabels[c],
+            })),
+          ]}
+        />
+        <Selector
           label="Status"
           isLabelHidden
           size="sm"
@@ -268,6 +296,14 @@ function FindingDetail({
     if (row.pr && review) onChoose(row.pr, review);
   };
   const commit = row.commit?.slice(0, 7);
+  // Older findings have none of these; their body holds it all.
+  const details: [string, string | null | undefined][] = [
+    ["Breaks when", f.failureScenario],
+    ["Evidence", f.evidence],
+    ["Suggested fix", f.suggestedFix],
+    ["Done when", f.doneWhen],
+    ["Reviewer's notes", f.reviewerNotes],
+  ];
   return (
     <VStack gap={4}>
       <HStack>
@@ -293,10 +329,27 @@ function FindingDetail({
               : row.prId}
         </Text>
       </VStack>
+      <FindingKind finding={f} />
       <SafeMarkdown>{f.body}</SafeMarkdown>
+      {details
+        .filter(([, text]) => text?.trim())
+        .map(([label, text]) => (
+          <VStack key={label} gap={1}>
+            <Heading level={3}>{label}</Heading>
+            <SafeMarkdown>{text!}</SafeMarkdown>
+          </VStack>
+        ))}
       <MetadataList>
-        <MetadataListItem label="Location">
-          <Text type="code">{findingLocation(f)}</Text>
+        <MetadataListItem
+          label={f.otherLocations?.length ? "Locations" : "Location"}
+        >
+          <VStack gap={1}>
+            {[f, ...(f.otherLocations ?? [])].map((l) => (
+              <Text key={findingLocation(l)} type="code">
+                {findingLocation(l)}
+              </Text>
+            ))}
+          </VStack>
         </MetadataListItem>
         {commit && (
           <MetadataListItem
@@ -318,6 +371,13 @@ function FindingDetail({
         <MetadataListItem label="Confidence">
           {`${Math.round(f.confidence * 100)}%`}
         </MetadataListItem>
+        {f.confirmed != null && (
+          <MetadataListItem label="Verified">
+            {f.confirmed
+              ? "Yes, by reading or running the code"
+              : "No, it is likely but unverified"}
+          </MetadataListItem>
+        )}
         {row.source === "review" && (
           <MetadataListItem label="Pull request">
             {row.prOpen ? "In your inbox" : "Left the inbox"}
@@ -395,6 +455,16 @@ function FindingDetail({
   );
 }
 
+/** Where a finding came from, with its category for a review's finding. A
+ * scan's findings are all about security. */
+function origin(r: FindingRow) {
+  if (r.scan) return `Security scan · ${r.repo} ·`;
+  const category = r.finding.category
+    ? `${categoryLabels[r.finding.category]} · `
+    : "";
+  return `${category}${r.prId} · Round ${r.round} ·`;
+}
+
 /** Every finding Orbit has collected, across PRs and repositories. */
 export function FindingsPage({
   selected,
@@ -462,11 +532,7 @@ export function FindingsPage({
                   endContent={<StatusToken status={r.status} />}
                   description={
                     <HStack gap={1} vAlign="center" wrap="wrap">
-                      <Text color="secondary">
-                        {r.scan
-                          ? `Security scan · ${r.repo} ·`
-                          : `${r.prId} · Round ${r.round} ·`}
-                      </Text>
+                      <Text color="secondary">{origin(r)}</Text>
                       <Timestamp value={r.foundAt} format="relative_short" />
                     </HStack>
                   }

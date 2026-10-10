@@ -169,9 +169,13 @@ pub struct Review {
     pub verdict: Option<Verdict>,
     #[serde(default)]
     pub summary: Option<String>,
-    /// Tests or checks the reviewer said it could not run.
+    /// What the reviewer said it could not read, run or check.
+    #[serde(default, alias = "testsNotRun")]
+    pub not_checked: Vec<String>,
+    /// False when the reviewer said it could not read or check the change.
+    /// None before extraction and in older state.
     #[serde(default)]
-    pub tests_not_run: Vec<String>,
+    pub completed: Option<bool>,
     /// The findings-extraction turn is running; its output is not chat.
     #[serde(default)]
     pub extracting: bool,
@@ -274,7 +278,7 @@ pub enum Verdict {
     Clean,
     ChangesRequested,
 }
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Finding {
     /// Stable within Orbit: the review ID and the finding's index.
@@ -282,13 +286,175 @@ pub struct Finding {
     pub title: String,
     /// 0 (P0, most severe) to 3 (P3).
     pub priority: u8,
-    /// Relative to the repository root; None when Codex reported a path
-    /// outside the review's worktree.
+    /// Where the finding is, and where its inline comment goes. Relative to
+    /// the repository root; None when the reviewer reported a path outside
+    /// the review's worktree.
     pub path: Option<String>,
     pub start_line: u32,
     pub end_line: u32,
+    /// What is wrong. Older findings also fold the failure scenario and the
+    /// fix in here.
     pub body: String,
     pub confidence: f64,
+    /// None in findings from before categories.
+    #[serde(default)]
+    pub category: Option<Category>,
+    /// Other places the finding involves, such as the caller of a broken
+    /// function.
+    #[serde(default)]
+    pub other_locations: Vec<Location>,
+    /// A concrete input or state and the wrong result it produces.
+    #[serde(default)]
+    pub failure_scenario: Option<String>,
+    /// How the reviewer confirmed it: files read, commands run.
+    #[serde(default)]
+    pub evidence: Option<String>,
+    /// True when the reviewer verified it by reading or running the code,
+    /// false when it is likely but unverified. None in older findings.
+    #[serde(default)]
+    pub confirmed: Option<bool>,
+    #[serde(default)]
+    pub suggested_fix: Option<String>,
+    /// The test or check that would show it is fixed.
+    #[serde(default)]
+    pub done_when: Option<String>,
+    /// Anything from the reviewer's report that fits no other field.
+    #[serde(default)]
+    pub reviewer_notes: Option<String>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Category {
+    Bug,
+    Security,
+    DataLoss,
+    Compatibility,
+    TestGap,
+    Performance,
+    Other,
+}
+impl Category {
+    pub const ALL: [Category; 7] = [
+        Category::Bug,
+        Category::Security,
+        Category::DataLoss,
+        Category::Compatibility,
+        Category::TestGap,
+        Category::Performance,
+        Category::Other,
+    ];
+    /// The name the reviewer's JSON uses.
+    pub fn key(self) -> &'static str {
+        match self {
+            Category::Bug => "bug",
+            Category::Security => "security",
+            Category::DataLoss => "data_loss",
+            Category::Compatibility => "compatibility",
+            Category::TestGap => "test_gap",
+            Category::Performance => "performance",
+            Category::Other => "other",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Category::Bug => "Bug",
+            Category::Security => "Security",
+            Category::DataLoss => "Data loss",
+            Category::Compatibility => "Compatibility",
+            Category::TestGap => "Test gap",
+            Category::Performance => "Performance",
+            Category::Other => "Other",
+        }
+    }
+}
+/// A place in the repository, relative to its root.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Location {
+    /// None for a path outside the review's worktree.
+    pub path: Option<String>,
+    pub start_line: u32,
+    pub end_line: u32,
+}
+impl Location {
+    /// `src/a.rs:4-9`, or a note that it is outside the repository.
+    pub fn label(&self) -> String {
+        match &self.path {
+            None => "(outside the repository)".into(),
+            Some(path) if self.start_line == self.end_line => format!("{path}:{}", self.start_line),
+            Some(path) => format!("{path}:{}-{}", self.start_line, self.end_line),
+        }
+    }
+}
+impl Finding {
+    /// The finding's first location.
+    pub fn location(&self) -> Location {
+        Location {
+            path: self.path.clone(),
+            start_line: self.start_line,
+            end_line: self.end_line,
+        }
+    }
+    /// Everything but the title and the problem, as Markdown lines: the
+    /// failure scenario, evidence, fix, other locations and so on. Empty for
+    /// older findings, whose body holds it all.
+    pub fn details(&self) -> String {
+        let kind = [
+            self.category.map(Category::label),
+            self.confirmed.map(|c| {
+                if c {
+                    "Confirmed"
+                } else {
+                    "Likely, not verified"
+                }
+            }),
+        ];
+        let kind: Vec<&str> = kind.into_iter().flatten().collect();
+        let mut lines = vec![];
+        if !kind.is_empty() {
+            lines.push(format!("_{}_", kind.join(" · ")));
+        }
+        let mut line = |label: &str, text: Option<&str>| {
+            if let Some(text) = text.map(str::trim).filter(|t| !t.is_empty()) {
+                lines.push(format!("**{label}:** {text}"));
+            }
+        };
+        line("Breaks when", self.failure_scenario.as_deref());
+        line("Evidence", self.evidence.as_deref());
+        line("Suggested fix", self.suggested_fix.as_deref());
+        line("Done when", self.done_when.as_deref());
+        let also: Vec<String> = self
+            .other_locations
+            .iter()
+            .map(|l| format!("`{}`", l.label()))
+            .collect();
+        line("Also at", Some(&also.join(", ")));
+        line("Reviewer's notes", self.reviewer_notes.as_deref());
+        lines.join("\n")
+    }
+    /// Its free-text parts, for the credential scan.
+    pub fn texts(&self) -> impl Iterator<Item = &str> {
+        [&self.title, &self.body]
+            .into_iter()
+            .map(String::as_str)
+            .chain(self.path.as_deref())
+            .chain(
+                self.other_locations
+                    .iter()
+                    .filter_map(|l| l.path.as_deref()),
+            )
+            .chain(
+                [
+                    &self.failure_scenario,
+                    &self.evidence,
+                    &self.suggested_fix,
+                    &self.done_when,
+                    &self.reviewer_notes,
+                ]
+                .into_iter()
+                .filter_map(|t| t.as_deref()),
+            )
+    }
 }
 /// The findings a re-review was asked to check again, and what it was told.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -388,7 +554,8 @@ impl Review {
             findings: None,
             verdict: None,
             summary: None,
-            tests_not_run: vec![],
+            not_checked: vec![],
+            completed: None,
             extracting: false,
             extraction_selection: None,
             previous_round: None,
@@ -406,7 +573,7 @@ impl Review {
     pub fn credential_scan(&self) -> Vec<String> {
         let mut text = self.report.clone();
         for f in self.findings.iter().flatten() {
-            for part in [&f.title, &f.body, f.path.as_deref().unwrap_or("")] {
+            for part in f.texts() {
                 text.push('\n');
                 text.push_str(part);
             }
@@ -421,7 +588,7 @@ impl Review {
         for part in self
             .summary
             .iter()
-            .chain(&self.tests_not_run)
+            .chain(&self.not_checked)
             .chain(&self.declined_approvals)
             .chain(notes)
         {
@@ -451,7 +618,8 @@ impl Review {
             self.findings = None;
             self.verdict = None;
             self.summary = None;
-            self.tests_not_run.clear();
+            self.not_checked.clear();
+            self.completed = None;
             self.prior_findings.clear();
             self.error = Some(format!(
                 "Findings were not extracted, so this run is unstructured; its report is kept. {error}"

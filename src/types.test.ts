@@ -1,7 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { freshDemo } from "./demo";
 import reportLabelCases from "../test-fixtures/report-selection-labels.json";
+import findingCategories from "../test-fixtures/finding-categories.json";
 import {
+  categoryLabels,
+  notChecked,
   reviewDisplayStatus,
   followUpUnavailable,
   canStartReview,
@@ -242,5 +245,23 @@ describe("Claude reviewer", () => {
     expect(followUpUnavailable(s, r)).toBeNull();
     r.model = "demo-review-model";
     expect(followUpUnavailable(s, r)).toMatch(/Claude model/);
+  });
+});
+
+describe("findings form", () => {
+  it("knows the engine's categories", () => {
+    expect(Object.keys(categoryLabels)).toEqual(findingCategories);
+  });
+  it("reads what wasn't checked from current and older reviews", () => {
+    const r = freshDemo().reviews[0];
+    expect(notChecked({ ...r, notChecked: ["a"], testsNotRun: ["b"] })).toEqual(
+      ["a"],
+    );
+    expect(
+      notChecked({ ...r, notChecked: undefined, testsNotRun: ["b"] }),
+    ).toEqual(["b"]);
+    expect(
+      notChecked({ ...r, notChecked: undefined, testsNotRun: undefined }),
+    ).toEqual([]);
   });
 });

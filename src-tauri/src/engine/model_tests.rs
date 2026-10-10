@@ -1026,12 +1026,15 @@ async fn extraction_pins_the_review_selection_and_saves_confirmation_before_infe
     assert_eq!(turn["method"], "turn/start");
     assert_eq!(turn["params"]["model"], "model-a");
     assert_eq!(turn["params"]["effort"], "high");
-    assert_eq!(turn["params"]["outputSchema"]["required"][2], "findings");
+    let required = turn["params"]["outputSchema"]["required"]
+        .as_array()
+        .unwrap();
+    assert!(required.contains(&json!("findings")) && required.contains(&json!("completed")));
     let r = e.snapshot().await.reviews.remove(0);
     assert!(r.extracting && r.status == "reviewing" && r.error.is_none());
     assert_eq!(r.turn_id.as_deref(), Some("fixture-turn"));
     assert_eq!(r.extraction_selection.unwrap().model, "model-a");
-    let text = json!({"verdict":"clean","summary":"Nothing to fix.","findings":[],"testsNotRun":[],"priorFindings":[]});
+    let text = json!({"verdict":"clean","summary":"Nothing to fix.","completed":true,"findings":[],"notChecked":[],"priorFindings":[]});
     e.event(json!({"method":"item/completed","params":{"threadId":"fixture-thread","turnId":"fixture-turn","item":{"id":"j","type":"agentMessage","text":text.to_string()}}})).await;
     e.event(json!({"method":"turn/completed","params":{"threadId":"fixture-thread","turn":{"id":"fixture-turn","status":"completed"}}})).await;
     let r = e.snapshot().await.reviews.remove(0);

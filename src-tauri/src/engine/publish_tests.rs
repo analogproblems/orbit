@@ -129,6 +129,7 @@ mod fake_gh {
                 end_line: 2,
                 body: "Explain.".into(),
                 confidence: 0.9,
+                ..Default::default()
             }]);
         })
         .await;

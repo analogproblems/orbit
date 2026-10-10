@@ -1,4 +1,11 @@
-import { Banner, Button, Text, Token, VStack } from "@astryxdesign/core";
+import {
+  Banner,
+  Button,
+  HStack,
+  Text,
+  Token,
+  VStack,
+} from "@astryxdesign/core";
 import {
   Table,
   pixel,
@@ -14,9 +21,12 @@ import {
   type FindingStatus,
 } from "./findingIndex";
 import {
+  categoryLabels,
   findingLocation,
   findingReviewId,
+  notChecked,
   priorStatusLabels,
+  providerLabels,
   type Finding,
   type PriorStatus,
   type Review,
@@ -47,6 +57,10 @@ const columns = (
       <VStack gap={1}>
         <Text weight="medium">{f.title}</Text>
         <Text type="supporting">{f.body}</Text>
+        {f.failureScenario && (
+          <Text type="supporting">Breaks when: {f.failureScenario}</Text>
+        )}
+        <FindingKind finding={f} />
       </VStack>
     ),
   },
@@ -54,7 +68,16 @@ const columns = (
     key: "path",
     header: "Location",
     width: proportional(2),
-    renderCell: (f) => <Text type="code">{findingLocation(f)}</Text>,
+    renderCell: (f) => (
+      <VStack gap={1}>
+        <Text type="code">{findingLocation(f)}</Text>
+        {f.otherLocations?.map((l) => (
+          <Text key={findingLocation(l)} type="code" color="secondary">
+            {findingLocation(l)}
+          </Text>
+        ))}
+      </VStack>
+    ),
   },
   {
     key: "status",
@@ -70,6 +93,50 @@ const columns = (
     ),
   },
 ];
+
+/** A finding's category, and whether it is only likely. Absent from older
+ * findings. */
+export function FindingKind({ finding: f }: { finding: Finding }) {
+  if (!f.category && f.confirmed !== false) return null;
+  return (
+    <HStack gap={1} wrap="wrap">
+      {f.category && (
+        <Token label={categoryLabels[f.category]} color="gray" size="sm" />
+      )}
+      {f.confirmed === false && (
+        <Token label="Likely, not verified" color="yellow" size="sm" />
+      )}
+    </HStack>
+  );
+}
+
+/** Everything a finding says beyond its title and problem, one line each,
+ * as it will be published. Empty for older findings. */
+export function FindingDetails({ finding: f }: { finding: Finding }) {
+  const lines: [string, string | null | undefined][] = [
+    ["Breaks when", f.failureScenario],
+    ["Evidence", f.evidence],
+    ["Suggested fix", f.suggestedFix],
+    ["Done when", f.doneWhen],
+    ["Also at", f.otherLocations?.map(findingLocation).join(", ")],
+    ["Reviewer's notes", f.reviewerNotes],
+  ];
+  return (
+    <>
+      <FindingKind finding={f} />
+      {lines
+        .filter(([, text]) => text?.trim())
+        .map(([label, text]) => (
+          <Text key={label} type="supporting">
+            <Text type="supporting" weight="semibold">
+              {label}:
+            </Text>{" "}
+            {text}
+          </Text>
+        ))}
+    </>
+  );
+}
 
 const priorColors: Record<PriorStatus, "green" | "orange" | "gray" | "red"> = {
   fixed: "green",
@@ -228,7 +295,7 @@ export function Findings({
         review.verdict &&
         review.orbitVerdict !== review.verdict && (
           <Text type="supporting">
-            Codex’s own verdict:{" "}
+            {providerLabels[review.provider ?? "codex"]}’s own verdict:{" "}
             {review.verdict === "clean" ? "clean" : "changes requested"}.
           </Text>
         )}
@@ -242,8 +309,10 @@ export function Findings({
           verticalAlign="top"
         />
       )}
-      {review.testsNotRun && review.testsNotRun.length > 0 && (
-        <Text type="supporting">Not run: {review.testsNotRun.join("; ")}</Text>
+      {notChecked(review).length > 0 && (
+        <Text type="supporting">
+          Not checked: {notChecked(review).join("; ")}
+        </Text>
       )}
       {declined}
       <SinceLastRound review={review} onOpenReview={onOpenReview} />

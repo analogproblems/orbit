@@ -3,7 +3,7 @@
 //! the files a finished scan writes. The engine runs the scans
 //! (`engine/scans.rs`); everything here is plain data handling.
 
-use crate::types::{Finding, ScanProgress};
+use crate::types::{Category, Finding, ScanProgress};
 use serde::Serialize;
 use serde_json::Value;
 use std::path::{Component, Path};
@@ -416,6 +416,10 @@ pub fn parse_findings(doc: &Value, scan_id: &str) -> Result<Vec<Finding>, String
                 end_line: end,
                 body: body(f, level, location),
                 confidence: confidence(f["confidence"]["level"].as_str().unwrap_or("")),
+                // The rest of the plugin's detail, other locations included,
+                // is in the body.
+                category: Some(Category::Security),
+                ..Default::default()
             }
         })
         .collect();

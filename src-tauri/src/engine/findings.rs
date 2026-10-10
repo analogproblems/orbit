@@ -1,6 +1,6 @@
-//! After a review turn, Codex restates its findings as JSON in one more turn
-//! on the same thread. The Markdown report stays the record of the review;
-//! the JSON is stored beside it for the review loop.
+//! After a review turn, the reviewer restates its findings as JSON in one
+//! more turn on the same thread. The Markdown report stays the record of the
+//! review; the JSON is stored beside it for the review loop.
 use super::Engine;
 use crate::{rpc::Rpc, types::*};
 use serde_json::{json, Value};
@@ -11,10 +11,32 @@ use std::{
 
 const EXTRACTION_PROMPT: &str = "Restate the findings from the review you just completed as JSON matching the output schema. \
     Do not run commands, read files, or review the code again. \
-    Include every finding you reported, including low-priority ones, with the title without its [P#] prefix, \
-    priority 0-3 for P0-P3, the file path relative to the repository root, and the line range. \
-    Use verdict \"clean\" only when you reported no findings and no earlier finding is still_open or declined_disputed. \
-    If your review classified earlier findings, list each in priorFindings with its ID, status and note; otherwise use an empty list.";
+    Include every finding you reported, including low-priority ones, with the title without its [P#] prefix and \
+    priority 0-3 for P0-P3. ";
+
+/// What each field of the form holds, for every reviewer's extraction turn.
+pub(super) const FORM_PROMPT: &str = "For each finding, also give: \
+    its category; \
+    every location it involves, each with the file path relative to the repository root and the line range, the place to comment on first; \
+    the problem, what is wrong in one or two sentences; \
+    the failure scenario, a concrete input or state and the wrong result it produces; \
+    the evidence, how you established it, such as the files you read and the commands you ran; \
+    confirmed, true only when you verified it by reading or running the code and false when it is likely but unverified; \
+    a suggested fix; doneWhen, the test or check that would show it is fixed; \
+    reviewerNotes, anything your review said about the finding that fits no other field; \
+    and how confident you are from 0 to 1. \
+    Use null for a field your review has nothing for, and don't invent detail it didn't give. \
+    List what you could not read, run or check in notChecked. \
+    Set completed to false only when the review could not read or check the change, for example because a command it needed was refused, \
+    and then say why in the summary. \
+    Use verdict \"clean\" only when you reported no findings and no earlier finding is still_open or declined_disputed. ";
+
+const CODEX_PRIOR_PROMPT: &str = "If your review classified earlier findings, list each in priorFindings with its ID, status and note; otherwise use an empty list.";
+
+/// Codex's extraction prompt.
+fn extraction_prompt() -> String {
+    format!("{EXTRACTION_PROMPT}{FORM_PROMPT}{CODEX_PRIOR_PROMPT}")
+}
 
 const PRIOR_STATUSES: [(&str, PriorStatus); 4] = [
     ("fixed", PriorStatus::Fixed),
@@ -23,32 +45,57 @@ const PRIOR_STATUSES: [(&str, PriorStatus); 4] = [
     ("declined_disputed", PriorStatus::DeclinedDisputed),
 ];
 
+/// The form every reviewer restates its findings in. Every field is
+/// required, with null for an empty one, as strict schemas need.
 pub(super) fn output_schema() -> Value {
+    let text = json!({"type": "string"});
+    let optional = json!({"type": ["string", "null"]});
     json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["verdict", "summary", "findings", "testsNotRun", "priorFindings"],
+        "required": ["verdict", "summary", "completed", "findings", "notChecked", "priorFindings"],
         "properties": {
             "verdict": {"type": "string", "enum": ["clean", "changes_requested"]},
-            "summary": {"type": "string"},
+            "summary": text,
+            "completed": {"type": "boolean"},
             "findings": {
                 "type": "array",
                 "items": {
                     "type": "object",
                     "additionalProperties": false,
-                    "required": ["title", "priority", "path", "startLine", "endLine", "body", "confidence"],
+                    "required": [
+                        "title", "priority", "category", "locations", "problem", "failureScenario",
+                        "evidence", "confirmed", "suggestedFix", "doneWhen", "reviewerNotes", "confidence",
+                    ],
                     "properties": {
-                        "title": {"type": "string"},
+                        "title": text,
                         "priority": {"type": "integer", "enum": [0, 1, 2, 3]},
-                        "path": {"type": "string"},
-                        "startLine": {"type": "integer"},
-                        "endLine": {"type": "integer"},
-                        "body": {"type": "string"},
+                        "category": {"type": "string", "enum": Category::ALL.map(Category::key)},
+                        "locations": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "required": ["path", "startLine", "endLine"],
+                                "properties": {
+                                    "path": text,
+                                    "startLine": {"type": "integer"},
+                                    "endLine": {"type": "integer"},
+                                },
+                            },
+                        },
+                        "problem": text,
+                        "failureScenario": optional,
+                        "evidence": optional,
+                        "confirmed": {"type": "boolean"},
+                        "suggestedFix": optional,
+                        "doneWhen": optional,
+                        "reviewerNotes": optional,
                         "confidence": {"type": "number"},
                     },
                 },
             },
-            "testsNotRun": {"type": "array", "items": {"type": "string"}},
+            "notChecked": {"type": "array", "items": text},
             "priorFindings": {
                 "type": "array",
                 "items": {
@@ -56,9 +103,9 @@ pub(super) fn output_schema() -> Value {
                     "additionalProperties": false,
                     "required": ["id", "status", "note"],
                     "properties": {
-                        "id": {"type": "string"},
+                        "id": text,
                         "status": {"type": "string", "enum": PRIOR_STATUSES.map(|(name, _)| name)},
-                        "note": {"type": "string"},
+                        "note": text,
                     },
                 },
             },
@@ -70,23 +117,25 @@ pub(super) fn output_schema() -> Value {
 pub(super) struct Extracted {
     pub verdict: Verdict,
     pub summary: String,
+    pub completed: bool,
     pub findings: Vec<Finding>,
-    pub tests_not_run: Vec<String>,
+    pub not_checked: Vec<String>,
     pub prior_findings: Vec<PriorFinding>,
 }
 impl Extracted {
     pub(super) fn store(self, r: &mut Review) {
         r.verdict = Some(self.verdict);
         r.summary = Some(self.summary);
+        r.completed = Some(self.completed);
         r.findings = Some(self.findings);
-        r.tests_not_run = self.tests_not_run;
+        r.not_checked = self.not_checked;
         r.prior_findings = self.prior_findings;
     }
 }
 
-/// Validates Codex's JSON. Anything that does not match the schema is refused
-/// as a whole, leaving the run unstructured. Classifications of findings the
-/// review was not given (`previous`) are ignored.
+/// Validates the reviewer's JSON. Anything that does not match the schema is
+/// refused as a whole, leaving the run unstructured. Classifications of
+/// findings the review was not given (`previous`) are ignored.
 pub(super) fn parse(
     text: &str,
     review_id: &str,
@@ -100,11 +149,34 @@ pub(super) fn parse(
             .map(str::to_owned)
             .ok_or_else(|| format!("'{key}' must be a string."))
     };
+    // A blank optional field is the same as null.
+    let optional = |v: &Value, key: &str| match &v[key] {
+        Value::Null => Ok(None),
+        Value::String(t) => Ok(Some(t.trim().to_owned()).filter(|t| !t.is_empty())),
+        _ => Err(format!("'{key}' must be a string or null.")),
+    };
+    let boolean = |v: &Value, key: &str| {
+        v[key]
+            .as_bool()
+            .ok_or_else(|| format!("'{key}' must be true or false."))
+    };
     let line = |v: &Value, key: &str| {
         v[key]
             .as_u64()
             .and_then(|n| u32::try_from(n).ok())
             .ok_or_else(|| format!("'{key}' must be a line number."))
+    };
+    let location = |l: &Value| -> Result<Location, String> {
+        let start_line = line(l, "startLine")?;
+        let end_line = line(l, "endLine")?;
+        if end_line < start_line {
+            return Err("'endLine' must not be before 'startLine'.".into());
+        }
+        Ok(Location {
+            path: relative_path(&string(l, "path")?, worktree),
+            start_line,
+            end_line,
+        })
     };
     let verdict = match v["verdict"].as_str() {
         Some("clean") => Verdict::Clean,
@@ -125,32 +197,55 @@ pub(super) fn parse(
                 .as_f64()
                 .filter(|c| (0.0..=1.0).contains(c))
                 .ok_or("'confidence' must be between 0 and 1.")?;
-            let start_line = line(f, "startLine")?;
-            let end_line = line(f, "endLine")?;
-            if end_line < start_line {
-                return Err("'endLine' must not be before 'startLine'.".into());
+            let category = Category::ALL
+                .into_iter()
+                .find(|c| f["category"] == c.key())
+                .ok_or("'category' must be one of the listed categories.")?;
+            let mut locations = f["locations"]
+                .as_array()
+                .ok_or("'locations' must be a list.")?
+                .iter()
+                .map(location)
+                .collect::<Result<Vec<_>, String>>()?;
+            if locations.is_empty() {
+                return Err("'locations' must list at least one place.".into());
+            }
+            let first = locations.remove(0);
+            let mut others: Vec<Location> = vec![];
+            for l in locations {
+                if l != first && !others.contains(&l) {
+                    others.push(l);
+                }
             }
             let title = string(f, "title")?;
             Ok(Finding {
                 id: format!("{review_id}-{index}"),
                 title: strip_priority(&title).into(),
                 priority,
-                path: relative_path(&string(f, "path")?, worktree),
-                start_line,
-                end_line,
-                body: string(f, "body")?,
+                path: first.path,
+                start_line: first.start_line,
+                end_line: first.end_line,
+                body: string(f, "problem")?,
                 confidence,
+                category: Some(category),
+                other_locations: others,
+                failure_scenario: optional(f, "failureScenario")?,
+                evidence: optional(f, "evidence")?,
+                confirmed: Some(boolean(f, "confirmed")?),
+                suggested_fix: optional(f, "suggestedFix")?,
+                done_when: optional(f, "doneWhen")?,
+                reviewer_notes: optional(f, "reviewerNotes")?,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let tests_not_run = v["testsNotRun"]
+    let not_checked = v["notChecked"]
         .as_array()
-        .ok_or("'testsNotRun' must be a list.")?
+        .ok_or("'notChecked' must be a list.")?
         .iter()
         .map(|t| {
             t.as_str()
                 .map(str::to_owned)
-                .ok_or("'testsNotRun' must list strings.")
+                .ok_or("'notChecked' must list strings.")
         })
         .collect::<Result<Vec<_>, _>>()?;
     let mut prior_findings: Vec<PriorFinding> = vec![];
@@ -186,8 +281,9 @@ pub(super) fn parse(
     Ok(Extracted {
         verdict,
         summary: string(&v, "summary")?,
+        completed: boolean(&v, "completed")?,
         findings,
-        tests_not_run,
+        not_checked,
         prior_findings,
     })
 }
@@ -320,7 +416,7 @@ impl Engine {
                 "turn/start",
                 json!({
                     "threadId": thread, "model": selection.model, "effort": selection.effort,
-                    "input": [{"type":"text","text":EXTRACTION_PROMPT}],
+                    "input": [{"type":"text","text":extraction_prompt()}],
                     "outputSchema": output_schema(),
                 }),
             )

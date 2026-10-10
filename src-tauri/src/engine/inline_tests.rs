@@ -12,6 +12,7 @@ fn finding(path: Option<&str>, start_line: u32, end_line: u32) -> Finding {
         end_line,
         body: "Explain.".into(),
         confidence: 0.8,
+        ..Default::default()
     }
 }
 /// `src/a.rs` changes new lines 10-14 and 30-31; `new.rs` is added;
@@ -76,13 +77,45 @@ fn makes_absolute_paths_relative_before_placing_them() {
     let d = tempfile::tempdir().unwrap();
     let worktree = d.path().to_str().unwrap();
     let answer = json!({
-        "verdict": "changes_requested", "summary": "", "testsNotRun": [], "priorFindings": [],
-        "findings": [{"title":"Keep overrides","priority":1,"path":format!("{worktree}/src/a.rs"),
-                      "startLine":11,"endLine":12,"body":"Explain.","confidence":0.8}]
+        "verdict": "changes_requested", "summary": "", "completed": true, "notChecked": [], "priorFindings": [],
+        "findings": [{"title":"Keep overrides","priority":1,"category":"bug",
+                      "locations":[{"path":format!("{worktree}/src/a.rs"),"startLine":11,"endLine":12}],
+                      "problem":"Explain.","failureScenario":null,"evidence":null,"confirmed":true,
+                      "suggestedFix":null,"doneWhen":null,"reviewerNotes":null,"confidence":0.8}]
     });
     let x = parse(&answer.to_string(), "rid", Some(worktree), None).unwrap();
     assert_eq!(x.findings[0].path.as_deref(), Some("src/a.rs"));
     assert_eq!(placement(&x.findings[0], &files()), None);
+}
+#[test]
+fn comments_carry_the_whole_finding() {
+    let f = Finding {
+        category: Some(Category::Bug),
+        confirmed: Some(true),
+        failure_scenario: Some("A one-item list returns nothing.".into()),
+        suggested_fix: Some("Index 0.".into()),
+        other_locations: vec![Location {
+            path: Some("src/main.rs".into()),
+            start_line: 40,
+            end_line: 40,
+        }],
+        ..finding(Some("src/a.rs"), 11, 12)
+    };
+    assert_eq!(
+        comment_body(&f),
+        "**[P1] Keep overrides**\n\nExplain.\n\n_Bug · Confirmed_\n\
+         **Breaks when:** A one-item list returns nothing.\n\
+         **Suggested fix:** Index 0.\n**Also at:** `src/main.rs:40`\n\n\
+         <!-- orbit-finding:rid-11 -->"
+    );
+    // A finding that can't go inline carries it all in the review's text.
+    let plan = plan(&review(vec![f]), &files(), None, false);
+    assert!(
+        plan.body
+            .contains("Explain.\n\n_Bug · Confirmed_\n**Breaks when:**"),
+        "{}",
+        plan.body
+    );
 }
 #[test]
 fn builds_the_review_with_inline_comments_and_other_findings() {

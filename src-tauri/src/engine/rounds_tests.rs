@@ -20,6 +20,7 @@ fn finding(id: &str) -> Finding {
         end_line: 9,
         body: format!("Body {id}"),
         confidence: 0.8,
+        ..Default::default()
     }
 }
 fn finished(pr: &PullRequest, head: &str, created_at: &str, findings: &[&str]) -> Review {
@@ -367,6 +368,14 @@ fn prompt_reproduces_the_base_review_and_marks_the_round_as_data() {
     let prompt = review_prompt(&r, base, &round(), &Err("offline".into()), &since);
     assert!(prompt.contains("- r1-0 · P2"));
     assert!(prompt.contains("could not be loaded: offline"));
+    // A finding in the new form brings what would show it fixed.
+    let mut detailed = round();
+    detailed.findings[0].done_when = Some("A test covers a one-item list.".into());
+    let prompt = review_prompt(&r, base, &detailed, &Err("offline".into()), &since);
+    assert!(
+        prompt.contains("  Body r1-0\n  **Done when:** A test covers a one-item list."),
+        "{prompt}"
+    );
     assert!(prompt.contains("Commits since the previous round are not listed."));
     assert!(!prompt.contains("Size of the changes"));
 }
