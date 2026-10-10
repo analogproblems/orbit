@@ -259,27 +259,43 @@ fn findings_section(r: &Review) -> String {
     if let Some(summary) = r.summary.as_deref().filter(|s| !s.trim().is_empty()) {
         out.push_str(&format!("{}\n\n", summary.trim()));
     }
+    if let Some(note) = r.count_note() {
+        out.push_str(&format!("Note: {note}\n\n"));
+    }
     if !findings.is_empty() {
-        out.push_str("| Priority | Location | Finding |\n| --- | --- | --- |\n");
+        out.push_str(
+            "| ID | Priority | Blocking | Location | Finding |\n| --- | --- | --- | --- | --- |\n",
+        );
         for f in findings {
-            let lines = if f.start_line == f.end_line {
-                f.start_line.to_string()
-            } else {
-                format!("{}-{}", f.start_line, f.end_line)
+            let location = match f.path.as_deref() {
+                Some(_) => format!("`{}`", cell(&f.location().label())),
+                None => "(outside the repository)".into(),
             };
-            let location = f
-                .path
-                .as_deref()
-                .map_or("(outside the repository)".into(), |p| {
-                    format!("`{}:{lines}`", cell(p))
-                });
             out.push_str(&format!(
-                "| P{} | {location} | {} |\n",
+                "| {} | P{} | {} | {location} | {} |\n",
+                f.short_id().unwrap_or_default(),
                 f.priority,
+                match f.blocking(r.blocking_priority) {
+                    Some(true) => "yes",
+                    Some(false) => "no",
+                    None => "",
+                },
                 cell(&f.title)
             ));
         }
         out.push('\n');
+        // The whole form of each finding, as it is published.
+        for f in findings {
+            out.push_str(&format!(
+                "{}\n\n{}\n\n",
+                f.heading(r.blocking_priority),
+                f.body.trim()
+            ));
+            let details = f.detail_lines();
+            if !details.is_empty() {
+                out.push_str(&format!("{}\n\n", details.join("\n")));
+            }
+        }
     }
     if !r.not_checked.is_empty() {
         out.push_str(&format!("Not checked: {}\n\n", r.not_checked.join("; ")));
@@ -291,8 +307,9 @@ fn findings_section(r: &Review) -> String {
         ));
         for f in &round.findings {
             let prior = r.prior_findings.iter().find(|p| p.id == f.id);
+            let id = f.short_id().map(|s| format!("{s} · ")).unwrap_or_default();
             out.push_str(&format!(
-                "| {} | P{} {} | {} |\n",
+                "| {} | {id}P{} {} | {} |\n",
                 prior.map_or("not reported", |p| p.status.label()),
                 f.priority,
                 cell(&f.title),
@@ -403,6 +420,8 @@ mod tests {
         r.verdict = Some(Verdict::ChangesRequested);
         r.summary = Some("Two defects.".into());
         r.not_checked = vec!["cargo test".into()];
+        r.blocking_priority = Some(1);
+        r.report_findings = Some(3);
         let finding = crate::types::Finding {
             id: format!("{}-0", r.id),
             title: "Escape | pipes\nand lines".into(),
@@ -412,9 +431,13 @@ mod tests {
             end_line: 9,
             body: "Details.".into(),
             confidence: 0.9,
+            number: Some(1),
+            failure_scenario: Some("An empty list.".into()),
             ..Default::default()
         };
         let outside = crate::types::Finding {
+            number: Some(2),
+            priority: 2,
             path: None,
             start_line: 2,
             end_line: 2,
@@ -427,10 +450,19 @@ mod tests {
             "{body}"
         );
         assert!(
-            body.contains("| P1 | `src/a.rs:4-9` | Escape \\| pipes and lines |"),
+            body.contains("| F1 | P1 | yes | `src/a.rs:4-9` | Escape \\| pipes and lines |"),
             "{body}"
         );
-        assert!(body.contains("| P1 | (outside the repository) |"), "{body}");
+        assert!(
+            body.contains("| F2 | P2 | no | (outside the repository) |"),
+            "{body}"
+        );
+        // Each finding's whole form follows the table.
+        assert!(
+            body.contains("**F1 · P1 · Blocking** Escape | pipes\nand lines\n\nDetails.\n\n**Breaks when:** An empty list.\n\n"),
+            "{body}"
+        );
+        assert!(body.contains("Note: Codex’s report lists 3 findings, but Orbit’s list has 2"));
         assert!(body.contains("Not checked: cargo test"));
         assert!(!body.contains("Since the last round"));
         let r = &mut s.reviews[0];
@@ -457,11 +489,11 @@ mod tests {
         );
         assert!(
             body.contains(
-                "| declined (accepted) | P1 Escape \\| pipes and lines | Intended \\| by design. |"
+                "| declined (accepted) | F1 · P1 Escape \\| pipes and lines | Intended \\| by design. |"
             ),
             "{body}"
         );
-        assert!(body.contains("| not reported | P1 "), "{body}");
+        assert!(body.contains("| not reported | F2 · P2 "), "{body}");
         assert!(body.find("## Report").unwrap() < body.find("A useful report.").unwrap());
     }
     #[test]

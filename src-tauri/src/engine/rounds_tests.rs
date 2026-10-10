@@ -371,7 +371,10 @@ fn prompt_reproduces_the_base_review_and_marks_the_round_as_data() {
     // A finding in the new form brings what would show it fixed.
     let mut detailed = round();
     detailed.findings[0].done_when = Some("A test covers a one-item list.".into());
+    detailed.findings[0].number = Some(2);
     let prompt = review_prompt(&r, base, &detailed, &Err("offline".into()), &since);
+    // With the short ID the PR's comments name it by.
+    assert!(prompt.contains("- r1-0 (F2) · P2"), "{prompt}");
     assert!(
         prompt.contains("  Body r1-0\n  **Done when:** A test covers a one-item list."),
         "{prompt}"

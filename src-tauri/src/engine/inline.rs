@@ -101,56 +101,57 @@ pub(crate) struct Plan {
 /// the fallback when GitHub refuses the inline comments.
 pub(crate) fn plan(r: &Review, hunks: &Hunks, round: Option<u32>, inline: bool) -> Plan {
     let findings = r.findings.as_deref().unwrap_or_default();
-    let mut comments = vec![];
-    let mut other = vec![];
-    for f in findings {
-        let reason = if inline {
-            placement(f, hunks)
-        } else {
-            Some("GitHub did not accept a comment on these lines")
-        };
-        match reason {
-            Some(reason) => other.push((f, reason)),
-            None => {
-                let mut c = json!({
-                    "path": f.path,
-                    "line": f.end_line,
-                    "side": "RIGHT",
-                    "body": comment_body(f),
-                });
-                if f.start_line != f.end_line {
-                    c["start_line"] = json!(f.start_line);
-                    c["start_side"] = json!("RIGHT");
-                }
-                comments.push(c);
+    let placed: Vec<(&Finding, Option<&str>)> = findings
+        .iter()
+        .map(|f| {
+            let reason = if inline {
+                placement(f, hunks)
+            } else {
+                Some("GitHub did not accept a comment on these lines")
+            };
+            (f, reason)
+        })
+        .collect();
+    let comments = placed
+        .iter()
+        .filter(|(_, reason)| reason.is_none())
+        .map(|(f, _)| {
+            let mut c = json!({
+                "path": f.path,
+                "line": f.end_line,
+                "side": "RIGHT",
+                "body": comment_body(f, r.blocking_priority),
+            });
+            if f.start_line != f.end_line {
+                c["start_line"] = json!(f.start_line);
+                c["start_side"] = json!("RIGHT");
             }
-        }
-    }
+            c
+        })
+        .collect();
     Plan {
-        body: review_body(r, round, &other),
+        body: review_body(r, round, &placed),
         comments,
     }
 }
-fn title(f: &Finding) -> String {
-    format!("**[P{}] {}**", f.priority, f.title.trim())
-}
-/// An inline comment. The hidden marker maps GitHub's comment back to the
-/// finding, so replies in its thread can be matched.
-pub(crate) fn comment_body(f: &Finding) -> String {
+/// An inline comment: the heading, the problem and the rest of the form. The
+/// hidden marker maps GitHub's comment back to the finding, so replies in its
+/// thread can be matched.
+pub(crate) fn comment_body(f: &Finding, blocking_priority: Option<u8>) -> String {
     format!(
         "{}\n\n{}\n\n<!-- orbit-finding:{} -->",
-        title(f),
+        f.heading(blocking_priority),
         explanation(f),
         f.id
     )
 }
-/// The problem, then the rest of the finding's detail.
+/// The problem, then the rest of the finding's form.
 fn explanation(f: &Finding) -> String {
-    let details = f.details();
+    let details = f.detail_lines();
     if details.is_empty() {
         f.body.trim().to_string()
     } else {
-        format!("{}\n\n{details}", f.body.trim())
+        format!("{}\n\n{}", f.body.trim(), details.join("\n"))
     }
 }
 /// The finding ID in an inline comment Orbit posted.
@@ -168,7 +169,95 @@ fn location(f: &Finding) -> String {
         format!("`{path}:{}-{}`", f.start_line, f.end_line)
     }
 }
-fn review_body(r: &Review, round: Option<u32>, other: &[(&Finding, &str)]) -> String {
+/// What an agent can read instead of the Markdown: the whole form of every
+/// finding, as JSON in an HTML comment. `<`, `>` and `&` are escaped so the
+/// text can't end the comment.
+fn data(r: &Review, round: Option<u32>, placed: &[(&Finding, Option<&str>)]) -> String {
+    let findings: Vec<Value> = placed
+        .iter()
+        .map(|(f, reason)| {
+            let locations: Vec<Location> = std::iter::once(f.location())
+                .chain(f.other_locations.iter().cloned())
+                .collect();
+            json!({
+                "id": f.id,
+                "shortId": f.short_id(),
+                "title": f.title.trim(),
+                "priority": f.priority,
+                "blocking": f.blocking(r.blocking_priority),
+                "category": f.category,
+                "locations": locations,
+                "problem": f.body.trim(),
+                "failureScenario": f.failure_scenario,
+                "evidence": f.evidence,
+                "confirmed": f.confirmed,
+                "suggestedFix": f.suggested_fix,
+                "doneWhen": f.done_when,
+                "reviewerNotes": f.reviewer_notes,
+                "confidence": f.confidence,
+                "inline": reason.is_none(),
+                "notInlineBecause": reason,
+            })
+        })
+        .collect();
+    let earlier: Vec<Value> = r
+        .previous_round
+        .iter()
+        .flat_map(|p| &p.findings)
+        .map(|f| {
+            let prior = r.prior_findings.iter().find(|p| p.id == f.id);
+            json!({
+                "id": f.id,
+                "shortId": f.short_id(),
+                "title": f.title.trim(),
+                "priority": f.priority,
+                "status": prior.map(|p| p.status),
+                "note": prior.map(|p| p.note.as_str()),
+            })
+        })
+        .collect();
+    let v = json!({
+        "version": 1,
+        "review": r.id,
+        "round": round,
+        "reviewer": r.provider,
+        "head": r.head_sha,
+        "base": r.base_sha,
+        "verdict": r.orbit_verdict.or(r.verdict),
+        "blocking": r.blocking,
+        "blockingPriority": r.blocking_priority,
+        "completed": r.completed,
+        "notChecked": r.not_checked,
+        "reportFindings": r.report_findings,
+        "findings": findings,
+        "earlierFindings": earlier,
+    });
+    let text = v
+        .to_string()
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('&', "\\u0026");
+    format!("<!-- orbit-data {text} -->\n")
+}
+/// The review's text, kept within GitHub's limit: the hidden data is left
+/// out first, then the reviewer's report, then both.
+fn review_body(r: &Review, round: Option<u32>, placed: &[(&Finding, Option<&str>)]) -> String {
+    let mut body = String::new();
+    for (with_data, with_report) in [(true, true), (false, true), (true, false), (false, false)] {
+        body = compose(r, round, placed, with_data, with_report);
+        if body.len() <= MAX_BODY {
+            break;
+        }
+    }
+    body
+}
+fn compose(
+    r: &Review,
+    round: Option<u32>,
+    placed: &[(&Finding, Option<&str>)],
+    with_data: bool,
+    with_report: bool,
+) -> String {
     let cell = |text: &str| text.replace('|', "\\|").replace(['\r', '\n'], " ");
     let verdict = match r.orbit_verdict.or(r.verdict) {
         Some(Verdict::Clean) => "clean".to_string(),
@@ -193,6 +282,9 @@ fn review_body(r: &Review, round: Option<u32>, other: &[(&Finding, &str)]) -> St
     if let Some(summary) = r.summary.as_deref().filter(|s| !s.trim().is_empty()) {
         out.push_str(&format!("{}\n\n", summary.trim()));
     }
+    if let Some(note) = r.count_note() {
+        out.push_str(&format!("**Note:** {note}\n\n"));
+    }
     if let Some(previous) = &r.previous_round {
         out.push_str(&format!(
             "### Since the last round (head `{}`)\n\n| Status | Earlier finding | Note |\n| --- | --- | --- |\n",
@@ -200,8 +292,9 @@ fn review_body(r: &Review, round: Option<u32>, other: &[(&Finding, &str)]) -> St
         ));
         for f in &previous.findings {
             let prior = r.prior_findings.iter().find(|p| p.id == f.id);
+            let id = f.short_id().map(|s| format!("{s} · ")).unwrap_or_default();
             out.push_str(&format!(
-                "| {} | P{} {} | {} |\n",
+                "| {} | {id}P{} {} | {} |\n",
                 prior.map_or("not reported", |p| p.status.label()),
                 f.priority,
                 cell(&f.title),
@@ -210,12 +303,16 @@ fn review_body(r: &Review, round: Option<u32>, other: &[(&Finding, &str)]) -> St
         }
         out.push('\n');
     }
+    let other: Vec<(&Finding, &str)> = placed
+        .iter()
+        .filter_map(|(f, reason)| reason.map(|reason| (*f, reason)))
+        .collect();
     if !other.is_empty() {
         out.push_str("### Other findings\n\n");
         for (f, reason) in other {
             out.push_str(&format!(
                 "{} · {} · not inline: {reason}\n\n{}\n\n",
-                title(f),
+                f.heading(r.blocking_priority),
                 location(f),
                 explanation(f)
             ));
@@ -226,6 +323,22 @@ fn review_body(r: &Review, round: Option<u32>, other: &[(&Finding, &str)]) -> St
     }
     for note in &r.declined_approvals {
         out.push_str(&format!("{note}\n\n"));
+    }
+    let report = r.report.trim();
+    if !report.is_empty() {
+        let summary = format!("{}’s own report", r.provider.label());
+        if with_report {
+            out.push_str(&format!(
+                "<details>\n<summary>{summary}</summary>\n\n{report}\n\n</details>\n\n"
+            ));
+        } else {
+            out.push_str(&format!(
+                "{summary} is too long to include here; it is kept in Orbit.\n\n"
+            ));
+        }
+    }
+    if with_data {
+        out.push_str(&data(r, round, placed));
     }
     out.push_str(&format!(
         "---\n{}",

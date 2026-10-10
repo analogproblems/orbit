@@ -336,9 +336,13 @@ fn round_details(
         } else {
             format!("{}\n{details}", f.body.trim())
         };
+        // The short ID is how the PR's comments name it, such as "Fixed F2".
+        let id = match f.short_id() {
+            Some(short) => format!("{} ({short})", f.id),
+            None => f.id.clone(),
+        };
         out.push_str(&format!(
-            "- {} · P{} · {location} · {}\n{}\n",
-            f.id,
+            "- {id} · P{} · {location} · {}\n{}\n",
             f.priority,
             f.title,
             indent(&text)

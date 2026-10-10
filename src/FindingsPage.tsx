@@ -27,7 +27,10 @@ import { desktop, useOrbit } from "./store";
 import {
   categoryLabels,
   findingLocation,
+  isBlocking,
   priorStatusLabels,
+  shortId,
+  type Finding,
   type AttentionHandlers,
   type Category,
 } from "./types";
@@ -89,6 +92,7 @@ export function filterFindings(rows: FindingRow[], f: FindingFilters) {
       return false;
     const g = row.finding;
     const text = [
+      shortId(g) ?? "",
       g.title,
       g.body,
       g.path ?? "",
@@ -318,9 +322,12 @@ function FindingDetail({
       <VStack gap={2}>
         <HStack gap={2} vAlign="center" wrap="wrap">
           <SeverityToken priority={f.priority} />
+          {row.review && isBlocking(f, row.review) && (
+            <Token label="Blocking" color="red" size="sm" />
+          )}
           <StatusToken status={row.status} />
         </HStack>
-        <Heading level={2}>{f.title}</Heading>
+        <Heading level={2}>{withShortId(f)}</Heading>
         <Text color="secondary">
           {row.scan
             ? `Security scan of ${row.repo}${commit ? ` at ${commit}` : ""}`
@@ -455,6 +462,12 @@ function FindingDetail({
   );
 }
 
+/** A finding's title after its short ID, as the PR's comments name it. */
+function withShortId(f: Finding) {
+  const id = shortId(f);
+  return id ? `${id} · ${f.title}` : f.title;
+}
+
 /** Where a finding came from, with its category for a review's finding. A
  * scan's findings are all about security. */
 function origin(r: FindingRow) {
@@ -526,7 +539,7 @@ export function FindingsPage({
               {filtered.slice(0, shown).map((r) => (
                 <ListItem
                   key={r.finding.id}
-                  label={r.finding.title}
+                  label={withShortId(r.finding)}
                   onClick={() => onSelect(r.finding.id)}
                   startContent={<SeverityToken priority={r.finding.priority} />}
                   endContent={<StatusToken status={r.status} />}

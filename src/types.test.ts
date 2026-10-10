@@ -4,7 +4,10 @@ import reportLabelCases from "../test-fixtures/report-selection-labels.json";
 import findingCategories from "../test-fixtures/finding-categories.json";
 import {
   categoryLabels,
+  countNote,
+  isBlocking,
   notChecked,
+  shortId,
   reviewDisplayStatus,
   followUpUnavailable,
   canStartReview,
@@ -263,5 +266,27 @@ describe("findings form", () => {
     expect(
       notChecked({ ...r, notChecked: undefined, testsNotRun: undefined }),
     ).toEqual([]);
+  });
+  it("names findings by short ID and says what blocks", () => {
+    const r = freshDemo().reviews[0];
+    const [first, second] = r.findings!;
+    expect(shortId(first)).toBe("F1");
+    expect(shortId({ ...first, number: null })).toBeNull();
+    expect(isBlocking(first, { ...r, blockingPriority: 2 })).toBe(true);
+    expect(isBlocking(first, { ...r, blockingPriority: 1 })).toBe(false);
+    expect(isBlocking(first, { ...r, blockingPriority: undefined })).toBeNull();
+    expect(countNote({ ...r, reportFindings: 2 })).toBeNull();
+    expect(countNote({ ...r, reportFindings: 3, provider: "claude" })).toBe(
+      "Claude’s report lists 3 findings, but Orbit’s list has 2, so some may have been left out. Check the report.",
+    );
+    // Earlier findings the reviewer still holds open count as listed.
+    const held = {
+      ...r,
+      reportFindings: 3,
+      priorFindings: [{ id: "x", status: "still_open" as const, note: "" }],
+    };
+    expect(countNote(held)).toBeNull();
+    expect(countNote({ ...r, reportFindings: null })).toBeNull();
+    expect(second.number).toBe(2);
   });
 });

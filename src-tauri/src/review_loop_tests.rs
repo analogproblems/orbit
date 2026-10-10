@@ -73,6 +73,12 @@ fn verdict_follows_the_blocking_priority_not_the_model() {
         (r.blocking, r.orbit_verdict),
         (Some(1), Some(Verdict::ChangesRequested))
     );
+    // Kept so each finding can say whether it blocks.
+    assert_eq!(r.blocking_priority, Some(2));
+    let mut unstructured = r.clone();
+    unstructured.findings = None;
+    decide(&mut unstructured, 2);
+    assert_eq!(unstructured.blocking_priority, None);
     r.findings = Some(vec![finding("r-0", 0, "Severe"), finding("r-1", 1, "Bad")]);
     decide(&mut r, 0);
     assert_eq!(r.blocking, Some(1));
