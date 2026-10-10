@@ -12,14 +12,20 @@ fn answer(findings: Value) -> String {
     json!({
         "verdict": "changes_requested",
         "summary": "One defect.",
+        "completed": true,
         "findings": findings,
-        "testsNotRun": ["cargo test"],
+        "notChecked": ["cargo test"],
         "priorFindings": [],
     })
     .to_string()
 }
 fn finding(path: &str) -> Value {
-    json!({"title":"[P2] Keep overrides","priority":2,"path":path,"startLine":4,"endLine":9,"body":"Explain.","confidence":0.8})
+    json!({
+        "title": "[P2] Keep overrides", "priority": 2, "category": "bug",
+        "locations": [{"path": path, "startLine": 4, "endLine": 9}],
+        "problem": "Explain.", "failureScenario": null, "evidence": null, "confirmed": true,
+        "suggestedFix": null, "doneWhen": null, "reviewerNotes": null, "confidence": 0.8,
+    })
 }
 /// A review whose report is in and whose extraction turn is running.
 async fn extracting(e: &Engine, worktree: &str) {
@@ -47,7 +53,8 @@ fn parses_findings_with_stable_ids_and_without_priority_prefixes() {
     .unwrap();
     assert_eq!(x.verdict, Verdict::ChangesRequested);
     assert_eq!(x.summary, "One defect.");
-    assert_eq!(x.tests_not_run, ["cargo test"]);
+    assert_eq!(x.not_checked, ["cargo test"]);
+    assert!(x.completed);
     assert_eq!(x.findings[0].id, "r1-0");
     assert_eq!(x.findings[1].id, "r1-1");
     assert_eq!(x.findings[0].title, "Keep overrides");
@@ -55,13 +62,137 @@ fn parses_findings_with_stable_ids_and_without_priority_prefixes() {
     assert_eq!((x.findings[0].start_line, x.findings[0].end_line), (4, 9));
 }
 #[test]
+fn keeps_every_part_of_the_form() {
+    let d = tempfile::tempdir().unwrap();
+    let wt = d.path().to_str().unwrap();
+    let mut f = finding(&format!("{wt}/src/lib.rs"));
+    f["category"] = json!("data_loss");
+    f["locations"] = json!([
+        {"path": format!("{wt}/src/lib.rs"), "startLine": 3, "endLine": 3},
+        {"path": "src/main.rs", "startLine": 40, "endLine": 41},
+        {"path": "src/main.rs", "startLine": 40, "endLine": 41},
+        {"path": "src/lib.rs", "startLine": 3, "endLine": 3},
+        {"path": "/etc/passwd", "startLine": 1, "endLine": 1},
+        {"path": "src/main.rs", "startLine": 40, "endLine": 41},
+    ]);
+    f["problem"] = json!("first() returns the second item.");
+    f["failureScenario"] = json!("A one-item list returns nothing.");
+    f["evidence"] = json!("Read src/lib.rs:3 and its caller.");
+    f["confirmed"] = json!(false);
+    f["suggestedFix"] = json!("  ");
+    f["doneWhen"] = json!("A test covers a one-item list.");
+    f["reviewerNotes"] = json!("Rated high by the reviewer.");
+    let x = parse(&answer(json!([f])), "r1", Some(wt), None).unwrap();
+    let f = &x.findings[0];
+    assert_eq!(
+        (f.path.as_deref(), f.start_line, f.end_line),
+        (Some("src/lib.rs"), 3, 3)
+    );
+    // Repeats of a place are dropped; a place outside the worktree keeps
+    // its lines without a path.
+    assert_eq!(
+        f.other_locations,
+        [
+            Location {
+                path: Some("src/main.rs".into()),
+                start_line: 40,
+                end_line: 41
+            },
+            Location {
+                path: None,
+                start_line: 1,
+                end_line: 1
+            },
+        ]
+    );
+    assert_eq!(f.body, "first() returns the second item.");
+    assert_eq!(f.category, Some(Category::DataLoss));
+    assert_eq!(f.confirmed, Some(false));
+    assert_eq!(
+        f.failure_scenario.as_deref(),
+        Some("A one-item list returns nothing.")
+    );
+    assert_eq!(
+        f.evidence.as_deref(),
+        Some("Read src/lib.rs:3 and its caller.")
+    );
+    // A blank field is the same as null.
+    assert_eq!(f.suggested_fix, None);
+    assert_eq!(
+        f.done_when.as_deref(),
+        Some("A test covers a one-item list.")
+    );
+    assert_eq!(
+        f.reviewer_notes.as_deref(),
+        Some("Rated high by the reviewer.")
+    );
+    assert_eq!(
+        f.details(),
+        "_Data loss · Likely, not verified_\n\
+         **Breaks when:** A one-item list returns nothing.\n\
+         **Evidence:** Read src/lib.rs:3 and its caller.\n\
+         **Done when:** A test covers a one-item list.\n\
+         **Also at:** `src/main.rs:40-41`, `(outside the repository)`\n\
+         **Reviewer's notes:** Rated high by the reviewer."
+    );
+    let mut v: Value = serde_json::from_str(&answer(json!([]))).unwrap();
+    v["completed"] = json!(false);
+    assert!(!parse(&v.to_string(), "r1", None, None).unwrap().completed);
+}
+#[test]
+fn the_app_knows_the_same_categories() {
+    let fixture: Vec<String> = serde_json::from_str(include_str!(
+        "../../../test-fixtures/finding-categories.json"
+    ))
+    .unwrap();
+    assert_eq!(fixture, Category::ALL.map(Category::key));
+    for c in Category::ALL {
+        assert_eq!(serde_json::to_value(c).unwrap(), c.key());
+    }
+}
+#[test]
+fn findings_and_reviews_saved_before_the_new_form_still_load() {
+    let f: Finding = serde_json::from_value(json!({"id":"r0-0","title":"Keep overrides",
+        "priority":1,"path":"a.rs","startLine":4,"endLine":9,"body":"Explain and fix.","confidence":0.8}))
+    .unwrap();
+    assert_eq!(f.body, "Explain and fix.");
+    assert!(f.category.is_none() && f.confirmed.is_none() && f.other_locations.is_empty());
+    assert_eq!(f.details(), "");
+    let mut r = serde_json::to_value(Review::new(
+        &crate::types::tests::pr(),
+        &Settings::default(),
+        true,
+    ))
+    .unwrap();
+    let review = r.as_object_mut().unwrap();
+    review.remove("notChecked");
+    review.remove("completed");
+    review.insert("testsNotRun".into(), json!(["cargo test"]));
+    let r: Review = serde_json::from_value(r).unwrap();
+    assert_eq!(r.not_checked, ["cargo test"]);
+    assert_eq!(r.completed, None);
+}
+#[test]
 fn refuses_output_that_does_not_match_the_schema() {
     let mut bad_priority = finding("a.rs");
     bad_priority["priority"] = json!(4);
     let mut backwards = finding("a.rs");
-    backwards["endLine"] = json!(1);
+    backwards["locations"][0]["endLine"] = json!(1);
     let mut confidence = finding("a.rs");
     confidence["confidence"] = json!(1.5);
+    let mut category = finding("a.rs");
+    category["category"] = json!("style");
+    let mut nowhere = finding("a.rs");
+    nowhere["locations"] = json!([]);
+    let mut unsure = finding("a.rs");
+    unsure["confirmed"] = json!(null);
+    let mut evidence = finding("a.rs");
+    evidence["evidence"] = json!(["read a.rs"]);
+    // The form before #56, with one location and a body.
+    let old = json!({"title":"Keep overrides","priority":2,"path":"a.rs","startLine":4,"endLine":9,
+        "body":"Explain.","confidence":0.8});
+    let mut incomplete: Value = serde_json::from_str(&answer(json!([]))).unwrap();
+    incomplete.as_object_mut().unwrap().remove("completed");
     for text in [
         String::new(),
         "not json".into(),
@@ -70,10 +201,16 @@ fn refuses_output_that_does_not_match_the_schema() {
         answer(json!([bad_priority])),
         answer(json!([backwards])),
         answer(json!([confidence])),
-        json!({"verdict":"maybe","summary":"","findings":[],"testsNotRun":[],"priorFindings":[]})
+        answer(json!([category])),
+        answer(json!([nowhere])),
+        answer(json!([unsure])),
+        answer(json!([evidence])),
+        answer(json!([old])),
+        incomplete.to_string(),
+        json!({"verdict":"maybe","summary":"","completed":true,"findings":[],"notChecked":[],"priorFindings":[]})
             .to_string(),
-        json!({"verdict":"clean","summary":"","findings":[],"testsNotRun":[]}).to_string(),
-        json!({"verdict":"clean","summary":"","findings":[],"testsNotRun":[],
+        json!({"verdict":"clean","summary":"","completed":true,"findings":[],"notChecked":[]}).to_string(),
+        json!({"verdict":"clean","summary":"","completed":true,"findings":[],"notChecked":[],
             "priorFindings":[{"id":"r0-0","status":"ignored","note":""}]})
         .to_string(),
     ] {
@@ -244,6 +381,25 @@ async fn stores_extracted_findings_without_adding_chat_messages() {
     assert_eq!(findings[0].id, format!("{}-0", r.id));
 }
 #[tokio::test]
+async fn a_review_that_could_not_check_the_change_fails_without_publishing() {
+    let (d, e, _) = running_engine().await;
+    automatic_extracting(&e, d.path().to_str().unwrap()).await;
+    let mut v: Value = serde_json::from_str(&answer(json!([]))).unwrap();
+    v["verdict"] = json!("clean");
+    v["completed"] = json!(false);
+    v["summary"] = json!("A command it needed was refused.");
+    deliver(&e, &v.to_string(), "completed").await;
+    let r = e.snapshot().await.reviews.remove(0);
+    assert_eq!(r.status, "failed");
+    assert!(!r.extracting);
+    assert!(r.findings.is_none() && r.verdict.is_none() && r.blocking.is_none());
+    assert_eq!(
+        r.error.as_deref(),
+        Some("Codex could not complete the review, so nothing was published. A command it needed was refused.")
+    );
+    assert!(r.comment_url.is_none());
+}
+#[tokio::test]
 async fn invalid_or_failed_extraction_keeps_a_publishable_report() {
     for (text, status) in [
         ("", "completed"),
@@ -266,7 +422,7 @@ async fn scans_findings_for_credentials() {
     let (d, e, _) = running_engine().await;
     extracting(&e, d.path().to_str().unwrap()).await;
     let mut leaked = finding("a.rs");
-    leaked["body"] = json!(format!("Found ghp_{} in a fixture.", "a1".repeat(18)));
+    leaked["failureScenario"] = json!(format!("Found ghp_{} in a fixture.", "a1".repeat(18)));
     deliver(&e, &answer(json!([leaked])), "completed").await;
     let r = e.snapshot().await.reviews.remove(0);
     assert!(r.findings.is_some());
@@ -312,7 +468,8 @@ async fn older_saved_reviews_load_without_findings() {
         "findings",
         "verdict",
         "summary",
-        "testsNotRun",
+        "notChecked",
+        "completed",
         "extracting",
         "extractionSelection",
         "previousRound",

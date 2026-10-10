@@ -756,6 +756,20 @@ pub(super) fn apply_event(s: &mut Snapshot, id: &str, event: ReviewEvent) -> Nex
                 ));
             }
         }
+        // A review that could not read or check the change failed, however
+        // clean its findings look. (Claude and Antigravity report this before
+        // their turn ends; see `cli_review`.)
+        ReviewEvent::TurnDone(TurnEnd::Completed) if r.extracting && r.completed == Some(false) => {
+            r.extracting = false;
+            r.status = "failed".into();
+            r.findings = None;
+            r.verdict = None;
+            r.prior_findings.clear();
+            r.error = Some(format!(
+                "{reviewer} could not complete the review, so nothing was published. {}",
+                r.summary.as_deref().unwrap_or_default()
+            ));
+        }
         ReviewEvent::TurnDone(end) if r.extracting => {
             let error = match end {
                 TurnEnd::Completed => None,

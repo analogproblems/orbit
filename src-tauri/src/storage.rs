@@ -281,8 +281,8 @@ fn findings_section(r: &Review) -> String {
         }
         out.push('\n');
     }
-    if !r.tests_not_run.is_empty() {
-        out.push_str(&format!("Not run: {}\n\n", r.tests_not_run.join("; ")));
+    if !r.not_checked.is_empty() {
+        out.push_str(&format!("Not checked: {}\n\n", r.not_checked.join("; ")));
     }
     if let Some(round) = &r.previous_round {
         out.push_str(&format!(
@@ -402,7 +402,7 @@ mod tests {
         let r = &mut s.reviews[0];
         r.verdict = Some(Verdict::ChangesRequested);
         r.summary = Some("Two defects.".into());
-        r.tests_not_run = vec!["cargo test".into()];
+        r.not_checked = vec!["cargo test".into()];
         let finding = crate::types::Finding {
             id: format!("{}-0", r.id),
             title: "Escape | pipes\nand lines".into(),
@@ -412,6 +412,7 @@ mod tests {
             end_line: 9,
             body: "Details.".into(),
             confidence: 0.9,
+            ..Default::default()
         };
         let outside = crate::types::Finding {
             path: None,
@@ -430,7 +431,7 @@ mod tests {
             "{body}"
         );
         assert!(body.contains("| P1 | (outside the repository) |"), "{body}");
-        assert!(body.contains("Not run: cargo test"));
+        assert!(body.contains("Not checked: cargo test"));
         assert!(!body.contains("Since the last round"));
         let r = &mut s.reviews[0];
         let mut earlier = r.findings.clone().unwrap();

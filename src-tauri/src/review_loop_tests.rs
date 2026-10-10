@@ -12,6 +12,7 @@ fn finding(id: &str, priority: u8, title: &str) -> Finding {
         end_line: 2,
         body: String::new(),
         confidence: 0.9,
+        ..Default::default()
     }
 }
 fn prior(id: &str, status: PriorStatus) -> PriorFinding {

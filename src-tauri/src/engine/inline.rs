@@ -140,9 +140,18 @@ pub(crate) fn comment_body(f: &Finding) -> String {
     format!(
         "{}\n\n{}\n\n<!-- orbit-finding:{} -->",
         title(f),
-        f.body.trim(),
+        explanation(f),
         f.id
     )
+}
+/// The problem, then the rest of the finding's detail.
+fn explanation(f: &Finding) -> String {
+    let details = f.details();
+    if details.is_empty() {
+        f.body.trim().to_string()
+    } else {
+        format!("{}\n\n{details}", f.body.trim())
+    }
 }
 /// The finding ID in an inline comment Orbit posted.
 pub(crate) fn finding_marker(body: &str) -> Option<&str> {
@@ -208,12 +217,12 @@ fn review_body(r: &Review, round: Option<u32>, other: &[(&Finding, &str)]) -> St
                 "{} · {} · not inline: {reason}\n\n{}\n\n",
                 title(f),
                 location(f),
-                f.body.trim()
+                explanation(f)
             ));
         }
     }
-    if !r.tests_not_run.is_empty() {
-        out.push_str(&format!("Not run: {}\n\n", r.tests_not_run.join("; ")));
+    if !r.not_checked.is_empty() {
+        out.push_str(&format!("Not checked: {}\n\n", r.not_checked.join("; ")));
     }
     for note in &r.declined_approvals {
         out.push_str(&format!("{note}\n\n"));

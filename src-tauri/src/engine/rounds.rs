@@ -329,12 +329,19 @@ fn round_details(
             .map_or("(outside the repository)".into(), |p| {
                 format!("{p}:{}-{}", f.start_line, f.end_line)
             });
+        // With what would show it fixed, for checking it again.
+        let details = f.details();
+        let text = if details.is_empty() {
+            f.body.clone()
+        } else {
+            format!("{}\n{details}", f.body.trim())
+        };
         out.push_str(&format!(
             "- {} · P{} · {location} · {}\n{}\n",
             f.id,
             f.priority,
             f.title,
-            indent(&f.body)
+            indent(&text)
         ));
         if let Some(d) = round.decisions.iter().find(|d| d.id == f.id) {
             let status = serde_json::to_value(d.status).unwrap_or_default();

@@ -161,6 +161,10 @@ async fn reviews_with_orbits_instructions_then_extracts_findings_in_the_same_con
     assert_eq!(r.thread_id.as_deref(), Some("conv-1"));
     let findings = r.findings.as_ref().expect("structured findings");
     assert_eq!(findings[0].path.as_deref(), Some("src/lib.rs"));
+    assert_eq!(
+        findings[0].evidence.as_deref(),
+        Some("Read src/lib.rs:3 and its caller in src/main.rs:40.")
+    );
     assert_eq!(r.verdict, Some(Verdict::ChangesRequested));
     let selection = ModelSelection {
         model: "gemini-3.1-pro-high".into(),

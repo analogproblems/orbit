@@ -85,7 +85,12 @@ export interface Review {
   findings?: Finding[] | null;
   verdict?: Verdict | null;
   summary?: string | null;
+  /** What the reviewer said it could not read, run or check. */
+  notChecked?: string[];
+  /** The same, in demos saved before it was renamed. */
   testsNotRun?: string[];
+  /** False when the reviewer said it could not check the change. */
+  completed?: boolean | null;
   /** Requests Orbit declined because no one approved them in time. */
   declinedApprovals?: string[];
   /** The findings-extraction turn is running. */
@@ -151,19 +156,59 @@ export const priorStatusLabels: Record<PriorStatus, string> = {
 export function findingReviewId(f: Finding) {
   return f.id.slice(0, f.id.lastIndexOf("-"));
 }
-export interface Finding extends Record<string, unknown> {
-  id: string;
-  title: string;
-  /** 0 (P0, most severe) to 3. */
-  priority: number;
+export type Category =
+  | "bug"
+  | "security"
+  | "data_loss"
+  | "compatibility"
+  | "test_gap"
+  | "performance"
+  | "other";
+export const categoryLabels: Record<Category, string> = {
+  bug: "Bug",
+  security: "Security",
+  data_loss: "Data loss",
+  compatibility: "Compatibility",
+  test_gap: "Test gap",
+  performance: "Performance",
+  other: "Other",
+};
+/** A place in the repository. */
+export interface Location {
   /** Relative to the repository root; null when outside the worktree. */
   path: string | null;
   startLine: number;
   endLine: number;
+}
+export interface Finding extends Location, Record<string, unknown> {
+  id: string;
+  title: string;
+  /** 0 (P0, most severe) to 3. */
+  priority: number;
+  /** What is wrong. Older findings also fold in the failure scenario and
+   * the fix. */
   body: string;
   confidence: number;
+  /** The fields below are missing or null in older findings. */
+  category?: Category | null;
+  /** Other places the finding involves. */
+  otherLocations?: Location[];
+  /** A concrete input or state and the wrong result it produces. */
+  failureScenario?: string | null;
+  /** How the reviewer established it. */
+  evidence?: string | null;
+  /** Verified by reading or running the code, or only likely. */
+  confirmed?: boolean | null;
+  suggestedFix?: string | null;
+  /** The test or check that would show it is fixed. */
+  doneWhen?: string | null;
+  reviewerNotes?: string | null;
 }
-export function findingLocation(f: Finding) {
+/** What the reviewer could not check, from current or older state. */
+export function notChecked(r: Review): string[] {
+  return r.notChecked ?? r.testsNotRun ?? [];
+}
+export function findingLocation(f: Location) {
   if (!f.path) return "Outside the repository";
   return f.startLine === f.endLine
     ? `${f.path}:${f.startLine}`

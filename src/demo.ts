@@ -176,8 +176,22 @@ export function demoFindings(reviewId: string): Finding[] {
       path: "src/config/repositories.ts",
       startLine: 48,
       endLine: 48,
-      body: "Saving the global review configuration replaces the repository configuration object, so per-repository overrides are lost. Merge the updated defaults with the existing entries and add a regression test.",
+      body: "Saving the global review configuration replaces the repository configuration object, so per-repository overrides are lost.",
       confidence: 0.8,
+      category: "data_loss",
+      otherLocations: [
+        { path: "src/settings/save.ts", startLine: 21, endLine: 24 },
+      ],
+      failureScenario:
+        "Give a repository its own model, then change any global setting: the repository is back on the default model.",
+      evidence:
+        "Read saveDefaults in src/settings/save.ts and the repository object it rebuilds in src/config/repositories.ts:48.",
+      confirmed: true,
+      suggestedFix:
+        "Merge the updated defaults with the existing repository entries.",
+      doneWhen:
+        "A test saves defaults after configuring an override and the override is still there.",
+      reviewerNotes: null,
     },
     {
       id: `${reviewId}-1`,
@@ -186,8 +200,18 @@ export function demoFindings(reviewId: string): Finding[] {
       path: "src/reviews/queue.ts",
       startLine: 72,
       endLine: 72,
-      body: "A deleted or moved checkout still passes the configuration check and fails later during worktree creation. Check the directory before enqueueing and link to repository settings on failure.",
+      body: "A deleted or moved checkout still passes the configuration check and fails later during worktree creation.",
       confidence: 0.7,
+      category: "bug",
+      otherLocations: [],
+      failureScenario:
+        "Move a connected checkout, then start a review: it queues, then fails while creating the worktree with no way to fix the path.",
+      evidence: "Read the enqueue check in src/reviews/queue.ts:72.",
+      confirmed: false,
+      suggestedFix:
+        "Check that the directory is a Git repository before enqueueing, and link to repository settings when it isn't.",
+      doneWhen: null,
+      reviewerNotes: null,
     },
   ];
 }
@@ -203,6 +227,7 @@ export function demoScanFindings(scanId: string): Finding[] {
       endLine: 33,
       body: "The search handler joins the request's query string into SQL, so a crafted search can read other users' rows.\n\n**Severity:** High (CVSS:3.1 8.6) · **Weakness:** CWE-89 · **Confidence:** High\n\n**Suggested fix:** Pass the search text as a bound parameter.",
       confidence: 0.9,
+      category: "security",
     },
     {
       id: `${scanId}:csf_demo_1`,
@@ -213,6 +238,7 @@ export function demoScanFindings(scanId: string): Finding[] {
       endLine: 18,
       body: "The signature check uses `===`, which can leak how many leading bytes matched.\n\n**Severity:** Medium · **Weakness:** CWE-208 · **Confidence:** Medium\n\n**Suggested fix:** Compare with `crypto.timingSafeEqual`.",
       confidence: 0.6,
+      category: "security",
     },
     {
       id: `${scanId}:csf_demo_2`,
@@ -223,6 +249,7 @@ export function demoScanFindings(scanId: string): Finding[] {
       endLine: 9,
       body: "The `/debug/state` route is registered whatever the environment.\n\n**Severity:** Low · **Weakness:** CWE-489 · **Confidence:** High\n\n**Suggested fix:** Register it only in development.",
       confidence: 0.9,
+      category: "security",
     },
   ];
 }
@@ -283,6 +310,7 @@ function demoRound(
           endLine: 40 + i * 10,
           body: "An illustrative finding in demo mode.",
           confidence: 0.8,
+          category: "bug" as const,
         })),
         {
           id: `${id}-${blocking}`,
@@ -293,6 +321,7 @@ function demoRound(
           endLine: 12,
           body: "An illustrative nit in demo mode.",
           confidence: 0.6,
+          category: "other" as const,
         },
       ];
   // The first `blocking` earlier blocking findings stay open; the rest are fixed.
@@ -496,7 +525,8 @@ export function freshDemo(): Snapshot {
     verdict: "changes_requested",
     summary:
       "Two defects in the new repository configuration flow; the rest of the change looks sound.",
-    testsNotRun: ["End-to-end tests (no browser in the review sandbox)"],
+    notChecked: ["End-to-end tests (no browser in the review sandbox)"],
+    completed: true,
     automatic: false,
     isReview: true,
   };

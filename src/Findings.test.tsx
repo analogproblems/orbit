@@ -23,7 +23,22 @@ describe("structured findings", () => {
     expect(screen.getByText("src/config/repositories.ts:48")).toBeTruthy();
     expect(screen.getByText("Outside the repository")).toBeTruthy();
     expect(screen.getAllByText("Open")).toHaveLength(2);
-    expect(screen.getByText(/End-to-end tests/)).toBeTruthy();
+    expect(screen.getByText(/Not checked: End-to-end tests/)).toBeTruthy();
+    // The category, the failure case, other places, and an unverified one.
+    expect(screen.getByText("Data loss")).toBeTruthy();
+    expect(
+      screen.getByText(`Breaks when: ${findings[0].failureScenario}`),
+    ).toBeTruthy();
+    expect(screen.getByText("src/settings/save.ts:21–24")).toBeTruthy();
+    expect(screen.getAllByText("Likely, not verified")).toHaveLength(1);
+  });
+  it("shows what older reviews could not run", () => {
+    render(
+      <Findings
+        review={review({ notChecked: undefined, testsNotRun: ["cargo test"] })}
+      />,
+    );
+    expect(screen.getByText("Not checked: cargo test")).toBeTruthy();
   });
   it("notes requests declined by the approval time limit", () => {
     const note =

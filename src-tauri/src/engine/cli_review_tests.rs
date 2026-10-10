@@ -80,6 +80,13 @@ async fn reviews_with_code_review_then_extracts_findings_on_the_same_session() {
     let findings = r.findings.as_ref().expect("structured findings");
     assert_eq!(findings.len(), 1);
     assert_eq!(findings[0].path.as_deref(), Some("src/lib.rs"));
+    assert_eq!(findings[0].category, Some(Category::Bug));
+    assert_eq!(findings[0].other_locations[0].label(), "src/main.rs:40");
+    assert_eq!(
+        findings[0].failure_scenario.as_deref(),
+        Some("A list with one item returns nothing.")
+    );
+    assert_eq!(r.completed, Some(true));
     assert_eq!(r.verdict, Some(Verdict::ChangesRequested));
     assert!(r.error.is_none(), "{:?}", r.error);
     let selection = ModelSelection {
@@ -110,7 +117,9 @@ async fn reviews_with_code_review_then_extracts_findings_on_the_same_session() {
     assert_eq!(after(extraction, "--resume"), session);
     assert_eq!(after(extraction, "--tools"), "");
     let schema: Value = serde_json::from_str(&after(extraction, "--json-schema")).unwrap();
-    assert_eq!(schema["required"][2], "findings");
+    assert_eq!(schema, super::findings::output_schema());
+    let prompt = after(extraction, "-p");
+    assert!(prompt.contains("failure scenario") && prompt.contains("reviewerNotes"));
     // The finished turn is forgotten once its process has gone.
     tokio::time::timeout(Duration::from_secs(5), async {
         while !e.cli_turns.lock().unwrap().is_empty() {

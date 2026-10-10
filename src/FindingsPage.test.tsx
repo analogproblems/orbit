@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { FindingsPage, filterFindings, noFilters } from "./FindingsPage";
 import { collectFindings } from "./findingIndex";
-import { freshDemo } from "./demo";
+import { demoFindings, freshDemo } from "./demo";
 import { useOrbit } from "./store";
 import type { AttentionHandlers } from "./types";
 afterEach(cleanup);
@@ -71,6 +71,46 @@ describe("findings page", () => {
     expect(filterFindings(rows, { ...noFilters, pr: "open" })).toEqual(
       rows.filter((r) => r.prOpen),
     );
+  });
+  it("filters by category and searches every part of a finding", () => {
+    const rows = collectFindings(freshDemo());
+    const lost = filterFindings(rows, { ...noFilters, category: "data_loss" });
+    expect(lost.map((r) => r.finding.title)).toEqual([
+      "Preserve repository overrides when saving defaults",
+    ]);
+    for (const search of ["back on the default model", "settings/save.ts"])
+      expect(
+        filterFindings(rows, { ...noFilters, search }).map(
+          (r) => r.finding.title,
+        ),
+      ).toEqual(["Preserve repository overrides when saving defaults"]);
+  });
+  it("shows every part of a finding", () => {
+    const snapshot = freshDemo();
+    useOrbit.setState({ snapshot });
+    render(<Page onChoose={vi.fn()} />);
+    const f = demoFindings("demo-completed")[0];
+    expect(screen.getAllByText(/^Data loss · /).length).toBeGreaterThan(0);
+    fireEvent.click(
+      screen.getByRole("button", { name: (name) => name.includes(f.title) }),
+    );
+    for (const [heading, text] of [
+      ["Breaks when", f.failureScenario],
+      ["Evidence", f.evidence],
+      ["Suggested fix", f.suggestedFix],
+      ["Done when", f.doneWhen],
+    ]) {
+      expect(screen.getByRole("heading", { name: heading! })).toBeTruthy();
+      expect(screen.getByText(text!)).toBeTruthy();
+    }
+    expect(
+      screen.queryByRole("heading", { name: "Reviewer's notes" }),
+    ).toBeNull();
+    expect(screen.getByText("Locations")).toBeTruthy();
+    expect(screen.getByText("src/settings/save.ts:21–24")).toBeTruthy();
+    expect(
+      screen.getByText("Yes, by reading or running the code"),
+    ).toBeTruthy();
   });
   it("explains an empty page", () => {
     const snapshot = freshDemo();
