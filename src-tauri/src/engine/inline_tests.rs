@@ -114,6 +114,10 @@ fn builds_the_review_with_inline_comments_and_other_findings() {
     let all = super::inline::plan(&r, &files(), Some(2), false);
     assert!(all.comments.is_empty());
     assert_eq!(all.body.matches("not inline").count(), 3);
+    let mut claude = r.clone();
+    claude.provider = Provider::Claude;
+    let body = super::inline::plan(&claude, &files(), Some(2), true).body;
+    assert!(body.contains("\n## Orbit · Claude review\n") && !body.contains("Codex"));
 }
 #[test]
 fn previews_where_each_finding_goes() {

@@ -173,10 +173,11 @@ fn review_body(r: &Review, round: Option<u32>, other: &[(&Finding, &str)]) -> St
         None => "not reported".into(),
     };
     let mut out = format!(
-        "<!-- orbit-review:{} -->{}\n## Orbit · Codex review\n\n\
+        "<!-- orbit-review:{} -->{}\n## Orbit · {} review\n\n\
          Reviewed head `{}` against base `{}`.\n\nVerdict: {verdict}\n\n",
         r.id,
         crate::github::verdict_marker(r, round),
+        r.provider.label(),
         r.head_sha,
         r.base_sha
     );
