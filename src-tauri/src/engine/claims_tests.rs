@@ -69,6 +69,55 @@ fn reads_fixed_and_declined_replies() {
         ]
     );
 }
+/// The reply skill for coding agents only teaches lines Orbit reads.
+#[test]
+fn the_reply_skill_teaches_lines_orbit_reads() {
+    use ClaimKind::*;
+    let skill = include_str!("../../../.claude/skills/answer-orbit-reviews/SKILL.md");
+    let examples = skill.split("```text\n").nth(1).unwrap();
+    let examples = examples.split("```").next().unwrap();
+    assert_eq!(
+        lines(examples),
+        [
+            line(&[2], Fixed, Some("3f9c2a1"), None),
+            line(&[1, 3], Fixed, Some("3f9c2a1"), None),
+            line(
+                &[4],
+                Declined,
+                None,
+                Some("the caller in src/api.rs rejects an empty list, so this path can't be reached.")
+            ),
+        ]
+    );
+    // Each form it names, such as `Fixed F2 in <commit>`, filled in.
+    let code = regex::Regex::new(r"`([^`\n]+)`").unwrap();
+    let forms: Vec<&str> = code
+        .captures_iter(skill)
+        .map(|c| c.get(1).unwrap().as_str())
+        .filter(|s| {
+            ["Fixed ", "Declined ", "Declined:"]
+                .iter()
+                .any(|p| s.starts_with(p))
+        })
+        .collect();
+    assert_eq!(forms.len(), 5, "{forms:?}");
+    for form in forms {
+        let text = form
+            .replace("<commit>", "3f9c2a1")
+            .replace("<reason>", "intended");
+        let read = lines(&text);
+        assert_eq!(read.len(), 1, "{form}");
+        let expected = match read[0].kind {
+            Fixed => (Some("3f9c2a1"), None),
+            Declined => (None, Some("intended")),
+        };
+        assert_eq!(
+            (read[0].commit.as_deref(), read[0].reason.as_deref()),
+            expected,
+            "{form}"
+        );
+    }
+}
 
 fn round() -> PreviousRound {
     let finding = |id: &str, number| Finding {
