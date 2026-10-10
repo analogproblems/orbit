@@ -244,7 +244,9 @@ fn current<'a>(s: &'a Snapshot, pr: &'a PullRequest) -> Option<Current<'a>> {
         .round_ids
         .iter()
         .filter_map(|id| s.reviews.iter().find(|r| &r.id == id))
-        .filter(|r| !active(&r.status))
+        // A follow-up chat sets a finished round back to running until the
+        // chat ends; the round is still finished.
+        .filter(|r| !active(&r.status) || r.before_follow_up.is_some())
         .collect();
     let control = s.loops.iter().find(|c| c.pr_id == pr.id);
     let seen = SeenLoop {
@@ -276,7 +278,8 @@ enum Outcome {
     Unstructured,
 }
 fn outcome(r: &Review) -> Outcome {
-    if r.status == "failed" {
+    let status = r.before_follow_up.as_ref().map_or(&r.status, |b| &b.status);
+    if status == "failed" {
         return Outcome::Failed;
     }
     match r.blocking {

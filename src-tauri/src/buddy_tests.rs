@@ -157,6 +157,48 @@ fn a_failed_round_says_so_and_its_needs_you_item_follows() {
     assert_eq!(note.review_id.as_deref(), Some("run-1"));
 }
 #[test]
+fn a_follow_up_chat_on_a_finished_round_repeats_nothing() {
+    // A follow-up sets the round running until it ends, then restores the
+    // round's outcome, whether the chat answered, failed or was interrupted.
+    let endings = [None, Some("The follow-up failed: boom".to_string())];
+    for (status, blocking, kind) in [
+        ("posted", 0, NoteKind::Clean),
+        ("posted", 2, NoteKind::RoundFinished),
+        ("failed", 0, NoteKind::RoundFinished),
+    ] {
+        let (mut s, p) = seeded();
+        s.reviews.push(round(&p, 1));
+        step(&mut s);
+        finish(&mut s.reviews[0], blocking);
+        s.reviews[0].status = status.into();
+        let finished = step(&mut s);
+        assert_eq!(finished[0].0, kind, "{status} {blocking}");
+        for ending in endings.iter().chain(&endings) {
+            let r = &mut s.reviews[0];
+            r.before_follow_up = Some(crate::types::Outcome {
+                status: std::mem::replace(&mut r.status, "reviewing".into()),
+                error: r.error.take(),
+            });
+            r.is_review = false;
+            let during = step(&mut s);
+            assert!(s.reviews[0].end_follow_up(ending.clone()));
+            let after = step(&mut s);
+            for (kind, text) in during.iter().chain(&after) {
+                assert!(
+                    !matches!(
+                        kind,
+                        NoteKind::RoundStarted | NoteKind::RoundFinished | NoteKind::Clean
+                    ),
+                    "{status} {blocking} {ending:?}: {text}"
+                );
+            }
+            if status == "posted" {
+                assert!(during.is_empty() && after.is_empty(), "{after:?}");
+            }
+        }
+    }
+}
+#[test]
 fn each_new_needs_you_item_writes_one_note() {
     let (mut s, p) = seeded();
     s.reviews.push(round(&p, 1));
