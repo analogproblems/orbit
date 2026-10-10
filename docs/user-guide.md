@@ -264,7 +264,7 @@ While automatic publication is on, Orbit also shows each automatic round's resul
 
 When a coding agent such as Claude Code fixes a PR, it can answer each finding in the form the next round recognises. Orbit includes a Claude Code skill for this, `answer-orbit-reviews`. It explains how to read a published review and its hidden data, which findings need an answer, the `Fixed F2 in <commit>` and `Declined F2: <reason>` lines, where to post them, and which accounts Orbit reads replies from.
 
-In Settings, **Replies from coding agents** shows the skill with **Copy skill**. Save it as `.claude/skills/answer-orbit-reviews/SKILL.md` in a repository Orbit reviews, which works in cloud sessions too, or under `~/.claude/skills/answer-orbit-reviews/` for every project on one computer. Orbit never adds it to a repository itself. If the agent posts as a bot account, add that account under **Trusted accounts**; otherwise its replies are left out.
+In Settings, **Replies from coding agents** shows the skill with **Copy skill**. Save it as `.claude/skills/answer-orbit-reviews/SKILL.md` in a repository Orbit reviews, then commit and push it: cloud sessions load skills from the repository they clone, not from your computer. Or save it under `~/.claude/skills/answer-orbit-reviews/` for every project on one computer. Orbit never adds it to a repository itself. If the agent posts as a bot account, add that account under **Trusted accounts**; otherwise its replies are left out.
 
 ### Live
 

@@ -33,7 +33,8 @@ export function ReplySkill() {
           </Text>
           <Text color="secondary">
             Save it as <Code>{replySkillPath}</Code> in a repository Orbit
-            reviews, which works in cloud sessions too, or under{" "}
+            reviews, then commit and push it: cloud sessions load skills from
+            the repository they clone. Or save it under{" "}
             <Code>~/.claude/skills/answer-orbit-reviews/</Code> for every
             project on one computer. Orbit doesn’t add it for you.
           </Text>
