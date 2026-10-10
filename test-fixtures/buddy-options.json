@@ -44,5 +44,14 @@
     "antenna",
     "space-helmet"
   ],
-  "tones": ["cheerful", "calm", "dry"]
+  "tones": ["cheerful", "calm", "dry"],
+  "rules": ["do_it", "ask_first", "leave_it"],
+  "fixes": [
+    "continue_loop",
+    "review_again",
+    "publish",
+    "sync_now",
+    "turn_on_autopilot"
+  ],
+  "questions": ["needs_you", "running", "loops", "repositories"]
 }

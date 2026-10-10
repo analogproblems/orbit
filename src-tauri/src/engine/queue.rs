@@ -7,10 +7,20 @@ use std::{
 };
 
 impl Engine {
+    /// Syncs with GitHub, unless a sync is already running.
     pub async fn poll(&self) -> Result<(), String> {
-        let Ok(_guard) = self.poll_lock.try_lock() else {
+        let Ok(guard) = self.poll_lock.try_lock() else {
             return Ok(());
         };
+        self.poll_holding(guard).await
+    }
+    /// Syncs with GitHub once any sync already running ends, so the result
+    /// is this sync's.
+    pub(super) async fn sync_now(&self) -> Result<(), String> {
+        let guard = self.poll_lock.lock().await;
+        self.poll_holding(guard).await
+    }
+    async fn poll_holding(&self, _guard: tokio::sync::MutexGuard<'_, ()>) -> Result<(), String> {
         self.update(|s| s.polling = true).await;
         let _ = self.flush().await;
         let result = async {

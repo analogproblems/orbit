@@ -18,6 +18,7 @@ mod clones;
 mod connection;
 mod events;
 mod findings;
+mod fixes;
 mod inline;
 mod publish;
 mod queue;
@@ -47,6 +48,8 @@ mod clones_tests;
 mod connection_tests;
 #[cfg(test)]
 mod findings_tests;
+#[cfg(test)]
+mod fixes_tests;
 #[cfg(test)]
 mod inline_tests;
 #[cfg(test)]
@@ -78,7 +81,8 @@ type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// `run` (preparing and running reviews, Codex events), `events` (what a
 /// reviewer reports, in Orbit's own terms), `chat` (follow-ups),
 /// `publish` (GitHub comments), `worktrees` (cleanup), `clones` (keeping
-/// users' clones up to date) and `scans` (repository security scans).
+/// users' clones up to date), `scans` (repository security scans) and
+/// `fixes` (Bit's fixes and answers).
 ///
 /// # Locks
 ///
@@ -102,9 +106,10 @@ type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// `items` via `retire_dead_connection` → `disconnected`); `poll_lock` →
 /// `state` and `synced_repos` (one at a time); `publish_lock` → `state`;
 /// `cleanup_lock` → `git_lock` → `state`; `state` → `synced_repos`
-/// (`schedule`). `preparing`, `recovered_publications`, `status_sender`,
-/// `sending_statuses` and `stopping_scans` (`std` mutexes, like `preparing`)
-/// are only taken on their own.
+/// (`schedule`); `state` → `fixing` (`flush`). `preparing`,
+/// `recovered_publications`, `status_sender`, `sending_statuses` and
+/// `stopping_scans` (`std` mutexes, like `preparing` and `fixing`) are
+/// otherwise only taken on their own.
 ///
 /// Known exception: `clean_worktrees_with` briefly holds a `git_lock` try-lock
 /// guard while it try-locks `cleanup_lock`, the reverse of `cleanup_lock` →
@@ -156,6 +161,9 @@ pub struct Engine {
     antigravity: std::sync::Mutex<crate::antigravity::Setup>,
     /// Each review's running Claude or Antigravity turn, so Stop can end it.
     cli_turns: std::sync::Mutex<HashMap<String, Arc<crate::cli::Running>>>,
+    /// Items that just opened whose fix Bit does on its own; the next tick
+    /// does them.
+    fixing: std::sync::Mutex<Vec<(Attention, crate::buddy::Fix)>>,
     _instance_lock: std::fs::File,
 }
 impl Engine {
@@ -286,6 +294,7 @@ impl Engine {
             claude_launcher: std::sync::Mutex::new(crate::claude::launcher()),
             antigravity: std::sync::Mutex::new(crate::antigravity::Setup::default()),
             cli_turns: std::sync::Mutex::new(HashMap::new()),
+            fixing: std::sync::Mutex::new(vec![]),
             _instance_lock: instance_lock,
         }))
     }
@@ -316,10 +325,21 @@ impl Engine {
         let mut s = self.state.lock().await;
         // The record of announced items is saved with the state, so an item
         // still open after a restart is not announced again.
-        let (notices, recorded) = crate::attention::announce(&mut s);
+        let (mut notices, recorded) = crate::attention::announce(&mut s);
         // Bit's feed is saved the same way, so a note is written once.
         let fresh: Vec<Attention> = notices.iter().map(|n| n.item.clone()).collect();
         let noted = crate::buddy::observe(&mut s, &fresh);
+        // An item Bit fixes on its own is noted instead of notified; if the
+        // fix fails, it is notified then.
+        let mut fixing = vec![];
+        notices.retain(|n| match crate::buddy::will_fix(&s, &n.item) {
+            Some(fix) => {
+                fixing.push((n.item.clone(), fix));
+                false
+            }
+            None => true,
+        });
+        self.fixing.lock().unwrap().extend(fixing);
         if recorded || noted {
             self.dirty.store(true, Ordering::SeqCst);
         }
@@ -446,10 +466,11 @@ impl Engine {
             }
         });
     }
-    /// Work done on every tick: scheduling needs a reviewer, but commit
-    /// statuses only need GitHub, so a disconnect still closes the checks it
-    /// failed.
+    /// Work done on every tick: Bit's fixes, scheduling, which needs a
+    /// reviewer, and commit statuses, which only need GitHub, so a
+    /// disconnect still closes the checks it failed.
     async fn tick(self: &Arc<Self>, reviewer_ready: bool) {
+        self.do_fixes();
         if reviewer_ready {
             self.schedule().await;
         }

@@ -165,6 +165,17 @@ mod desktop {
         engine.continue_loop(&pr_id, rounds).await
     }
     #[tauri::command]
+    async fn use_fix(engine: State<'_, AppState>, key: String) -> Result<(), String> {
+        engine.fix(&key).await
+    }
+    #[tauri::command]
+    async fn ask_buddy(
+        engine: State<'_, AppState>,
+        question: buddy::Question,
+    ) -> Result<(), String> {
+        engine.ask_buddy(question).await
+    }
+    #[tauri::command]
     async fn cancel_review(engine: State<'_, AppState>, review_id: String) -> Result<(), String> {
         engine.cancel(&review_id).await
     }
@@ -364,6 +375,8 @@ mod desktop {
                 cancel_review,
                 stop_loop,
                 continue_loop,
+                use_fix,
+                ask_buddy,
                 publish_review,
                 publish_plan,
                 send_message,

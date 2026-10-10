@@ -18,6 +18,11 @@ import {
   antigravitySelection,
   claudeSelection,
   reviewerSelectionUnavailable,
+  buddyOf,
+  defaults,
+  offeredFix,
+  withPatch,
+  type Attention,
   type Provider,
 } from "./types";
 
@@ -306,5 +311,50 @@ describe("findings form", () => {
       claimSummary({ ...claim, kind: "declined", reason: "intended" }),
     ).toBe("declined: intended");
     expect(claimSummary({ ...claim, kind: "declined" })).toBe("declined");
+  });
+});
+
+describe("Bit's fixes", () => {
+  const item = (fix: Attention["fix"]): Attention => ({
+    key: "loop:a/b#1:Round limit reached.",
+    kind: "loop",
+    prId: "a/b#1",
+    reviewId: null,
+    approvalId: null,
+    repo: null,
+    reason: "Round limit reached.",
+    fix,
+  });
+  it("offers an open item's fix unless the rule leaves it to you", () => {
+    const s = structuredClone(freshDemo());
+    s.attention = [item("continue_loop")];
+    expect(offeredFix(s, item("continue_loop").key)?.fix).toBe("continue_loop");
+    expect(offeredFix(s, "gone")).toBeUndefined();
+    expect(offeredFix(s, null)).toBeUndefined();
+    s.settings = withPatch(s.settings, {
+      buddy: { rules: { continue_loop: "leave_it" } },
+    });
+    expect(offeredFix(s, item("continue_loop").key)).toBeUndefined();
+    // A settings change has no rule; it is always a button.
+    s.attention = [{ ...item("turn_on_autopilot"), key: "autopilot-paused" }];
+    expect(offeredFix(s, "autopilot-paused")?.fix).toBe("turn_on_autopilot");
+    s.attention = [item(null)];
+    expect(offeredFix(s, item(null).key)).toBeUndefined();
+  });
+  it("patches one rule at a time, as the engine does", () => {
+    const settings = structuredClone(defaults);
+    delete settings.buddy;
+    const patched = withPatch(settings, {
+      buddy: { rules: { publish: "do_it" } },
+    });
+    expect(buddyOf(patched).rules).toEqual({
+      continue_loop: "ask_first",
+      review_again: "ask_first",
+      publish: "do_it",
+      sync_now: "ask_first",
+    });
+    expect(
+      buddyOf(withPatch(patched, { buddy: { name: "Orbie" } })).rules.publish,
+    ).toBe("do_it");
   });
 });

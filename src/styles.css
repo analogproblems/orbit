@@ -32,14 +32,21 @@ body {
   margin-inline: auto;
   width: 100%;
 }
-.review-chat {
+.review-chat,
+.buddy-page,
+.buddy-chat {
   min-height: 0;
 }
-.review-chat > .astryx-chat-layout {
+.buddy-chat {
+  flex: 1;
+}
+.review-chat > .astryx-chat-layout,
+.buddy-chat > .astryx-chat-layout {
   flex: 1;
   min-height: 0;
 }
-.review-chat-composer {
+.review-chat-composer,
+.buddy-chat-composer {
   background-color: var(--color-background-surface);
 }
 .diff-added {

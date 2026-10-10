@@ -2,6 +2,8 @@ import { create } from "zustand";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
+  demoAnswer,
+  demoFixed,
   demoWorkspace,
   freshDemo,
   demoFindings,
@@ -15,6 +17,9 @@ import {
 import { call, download, follow, lostConnection, readToken } from "./remote";
 import {
   buddyOf,
+  questionLabels,
+  type BuddyNote,
+  type Question,
   defaults,
   selectionError,
   withPatch,
@@ -261,10 +266,64 @@ function demoRun(prId: string, automatic = false) {
   demoSchedule();
   return id;
 }
+/** Adds a note to Bit's feed in the demo, keeping the newest 50. */
+function demoNote(note: Partial<BuddyNote> & Pick<BuddyNote, "kind" | "text">) {
+  const feed = (demo.buddyFeed ??= { notes: [] });
+  const id = Math.max(0, ...feed.notes.map((n) => n.id)) + 1;
+  feed.notes.push({
+    prId: null,
+    reviewId: null,
+    repo: null,
+    ...note,
+    id,
+    at: new Date().toISOString(),
+  });
+  feed.notes = feed.notes.slice(-50);
+}
 async function demoAction(
   command: string,
   args: Record<string, unknown>,
 ): Promise<unknown> {
+  if (command === "ask_buddy") {
+    const question = args.question as Question;
+    demoNote({
+      kind: "answer",
+      question: questionLabels[question],
+      ...demoAnswer(demo, question),
+    });
+    commit();
+    return;
+  }
+  if (command === "use_fix") {
+    const item = demo.attention?.find((a) => a.key === args.key);
+    if (!item) throw Error("This doesn't need you any more.");
+    if (!item.fix)
+      throw Error(
+        "There's no button for this one. Open it to see what it needs.",
+      );
+    if (item.fix === "continue_loop")
+      await demoAction("continue_loop", { prId: item.prId, rounds: 2 });
+    else if (item.fix === "review_again")
+      await demoAction("start_review", { prId: item.prId });
+    else if (item.fix === "publish")
+      await demoAction("publish_review", {
+        reviewId: item.reviewId,
+        allowSensitive: false,
+      });
+    else if (item.fix === "turn_on_autopilot")
+      await demoAction("update_settings", { patch: { automatic: true } });
+    else demo.lastPoll = new Date().toISOString();
+    demo.attention = demo.attention?.filter((a) => a.key !== item.key);
+    demoNote({
+      kind: "fixed",
+      text: demoFixed(demo, item.fix, item.prId),
+      prId: item.prId,
+      reviewId: item.reviewId,
+      repo: item.repo,
+    });
+    commit();
+    return;
+  }
   if (command === "reset_demo") {
     timers.forEach(clearTimeout);
     timers.clear();

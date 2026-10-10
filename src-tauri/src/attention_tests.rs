@@ -242,3 +242,91 @@ fn github_needs_you_after_three_failed_polls_in_a_row() {
         "Orbit could not sync with GitHub 3 times in a row: HTTP 401: Bad credentials"
     );
 }
+#[test]
+fn each_item_names_the_control_that_fixes_it() {
+    use crate::buddy::Fix;
+    let fix = |s: &Snapshot| -> Vec<Option<Fix>> { items(s).into_iter().map(|a| a.fix).collect() };
+    let (mut s, mut p) = snapshot();
+    p.head_repo = p.repo.clone();
+    p.author_association = "MEMBER".into();
+    s.prs[0] = p.clone();
+
+    // A failed or interrupted run: Review again, while nothing else runs.
+    s.reviews.push(run(&p, "failed", 1));
+    assert_eq!(fix(&s), [Some(Fix::ReviewAgain)]);
+    s.reviews[0].status = "cancelled".into();
+    s.reviews[0].error = Some("Orbit restarted.".into());
+    assert_eq!(fix(&s), [Some(Fix::ReviewAgain)]);
+    let mut manual = run(&p, "queued", 2);
+    manual.automatic = false;
+    s.reviews.push(manual);
+    assert_eq!(fix(&s), [None]);
+
+    // A held report: Publish, unless automatic publication holds it for
+    // credentials or for where the PR comes from.
+    let (mut s, _) = snapshot();
+    s.prs[0] = p.clone();
+    let mut held = run(&p, "ready", 1);
+    held.report = "Looks fine.".into();
+    held.findings = Some(vec![]);
+    crate::review_loop::decide(&mut held, 1);
+    held.error = Some("Comment not confirmed: timeout.".into());
+    s.reviews.push(held);
+    assert_eq!(fix(&s), [Some(Fix::Publish)]);
+    s.reviews[0].sensitive = vec!["GitHub token".into()];
+    assert_eq!(fix(&s), [None]);
+    s.reviews[0].sensitive.clear();
+    s.prs[0].author_association = "NONE".into();
+    assert_eq!(fix(&s), [None]);
+    s.prs[0].author_association = "MEMBER".into();
+
+    // A report waiting for you to publish it.
+    s.settings.auto_post = false;
+    s.reviews[0].error = None;
+    s.reviews[0].findings = Some(vec![Finding {
+        priority: 1,
+        ..Default::default()
+    }]);
+    crate::review_loop::decide(&mut s.reviews[0], 1);
+    let all = items(&s);
+    assert_eq!(
+        all[0].reason,
+        "The report is waiting for you to publish it."
+    );
+    assert_eq!(all[0].fix, Some(Fix::Publish));
+
+    // A loop at its round limit: Continue loop. Other loop reasons need you.
+    s.settings.repositories[0].round_limit = 1;
+    s.reviews[0].status = "posted".into();
+    assert_eq!(items(&s)[0].reason, "Round limit reached.");
+    assert_eq!(fix(&s), [Some(Fix::ContinueLoop)]);
+    s.settings.repositories[0].round_limit = 4;
+    s.reviews[0].prior_findings = vec![PriorFinding {
+        id: "r0-0".into(),
+        status: PriorStatus::DeclinedDisputed,
+        note: String::new(),
+    }];
+    assert_eq!(
+        items(&s)[0].reason,
+        "The reviewer disputes a declined finding."
+    );
+    assert_eq!(fix(&s), [None]);
+
+    // An approval has none; syncing and a paused autopilot do.
+    let (mut s, _) = snapshot();
+    s.reviews.push(run(&p, "awaitingApproval", 1));
+    s.approvals.push(Approval {
+        id: json!(1),
+        review_id: "run-1".into(),
+        method: "item/commandExecution/requestApproval".into(),
+        params: json!({}),
+        requested_at: String::new(),
+    });
+    s.poll_failures = SYNC_FAILURES;
+    s.state_write_error = Some("disk full".into());
+    s.settings.automatic = false;
+    assert_eq!(
+        fix(&s),
+        [Some(Fix::TurnOnAutopilot), Some(Fix::SyncNow), None]
+    );
+}

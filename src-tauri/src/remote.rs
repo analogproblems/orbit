@@ -54,6 +54,8 @@ pub const COMMANDS: &[&str] = &[
     "cancel_review",
     "stop_loop",
     "continue_loop",
+    "use_fix",
+    "ask_buddy",
     "publish_review",
     "publish_plan",
     "send_message",
@@ -276,6 +278,8 @@ async fn dispatch(e: &Arc<Engine>, name: &str, a: &Value) -> Result<Value, Strin
         "continue_loop" => out(e
             .continue_loop(&arg::<String>(a, "prId")?, arg(a, "rounds")?)
             .await?),
+        "use_fix" => out(e.fix(&arg::<String>(a, "key")?).await?),
+        "ask_buddy" => out(e.ask_buddy(arg(a, "question")?).await?),
         "publish_review" => out(e
             .publish(
                 &arg::<String>(a, "reviewId")?,
