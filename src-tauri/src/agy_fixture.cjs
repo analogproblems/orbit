@@ -10,9 +10,12 @@ const send = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 const after = (flag) =>
   args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined;
 if (args[0] === "models") {
-  if (log) fs.appendFileSync(log, JSON.stringify({ args, prompt: null }) + "\n");
+  if (log)
+    fs.appendFileSync(log, JSON.stringify({ args, prompt: null }) + "\n");
   if (mode === "signed-out") {
-    process.stderr.write("Error: authentication required. Run agy to sign in.\n");
+    process.stderr.write(
+      "Error: authentication required. Run agy to sign in.\n",
+    );
     process.exit(1);
   }
   console.log(
@@ -41,7 +44,9 @@ function run(prompt) {
   }
   const resumed = after("--conversation");
   const conversation =
-    mode === "wrong-conversation" && resumed ? "conv-other" : resumed || "conv-1";
+    mode === "wrong-conversation" && resumed
+      ? "conv-other"
+      : resumed || "conv-1";
   const model = mode === "wrong-model" ? "gemini-other" : after("--model");
   if (mode === "no-sandbox") {
     if (args.includes("--sandbox")) {
@@ -88,13 +93,25 @@ function run(prompt) {
   const update = (fields) =>
     send({
       event: "step_update",
-      step_update: { conversation_id: conversation, step_index: step, ...fields },
+      step_update: {
+        conversation_id: conversation,
+        step_index: step,
+        ...fields,
+      },
     });
   const say = (text) => {
     step += 1;
     const half = Math.ceil(text.length / 2);
-    update({ state: "ACTIVE", step_type: "agent_response", text_delta: text.slice(0, half) });
-    update({ state: "DONE", step_type: "agent_response", text_delta: text.slice(half) });
+    update({
+      state: "ACTIVE",
+      step_type: "agent_response",
+      text_delta: text.slice(0, half),
+    });
+    update({
+      state: "DONE",
+      step_type: "agent_response",
+      text_delta: text.slice(half),
+    });
   };
   const result = (fields) =>
     send({
@@ -113,7 +130,12 @@ function run(prompt) {
       name: "view_file",
       parameters: { AbsolutePath: `${process.cwd()}/src/lib.rs` },
     };
-    update({ state: "ACTIVE", step_type: "tool", tool_name: "view_file", tool_info: tool });
+    update({
+      state: "ACTIVE",
+      step_type: "tool",
+      tool_name: "view_file",
+      tool_info: tool,
+    });
     update({
       state: "DONE",
       step_type: "tool",
@@ -157,7 +179,10 @@ function run(prompt) {
         },
       ],
     };
-    result({ response: JSON.stringify(structured), structured_output: structured });
+    result({
+      response: JSON.stringify(structured),
+      structured_output: structured,
+    });
   } else {
     say(`Answer: ${prompt}`);
     result({ response: `Answer: ${prompt}` });

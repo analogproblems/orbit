@@ -318,7 +318,31 @@ When something can only move forward with you, the sidebar shows **Needs you** w
 
 An item disappears once it is resolved. A stopped loop lists only its approvals, since you have already taken it over.
 
-Orbit also shows a desktop notification once when an item first appears, and not again while it stays open, even after a restart. When Orbit comes to the front after a notification, it opens that item. Turn off **Notify me when a review needs attention** in Settings to stop notifications; the list and count still appear.
+Orbit also shows a desktop notification once when an item first appears, and not again while it stays open, even after a restart. A follow-up chat on the review hides the item until the chat ends, and it isn't announced again afterwards. When Orbit comes to the front after a notification, it opens that item. Turn off **Notify me when a review needs attention** in Settings to stop notifications; the list and count still appear.
+
+### Bit, your buddy
+
+Bit is Orbit's buddy: a small planet with a face, at the bottom of the sidebar. It shows its latest note, or just its face when the sidebar is collapsed. Select it to open its notes, newest first. Bit writes a note when:
+
+- a round starts, and when it finishes, with how many blocking findings it found, or that it failed or had no findings list;
+- a loop comes out clean, with its blocking findings round by round, such as `4 → 1 → 0`;
+- a loop is stopped or continued;
+- something new needs you, with the same reason as the **Needs you** list.
+
+Selecting a note opens that pull request's loop, **Repositories** for a repository's sync problem, or **Settings** otherwise. Bit keeps its last 50 notes, and they survive a restart. When Orbit starts for the first time with Bit, it looks at the loops already running and starts noting from there, rather than retelling their history.
+
+Bit's face shows its mood: **worried** while anything needs you, **busy** while a review runs, **sleepy** when Autopilot is off or there are no pull requests, and **happy** otherwise.
+
+In **Settings → Buddy** you can preview each mood and change:
+
+- **Show**: off hides Bit and stops new notes; turning it back on doesn't replay what happened while it was off.
+- **Name**: up to 24 characters, saved with **Rename** or Enter. The default is Bit, short for Orbit.
+- **Colour**: one of 20, from Lime (the default) to Grey. Each is a colour of Orbit's theme.
+- **Hat**: one of 20, or none: party hat, top hat, beanie, crown, propeller cap, wizard hat, cowboy hat, chef's hat, baseball cap, graduation cap, beret, flower, bow, halo, headphones, Santa hat, Viking helmet, cat ears, antennae, or space helmet.
+- **Tone**: how the notes sound: **Cheerful** ("On it! Round 2 of orbit#41 is underway."), **Calm**, or **Dry**.
+- **Personality**: your own description of Bit, up to 4000 characters, saved with **Save personality**. It will shape how Bit chats once that arrives; today it changes nothing.
+
+Bit moves only while it is busy: its moon circles and a propeller cap spins. With your system set to reduce motion, both stay still.
 
 ### Approval time limit
 
@@ -344,6 +368,12 @@ By default an approval waits for you however long it takes. For a repository, yo
 | GitHub status check                    | On                                 | On/off; applies while automatic publication is on.                                                                |
 | Keep security scan working files       | Off                                | On/off; when off, a scan's `artifacts/` folder is deleted once its findings are imported.                         |
 | Allow access from a browser            | Off                                | On/off and a port from 1024 to 65535; changed from the desktop app only.                                          |
+| Buddy: show                            | On                                 | On/off; off hides Bit and stops new notes.                                                                        |
+| Buddy: name                            | Bit                                | 1–24 characters, without line breaks or tabs.                                                                     |
+| Buddy: colour                          | Lime                               | 20 theme colours.                                                                                                 |
+| Buddy: hat                             | None                               | None or one of 20 hats.                                                                                           |
+| Buddy: tone                            | Cheerful                           | Cheerful, calm, or dry.                                                                                           |
+| Buddy: personality                     | Empty                              | Up to 4000 characters.                                                                                            |
 
 Settings switches and selections save immediately. Changing the model saves that model and its explicit supported default effort in the same update. **Choose a model** and **Choose an effort** are placeholders, not executable default choices. **Saving…**, **Saved**, or an error with **Retry saving** shows the result. **Saved** clears after 2.5 seconds; errors remain until resolved. After a failed write, controls return to the active values. The unapplied request is listed beside its error and **Retry saving**, and survives page navigation along with typed account input. Retry after resolving the failure. If a model change fails, effort stays disabled until you retry successfully or choose a model again; this prevents a later retry from resetting a newly selected effort.
 

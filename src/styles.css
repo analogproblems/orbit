@@ -141,3 +141,69 @@ body {
     animation: none;
   }
 }
+
+/* Bit, Orbit's buddy (see Bit.tsx), the third raw-element exception. Every
+   colour is a theme token; sizes come from the spacing scale. */
+.bit {
+  display: block;
+  flex: none;
+  overflow: visible;
+}
+.bit-xs {
+  width: var(--spacing-5);
+  height: var(--spacing-5);
+}
+.bit-sm {
+  width: var(--spacing-10);
+  height: var(--spacing-10);
+}
+.bit-md {
+  width: calc(var(--spacing-12) * 2);
+  height: calc(var(--spacing-12) * 2);
+}
+.bit-lg {
+  width: calc(var(--spacing-12) * 3);
+  height: calc(var(--spacing-12) * 3);
+}
+.bit-ring {
+  fill: none;
+  stroke: var(--color-text-secondary);
+  stroke-width: 4;
+  stroke-linecap: round;
+}
+.bit-feature {
+  fill: none;
+  stroke: var(--color-background-body);
+  stroke-width: 3.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.bit-eye {
+  fill: var(--color-background-body);
+}
+.bit-moon {
+  fill: var(--color-text-accent);
+}
+.bit[data-mood="sleepy"] .bit-ring {
+  stroke: var(--color-text-disabled);
+  stroke-dasharray: 6 7;
+}
+.bit[data-mood="sleepy"] .bit-body {
+  opacity: 0.55;
+}
+.bit-badge circle {
+  fill: var(--color-warning);
+}
+.bit-badge path {
+  fill: none;
+  stroke: var(--color-on-warning);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+.bit-zz path {
+  fill: none;
+  stroke: var(--color-text-secondary);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}

@@ -19,11 +19,17 @@ import {
 } from "@astryxdesign/core";
 import { Code2, GitBranch, RefreshCw } from "lucide-react";
 import { useOrbit, live } from "./store";
-import { defaultEffort, workspaceSelectionUnavailable } from "./types";
+import {
+  defaultEffort,
+  withPatch,
+  workspaceSelectionUnavailable,
+  type SettingsPatch,
+} from "./types";
 import { SaveFeedback } from "./SaveFeedback";
 import { Storage } from "./Storage";
 import { RemoteAccess } from "./RemoteAccess";
 import { CliConnection, CliReviewSettings } from "./CliReviewers";
+import { BuddySettings } from "./Buddy";
 
 export function SettingsPage() {
   const {
@@ -34,10 +40,10 @@ export function SettingsPage() {
     trustedInput: newLogin,
     setTrustedInput: setNewLogin,
   } = useOrbit();
-  const draft = { ...s.settings };
+  let draft = { ...s.settings };
   for (const save of Object.values(saves)) {
     if (save.command === "update_settings" && save.state === "saving")
-      Object.assign(draft, save.args.patch);
+      draft = withPatch(draft, save.args.patch as SettingsPatch);
   }
   const [connecting, setConnecting] = useState(false);
   const addLogin = async () => {
@@ -433,6 +439,7 @@ export function SettingsPage() {
           </FormLayout>
         </VStack>
       </Card>
+      <BuddySettings />
       <RemoteAccess />
       <Text type="supporting" color="secondary">
         Changes save automatically on this device.

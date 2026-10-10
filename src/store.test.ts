@@ -164,6 +164,39 @@ describe("older demo storage", () => {
   });
 });
 
+describe("demo buddy", () => {
+  it("gives older demos Bit and saves one buddy field at a time", async () => {
+    const old = structuredClone(useOrbit.getState().snapshot);
+    delete old.settings.buddy;
+    localStorage.setItem("orbit-demo-v3", JSON.stringify(old));
+    await useOrbit.getState().init();
+    const store = useOrbit.getState();
+    await store.updateSettings({ buddy: { hat: "wizard" } }, "buddy.hat");
+    expect(useOrbit.getState().snapshot.settings.buddy).toMatchObject({
+      name: "Bit",
+      colour: "lime",
+      hat: "wizard",
+    });
+    await store.updateSettings({ buddy: { name: "  Orbie " } }, "buddy.name");
+    expect(useOrbit.getState().snapshot.settings.buddy?.name).toBe("Orbie");
+    for (const [name, error] of [
+      ["   ", "Give your buddy a name."],
+      ["x".repeat(25), "Keep your buddy's name to 24 characters."],
+    ]) {
+      const result = await store.updateSettings(
+        { buddy: { name } },
+        "buddy.name",
+      );
+      expect(result.ok).toBe(false);
+      expect(useOrbit.getState().saves["buddy.name"].error).toContain(error);
+    }
+    expect(useOrbit.getState().snapshot.settings.buddy).toMatchObject({
+      name: "Orbie",
+      hat: "wizard",
+    });
+  });
+});
+
 describe("save feedback", () => {
   it("expires successful settings and repository feedback without dismissing later failures", async () => {
     useOrbit.setState({ saves: {} });

@@ -50,6 +50,7 @@ import {
   providerLabels,
   attentionAction,
   autopilotSummary,
+  buddyOf,
   canPublish,
   latestReview,
   publishTarget,
@@ -63,6 +64,7 @@ import { Detail, type DetailTab } from "./Detail";
 import { SaveFeedback } from "./SaveFeedback";
 import { PublishPreview } from "./PublishPreview";
 import { UsageMeter } from "./Usage";
+import { BuddyCard, BuddyPage } from "./Buddy";
 
 const Live = lazy(() => import("./Live").then((m) => ({ default: m.Live })));
 const FindingsPage = lazy(() =>
@@ -86,7 +88,8 @@ type Page =
   | "findings"
   | "scans"
   | "repositories"
-  | "settings";
+  | "settings"
+  | "buddy";
 export default function App() {
   const {
     snapshot: s,
@@ -258,6 +261,7 @@ export default function App() {
     scans: "Security scans",
     repositories: "Repositories",
     settings: "Settings",
+    buddy: buddyOf(s.settings).name,
   };
   return (
     <>
@@ -283,6 +287,11 @@ export default function App() {
             }
             footer={
               <VStack gap={3} padding={3}>
+                <BuddyCard
+                  collapsed={collapsed}
+                  isSelected={page === "buddy"}
+                  onOpen={() => setPage("buddy")}
+                />
                 {!collapsed && (
                   <>
                     <UsageMeter usage={s.usage} />
@@ -604,6 +613,17 @@ export default function App() {
                     />
                   ) : page === "repositories" ? (
                     <Repositories onScans={() => setPage("scans")} />
+                  ) : page === "buddy" ? (
+                    <BuddyPage
+                      onSettings={() => setPage("settings")}
+                      onNote={(note) => {
+                        if (note.prId) {
+                          setLoop(note.prId);
+                          setPage("loops");
+                        } else if (note.repo) setPage("repositories");
+                        else setPage("settings");
+                      }}
+                    />
                   ) : (
                     <SettingsPage />
                   )}

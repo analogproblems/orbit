@@ -505,6 +505,7 @@ export function freshDemo(): Snapshot {
   const waiting = demoLoop(prs[2], [3, 2], 20);
   const limited = demoLoop(prs[1], [3, 2, 2, 1], 15);
   const ids = (rounds: Review[]) => rounds.map((r) => r.id).reverse();
+  const label = (p: PullRequest) => `${p.repo.split("/")[1]}#${p.number}`;
   return {
     prs,
     reviews: [review, ...limited, ...waiting, ...clean],
@@ -556,6 +557,47 @@ export function freshDemo(): Snapshot {
         roundIds: ids(clean),
       },
     ],
+    // Bit's notes, as the engine would have written them.
+    buddyFeed: {
+      notes: [
+        {
+          id: 1,
+          at: ago(30),
+          kind: "clean",
+          prId: prs[4].id,
+          reviewId: clean[0].id,
+          repo: null,
+          text: `${label(prs[4])} is clean after 3 rounds! 🎉 4 → 1 → 0`,
+        },
+        {
+          id: 2,
+          at: ago(20),
+          kind: "round_finished",
+          prId: prs[2].id,
+          reviewId: waiting[0].id,
+          repo: null,
+          text: `Round 2 of ${label(prs[2])} found 2 blocking findings. Over to the author!`,
+        },
+        {
+          id: 3,
+          at: ago(15),
+          kind: "needs_you",
+          prId: prs[1].id,
+          reviewId: limited[0].id,
+          repo: null,
+          text: `Could you take a look at ${label(prs[1])}? Round limit reached.`,
+        },
+        {
+          id: 4,
+          at: ago(10),
+          kind: "needs_you",
+          prId: null,
+          reviewId: null,
+          repo: "acme/dashboard",
+          text: "Heads up! acme/dashboard failed to sync 3 times in a row: GitHub returned 404 Not Found.",
+        },
+      ],
+    },
     settings: {
       ...defaults,
       model: "demo-review-model",

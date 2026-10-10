@@ -15,11 +15,13 @@ import { useOrbit } from "./store";
 import {
   type CliProvider,
   type Settings,
+  type SettingsPatch,
   cliStatus,
   defaultEffort,
   providerModels,
   providerSelection,
   reviewerSelectionUnavailable,
+  withPatch,
 } from "./types";
 import { SaveFeedback } from "./SaveFeedback";
 
@@ -54,10 +56,10 @@ const cli = {
 /** The draft settings: saved settings with any save in progress applied. */
 function useDraft(): Settings {
   const { snapshot: s, saves } = useOrbit();
-  const draft = { ...s.settings };
+  let draft = { ...s.settings };
   for (const save of Object.values(saves)) {
     if (save.command === "update_settings" && save.state === "saving")
-      Object.assign(draft, save.args.patch);
+      draft = withPatch(draft, save.args.patch as SettingsPatch);
   }
   return draft;
 }

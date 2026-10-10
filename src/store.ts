@@ -14,8 +14,10 @@ import {
 } from "./demo";
 import { call, download, follow, lostConnection, readToken } from "./remote";
 import {
+  buddyOf,
   defaults,
   selectionError,
+  withPatch,
   providerLabels,
   providerModels,
   providerSelection,
@@ -284,6 +286,8 @@ async function demoAction(
     ].includes(command)
   ) {
     const next = structuredClone(demo.settings);
+    // Demos saved before Bit have no buddy settings yet.
+    next.buddy = buddyOf(next);
     if (command === "update_settings") {
       const patch = args.patch as SettingsPatch;
       if (
@@ -292,7 +296,13 @@ async function demoAction(
         )
       )
         throw Error("Unknown settings field.");
-      Object.assign(next, patch);
+      Object.assign(next, withPatch(next, patch));
+      if (patch.buddy?.name !== undefined) {
+        next.buddy.name = patch.buddy.name.trim();
+        if (!next.buddy.name) throw Error("Give your buddy a name.");
+        if ([...next.buddy.name].length > 24)
+          throw Error("Keep your buddy's name to 24 characters.");
+      }
       if (patch.model !== undefined || patch.effort !== undefined) {
         const error = selectionError(demo.models, next);
         if (error) throw Error(error);

@@ -222,6 +222,119 @@ export interface Settings {
   notify: boolean;
   /** Keep a security scan's bulky working files after its import. */
   keepScanArtifacts?: boolean;
+  /** Bit, Orbit's buddy. Older saved state has none. */
+  buddy?: Buddy;
+}
+export type Mood = "happy" | "busy" | "worried" | "sleepy";
+export type BuddyHat =
+  | "none"
+  | "party"
+  | "top-hat"
+  | "beanie"
+  | "crown"
+  | "propeller"
+  | "wizard"
+  | "cowboy"
+  | "chef"
+  | "cap"
+  | "graduation"
+  | "beret"
+  | "flower"
+  | "bow"
+  | "halo"
+  | "headphones"
+  | "santa"
+  | "viking"
+  | "cat-ears"
+  | "antenna"
+  | "space-helmet";
+export type BuddyTone = "cheerful" | "calm" | "dry";
+export interface Buddy {
+  enabled: boolean;
+  name: string;
+  /** One of the colours in Bit.tsx. */
+  colour: string;
+  hat: BuddyHat;
+  tone: BuddyTone;
+  /** Saved now, used once Bit can chat. */
+  personality: string;
+}
+export const defaultBuddy: Buddy = {
+  enabled: true,
+  name: "Bit",
+  colour: "lime",
+  hat: "none",
+  tone: "cheerful",
+  personality: "",
+};
+export const buddyTones: Record<BuddyTone, string> = {
+  cheerful: "Cheerful",
+  calm: "Calm",
+  dry: "Dry",
+};
+export type NoteKind =
+  | "round_started"
+  | "round_finished"
+  | "clean"
+  | "needs_you"
+  | "stopped"
+  | "continued";
+/** A line in Bit's feed, in its own voice. */
+export interface BuddyNote {
+  id: number;
+  at: string;
+  kind: NoteKind;
+  prId: string | null;
+  reviewId: string | null;
+  /** The repository a workspace item is about. */
+  repo: string | null;
+  text: string;
+}
+export interface BuddyFeed {
+  /** Oldest first, at most 50. */
+  notes: BuddyNote[];
+}
+/** The buddy's settings, with defaults for anything missing. */
+export function buddyOf(settings: Settings): Buddy {
+  return { ...defaultBuddy, ...settings.buddy };
+}
+/** Bit's mood as the engine worked it out, or the same rules applied here
+ * when it didn't (the demo). */
+export function buddyMood(s: Snapshot): Mood {
+  if (s.mood) return s.mood;
+  if (s.attention?.length) return "worried";
+  if (
+    s.reviews.some((r) => activeStatuses.includes(r.status)) ||
+    s.loopStates?.some((l) => !l.closed && l.status === "reviewing")
+  )
+    return "busy";
+  if (!s.settings.automatic || !s.prs.length) return "sleepy";
+  return "happy";
+}
+/** What Bit's mood means, in a sentence. */
+export function moodReason(s: Snapshot, mood: Mood): string {
+  switch (mood) {
+    case "worried":
+      return "Something needs you.";
+    case "busy":
+      return "A review is running.";
+    case "sleepy":
+      return s.settings.automatic
+        ? "Nothing is open right now."
+        : "Autopilot is off.";
+    default:
+      return "Everything is clean or waiting on the author.";
+  }
+}
+/** Settings with a patch applied, as the engine applies it: only supplied
+ * fields change, including inside the buddy. */
+export function withPatch(settings: Settings, patch: SettingsPatch): Settings {
+  const { buddy, ...rest } = patch;
+  return {
+    ...settings,
+    ...rest,
+    ...(buddy ? { buddy: { ...buddyOf(settings), ...buddy } } : {}),
+  };
 }
 export interface CommitStatus {
   state: "pending" | "success" | "failure" | "error";
@@ -238,7 +351,9 @@ export interface CommitCheck {
   /** The last status GitHub refused, with why. */
   refused?: CommitStatus | null;
 }
-export type SettingsPatch = Partial<Omit<Settings, "repositories">>;
+export type SettingsPatch = Partial<
+  Omit<Settings, "repositories" | "buddy">
+> & { buddy?: Partial<Buddy> };
 export type ActionResult<T> =
   { ok: true; data: T } | { ok: false; error: string };
 export interface StorageUsage {
@@ -413,6 +528,10 @@ export interface Snapshot {
   usage?: Usage | null;
   /** Repository security scans, newest first. */
   scans?: SecurityScan[];
+  /** Bit's notes about the loops. */
+  buddyFeed?: BuddyFeed;
+  /** How Bit feels. Derived by the engine for display. */
+  mood?: Mood | null;
 }
 /** How far a security scan has come, as the Codex Security plugin reports it. */
 export interface ScanProgress {
@@ -546,6 +665,7 @@ export const defaults: Settings = {
   commitStatus: true,
   notify: true,
   keepScanArtifacts: false,
+  buddy: defaultBuddy,
 };
 export function latestReview(reviews: Review[], prId: string) {
   return reviews

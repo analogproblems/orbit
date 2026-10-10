@@ -1,6 +1,6 @@
 import { Banner, Button, Spinner, Text, VStack } from "@astryxdesign/core";
 import { useOrbit } from "./store";
-import type { SettingsPatch } from "./types";
+import type { Buddy, SettingsPatch } from "./types";
 
 export function SaveFeedback({ saveKey }: { saveKey?: string }) {
   const { saves, retrySave, snapshot } = useOrbit();
@@ -22,10 +22,27 @@ export function SaveFeedback({ saveKey }: { saveKey?: string }) {
       commitStatus: "GitHub status check",
       notify: "Notifications",
       keepScanArtifacts: "Keep scan working files",
+      buddy: "Buddy",
+    };
+    const buddyLabels: Record<keyof Buddy, string> = {
+      enabled: "Show your buddy",
+      name: "Buddy's name",
+      colour: "Buddy's colour",
+      hat: "Buddy's hat",
+      tone: "Buddy's tone",
+      personality: "Buddy's personality",
     };
     return Object.entries(patch)
-      .map(([key, value]) => {
-        const label = labels[key as keyof SettingsPatch];
+      .flatMap(([key, value]) =>
+        key === "buddy"
+          ? Object.entries(value as Partial<Buddy>).map(([field, v]) => [
+              field,
+              v,
+              buddyLabels[field as keyof Buddy],
+            ])
+          : [[key, value, labels[key as keyof SettingsPatch]]],
+      )
+      .map(([key, value, label]) => {
         const display =
           typeof value === "boolean"
             ? value
