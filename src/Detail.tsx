@@ -33,7 +33,8 @@ import {
   sameRepo,
   sameRepository,
   trustedSource,
-  claudeSelection,
+  providerModels,
+  providerSelection,
   providerLabels,
   reviewerSelectionUnavailable,
   repoProvider,
@@ -305,27 +306,19 @@ export function Detail({
                       {[
                         ["Workspace", "Isolated worktree"],
                         ["Execution", `${providerLabels[provider]} sandbox`],
-                        provider === "claude"
-                          ? [
-                              "Model",
-                              s.claudeModels?.find(
-                                (m) => m.model === claudeSelection(s).model,
-                              )?.displayName ||
-                                claudeSelection(s).model ||
-                                "Choose a model",
-                            ]
-                          : [
-                              "Model",
-                              s.models.find((m) => m.model === s.settings.model)
-                                ?.displayName ||
-                                s.settings.model ||
-                                "Choose a model",
-                            ],
+                        [
+                          "Model",
+                          providerModels(s, provider).find(
+                            (m) =>
+                              m.model === providerSelection(s, provider).model,
+                          )?.displayName ||
+                            providerSelection(s, provider).model ||
+                            "Choose a model",
+                        ],
                         [
                           "Reasoning",
-                          (provider === "claude"
-                            ? claudeSelection(s).effort
-                            : s.settings.effort) || "Choose an effort",
+                          providerSelection(s, provider).effort ||
+                            "Choose an effort",
                         ],
                       ].map(([label, value]) => (
                         <VStack gap={1} key={label}>

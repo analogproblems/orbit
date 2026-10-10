@@ -20,6 +20,8 @@ import { useOrbit } from "./store";
 import { mainAction } from "./Loops";
 import {
   activeStatuses,
+  cliStatus,
+  providerLabels,
   attentionAction,
   attentionLabels,
   sameRepo,
@@ -218,18 +220,22 @@ function problems(
       detail: s.codexError || "Reviews can't run until Codex reconnects.",
       action: { label: "Open settings", onClick: go.onSettings },
     });
-  if (
-    !s.claude?.ready &&
-    s.settings.repositories.some((r) => r.provider === "claude")
-  )
-    out.push({
-      key: "claude",
-      title: "Claude is not connected",
-      detail:
-        s.claude?.error ||
-        "Repositories reviewed by Claude can't run until Claude reconnects.",
-      action: { label: "Open settings", onClick: go.onSettings },
-    });
+  for (const provider of ["claude", "antigravity"] as const) {
+    const status = cliStatus(s, provider);
+    const name = providerLabels[provider];
+    if (
+      !status?.ready &&
+      s.settings.repositories.some((r) => r.provider === provider)
+    )
+      out.push({
+        key: provider,
+        title: `${name} is not connected`,
+        detail:
+          status?.error ||
+          `Repositories reviewed by ${name} can't run until ${name} reconnects.`,
+        action: { label: "Open settings", onClick: go.onSettings },
+      });
+  }
   if (s.githubError)
     out.push({
       key: "github",

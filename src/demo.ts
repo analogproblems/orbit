@@ -595,6 +595,20 @@ export function freshDemo(): Snapshot {
       ),
       isDefault: isDefault as boolean,
     })),
+    antigravity: { ready: true },
+    antigravityModels: [
+      ["gemini-3.1-pro-high", "Gemini 3.1 Pro (High)"],
+      ["gemini-3.8-flash-medium", "Gemini 3.8 Flash (Medium)"],
+    ].map(([model, displayName]) => ({
+      id: model,
+      model,
+      displayName,
+      defaultReasoningEffort: "high",
+      supportedReasoningEfforts: ["low", "medium", "high"].map(
+        (reasoningEffort) => ({ reasoningEffort, description: "" }),
+      ),
+      isDefault: false,
+    })),
     approvals: [],
     githubUser: "you",
     codexReady: true,

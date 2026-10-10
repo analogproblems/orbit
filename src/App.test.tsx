@@ -845,6 +845,65 @@ describe("initial loading and repository errors", () => {
       ),
     ).toBeTruthy();
   });
+  it("chooses Antigravity as a repository's reviewer and its model in Settings", async () => {
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Repositories" }));
+    await user().click(
+      await screen.findByRole("button", { name: "Configure acme/orbit" }),
+    );
+    const dialog = screen.getByRole("dialog");
+    await chooseOption(
+      within(dialog).getByRole("combobox", { name: "Reviewer" }),
+      "Antigravity",
+    );
+    expect(
+      within(dialog).getByText(
+        /Antigravity follows Orbit's review instructions/,
+      ),
+    ).toBeTruthy();
+    expect(
+      within(dialog).queryByRole("switch", {
+        name: "Allow sandbox network access",
+      }),
+    ).toBeNull();
+    await user().click(
+      within(dialog).getByRole("button", { name: "Save repository" }),
+    );
+    const saved = invoke.mock.calls.find(([cmd]) => cmd === "save_repository");
+    expect(
+      (saved?.[1] as { repository: { provider: string } }).repository,
+    ).toMatchObject({ provider: "antigravity" });
+    act(() => {
+      snapshot.settings.repositories[0].provider = "antigravity";
+      emit();
+    });
+    expect(
+      await screen.findByText(
+        "Reviewed by Antigravity · Sandboxed worktree · No network",
+      ),
+    ).toBeTruthy();
+    await user().click(screen.getByRole("button", { name: "Settings" }));
+    expect(
+      await screen.findByText(
+        /Antigravity reviews are blocked: Choose an Antigravity model/,
+      ),
+    ).toBeTruthy();
+    await chooseOption(
+      screen.getByRole("combobox", { name: "Antigravity model" }),
+      "Gemini 3.1 Pro (High)",
+    );
+    expect(invoke).toHaveBeenCalledWith("update_settings", {
+      patch: {
+        antigravityModel: "gemini-3.1-pro-high",
+        antigravityEffort: "high",
+      },
+    });
+    await waitFor(() =>
+      expect(document.body.textContent).not.toContain(
+        "Antigravity reviews are blocked",
+      ),
+    );
+  });
   it("saves keeping a clone up to date and shows its latest update", async () => {
     await mount();
     await user().click(screen.getByRole("button", { name: "Repositories" }));

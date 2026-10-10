@@ -46,6 +46,8 @@ import { useOrbit, desktop, live } from "./store";
 import { listen } from "@tauri-apps/api/event";
 import {
   activeStatuses,
+  cliStatus,
+  providerLabels,
   attentionAction,
   autopilotSummary,
   canPublish,
@@ -294,20 +296,30 @@ export default function App() {
                         {s.codexReady ? "Connected" : "Not connected"}
                       </Text>
                     </HStack>
-                    {s.settings.repositories.some(
-                      (r) => r.provider === "claude",
-                    ) && (
-                      <HStack gap={2} vAlign="center">
-                        <StatusDot
-                          variant={s.claude?.ready ? "success" : "warning"}
-                          label="Claude connection"
-                        />
-                        <Text type="supporting" color="secondary">
-                          Claude ·{" "}
-                          {s.claude?.ready ? "Connected" : "Not connected"}
-                        </Text>
-                      </HStack>
-                    )}
+                    {(["claude", "antigravity"] as const)
+                      .filter((provider) =>
+                        s.settings.repositories.some(
+                          (r) => r.provider === provider,
+                        ),
+                      )
+                      .map((provider) => (
+                        <HStack gap={2} vAlign="center" key={provider}>
+                          <StatusDot
+                            variant={
+                              cliStatus(s, provider)?.ready
+                                ? "success"
+                                : "warning"
+                            }
+                            label={`${providerLabels[provider]} connection`}
+                          />
+                          <Text type="supporting" color="secondary">
+                            {providerLabels[provider]} ·{" "}
+                            {cliStatus(s, provider)?.ready
+                              ? "Connected"
+                              : "Not connected"}
+                          </Text>
+                        </HStack>
+                      ))}
                     <HStack gap={2} vAlign="center">
                       <StatusDot
                         variant={

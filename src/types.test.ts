@@ -8,7 +8,9 @@ import {
   canPublish,
   publishTarget,
   reportSelectionLabel,
+  antigravitySelection,
   claudeSelection,
+  reviewerSelectionUnavailable,
   type Provider,
 } from "./types";
 
@@ -152,6 +154,51 @@ it.each(reportLabelCases)(
     ).toBe(testCase.label);
   },
 );
+
+describe("Antigravity reviewer", () => {
+  const antigravityRepo = () => {
+    const s = freshDemo();
+    const pr = s.prs.find((p) => !s.reviews.some((r) => r.prId === p.id))!;
+    s.settings.repositories = s.settings.repositories.map((r) =>
+      r.name === pr.repo ? { ...r, provider: "antigravity" as const } : r,
+    );
+    return { s, pr };
+  };
+  it("needs a chosen model before an Antigravity review can start", () => {
+    const { s, pr } = antigravityRepo();
+    s.codexReady = false;
+    expect(antigravitySelection(s)).toEqual({ model: "", effort: "high" });
+    expect(reviewerSelectionUnavailable(s, "antigravity")).toBe(
+      "Choose an Antigravity model in Settings.",
+    );
+    expect(canStartReview(s, pr.id)).toBe(false);
+    s.settings.antigravityModel = "gemini-3.1-pro-high";
+    expect(canStartReview(s, pr.id)).toBe(true);
+    s.settings.antigravityModel = "gemini-gone";
+    expect(reviewerSelectionUnavailable(s, "antigravity")).toMatch(
+      /Antigravity model 'gemini-gone' is unavailable/,
+    );
+    s.settings.antigravityModel = "gemini-3.1-pro-high";
+    s.antigravity = { ready: false, error: "Antigravity is not signed in." };
+    expect(reviewerSelectionUnavailable(s, "antigravity")).toBe(
+      "Antigravity is not signed in.",
+    );
+  });
+  it("checks Antigravity follow-ups against Antigravity's models", () => {
+    const s = freshDemo();
+    const r = s.reviews.find((r) => r.threadId && r.worktree)!;
+    Object.assign(r, {
+      status: "ready",
+      provider: "antigravity",
+      model: "gemini-3.1-pro-high",
+      effort: "high",
+    });
+    s.codexReady = false;
+    expect(followUpUnavailable(s, r)).toBeNull();
+    r.model = "claude-opus-5-5";
+    expect(followUpUnavailable(s, r)).toMatch(/Antigravity model/);
+  });
+});
 
 describe("Claude reviewer", () => {
   const claudeRepo = () => {
