@@ -688,11 +688,18 @@ impl Review {
                 text.push_str(part);
             }
         }
-        // Earlier findings' titles are repeated in the "Since the last round" table.
-        let earlier = self.previous_round.iter().flat_map(|p| &p.findings);
-        for f in earlier {
-            text.push('\n');
-            text.push_str(&f.title);
+        // Earlier findings' titles, and what the author said about them, are
+        // repeated in the "Since the last round" table and the hidden data.
+        if let Some(p) = &self.previous_round {
+            let claims = p.claims.iter().flat_map(|c| {
+                [Some(&c.author), c.commit.as_ref(), c.reason.as_ref()]
+                    .into_iter()
+                    .flatten()
+            });
+            for part in p.findings.iter().map(|f| &f.title).chain(claims) {
+                text.push('\n');
+                text.push_str(part);
+            }
         }
         let notes = self.prior_findings.iter().map(|p| &p.note);
         for part in self

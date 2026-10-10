@@ -1,4 +1,37 @@
-use super::test_support::*;
+use super::{test_support::*, Engine};
+use crate::types::*;
+
+/// A reply declining an earlier finding whose reason holds a credential, the
+/// only one in the review.
+async fn declined_with_a_credential(e: &Engine) {
+    e.update(|s| {
+        s.reviews[0].previous_round = Some(PreviousRound {
+            review_id: "old".into(),
+            head_sha: "c".repeat(40),
+            verdict: None,
+            findings: vec![Finding {
+                id: "old-0".into(),
+                number: Some(1),
+                title: "Keep overrides".into(),
+                priority: 1,
+                ..Default::default()
+            }],
+            claims: vec![AuthorClaim {
+                finding_id: "old-0".into(),
+                author: "alex".into(),
+                created_at: "2026-01-02T00:00:00Z".into(),
+                kind: ClaimKind::Declined,
+                commit: None,
+                commit_check: None,
+                reason: Some(format!("the fixture needs ghp_{}", "a1".repeat(18))),
+            }],
+            decisions: vec![],
+            comments_included: 1,
+            comments_omitted: 0,
+        });
+    })
+    .await;
+}
 
 #[tokio::test]
 async fn holds_automatic_publication_for_external_pull_requests() {
@@ -36,6 +69,20 @@ async fn manual_publication_of_credential_shaped_reports_needs_confirmation() {
         "{error}"
     );
     // Stopping early releases the publication claim.
+    assert_eq!(e.snapshot().await.reviews[0].status, "ready");
+}
+#[tokio::test]
+async fn holds_publication_when_only_a_declined_reply_holds_a_credential() {
+    let (_d, e, id) = running_engine().await;
+    ready_for_autopost(&e, "No actionable defects found.", true).await;
+    declined_with_a_credential(&e).await;
+    let error = e.publish(&id, true, true).await.unwrap_err();
+    assert!(error.contains("GitHub token"), "{error}");
+    let error = e.publish(&id, false, false).await.unwrap_err();
+    assert!(
+        error.contains("GitHub token") && error.contains("confirm"),
+        "{error}"
+    );
     assert_eq!(e.snapshot().await.reviews[0].status, "ready");
 }
 #[tokio::test]

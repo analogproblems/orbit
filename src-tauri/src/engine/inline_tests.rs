@@ -411,3 +411,46 @@ fn scans_every_published_part_for_credentials() {
         .iter()
         .any(|k| k.contains("GitHub token")));
 }
+#[test]
+fn scans_what_the_author_said_for_credentials() {
+    let reason = format!("the fixture needs ghp_{}", "a1".repeat(18));
+    let mut earlier = finding(Some("src/a.rs"), 30, 30);
+    earlier.id = "old-0".into();
+    earlier.number = Some(1);
+    let mut r = review(vec![]);
+    r.previous_round = Some(PreviousRound {
+        review_id: "old".into(),
+        head_sha: "c".repeat(40),
+        verdict: None,
+        findings: vec![earlier],
+        claims: vec![AuthorClaim {
+            finding_id: "old-0".into(),
+            author: "alex".into(),
+            created_at: "2026-01-02T00:00:00Z".into(),
+            kind: ClaimKind::Declined,
+            commit: None,
+            commit_check: None,
+            reason: Some(reason.clone()),
+        }],
+        decisions: vec![],
+        comments_included: 1,
+        comments_omitted: 0,
+    });
+    r.prior_findings = vec![PriorFinding {
+        id: "old-0".into(),
+        status: PriorStatus::StillOpen,
+        note: "Still there.".into(),
+    }];
+    // The reason is published in the table and the hidden data...
+    let body = plan(&r, &files(), Some(2), true).body;
+    assert!(
+        body.contains(&format!("| declined: {reason} | Still there. |")),
+        "{body}"
+    );
+    assert_eq!(
+        data(&body)["earlierFindings"][0]["authorSaid"]["reason"],
+        reason.as_str()
+    );
+    // ...so the scan finds it, though nothing else holds it.
+    assert_eq!(r.credential_scan(), ["GitHub token"]);
+}
