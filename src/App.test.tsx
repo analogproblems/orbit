@@ -27,6 +27,7 @@ import { Inbox } from "./Inbox";
 import { freshDemo } from "./demo";
 import { useOrbit } from "./store";
 import type { RemoteAccessStatus } from "./RemoteAccess";
+import { withPatch } from "./types";
 import type { Snapshot, SettingsPatch, ChangedFile } from "./types";
 
 const { invoke, listeners } = vi.hoisted(() => ({
@@ -76,6 +77,12 @@ function banner() {
   return found;
 }
 const findBanner = () => waitFor(banner);
+/** The first worktree row in Storage. Settings has other checkboxes, such as
+ * the buddy's colour and hat cards. */
+async function findWorktreeRow() {
+  const list = await screen.findByRole("group", { name: "Review worktrees" });
+  return within(list).getByRole("checkbox");
+}
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason: Error) => void;
@@ -91,7 +98,10 @@ async function backend(
 ): Promise<unknown> {
   if (command === "get_snapshot") return snapshot;
   if (command === "update_settings") {
-    Object.assign(snapshot.settings, args.patch as SettingsPatch);
+    Object.assign(
+      snapshot.settings,
+      withPatch(snapshot.settings, args.patch as SettingsPatch),
+    );
     emit();
     return snapshot.settings;
   }
@@ -595,6 +605,79 @@ describe("publication", () => {
     ).toBeTruthy();
   });
 });
+describe("Bit", () => {
+  it("lists Bit's notes newest first and opens what each one is about", async () => {
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Bit" }));
+    expect(
+      screen.getByRole("heading", {
+        name: /^Bit is (happy|busy|worried|sleepy)\.$/,
+      }),
+    ).toBeTruthy();
+    const notes = () =>
+      within(screen.getByRole("list", { name: "Bit's notes" })).getAllByRole(
+        "listitem",
+      );
+    expect(notes()).toHaveLength(4);
+    expect(notes()[0].textContent).toContain("acme/dashboard failed to sync");
+    expect(notes()[3].textContent).toContain("is clean after 3 rounds!");
+    await user().click(within(notes()[0]).getByText(/failed to sync/));
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Repositories" }),
+    ).toBeTruthy();
+    await user().click(screen.getByRole("button", { name: "Bit" }));
+    await user().click(within(notes()[2]).getByText(/blocking findings/));
+    expect(await screen.findByRole("list", { name: "Rounds" })).toBeTruthy();
+  });
+
+  it("renames, dresses and hides Bit from Settings, keeping a failed name", async () => {
+    let fail = true;
+    invoke.mockImplementation((cmd, args) =>
+      cmd === "update_settings" &&
+      (args as { patch: SettingsPatch }).patch.buddy?.name &&
+      fail
+        ? Promise.reject(Error("Keep your buddy's name to 24 characters."))
+        : backend(cmd, args),
+    );
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Settings" }));
+    const name = await screen.findByRole("textbox", { name: "Name" });
+    await user().clear(name);
+    await user().type(name, "Orbie{Enter}");
+    expect(invoke).toHaveBeenCalledWith("update_settings", {
+      patch: { buddy: { name: "Orbie" } },
+    });
+    await waitFor(() =>
+      expect(document.body.textContent).toContain(
+        "Keep your buddy's name to 24 characters.",
+      ),
+    );
+    expect(name).toHaveProperty("value", "Orbie");
+    fail = false;
+    await user().click(screen.getByRole("button", { name: "Rename" }));
+    expect(await screen.findByRole("button", { name: "Orbie" })).toBeTruthy();
+    await user().click(screen.getByRole("checkbox", { name: "Crown" }));
+    await user().click(screen.getByRole("checkbox", { name: "Gold" }));
+    expect(invoke).toHaveBeenCalledWith("update_settings", {
+      patch: { buddy: { hat: "crown" } },
+    });
+    expect(snapshot.settings.buddy).toMatchObject({
+      name: "Orbie",
+      hat: "crown",
+      colour: "gold",
+    });
+    expect(screen.getByRole("checkbox", { name: "Crown" })).toHaveProperty(
+      "checked",
+      true,
+    );
+    await user().click(screen.getByRole("switch", { name: /Show Orbie/ }));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Orbie" })).toBeNull(),
+    );
+    expect(snapshot.settings.buddy?.enabled).toBe(false);
+  });
+});
+
 describe("files and navigation", () => {
   it("retries failed files and discards responses from old head, base, and PR selections", async () => {
     const pending: ReturnType<typeof deferred<ChangedFile[]>>[] = [];
@@ -968,7 +1051,7 @@ describe("storage and export", () => {
       false,
     );
     await user().click(screen.getByRole("button", { name: "Inspect storage" }));
-    const row = await screen.findByRole("checkbox");
+    const row = await findWorktreeRow();
     expect(screen.getByText(/unclaimed/)).toBeTruthy();
     await act(async () => {
       snapshot.reviews[0].messages.push({
@@ -1141,7 +1224,7 @@ describe("review regression cases", () => {
     await mount();
     fireEvent.keyDown(document, { key: ",", ctrlKey: true });
     await user().click(screen.getByRole("button", { name: "Inspect storage" }));
-    await user().click(await screen.findByRole("checkbox"));
+    await user().click(await findWorktreeRow());
     await user().click(
       screen.getByRole("button", { name: "Remove worktrees (1)" }),
     );
@@ -1155,7 +1238,8 @@ describe("review regression cases", () => {
     expect(
       screen.getByRole("button", { name: "Remove worktrees (0)" }),
     ).toHaveProperty("disabled", true);
-    expect(screen.queryByRole("checkbox")).toBeNull();
+    const list = screen.queryByRole("group", { name: "Review worktrees" });
+    expect(list && within(list).queryByRole("checkbox")).toBeNull();
   });
   it("disables Autopilot while repository validation is still pending", async () => {
     const validation = deferred<void>();
@@ -1237,7 +1321,7 @@ describe("review regression cases", () => {
     await mount();
     fireEvent.keyDown(document, { key: ",", ctrlKey: true });
     await user().click(screen.getByRole("button", { name: "Inspect storage" }));
-    await user().click(await screen.findByRole("checkbox"));
+    await user().click(await findWorktreeRow());
     await user().click(
       screen.getByRole("button", { name: "Remove worktrees (1)" }),
     );
@@ -1553,7 +1637,7 @@ describe("Astryx dialog and composer integration", () => {
     await mount();
     fireEvent.keyDown(document, { key: ",", ctrlKey: true });
     await user().click(screen.getByRole("button", { name: "Inspect storage" }));
-    await user().click(await screen.findByRole("checkbox"));
+    await user().click(await findWorktreeRow());
     await user().click(
       screen.getByRole("button", { name: "Remove worktrees (1)" }),
     );

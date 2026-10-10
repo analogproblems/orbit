@@ -192,6 +192,7 @@ impl Engine {
             }
         }
         state.settings.repositories = repositories;
+        state.settings.buddy.normalize();
         for p in state.prs.iter_mut().chain(state.history_prs.iter_mut()) {
             p.id = p.id.to_ascii_lowercase();
         }
@@ -313,7 +314,10 @@ impl Engine {
         // The record of announced items is saved with the state, so an item
         // still open after a restart is not announced again.
         let (notices, recorded) = crate::attention::announce(&mut s);
-        if recorded {
+        // Bit's feed is saved the same way, so a note is written once.
+        let fresh: Vec<Attention> = notices.iter().map(|n| n.item.clone()).collect();
+        let noted = crate::buddy::observe(&mut s, &fresh);
+        if recorded || noted {
             self.dirty.store(true, Ordering::SeqCst);
         }
         let mut result = Ok(());

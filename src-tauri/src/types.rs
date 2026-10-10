@@ -548,6 +548,8 @@ pub struct Settings {
     /// Keep a security scan's bulky working files (`artifacts/`) after its
     /// findings are imported.
     pub keep_scan_artifacts: bool,
+    /// Bit, Orbit's buddy.
+    pub buddy: crate::buddy::Buddy,
 }
 /// Only supplied fields change. Repository mutations have separate commands.
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -569,6 +571,7 @@ pub struct SettingsPatch {
     pub commit_status: Option<bool>,
     pub notify: Option<bool>,
     pub keep_scan_artifacts: Option<bool>,
+    pub buddy: Option<crate::buddy::BuddyPatch>,
 }
 impl SettingsPatch {
     pub fn apply(self, settings: &mut Settings) {
@@ -620,6 +623,9 @@ impl SettingsPatch {
         if let Some(v) = self.keep_scan_artifacts {
             settings.keep_scan_artifacts = v;
         }
+        if let Some(v) = self.buddy {
+            v.apply(&mut settings.buddy);
+        }
     }
 }
 impl Default for Settings {
@@ -642,6 +648,7 @@ impl Default for Settings {
             commit_status: true,
             notify: true,
             keep_scan_artifacts: false,
+            buddy: crate::buddy::Buddy::default(),
         }
     }
 }
@@ -671,6 +678,7 @@ impl Settings {
         if self.blocking_priority > 3 {
             return Err("Choose a blocking priority from P0 to P3.".into());
         }
+        self.buddy.validate()?;
         if self.trusted_authors.len() > 50 {
             return Err("Trust at most 50 accounts.".into());
         }
@@ -811,6 +819,11 @@ pub struct Snapshot {
     pub usage: Option<crate::usage::Usage>,
     /// Repository security scans, newest first.
     pub scans: Vec<SecurityScan>,
+    /// Bit's notes and what it last saw of each loop.
+    pub buddy_feed: crate::buddy::Feed,
+    /// How Bit feels. Derived like `loop_states`.
+    #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub mood: Option<crate::buddy::Mood>,
 }
 /// How far a security scan has come, as the Codex Security plugin reports it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

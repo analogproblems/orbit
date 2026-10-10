@@ -1,5 +1,6 @@
 pub mod antigravity;
 pub mod attention;
+pub mod buddy;
 pub mod claude;
 pub mod cli;
 pub mod engine;
