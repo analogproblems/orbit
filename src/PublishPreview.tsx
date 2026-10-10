@@ -1,4 +1,4 @@
-import { Banner, Spinner, Text, Token, VStack } from "@astryxdesign/core";
+import { Banner, Spinner, Text, VStack } from "@astryxdesign/core";
 import {
   Table,
   pixel,
@@ -6,7 +6,7 @@ import {
   type TableColumn,
 } from "@astryxdesign/core/Table";
 import { useEffect, useState } from "react";
-import { FindingDetails, priorityColors } from "./Findings";
+import { FindingDetails, FindingTitle, Severity } from "./Findings";
 import { SafeMarkdown } from "./SafeMarkdown";
 import { useOrbit } from "./store";
 import {
@@ -20,18 +20,12 @@ interface Row extends Finding {
   placement: string;
 }
 
-const columns: TableColumn<Row>[] = [
+const columns = (review: Review): TableColumn<Row>[] => [
   {
     key: "priority",
     header: "Severity",
-    width: pixel(88),
-    renderCell: (f) => (
-      <Token
-        label={`P${f.priority}`}
-        color={priorityColors[f.priority] ?? "gray"}
-        size="sm"
-      />
-    ),
+    width: pixel(110),
+    renderCell: (f) => <Severity finding={f} review={review} />,
   },
   {
     key: "title",
@@ -39,7 +33,7 @@ const columns: TableColumn<Row>[] = [
     width: proportional(3),
     renderCell: (f) => (
       <VStack gap={1}>
-        <Text weight="medium">{f.title}</Text>
+        <FindingTitle finding={f} />
         <Text type="code">{findingLocation(f)}</Text>
         <Text type="supporting">{f.body}</Text>
         <FindingDetails finding={f} />
@@ -53,6 +47,21 @@ const columns: TableColumn<Row>[] = [
     renderCell: (f) => <Text type="supporting">{f.placement}</Text>,
   },
 ];
+
+/**
+ * The review text as GitHub shows it: hidden comments left out, and the
+ * reviewer's folded report under its own bold line, since the preview shows
+ * HTML as text.
+ */
+export function readable(body: string) {
+  return body
+    .replace(/<!--[\s\S]*?-->\n?/g, "")
+    .replace(
+      /<details>\n<summary>(.*)<\/summary>/g,
+      "**$1** (folded on GitHub)",
+    )
+    .replace(/\n<\/details>/g, "");
+}
 
 /**
  * What publishing will post. A run with a findings list becomes a review:
@@ -113,14 +122,20 @@ export function PublishPreview({ review }: { review: Review }) {
       {rows.length > 0 && (
         <Table
           data={rows}
-          columns={columns}
+          columns={columns(review)}
           idKey="id"
           density="compact"
           verticalAlign="top"
         />
       )}
       <Text weight="medium">Review text</Text>
-      <SafeMarkdown>{plan.body}</SafeMarkdown>
+      <SafeMarkdown>{readable(plan.body)}</SafeMarkdown>
+      {plan.body.includes("<!-- orbit-data ") && (
+        <Text type="supporting">
+          The review also carries a hidden copy of every finding for agents to
+          read.
+        </Text>
+      )}
     </VStack>
   );
 }

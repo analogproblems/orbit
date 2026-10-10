@@ -123,13 +123,78 @@ pub(super) struct Extracted {
     pub prior_findings: Vec<PriorFinding>,
 }
 impl Extracted {
-    pub(super) fn store(self, r: &mut Review) {
+    /// Saves the answer on its review, numbering the findings from
+    /// `first_number`.
+    pub(super) fn store(mut self, r: &mut Review, first_number: u32) {
+        for (f, number) in self.findings.iter_mut().zip(first_number..) {
+            f.number = Some(number);
+        }
         r.verdict = Some(self.verdict);
         r.summary = Some(self.summary);
         r.completed = Some(self.completed);
         r.findings = Some(self.findings);
         r.not_checked = self.not_checked;
         r.prior_findings = self.prior_findings;
+        r.report_findings = report_count(r.provider, &r.report);
+    }
+}
+
+/// The number for the first short ID of review `id`'s findings: one past the
+/// highest number any other review of its pull request gave, so a short ID
+/// is never reused within a pull request.
+pub(super) fn next_number(s: &Snapshot, id: &str) -> u32 {
+    let Some(pr_id) = s.reviews.iter().find(|r| r.id == id).map(|r| &r.pr_id) else {
+        return 1;
+    };
+    s.reviews
+        .iter()
+        .filter(|r| &r.pr_id == pr_id)
+        .flat_map(|r| {
+            // This review's own earlier findings count, but not the findings
+            // being numbered.
+            let own = (r.id != id).then_some(r.findings.iter().flatten());
+            own.into_iter()
+                .flatten()
+                .chain(r.previous_round.iter().flat_map(|p| &p.findings))
+        })
+        .filter_map(|f| f.number)
+        .max()
+        .unwrap_or(0)
+        + 1
+}
+
+/// How many findings a reviewer's report lists, when Orbit can tell: Codex
+/// titles each one `[P1] …`, Orbit's instructions ask Antigravity for a
+/// `### Problem 1: …` heading each, and Orbit writes Claude's list as "Claude's
+/// review found 3 issues". A Claude answer in plain words can't be counted.
+pub(crate) fn report_count(provider: Provider, report: &str) -> Option<u32> {
+    // A line's text after any list, heading or bold markers.
+    let text = |line: &str| {
+        line.trim_start()
+            .trim_start_matches(|c: char| c.is_ascii_digit())
+            .trim_start_matches(['-', '*', '#', '.', ')', ' ', '_'])
+            .to_string()
+    };
+    let count =
+        |pred: &dyn Fn(&str) -> bool| report.lines().filter(|l| pred(&text(l))).count() as u32;
+    match provider {
+        Provider::Codex => Some(count(&|t| {
+            let b = t.as_bytes();
+            b.len() > 3 && t.starts_with("[P") && (b'0'..=b'3').contains(&b[2]) && b[3] == b']'
+        })),
+        Provider::Antigravity => Some(count(&|t| {
+            t.strip_prefix("Problem ").is_some_and(|rest| {
+                let digits = rest.chars().take_while(char::is_ascii_digit).count();
+                digits > 0 && rest[digits..].starts_with(':')
+            })
+        })),
+        Provider::Claude => {
+            let rest = report.trim_start().strip_prefix("Claude's review found ")?;
+            if rest.starts_with("no issues") {
+                return Some(0);
+            }
+            rest.split_once(' ')?.0.parse().ok()
+        }
     }
 }
 
@@ -235,6 +300,7 @@ pub(super) fn parse(
                 suggested_fix: optional(f, "suggestedFix")?,
                 done_when: optional(f, "doneWhen")?,
                 reviewer_notes: optional(f, "reviewerNotes")?,
+                number: None,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;

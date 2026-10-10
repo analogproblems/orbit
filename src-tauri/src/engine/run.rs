@@ -690,6 +690,8 @@ pub(super) fn apply_event(s: &mut Snapshot, id: &str, event: ReviewEvent) -> Nex
         s.approvals.retain(|a| a.review_id != id);
     }
     let blocking_priority = s.settings.blocking_priority;
+    let first_number =
+        matches!(event, ReviewEvent::Text { .. }).then(|| findings::next_number(s, id));
     let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) else {
         return Next::Nothing;
     };
@@ -724,7 +726,7 @@ pub(super) fn apply_event(s: &mut Snapshot, id: &str, event: ReviewEvent) -> Nex
                 r.worktree.as_deref(),
                 r.previous_round.as_ref(),
             ) {
-                extracted.store(r);
+                extracted.store(r, first_number.unwrap_or(1));
             }
         }
         ReviewEvent::Text { item, text } => {

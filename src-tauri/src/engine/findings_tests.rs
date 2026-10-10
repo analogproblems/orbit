@@ -540,3 +540,88 @@ async fn automatic_reviews_recovered_from_extraction_are_still_published() {
     e.publish_recovered();
     assert_eq!(wait_for_publication_attempt(&e).await.status, "ready");
 }
+#[tokio::test]
+async fn numbers_findings_after_every_earlier_one_on_the_pull_request() {
+    let (d, e, _) = running_engine().await;
+    e.update(|s| {
+        let numbered = |number| Finding {
+            number: Some(number),
+            ..Default::default()
+        };
+        let mut earlier = s.reviews[0].clone();
+        earlier.id = "earlier".into();
+        earlier.findings = Some(vec![numbered(2)]);
+        // A finding carried from a review that is gone still holds its number.
+        earlier.previous_round = Some(PreviousRound {
+            review_id: "gone".into(),
+            head_sha: "c".repeat(40),
+            verdict: None,
+            findings: vec![numbered(5)],
+            decisions: vec![],
+            comments_included: 0,
+            comments_omitted: 0,
+        });
+        let mut other_pr = earlier.clone();
+        other_pr.id = "other".into();
+        other_pr.pr_id = "a/b#2".into();
+        other_pr.findings = Some(vec![numbered(9)]);
+        s.reviews.extend([earlier, other_pr]);
+    })
+    .await;
+    assert_eq!(
+        super::findings::next_number(&e.snapshot().await, "earlier"),
+        6
+    );
+    // The review's own earlier findings count even when their review is gone.
+    e.update(|s| {
+        let gone = s.reviews.iter().position(|r| r.id == "earlier").unwrap();
+        let mut earlier = s.reviews.remove(gone);
+        earlier.findings = Some(vec![]);
+        let round = earlier.previous_round.take().unwrap();
+        s.reviews[0].previous_round = Some(round);
+        s.reviews.push(earlier);
+    })
+    .await;
+    extracting(&e, d.path().to_str().unwrap()).await;
+    deliver(
+        &e,
+        &answer(json!([finding("a.rs"), finding("b.rs")])),
+        "completed",
+    )
+    .await;
+    let r = e.snapshot().await.reviews.remove(0);
+    let numbers: Vec<_> = r.findings.iter().flatten().map(|f| f.short_id()).collect();
+    assert_eq!(numbers, [Some("F6".to_string()), Some("F7".to_string())]);
+    // The report's one `[P2]` title is counted; the blocking priority used
+    // is kept for each finding's label.
+    assert_eq!(r.report_findings, Some(1));
+    assert_eq!(
+        r.blocking_priority,
+        Some(Settings::default().blocking_priority)
+    );
+    assert_eq!(r.count_note(), None);
+}
+#[test]
+fn counts_the_findings_in_each_reviewers_report() {
+    use super::findings::report_count;
+    let codex = "Two problems.\n\n- [P1] First — src/a.rs:3\n  Why.\n### [P3] Second\nThe [P2] in prose doesn't count.\n**[P0] Third**";
+    assert_eq!(report_count(Provider::Codex, codex), Some(3));
+    assert_eq!(report_count(Provider::Codex, "Looks good."), Some(0));
+    let agy = "Not ready.\n\n### Problem 1: First\n`a.rs:3`\n### Problem 2: Second\nProblem 3 is not a heading.";
+    assert_eq!(report_count(Provider::Antigravity, agy), Some(2));
+    assert_eq!(
+        report_count(
+            Provider::Claude,
+            &crate::claude::report(r#"[{"summary":"A"},{"summary":"B"}]"#)
+        ),
+        Some(2)
+    );
+    assert_eq!(
+        report_count(Provider::Claude, &crate::claude::report("[]")),
+        Some(0)
+    );
+    assert_eq!(
+        report_count(Provider::Claude, "I looked and it seems fine."),
+        None
+    );
+}

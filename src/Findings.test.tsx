@@ -26,11 +26,35 @@ describe("structured findings", () => {
     expect(screen.getByText(/Not checked: End-to-end tests/)).toBeTruthy();
     // The category, the failure case, other places, and an unverified one.
     expect(screen.getByText("Data loss")).toBeTruthy();
-    expect(
-      screen.getByText(`Breaks when: ${findings[0].failureScenario}`),
-    ).toBeTruthy();
+    expect(screen.getByText(findings[0].failureScenario!)).toBeTruthy();
+    expect(screen.getByText(findings[0].doneWhen!)).toBeTruthy();
     expect(screen.getByText("src/settings/save.ts:21–24")).toBeTruthy();
     expect(screen.getAllByText("Likely, not verified")).toHaveLength(1);
+    // Short IDs as the PR's comments name them, and what blocks.
+    expect(screen.getByText(`F1 · ${findings[0].title}`)).toBeTruthy();
+    expect(screen.getByText(`F2 · ${findings[1].title}`)).toBeTruthy();
+    expect(screen.getAllByText("Blocking")).toHaveLength(2);
+    expect(screen.queryByText("A finding may be missing")).toBeNull();
+  });
+  it("says what blocks only when the review knows, and keeps older titles", () => {
+    const findings = demoFindings("r").map((f) => ({ ...f, number: null }));
+    render(
+      <Findings review={review({ findings, blockingPriority: undefined })} />,
+    );
+    expect(screen.queryByText("Blocking")).toBeNull();
+    expect(screen.getByText(findings[0].title)).toBeTruthy();
+    cleanup();
+    render(<Findings review={review({ findings, blockingPriority: 1 })} />);
+    expect(screen.queryByText("Blocking")).toBeNull();
+  });
+  it("warns when the reviewer's report lists more findings than the list", () => {
+    render(<Findings review={review({ reportFindings: 3 })} />);
+    expect(screen.getByText("A finding may be missing")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Codex’s report lists 3 findings, but Orbit’s list has 2, so some may have been left out. Check the report.",
+      ),
+    ).toBeTruthy();
   });
   it("shows what older reviews could not run", () => {
     render(

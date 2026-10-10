@@ -32,6 +32,7 @@ pub fn blocking(r: &Review, blocking_priority: u8) -> Option<u32> {
 /// Records Orbit's verdict on a review whose findings were just extracted.
 pub fn decide(r: &mut Review, blocking_priority: u8) {
     r.blocking = blocking(r, blocking_priority);
+    r.blocking_priority = r.blocking.map(|_| blocking_priority);
     r.orbit_verdict = r.blocking.map(|n| {
         if n == 0 {
             Verdict::Clean

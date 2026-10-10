@@ -200,6 +200,15 @@ pub struct Review {
     /// structured findings.
     #[serde(default)]
     pub blocking: Option<u32>,
+    /// The blocking priority `blocking` was counted with, so each finding
+    /// can say whether it blocks. None without structured findings and in
+    /// older state.
+    #[serde(default)]
+    pub blocking_priority: Option<u8>,
+    /// How many findings the reviewer's own report lists, when Orbit can
+    /// count them, to notice a finding the restated list left out.
+    #[serde(default)]
+    pub report_findings: Option<u32>,
     /// Orbit's verdict from `blocking`; `verdict` is the model's own.
     #[serde(default)]
     pub orbit_verdict: Option<Verdict>,
@@ -321,6 +330,11 @@ pub struct Finding {
     /// Anything from the reviewer's report that fits no other field.
     #[serde(default)]
     pub reviewer_notes: Option<String>,
+    /// The number in its short ID (F2). Unique within its pull request and
+    /// never reused, so a reply can name it in any round. None in findings
+    /// from before short IDs and in security scans.
+    #[serde(default)]
+    pub number: Option<u32>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -395,6 +409,29 @@ impl Finding {
             end_line: self.end_line,
         }
     }
+    /// Its short ID, such as F2.
+    pub fn short_id(&self) -> Option<String> {
+        self.number.map(|n| format!("F{n}"))
+    }
+    /// Whether it blocks the change under `blocking_priority`, or None when
+    /// that is not known.
+    pub fn blocking(&self, blocking_priority: Option<u8>) -> Option<bool> {
+        blocking_priority.map(|p| self.priority <= p)
+    }
+    /// The bold first line of a published finding, such as
+    /// `**F2 · P1 · Blocking · Bug** Off-by-one in first()`.
+    pub fn heading(&self, blocking_priority: Option<u8>) -> String {
+        let label = [
+            self.short_id(),
+            Some(format!("P{}", self.priority)),
+            self.blocking(blocking_priority)
+                .map(|b| if b { "Blocking" } else { "Not blocking" }.to_string()),
+            self.category.map(|c| c.label().to_string()),
+            (self.confirmed == Some(false)).then(|| "Likely, not verified".to_string()),
+        ];
+        let label: Vec<String> = label.into_iter().flatten().collect();
+        format!("**{}** {}", label.join(" · "), self.title.trim())
+    }
     /// Everything but the title and the problem, as Markdown lines: the
     /// failure scenario, evidence, fix, other locations and so on. Empty for
     /// older findings, whose body holds it all.
@@ -414,6 +451,13 @@ impl Finding {
         if !kind.is_empty() {
             lines.push(format!("_{}_", kind.join(" · ")));
         }
+        lines.extend(self.detail_lines());
+        lines.join("\n")
+    }
+    /// The labeled parts of the form, one Markdown line each, such as
+    /// `**Breaks when:** …`.
+    pub fn detail_lines(&self) -> Vec<String> {
+        let mut lines = vec![];
         let mut line = |label: &str, text: Option<&str>| {
             if let Some(text) = text.map(str::trim).filter(|t| !t.is_empty()) {
                 lines.push(format!("**{label}:** {text}"));
@@ -430,7 +474,7 @@ impl Finding {
             .collect();
         line("Also at", Some(&also.join(", ")));
         line("Reviewer's notes", self.reviewer_notes.as_deref());
-        lines.join("\n")
+        lines
     }
     /// Its free-text parts, for the credential scan.
     pub fn texts(&self) -> impl Iterator<Item = &str> {
@@ -562,6 +606,8 @@ impl Review {
             review_prompt: None,
             prior_findings: vec![],
             blocking: None,
+            blocking_priority: None,
+            report_findings: None,
             orbit_verdict: None,
             superseded: false,
             review_id: None,
@@ -597,6 +643,31 @@ impl Review {
         }
         credential_kinds(&text)
     }
+    /// A warning when the reviewer's report lists more findings than its
+    /// restated list and the earlier findings it still holds open, so one may
+    /// have been left out.
+    pub fn count_note(&self) -> Option<String> {
+        let reported = self.report_findings?;
+        let listed = self.findings.as_ref()?.len() as u32
+            + self
+                .prior_findings
+                .iter()
+                .filter(|p| {
+                    matches!(
+                        p.status,
+                        PriorStatus::StillOpen | PriorStatus::DeclinedDisputed
+                    )
+                })
+                .count() as u32;
+        let plural = |n: u32| if n == 1 { "finding" } else { "findings" };
+        (reported > listed).then(|| {
+            format!(
+                "{}’s report lists {reported} {}, but Orbit’s list has {listed}, so some may have been left out. Check the report.",
+                self.provider.label(),
+                plural(reported)
+            )
+        })
+    }
     /// Ends a findings extraction. The review turn already produced a report,
     /// so the run becomes ready (or stays published) either way; without
     /// findings (`error`) it is an unstructured run. Returns false when no
@@ -620,6 +691,7 @@ impl Review {
             self.summary = None;
             self.not_checked.clear();
             self.completed = None;
+            self.report_findings = None;
             self.prior_findings.clear();
             self.error = Some(format!(
                 "Findings were not extracted, so this run is unstructured; its report is kept. {error}"

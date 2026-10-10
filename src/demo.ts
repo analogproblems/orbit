@@ -192,6 +192,7 @@ export function demoFindings(reviewId: string): Finding[] {
       doneWhen:
         "A test saves defaults after configuring an override and the override is still there.",
       reviewerNotes: null,
+      number: 1,
     },
     {
       id: `${reviewId}-1`,
@@ -212,6 +213,7 @@ export function demoFindings(reviewId: string): Finding[] {
         "Check that the directory is a Git repository before enqueueing, and link to repository settings when it isn't.",
       doneWhen: null,
       reviewerNotes: null,
+      number: 2,
     },
   ];
 }
@@ -311,6 +313,7 @@ function demoRound(
           body: "An illustrative finding in demo mode.",
           confidence: 0.8,
           category: "bug" as const,
+          number: i + 1,
         })),
         {
           id: `${id}-${blocking}`,
@@ -322,6 +325,7 @@ function demoRound(
           body: "An illustrative nit in demo mode.",
           confidence: 0.6,
           category: "other" as const,
+          number: blocking + 1,
         },
       ];
   // The first `blocking` earlier blocking findings stay open; the rest are fixed.
@@ -366,6 +370,7 @@ function demoRound(
     verdict,
     orbitVerdict: verdict,
     blocking,
+    blockingPriority: 1,
     summary: report,
     previousRound: previous
       ? {
@@ -527,6 +532,7 @@ export function freshDemo(): Snapshot {
       "Two defects in the new repository configuration flow; the rest of the change looks sound.",
     notChecked: ["End-to-end tests (no browser in the review sandbox)"],
     completed: true,
+    blockingPriority: 2,
     automatic: false,
     isReview: true,
   };

@@ -41,7 +41,9 @@ describe("findings page", () => {
       })[same.indexOf(followed)],
     );
     expect(
-      screen.getByRole("heading", { name: followed.finding.title }),
+      screen.getByRole("heading", {
+        name: `F${followed.finding.number} · ${followed.finding.title}`,
+      }),
     ).toBeTruthy();
     expect(screen.getByText("History")).toBeTruthy();
     expect(screen.getByText("Round 1: found")).toBeTruthy();
@@ -84,6 +86,12 @@ describe("findings page", () => {
           (r) => r.finding.title,
         ),
       ).toEqual(["Preserve repository overrides when saving defaults"]);
+    // A short ID, as a reply on GitHub names it.
+    expect(
+      filterFindings(rows, { ...noFilters, search: "f2" }).map(
+        (r) => r.finding.title,
+      ),
+    ).toContain(demoFindings("demo-completed")[1].title);
   });
   it("shows every part of a finding", () => {
     const snapshot = freshDemo();
@@ -94,6 +102,10 @@ describe("findings page", () => {
     fireEvent.click(
       screen.getByRole("button", { name: (name) => name.includes(f.title) }),
     );
+    expect(
+      screen.getByRole("heading", { name: `F1 · ${f.title}` }),
+    ).toBeTruthy();
+    expect(screen.getByText("Blocking")).toBeTruthy();
     for (const [heading, text] of [
       ["Breaks when", f.failureScenario],
       ["Evidence", f.evidence],

@@ -2,7 +2,7 @@
 import "./test-setup";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
-import { PublishPreview } from "./PublishPreview";
+import { PublishPreview, readable } from "./PublishPreview";
 import { demoFindings, freshDemo } from "./demo";
 import { useOrbit } from "./store";
 import type { Review } from "./types";
@@ -30,7 +30,7 @@ describe("publish preview", () => {
             reason: "lines not in the diff",
           },
         ],
-        body: "## Orbit · Codex review\n\nOne defect.",
+        body: '<!-- orbit-review:r -->\n## Orbit · Codex review\n\nOne defect.\n\n<details>\n<summary>Codex’s own report</summary>\n\nThe whole report.\n\n</details>\n\n<!-- orbit-data {"version":1} -->\n---\nModel',
       },
     });
     render(<PublishPreview review={review({ id: "r", findings })} />);
@@ -51,10 +51,30 @@ describe("publish preview", () => {
       screen.getByText("In the review text: lines not in the diff"),
     ).toBeTruthy();
     expect(screen.getByText("One defect.")).toBeTruthy();
+    // Short IDs and what blocks, as the comments will say.
+    expect(screen.getByText(`F1 · ${findings[0].title}`)).toBeTruthy();
+    expect(screen.getAllByText("Blocking")).toHaveLength(2);
+    // The review text reads as GitHub shows it, with the hidden data noted.
+    expect(screen.getByText("The whole report.")).toBeTruthy();
+    expect(screen.queryByText(/orbit-data/)).toBeNull();
+    expect(
+      screen.getByText(
+        "The review also carries a hidden copy of every finding for agents to read.",
+      ),
+    ).toBeTruthy();
     expect(action).toHaveBeenCalledWith(
       "publish_plan",
       { reviewId: "r" },
       { quiet: true },
+    );
+  });
+  it("shows the review text as GitHub does", () => {
+    expect(
+      readable(
+        '<!-- orbit-review:r -->\n<!-- orbit-verdict: clean blocking=0 -->\n## Orbit\n\n<details>\n<summary>Claude’s own report</summary>\n\nReport.\n\n</details>\n\n<!-- orbit-data {"a":"\\u003e"} -->\n---\nModel',
+      ),
+    ).toBe(
+      "## Orbit\n\n**Claude’s own report** (folded on GitHub)\n\nReport.\n\n\n---\nModel",
     );
   });
   it("says when the diff could not be checked", async () => {

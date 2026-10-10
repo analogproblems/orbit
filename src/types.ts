@@ -101,6 +101,12 @@ export interface Review {
   priorFindings?: PriorFinding[];
   /** Blocking findings this review left open; null without findings. */
   blocking?: number | null;
+  /** The blocking priority `blocking` was counted with; missing in older
+   * reviews. */
+  blockingPriority?: number | null;
+  /** How many findings the reviewer's own report lists, when Orbit can
+   * count them. */
+  reportFindings?: number | null;
   /** Orbit's verdict from the blocking priority; `verdict` is the model's. */
   orbitVerdict?: Verdict | null;
   /** Replaced by a newer head; never published automatically. */
@@ -203,6 +209,29 @@ export interface Finding extends Location, Record<string, unknown> {
   /** The test or check that would show it is fixed. */
   doneWhen?: string | null;
   reviewerNotes?: string | null;
+  /** The number in its short ID (F2), unique within its pull request. */
+  number?: number | null;
+}
+/** A finding's short ID, such as F2; null for older findings and scans. */
+export function shortId(f: Finding): string | null {
+  return f.number ? `F${f.number}` : null;
+}
+/** Whether a review's finding blocks the change, or null when the review
+ * predates blocking labels. */
+export function isBlocking(f: Finding, r: Review): boolean | null {
+  return r.blockingPriority == null ? null : f.priority <= r.blockingPriority;
+}
+/** A warning when the reviewer's report lists more findings than its list
+ * and the earlier findings it still holds open. Matches the published note. */
+export function countNote(r: Review): string | null {
+  if (r.reportFindings == null || !r.findings) return null;
+  const held = (r.priorFindings ?? []).filter(
+    (p) => p.status === "still_open" || p.status === "declined_disputed",
+  ).length;
+  const listed = r.findings.length + held;
+  if (r.reportFindings <= listed) return null;
+  const n = r.reportFindings;
+  return `${providerLabels[r.provider ?? "codex"]}’s report lists ${n} ${n === 1 ? "finding" : "findings"}, but Orbit’s list has ${listed}, so some may have been left out. Check the report.`;
 }
 /** What the reviewer could not check, from current or older state. */
 export function notChecked(r: Review): string[] {

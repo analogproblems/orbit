@@ -22,11 +22,14 @@ import {
 } from "./findingIndex";
 import {
   categoryLabels,
+  countNote,
   findingLocation,
   findingReviewId,
+  isBlocking,
   notChecked,
   priorStatusLabels,
   providerLabels,
+  shortId,
   type Finding,
   type PriorStatus,
   type Review,
@@ -35,19 +38,14 @@ import {
 export const priorityColors = ["red", "orange", "yellow", "gray"] as const;
 
 const columns = (
+  review: Review,
   statusOf: (f: Finding) => FindingStatus,
 ): TableColumn<Finding>[] => [
   {
     key: "priority",
     header: "Severity",
-    width: pixel(88),
-    renderCell: (f) => (
-      <Token
-        label={`P${f.priority}`}
-        color={priorityColors[f.priority] ?? "gray"}
-        size="sm"
-      />
-    ),
+    width: pixel(110),
+    renderCell: (f) => <Severity finding={f} review={review} />,
   },
   {
     key: "title",
@@ -55,12 +53,9 @@ const columns = (
     width: proportional(3),
     renderCell: (f) => (
       <VStack gap={1}>
-        <Text weight="medium">{f.title}</Text>
+        <FindingTitle finding={f} />
         <Text type="supporting">{f.body}</Text>
-        {f.failureScenario && (
-          <Text type="supporting">Breaks when: {f.failureScenario}</Text>
-        )}
-        <FindingKind finding={f} />
+        <FindingDetails finding={f} alsoAt={false} />
       </VStack>
     ),
   },
@@ -94,6 +89,40 @@ const columns = (
   },
 ];
 
+/** A finding's priority, and whether it blocks the change when the review
+ * says. */
+export function Severity({
+  finding: f,
+  review,
+}: {
+  finding: Finding;
+  review: Review;
+}) {
+  return (
+    <VStack gap={1}>
+      <Token
+        label={`P${f.priority}`}
+        color={priorityColors[f.priority] ?? "gray"}
+        size="sm"
+      />
+      {isBlocking(f, review) && (
+        <Token label="Blocking" color="red" size="sm" />
+      )}
+    </VStack>
+  );
+}
+
+/** A finding's title after its short ID, as the PR's comments name it. */
+export function FindingTitle({ finding: f }: { finding: Finding }) {
+  const id = shortId(f);
+  return (
+    <Text weight="medium">
+      {id ? `${id} · ` : ""}
+      {f.title}
+    </Text>
+  );
+}
+
 /** A finding's category, and whether it is only likely. Absent from older
  * findings. */
 export function FindingKind({ finding: f }: { finding: Finding }) {
@@ -112,13 +141,23 @@ export function FindingKind({ finding: f }: { finding: Finding }) {
 
 /** Everything a finding says beyond its title and problem, one line each,
  * as it will be published. Empty for older findings. */
-export function FindingDetails({ finding: f }: { finding: Finding }) {
+export function FindingDetails({
+  finding: f,
+  alsoAt = true,
+}: {
+  finding: Finding;
+  /** False where the other locations are shown beside it already. */
+  alsoAt?: boolean;
+}) {
   const lines: [string, string | null | undefined][] = [
     ["Breaks when", f.failureScenario],
     ["Evidence", f.evidence],
     ["Suggested fix", f.suggestedFix],
     ["Done when", f.doneWhen],
-    ["Also at", f.otherLocations?.map(findingLocation).join(", ")],
+    [
+      "Also at",
+      alsoAt ? f.otherLocations?.map(findingLocation).join(", ") : null,
+    ],
     ["Reviewer's notes", f.reviewerNotes],
   ];
   return (
@@ -199,7 +238,7 @@ function SinceLastRound({
       renderCell: (f) => (
         <VStack gap={1}>
           <Text weight="medium">
-            P{f.priority} · {f.title}
+            {shortId(f) ? `${shortId(f)} · ` : ""}P{f.priority} · {f.title}
           </Text>
           {f.note && <Text type="supporting">{f.note}</Text>}
           <Text type="code">{findingLocation(f)}</Text>
@@ -300,10 +339,17 @@ export function Findings({
           </Text>
         )}
       {review.summary && <Text type="supporting">{review.summary}</Text>}
+      {countNote(review) && (
+        <Banner
+          status="warning"
+          title="A finding may be missing"
+          description={countNote(review)!}
+        />
+      )}
       {review.findings.length > 0 && (
         <Table
           data={review.findings}
-          columns={columns((f) => statuses.get(f.id) ?? "open")}
+          columns={columns(review, (f) => statuses.get(f.id) ?? "open")}
           idKey="id"
           density="compact"
           verticalAlign="top"
