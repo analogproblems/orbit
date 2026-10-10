@@ -701,6 +701,27 @@ describe("Bit", () => {
     ).toHaveLength(0);
   });
 
+  it("reaches Bit from the menu on a phone-sized screen", async () => {
+    const wide = window.matchMedia;
+    window.matchMedia = vi.fn((media: string) => ({
+      ...wide(media),
+      matches: media.startsWith("(width <"),
+    })) as typeof window.matchMedia;
+    onTestFinished(() => {
+      window.matchMedia = wide;
+    });
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Open navigation" }));
+    await user().click(
+      within(await screen.findByRole("dialog")).getByRole("button", {
+        name: "Bit",
+      }),
+    );
+    expect(
+      await screen.findByRole("heading", { name: /^Bit is / }),
+    ).toBeTruthy();
+  });
+
   it("sets what Bit may do on its own in Settings", async () => {
     await mount();
     await user().click(screen.getByRole("button", { name: "Settings" }));

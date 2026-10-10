@@ -444,6 +444,8 @@ The link works like a key. Anyone with it can do everything you can in the deskt
 
 Your computer has to stay on with Orbit running. Desktop notifications appear on the computer only, but **Needs you** shows every item in the browser too. When the connection drops, the browser says so and reconnects on its own.
 
+On a phone-sized screen, the sidebar moves into a menu: tap the menu button at the top right to reach every page, including Bit.
+
 ## Restart, retained data, and cleanup
 
 Orbit saves settings, PR metadata, reviews, reports, and chat messages in `state.json` under its app-data directory. On Linux this is normally `~/.local/share/dev.orbit.review`; an absolute `XDG_DATA_HOME` changes the parent directory. Review checkouts are under its `worktrees` subdirectory. The browser demo uses separate browser local storage.
