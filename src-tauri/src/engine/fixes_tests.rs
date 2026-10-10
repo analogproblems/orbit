@@ -136,6 +136,215 @@ async fn a_fix_that_fails_needs_you_after_all() {
     .unwrap();
     assert_eq!(*shown.lock().unwrap(), ["An automatic review stopped"]);
 }
+/// Waits for the fixes Bit queued to finish.
+async fn do_fixes(e: &Arc<Engine>) {
+    for task in e.do_fixes() {
+        task.await.unwrap();
+    }
+}
+#[tokio::test]
+async fn a_queued_fix_waits_for_nothing_that_isnt_bits_to_do_any_more() {
+    let pr = trusted_pr().id;
+    // You stop the loop before Bit gets to it: it stays stopped, and as the
+    // item closed, there's nothing to say or notify.
+    let (_d, e, shown) = at_round_limit("do_it").await;
+    e.flush().await.unwrap();
+    e.stop_loop(&pr).await.unwrap();
+    do_fixes(&e).await;
+    let s = e.snapshot().await;
+    assert!(s.loops[0].stopped);
+    assert_eq!(s.loops[0].extra_rounds, 0);
+    assert_eq!(notes(&s).len(), 1);
+    assert_eq!(notes(&s)[0].0, NoteKind::Fixing);
+    assert!(shown.lock().unwrap().is_empty());
+
+    // You change the rule to Ask first: the loop isn't continued, and it's
+    // handed back to you with its button and a notification.
+    let (_d, e, shown) = at_round_limit("do_it").await;
+    e.flush().await.unwrap();
+    e.update(|s| s.settings.buddy.rules.continue_loop = "ask_first".into())
+        .await;
+    do_fixes(&e).await;
+    let s = e.snapshot().await;
+    assert_eq!(s.loops.first().map_or(0, |c| c.extra_rounds), 0);
+    let note = s.buddy_feed.notes.last().unwrap();
+    assert_eq!(
+        (note.kind, note.text.as_str()),
+        (
+            NoteKind::NeedsYou,
+            "I tried to continue the loop on b#1, but it didn't work: My rule for this isn't Do it any more."
+        )
+    );
+    assert_eq!(
+        note.key.as_deref(),
+        Some(format!("loop:{pr}:Round limit reached.").as_str())
+    );
+    assert_eq!(*shown.lock().unwrap(), ["A review loop needs you"]);
+
+    // You turn Bit off: not done, nothing written, notified as usual.
+    let (_d, e, shown) = at_round_limit("do_it").await;
+    e.flush().await.unwrap();
+    e.update(|s| s.settings.buddy.enabled = false).await;
+    do_fixes(&e).await;
+    let s = e.snapshot().await;
+    assert_eq!(s.loops.first().map_or(0, |c| c.extra_rounds), 0);
+    assert_eq!(notes(&s).len(), 1);
+    assert_eq!(*shown.lock().unwrap(), ["A review loop needs you"]);
+}
+#[tokio::test]
+async fn a_queued_review_again_never_starts_a_second_review() {
+    let (_d, e, shown) = at_round_limit("ask_first").await;
+    e.update(|s| {
+        s.settings.buddy.rules.review_again = "do_it".into();
+        s.reviews.retain(|r| r.id == "run-1");
+        s.reviews[0].status = "failed".into();
+        s.reviews[0].error = Some("Codex exited.".into());
+    })
+    .await;
+    e.flush().await.unwrap();
+    // You start a review yourself before Bit gets to it. The failed run
+    // still needs you, so it's handed back rather than reviewed twice.
+    let pr = trusted_pr().id;
+    e.enqueue(&pr, false).await.unwrap();
+    do_fixes(&e).await;
+    let s = e.snapshot().await;
+    assert_eq!(s.reviews.iter().filter(|r| r.pr_id == pr).count(), 2);
+    assert_eq!(
+        notes(&s).last().unwrap(),
+        &(
+            NoteKind::NeedsYou,
+            "I tried to review b#1 again, but it didn't work: That isn't the fix for this any more."
+                .to_string()
+        )
+    );
+    assert_eq!(*shown.lock().unwrap(), ["An automatic review stopped"]);
+}
+
+/// Bit's publications, against a fake `gh`.
+#[cfg(unix)]
+mod publishing {
+    use super::super::publish_tests::fake_gh::*;
+    use super::*;
+    use crate::github::GH;
+
+    /// A structured report from a member's PR whose automatic publication
+    /// wasn't confirmed, so Bit offers Publish, with Bit's rule for it.
+    async fn held(rule: &str) -> (tempfile::TempDir, Arc<Engine>, Attention) {
+        let (d, e, id) = structured_autopost().await;
+        e.update(|s| {
+            s.reviews[0].error = Some("Comment not confirmed: timed out.".into());
+            s.settings.buddy.rules.publish = rule.into();
+        })
+        .await;
+        let item = crate::attention::items(&e.snapshot().await)
+            .into_iter()
+            .find(|a| a.key == format!("held:{id}"))
+            .unwrap();
+        assert_eq!(item.fix, Some(Fix::Publish));
+        (d, e, item)
+    }
+    /// What GitHub says about the PR's author from now on.
+    fn fresh_author(dir: &std::path::Path, association: &str) {
+        let path = dir.join("pr.json");
+        let mut pr: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        pr["author_association"] = association.into();
+        std::fs::write(path, pr.to_string()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn bit_publishes_only_while_the_fresh_pr_comes_from_a_trusted_source() {
+        // Orbit last saw a member's PR, but GitHub now says otherwise:
+        // neither the button nor Do it publishes.
+        for on_its_own in [false, true] {
+            let (d, e, item) = held("do_it").await;
+            let gh = fake_gh(d.path());
+            fresh_author(d.path(), "CONTRIBUTOR");
+            let result = if on_its_own {
+                GH.scope(gh, e.run_fix(&item, Fix::Publish, true)).await
+            } else {
+                GH.scope(gh, e.fix(&item.key)).await
+            };
+            let error = result.unwrap_err();
+            assert!(
+                error.contains("doesn't come from a source Orbit trusts"),
+                "{error}"
+            );
+            assert_eq!(posts(d.path()), 0);
+            assert_eq!(e.snapshot().await.reviews[0].status, "ready");
+        }
+        // Still trusted: Do it publishes, whatever the publication switch
+        // says.
+        let (d, e, item) = held("do_it").await;
+        e.update(|s| s.settings.auto_post = false).await;
+        let gh = fake_gh(d.path());
+        GH.scope(gh, e.run_fix(&item, Fix::Publish, true))
+            .await
+            .unwrap();
+        assert_eq!(posts(d.path()), 1);
+        assert_eq!(e.snapshot().await.reviews[0].status, "posted");
+    }
+    #[tokio::test]
+    async fn bit_checks_again_before_it_writes() {
+        // While the diff is fetched: the rule changes, Bit is turned off,
+        // the author leaves the organization, or you stop trusting them.
+        for change in ["rule", "bit off", "left", "untrusted"] {
+            let (d, e, item) = held("do_it").await;
+            let gh = fake_gh(d.path());
+            if change == "untrusted" {
+                fresh_author(d.path(), "CONTRIBUTOR");
+                e.update(|s| {
+                    s.prs[0].author_association = "CONTRIBUTOR".into();
+                    s.settings.trusted_authors = vec!["a".into()];
+                })
+                .await;
+            }
+            std::fs::write(d.path().join("pause"), "").unwrap();
+            let revoke = async {
+                wait_for_file(d.path().join("fetching")).await;
+                match change {
+                    "rule" => {
+                        e.update(|s| s.settings.buddy.rules.publish = "ask_first".into())
+                            .await
+                    }
+                    "bit off" => e.update(|s| s.settings.buddy.enabled = false).await,
+                    "left" => fresh_author(d.path(), "CONTRIBUTOR"),
+                    _ => e.update(|s| s.settings.trusted_authors.clear()).await,
+                }
+                std::fs::write(d.path().join("release"), "").unwrap();
+            };
+            let (result, ()) = GH
+                .scope(gh, async {
+                    tokio::join!(e.run_fix(&item, Fix::Publish, true), revoke)
+                })
+                .await;
+            assert!(result.is_err(), "{change}");
+            assert_eq!(posts(d.path()), 0, "{change}");
+            assert_eq!(e.snapshot().await.reviews[0].status, "ready", "{change}");
+        }
+
+        // Waiting behind another publication, the rule changes.
+        let (d, e, item) = held("do_it").await;
+        let gh = fake_gh(d.path());
+        let turn = e.publish_lock.lock().await;
+        let revoke = async {
+            e.update(|s| s.settings.buddy.rules.publish = "ask_first".into())
+                .await;
+            drop(turn);
+        };
+        let (result, ()) = GH
+            .scope(gh, async {
+                tokio::join!(e.run_fix(&item, Fix::Publish, true), revoke)
+            })
+            .await;
+        assert_eq!(
+            result.unwrap_err(),
+            "My rule for this isn't Do it any more."
+        );
+        assert_eq!(posts(d.path()), 0);
+        assert_eq!(e.snapshot().await.reviews[0].status, "ready");
+    }
+}
 #[tokio::test]
 async fn a_button_uses_its_items_fix_and_notes_it() {
     let (_d, e, _) = at_round_limit("ask_first").await;

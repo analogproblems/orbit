@@ -2,6 +2,20 @@ use super::{inline, Engine};
 use crate::{github, types::*};
 use std::sync::atomic::Ordering;
 
+/// Who is publishing a report, which decides the checks before each write.
+#[derive(Clone, Copy)]
+pub(super) enum By<'a> {
+    /// You, from the app: a report with credentials waits for your say-so.
+    You { allow_sensitive: bool },
+    /// Autopilot, for an automatic review, while its switches allow it.
+    Autopilot,
+    /// Bit, for something that needs you: only a report automatic
+    /// publication wouldn't hold, judged on the fresh PR before each write,
+    /// whatever the publication switch says. The check runs then too, with
+    /// the report as it was before this publication claimed it.
+    Bit(&'a (dyn Fn(&Snapshot) -> Result<(), String> + Sync)),
+}
+
 impl Engine {
     pub async fn publish(
         &self,
@@ -9,6 +23,14 @@ impl Engine {
         automatic: bool,
         allow_sensitive: bool,
     ) -> Result<(), String> {
+        let by = if automatic {
+            By::Autopilot
+        } else {
+            By::You { allow_sensitive }
+        };
+        self.publish_by(id, by).await
+    }
+    pub(super) async fn publish_by(&self, id: &str, by: By<'_>) -> Result<(), String> {
         let _guard = self.publish_lock.lock().await;
         // Claimed under the state lock, so a follow-up cannot start while GitHub is
         // being checked. Anything short of a confirmed comment releases the claim.
@@ -28,7 +50,7 @@ impl Engine {
             r.clone()
         };
         self.dirty.store(true, Ordering::SeqCst);
-        let result = self.publish_claimed(&r, automatic, allow_sensitive).await;
+        let result = self.publish_claimed(&r, by).await;
         self.update(|s| {
             if let Some(r) = s
                 .reviews
@@ -41,12 +63,7 @@ impl Engine {
         .await;
         result
     }
-    pub(super) async fn publish_claimed(
-        &self,
-        r: &Review,
-        automatic: bool,
-        allow_sensitive: bool,
-    ) -> Result<(), String> {
+    pub(super) async fn publish_claimed(&self, r: &Review, by: By<'_>) -> Result<(), String> {
         let id = r.id.as_str();
         let s = self.snapshot().await;
         // A PR from a disconnected repository may still be open; the fresh fetch
@@ -63,25 +80,38 @@ impl Engine {
             );
         }
         let sensitive = r.credential_scan();
-        if automatic {
-            if !(s.settings.automatic
-                && s.settings.auto_post
-                && r.automatic
-                && s.settings
-                    .repositories
-                    .iter()
-                    .any(|repo| same_repo(&repo.name, &cached.repo) && repo.automatic))
-            {
-                return Ok(());
+        match by {
+            By::Autopilot => {
+                if !(s.settings.automatic
+                    && s.settings.auto_post
+                    && r.automatic
+                    && s.settings
+                        .repositories
+                        .iter()
+                        .any(|repo| same_repo(&repo.name, &cached.repo) && repo.automatic))
+                {
+                    return Ok(());
+                }
+                if let Some(reason) =
+                    automatic_hold(cached, &sensitive, &s.settings.trusted_authors)
+                {
+                    return Err(reason);
+                }
             }
-            if let Some(reason) = automatic_hold(cached, &sensitive, &s.settings.trusted_authors) {
-                return Err(reason);
+            By::You { allow_sensitive } => {
+                if !sensitive.is_empty() && !allow_sensitive {
+                    return Err(format!(
+                        "The report contains text that looks like credentials ({}). Check it, then confirm to publish.",
+                        sensitive.join(", ")
+                    ));
+                }
             }
-        } else if !sensitive.is_empty() && !allow_sensitive {
-            return Err(format!(
-                "The report contains text that looks like credentials ({}). Check it, then confirm to publish.",
-                sensitive.join(", ")
-            ));
+            By::Bit(still) => {
+                still(&unclaimed(s.clone(), id))?;
+                if let Some(reason) = bit_hold(cached, &sensitive, &s.settings.trusted_authors) {
+                    return Err(reason);
+                }
+            }
         }
         // Reconcile before fresh-head and automation checks, so slow pagination
         // cannot leave a long gap between the final checks and the POST.
@@ -103,7 +133,7 @@ impl Engine {
         if let Some(plan) = &plan {
             inline::check_size(plan)?;
         }
-        let Some(fresh) = self.final_checks(cached, r, automatic, &sensitive).await? else {
+        let Some(fresh) = self.final_checks(cached, r, by, &sensitive).await? else {
             return Ok(());
         };
         // Persisted first, so a crash mid-request is recovered as an interrupted publication.
@@ -117,8 +147,7 @@ impl Engine {
                     Err(error) if github::unprocessable(&error) && !plan.comments.is_empty() => {
                         let plan = inline::plan(r, hunks, round, false);
                         inline::check_size(&plan)?;
-                        let Some(fresh) =
-                            self.final_checks(cached, r, automatic, &sensitive).await?
+                        let Some(fresh) = self.final_checks(cached, r, by, &sensitive).await?
                         else {
                             return Ok(());
                         };
@@ -148,14 +177,15 @@ impl Engine {
         }
     }
     /// The checks run immediately before each write: the PR is still open at
-    /// the reviewed head and base, and, for automatic publication, the
-    /// switches still allow it. Returns the fresh PR, or None when automatic
-    /// publication was switched off, which cancels it.
+    /// the reviewed head and base; for automatic publication, the switches
+    /// still allow it; and for Bit, its check still passes and the fresh PR
+    /// is one automatic publication would trust. Returns the fresh PR, or
+    /// None when automatic publication was switched off, which cancels it.
     async fn final_checks(
         &self,
         cached: &PullRequest,
         r: &Review,
-        automatic: bool,
+        by: By<'_>,
         sensitive: &[String],
     ) -> Result<Option<PullRequest>, String> {
         let login = self.snapshot().await.github_user.unwrap_or_default();
@@ -163,19 +193,30 @@ impl Engine {
         if !publishable(r, &fresh) {
             return Err("The pull request changed since this review. Sync and review the new commits before publishing.".into());
         }
-        if automatic {
-            let s = self.snapshot().await;
-            if !(s.settings.automatic
-                && s.settings.auto_post
-                && s.settings
-                    .repositories
-                    .iter()
-                    .any(|repo| same_repo(&repo.name, &fresh.repo) && repo.automatic))
-            {
-                return Ok(None);
+        match by {
+            By::Autopilot => {
+                let s = self.snapshot().await;
+                if !(s.settings.automatic
+                    && s.settings.auto_post
+                    && s.settings
+                        .repositories
+                        .iter()
+                        .any(|repo| same_repo(&repo.name, &fresh.repo) && repo.automatic))
+                {
+                    return Ok(None);
+                }
+                if let Some(reason) = automatic_hold(&fresh, sensitive, &s.settings.trusted_authors)
+                {
+                    return Err(reason);
+                }
             }
-            if let Some(reason) = automatic_hold(&fresh, sensitive, &s.settings.trusted_authors) {
-                return Err(reason);
+            By::You { .. } => {}
+            By::Bit(still) => {
+                let s = unclaimed(self.snapshot().await, &r.id);
+                still(&s)?;
+                if let Some(reason) = bit_hold(&fresh, sensitive, &s.settings.trusted_authors) {
+                    return Err(reason);
+                }
             }
         }
         Ok(Some(fresh))
@@ -233,6 +274,32 @@ impl Engine {
         .await;
         self.flush().await
     }
+}
+/// Orbit's state as it was before a publication claimed review `id`, so a
+/// check made while publishing sees the report still waiting.
+fn unclaimed(mut s: Snapshot, id: &str) -> Snapshot {
+    if let Some(r) = s
+        .reviews
+        .iter_mut()
+        .find(|r| r.id == id && r.status == "publishing")
+    {
+        r.status = "ready".into();
+    }
+    s
+}
+/// Why Bit must leave a report to you, if it must: for the same reasons
+/// automatic publication would hold it.
+fn bit_hold(pr: &PullRequest, sensitive: &[String], trusted_authors: &[String]) -> Option<String> {
+    if !trusted_source(pr, trusted_authors) {
+        return Some("This pull request doesn't come from a source Orbit trusts. Check the report, then publish it yourself.".into());
+    }
+    if !sensitive.is_empty() {
+        return Some(format!(
+            "The report contains text that looks like credentials ({}). Check it, then publish it yourself.",
+            sensitive.join(", ")
+        ));
+    }
+    None
 }
 /// Why an automatic review's report must wait for a person, if it must.
 /// The report stays ready for manual publication either way.

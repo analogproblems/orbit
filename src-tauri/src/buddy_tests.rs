@@ -538,6 +538,30 @@ fn the_app_offers_the_same_choices() {
     assert_eq!(list("questions"), names(asked.to_vec()));
 }
 
+#[test]
+fn rules_use_the_names_the_app_sends() {
+    // The app keys rules by fix name, both for what it reads and for the one
+    // rule at a time it saves.
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../test-fixtures/buddy-options.json")).unwrap();
+    let defaults = &fixture["defaultRules"];
+    assert_eq!(serde_json::to_value(Rules::default()).unwrap(), *defaults);
+    let ruled = FIXES.into_iter().filter(|&f| f != Fix::TurnOnAutopilot);
+    for fix in ruled {
+        let name = serde_json::to_value(fix).unwrap();
+        let name = name.as_str().unwrap();
+        assert!(defaults.get(name).is_some(), "{name} has no rule");
+        let mut b = Buddy::default();
+        let patch: BuddyPatch = serde_json::from_value(json!({"rules": {name: "do_it"}})).unwrap();
+        patch.apply(&mut b);
+        assert_eq!(b.rules.of(fix), "do_it", "{name}");
+        let saved = serde_json::to_value(&b).unwrap();
+        assert_eq!(saved["rules"][name], "do_it", "{name}");
+        let loaded: Buddy = serde_json::from_value(saved).unwrap();
+        assert_eq!(loaded.rules.of(fix), "do_it", "{name}");
+    }
+}
+
 fn ask_and_read(
     s: &mut Snapshot,
     question: Question,

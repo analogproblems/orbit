@@ -53,5 +53,11 @@
     "sync_now",
     "turn_on_autopilot"
   ],
-  "questions": ["needs_you", "running", "loops", "repositories"]
+  "questions": ["needs_you", "running", "loops", "repositories"],
+  "defaultRules": {
+    "continue_loop": "ask_first",
+    "review_again": "ask_first",
+    "publish": "ask_first",
+    "sync_now": "ask_first"
+  }
 }

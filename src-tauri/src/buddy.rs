@@ -88,9 +88,10 @@ pub enum Fix {
     TurnOnAutopilot,
 }
 
-/// The rule for each fix Bit can do on its own.
+/// The rule for each fix Bit can do on its own, keyed by the fix's own name
+/// (`continue_loop`, …) as the app's rule maps are.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(default)]
 pub struct Rules {
     pub continue_loop: String,
     pub review_again: String,
@@ -137,7 +138,7 @@ impl Rules {
 }
 /// Only supplied rules change.
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(deny_unknown_fields)]
 pub struct RulesPatch {
     pub continue_loop: Option<String>,
     pub review_again: Option<String>,

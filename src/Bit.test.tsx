@@ -29,13 +29,12 @@ describe("Bit", () => {
     expect(Object.keys(fixRuleLabels)).toEqual(options.rules);
     expect(Object.keys(fixLabels)).toEqual(options.fixes);
     expect(Object.keys(questionLabels)).toEqual(options.questions);
-    // Every fix but a settings change has a rule, which starts on Ask first.
+    // Every fix but a settings change has a rule, which starts on Ask first,
+    // under the same names the engine saves and accepts.
     expect(Object.keys(defaultBuddy.rules)).toEqual(
       options.fixes.filter((f) => f !== "turn_on_autopilot"),
     );
-    expect(new Set(Object.values(defaultBuddy.rules))).toEqual(
-      new Set(["ask_first"]),
-    );
+    expect(defaultBuddy.rules).toEqual(options.defaultRules);
   });
 
   it("draws every hat in every mood with theme colours only", () => {
