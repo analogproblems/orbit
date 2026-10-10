@@ -30,6 +30,7 @@ import { Storage } from "./Storage";
 import { RemoteAccess } from "./RemoteAccess";
 import { CliConnection, CliReviewSettings } from "./CliReviewers";
 import { BuddySettings } from "./Buddy";
+import { ReplySkill } from "./ReplySkill";
 
 export function SettingsPage() {
   const {
@@ -439,6 +440,7 @@ export function SettingsPage() {
           </FormLayout>
         </VStack>
       </Card>
+      <ReplySkill />
       <BuddySettings />
       <RemoteAccess />
       <Text type="supporting" color="secondary">
