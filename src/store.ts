@@ -402,7 +402,7 @@ async function demoAction(
         inline: !!f.path,
         reason: f.path ? null : "outside the repository",
       })),
-      body: `## Orbit · Codex review\n\nReviewed head \`${r.headSha}\` against base \`${r.baseSha}\`.\n\n${r.summary ?? ""}`,
+      body: `## Orbit · ${providerLabels[r.provider ?? "codex"]} review\n\nReviewed head \`${r.headSha}\` against base \`${r.baseSha}\`.\n\n${r.summary ?? ""}`,
     } satisfies PublishPlan;
   }
   if (command === "publish_review") {

@@ -407,9 +407,12 @@ fn comment_body(r: &Review, round: Option<u32>) -> String {
         .map(|note| format!("{note}\n\n"))
         .collect();
     format!(
-        "{marker}\n## Orbit · Codex review\n\n\
+        "{marker}\n## Orbit · {} review\n\n\
          Reviewed head `{}` against base `{}`.\n\n{}\n\n{declined}---\n{selection}",
-        r.head_sha, r.base_sha, r.report
+        r.provider.label(),
+        r.head_sha,
+        r.base_sha,
+        r.report
     )
 }
 pub async fn publish(pr: &PullRequest, r: &Review, round: Option<u32>) -> Result<String, String> {
@@ -567,6 +570,9 @@ mod tests {
         });
         assert!(comment_body(&r, None)
             .ends_with("Model: confirmed-report (confirmed) · Effort: medium (confirmed)"));
+        // Other reviewers are named in the heading, not just the footer.
+        r.provider = Provider::Antigravity;
+        assert!(comment_body(&r, None).contains("\n## Orbit · Antigravity review\n"));
     }
     #[test]
     fn adds_orbits_verdict_as_a_hidden_line() {
