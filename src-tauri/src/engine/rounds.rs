@@ -7,7 +7,7 @@
 //! `session/review.rs` and `tasks/review.rs` at 0.156.1), so the context goes
 //! in a `custom` review target. Its instructions reproduce what the
 //! `baseBranch` target asks for, followed by the previous round.
-use super::{worktrees::git, Engine};
+use super::{claims, worktrees::git, Engine};
 use crate::{github, types::*};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -272,6 +272,7 @@ pub(super) fn review_prompt(
          declined_disputed (the author declined it, but you still believe it is a real defect). \
          An earlier finding marked with a previous classification was already judged in an earlier round, with the reason shown: \
          keep that classification unless the code or the discussion since gives a reason to change it. \
+         A recognised reply saying a finding is fixed is the author's claim: check the code before classifying it as fixed. \
          Do not report an earlier finding again as a new finding, whatever its status; report only new problems as findings. \
          The patch is not correct while any earlier finding is still_open or declined_disputed. \
          In overall_explanation, after explaining your verdict, add one line per earlier finding in the form \
@@ -301,6 +302,7 @@ pub(super) fn cli_round_notes(
          declined_disputed (the author declined it, but you still believe it is a real defect). \
          An earlier finding marked with a previous classification was already judged in an earlier round, with the reason shown: \
          keep that classification unless the code or the discussion since gives a reason to change it. \
+         A recognised reply saying a finding is fixed is the author's claim: check the code before classifying it as fixed. \
          The patch is not correct while any earlier finding is still_open or declined_disputed.\n\n<{tag}>\n{}</{tag}>",
         round.head_sha,
         round_details(round, comments, since)
@@ -353,6 +355,19 @@ fn round_details(
                 "Previous classification: {}. {}",
                 status.as_str().unwrap_or(""),
                 d.note
+            )));
+            out.push('\n');
+        }
+        if let Some(claim) = round.claims.iter().find(|c| c.finding_id == f.id) {
+            let place = claim
+                .commit_note()
+                .map(|note| format!(" ({note})"))
+                .unwrap_or_default();
+            out.push_str(&indent(&format!(
+                "Recognised reply from @{}, {}: {}{place}.",
+                claim.author,
+                claim.created_at,
+                claim.summary().replace('`', "")
             )));
             out.push('\n');
         }
@@ -485,15 +500,21 @@ impl Engine {
             .map(|m| m.trim().to_string())
             .unwrap_or_else(|_| r.base_sha.clone());
         let findings = carried_findings(previous);
-        let round = PreviousRound {
+        let mut round = PreviousRound {
             review_id: previous.id.clone(),
             head_sha: previous.head_sha.clone(),
             verdict: previous.verdict,
             decisions: carried_decisions(previous, &findings),
             findings,
+            claims: vec![],
             comments_included: comments.as_ref().map_or(0, |c| c.kept.len()),
             comments_omitted: comments.as_ref().map_or(0, |c| c.omitted),
         };
+        if let Ok(c) = &comments {
+            round.claims = claims::collect(c, &round);
+            claims::place_commits(&mut round.claims, worktree, &previous.head_sha, &r.head_sha)
+                .await;
+        }
         let prompt = match r.provider {
             Provider::Codex => review_prompt(r, &merge_base, &round, &comments, &since),
             Provider::Claude | Provider::Antigravity => cli_round_notes(&round, &comments, &since),

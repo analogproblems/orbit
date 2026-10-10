@@ -12,6 +12,7 @@ use std::{
 use tokio::sync::Mutex;
 
 mod chat;
+mod claims;
 mod cli_review;
 mod clones;
 mod connection;
@@ -36,6 +37,8 @@ const USAGE_REFRESH: Duration = Duration::from_secs(5 * 60);
 mod antigravity_tests;
 #[cfg(test)]
 mod chat_tests;
+#[cfg(test)]
+mod claims_tests;
 #[cfg(test)]
 mod cli_review_tests;
 #[cfg(test)]

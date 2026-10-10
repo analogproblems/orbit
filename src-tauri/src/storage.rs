@@ -302,14 +302,19 @@ fn findings_section(r: &Review) -> String {
     }
     if let Some(round) = &r.previous_round {
         out.push_str(&format!(
-            "Since the last round (head `{}`):\n\n| Status | Earlier finding | Note |\n| --- | --- | --- |\n",
+            "Since the last round (head `{}`):\n\n| Status | Earlier finding | Author said | Note |\n| --- | --- | --- | --- |\n",
             &round.head_sha[..round.head_sha.len().min(7)]
         ));
         for f in &round.findings {
             let prior = r.prior_findings.iter().find(|p| p.id == f.id);
             let id = f.short_id().map(|s| format!("{s} · ")).unwrap_or_default();
+            let said = round
+                .claims
+                .iter()
+                .find(|c| c.finding_id == f.id)
+                .map_or(String::new(), |c| cell(&c.summary()));
             out.push_str(&format!(
-                "| {} | {id}P{} {} | {} |\n",
+                "| {} | {id}P{} {} | {said} | {} |\n",
                 prior.map_or("not reported", |p| p.status.label()),
                 f.priority,
                 cell(&f.title),
@@ -474,6 +479,15 @@ mod tests {
             verdict: Some(Verdict::ChangesRequested),
             findings: earlier.clone(),
             decisions: vec![],
+            claims: vec![crate::types::AuthorClaim {
+                finding_id: earlier[0].id.clone(),
+                author: "a".into(),
+                created_at: String::new(),
+                kind: crate::types::ClaimKind::Declined,
+                commit: None,
+                commit_check: None,
+                reason: Some("On | purpose.".into()),
+            }],
             comments_included: 0,
             comments_omitted: 0,
         });
@@ -489,11 +503,12 @@ mod tests {
         );
         assert!(
             body.contains(
-                "| declined (accepted) | F1 · P1 Escape \\| pipes and lines | Intended \\| by design. |"
+                "| declined (accepted) | F1 · P1 Escape \\| pipes and lines | declined: On \\| purpose. | Intended \\| by design. |"
             ),
             "{body}"
         );
         assert!(body.contains("| not reported | F2 · P2 "), "{body}");
+        assert!(body.contains("| Status | Earlier finding | Author said | Note |"));
         assert!(body.find("## Report").unwrap() < body.find("A useful report.").unwrap());
     }
     #[test]

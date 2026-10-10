@@ -263,6 +263,7 @@ fn previous() -> PreviousRound {
         )
         .unwrap()
         .findings,
+        claims: vec![],
         decisions: vec![],
         comments_included: 0,
         comments_omitted: 0,
@@ -557,6 +558,7 @@ async fn numbers_findings_after_every_earlier_one_on_the_pull_request() {
             head_sha: "c".repeat(40),
             verdict: None,
             findings: vec![numbered(5)],
+            claims: vec![],
             decisions: vec![],
             comments_included: 0,
             comments_omitted: 0,

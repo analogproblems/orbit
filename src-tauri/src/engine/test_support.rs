@@ -134,3 +134,30 @@ pub(super) async fn wait_for_status(e: &Engine, status: &str) -> Review {
     .await
     .unwrap_or_else(|_| panic!("Timed out waiting for status {status}"))
 }
+/// Commits `message` as the content of `file.txt` and returns the commit.
+pub(super) async fn commit(repo: &Path, message: &str) -> String {
+    std::fs::write(repo.join("file.txt"), message).unwrap();
+    git(repo, &["add", "file.txt"]).await.unwrap();
+    git(
+        repo,
+        &[
+            "-c",
+            "user.name=Orbit",
+            "-c",
+            "user.email=orbit@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            message,
+        ],
+    )
+    .await
+    .unwrap();
+    git(repo, &["rev-parse", "HEAD"])
+        .await
+        .unwrap()
+        .trim()
+        .into()
+}

@@ -514,10 +514,74 @@ pub struct PreviousRound {
     /// its reason, so a later round does not reopen it without cause.
     #[serde(default)]
     pub decisions: Vec<PriorFinding>,
+    /// What the author said about each of `findings` in a reply Orbit
+    /// recognised, such as "Fixed F2 in abc1234": the latest one per finding.
+    #[serde(default)]
+    pub claims: Vec<AuthorClaim>,
     /// Comments from trusted accounts given to the reviewer.
     pub comments_included: usize,
     /// Comments from other accounts, left out.
     pub comments_omitted: usize,
+}
+/// A reply from the author or a trusted account saying an earlier finding
+/// is fixed or declined. The reviewer still judges the finding.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthorClaim {
+    pub finding_id: String,
+    pub author: String,
+    pub created_at: String,
+    pub kind: ClaimKind,
+    /// The commit named in "Fixed F2 in abc1234", lowercased.
+    pub commit: Option<String>,
+    /// Where that commit is, when Orbit could check.
+    pub commit_check: Option<CommitPlace>,
+    /// The reason in "Declined F2: reason".
+    pub reason: Option<String>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaimKind {
+    Fixed,
+    Declined,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommitPlace {
+    /// One of the commits since the previous round.
+    InChange,
+    /// Already part of the head the previous round reviewed.
+    Earlier,
+    /// In the repository but not in this head's history.
+    NotInBranch,
+    NotFound,
+}
+impl AuthorClaim {
+    /// What the author said, as a short phrase: "fixed in `abc1234`" or
+    /// "declined: intended".
+    pub fn summary(&self) -> String {
+        match self.kind {
+            ClaimKind::Fixed => match &self.commit {
+                Some(c) => format!("fixed in `{}`", &c[..c.len().min(7)]),
+                None => "fixed".into(),
+            },
+            ClaimKind::Declined => match &self.reason {
+                Some(r) => format!("declined: {r}"),
+                None => "declined".into(),
+            },
+        }
+    }
+    /// Where the named commit is, when that tells the reviewer something.
+    pub fn commit_note(&self) -> Option<&'static str> {
+        Some(match self.commit_check? {
+            CommitPlace::InChange => "the commit is one of the commits since the previous round",
+            CommitPlace::Earlier => {
+                "the commit was already part of the head the previous round reviewed"
+            }
+            CommitPlace::NotInBranch => "the commit is not part of this pull request's head",
+            CommitPlace::NotFound => "Orbit could not find the commit",
+        })
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -624,11 +688,18 @@ impl Review {
                 text.push_str(part);
             }
         }
-        // Earlier findings' titles are repeated in the "Since the last round" table.
-        let earlier = self.previous_round.iter().flat_map(|p| &p.findings);
-        for f in earlier {
-            text.push('\n');
-            text.push_str(&f.title);
+        // Earlier findings' titles, and what the author said about them, are
+        // repeated in the "Since the last round" table and the hidden data.
+        if let Some(p) = &self.previous_round {
+            let claims = p.claims.iter().flat_map(|c| {
+                [Some(&c.author), c.commit.as_ref(), c.reason.as_ref()]
+                    .into_iter()
+                    .flatten()
+            });
+            for part in p.findings.iter().map(|f| &f.title).chain(claims) {
+                text.push('\n');
+                text.push_str(part);
+            }
         }
         let notes = self.prior_findings.iter().map(|p| &p.note);
         for part in self

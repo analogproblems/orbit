@@ -142,9 +142,36 @@ export interface PreviousRound {
   findings: Finding[];
   /** The latest classification of each earlier finding that has one. */
   decisions?: PriorFinding[];
+  /** What the author said about each earlier finding in a reply Orbit
+   * recognised, such as "Fixed F2 in abc1234". */
+  claims?: AuthorClaim[];
   commentsIncluded: number;
   commentsOmitted: number;
 }
+export type CommitPlace =
+  "in_change" | "earlier" | "not_in_branch" | "not_found";
+export interface AuthorClaim {
+  findingId: string;
+  author: string;
+  createdAt: string;
+  kind: "fixed" | "declined";
+  commit: string | null;
+  commitCheck: CommitPlace | null;
+  reason: string | null;
+}
+/** What the author said, as a short phrase. Matches the published review. */
+export function claimSummary(c: AuthorClaim): string {
+  if (c.kind === "fixed")
+    return c.commit ? `fixed in ${c.commit.slice(0, 7)}` : "fixed";
+  return c.reason ? `declined: ${c.reason}` : "declined";
+}
+/** Where a claimed fix's commit is, when that is worth saying. */
+export const commitPlaceNotes: Record<CommitPlace, string | null> = {
+  in_change: null,
+  earlier: "That commit was already in the reviewed head.",
+  not_in_branch: "That commit isn’t part of this pull request.",
+  not_found: "Orbit couldn’t find that commit.",
+};
 export type PriorStatus =
   "fixed" | "still_open" | "declined_accepted" | "declined_disputed";
 export interface PriorFinding {

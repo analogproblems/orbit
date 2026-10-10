@@ -136,6 +136,26 @@ describe("since the last round", () => {
       verdict: "changes_requested",
       findings: [...earlier, { ...earlier[0], id: "gone-0", title: "Old" }],
       decisions: [],
+      claims: [
+        {
+          findingId: earlier[0].id,
+          author: "alex",
+          createdAt: "2026-01-02T00:00:00Z",
+          kind: "fixed",
+          commit: "abc1234def",
+          commitCheck: "in_change",
+          reason: null,
+        },
+        {
+          findingId: earlier[1].id,
+          author: "alex",
+          createdAt: "2026-01-02T00:00:00Z",
+          kind: "fixed",
+          commit: "0000000",
+          commitCheck: "not_found",
+          reason: null,
+        },
+      ],
       commentsIncluded: 1,
       commentsOmitted: 2,
     },
@@ -154,6 +174,14 @@ describe("since the last round", () => {
     expect(screen.getByText("Merged now.")).toBeTruthy();
     expect(screen.getByText("Still racy.")).toBeTruthy();
     expect(screen.getByText("Not reported")).toBeTruthy();
+    // What the author said in a reply Orbit recognised, and where its
+    // commit is when that matters.
+    expect(screen.getByText("@alex: fixed in abc1234.")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "@alex: fixed in 0000000. Orbit couldn’t find that commit.",
+      ),
+    ).toBeTruthy();
     // Only findings whose review still exists link back to it.
     expect(screen.getAllByRole("button", { name: "Open review" })).toHaveLength(
       2,
