@@ -449,8 +449,15 @@ async fn copy_in(
     }
     Ok(())
 }
+/// Kills every process in a container but its first, the `sleep` that keeps
+/// it running. The shell's own `kill`, since images needn't have one.
+pub const STOP_ALL: &str = "kill -KILL -1";
+
 /// Runs `command` with the shell in `folder` of the container `name`, as
-/// `user`, and stops it after `timeout`.
+/// `user`, and stops it after `timeout`. Stopping `docker exec` on this
+/// computer leaves the command running in the container, so a command that
+/// runs out of time is stopped there too, with everything else it started,
+/// before this returns.
 pub async fn exec(
     docker: &Launcher,
     name: &str,
@@ -466,6 +473,14 @@ pub async fn exec(
     args.extend(["--workdir", folder, name, "/bin/sh", "-c", command]);
     let started = Instant::now();
     let out = run(docker, &args, timeout).await?;
+    if out.timed_out {
+        let _ = run(
+            docker,
+            &["exec", "--user", "root", name, "/bin/sh", "-c", STOP_ALL],
+            DOCKER_TIMEOUT,
+        )
+        .await;
+    }
     Ok(CheckStep {
         command: command.to_string(),
         exit_code: if out.timed_out { None } else { out.status },

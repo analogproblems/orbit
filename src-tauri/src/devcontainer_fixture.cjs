@@ -29,6 +29,19 @@ const fail = (message, code = 1) => {
   process.exit(code);
 };
 const after = (list, flag) => list[list.indexOf(flag) + 1];
+// Stops the commands run in a container, and what they started.
+const stopAll = (name) => {
+  const pids = path.join(containers, name, "pids");
+  if (!fs.existsSync(pids)) return;
+  for (const pid of fs.readFileSync(pids, "utf8").split("\n")) {
+    try {
+      if (pid) process.kill(-Number(pid), "SIGKILL");
+    } catch {
+      // It finished already.
+    }
+  }
+  fs.writeFileSync(pids, "");
+};
 
 if (tool === "devcontainer") {
   if (args[0] === "--version") {
@@ -119,8 +132,12 @@ switch (command) {
       fs.rmSync(inside(name, argv[argv.length - 1]), { force: true });
     } else if (program === "chown") {
       // Nothing to change in a folder.
+    } else if (program === "/bin/sh" && argv[1] === "kill -KILL -1") {
+      // Kills everything started in the container, never on this computer.
+      stopAll(name);
     } else if (program === "/bin/sh") {
-      // In its own process group, which `docker rm` stops.
+      // In its own process group, which `docker rm` and `kill -KILL -1`
+      // stop.
       const child = spawn(argv[1], {
         cwd: inside(name, workdir),
         shell: true,
@@ -136,16 +153,7 @@ switch (command) {
   }
   case "rm": {
     const container = path.join(containers, rest[rest.length - 1]);
-    const pids = path.join(container, "pids");
-    if (fs.existsSync(pids)) {
-      for (const pid of fs.readFileSync(pids, "utf8").split("\n")) {
-        try {
-          if (pid) process.kill(-Number(pid), "SIGKILL");
-        } catch {
-          // It finished already.
-        }
-      }
-    }
+    stopAll(rest[rest.length - 1]);
     if (!fs.existsSync(container)) fail(`No such container: ${rest.at(-1)}`);
     fs.rmSync(container, { recursive: true, force: true });
     break;

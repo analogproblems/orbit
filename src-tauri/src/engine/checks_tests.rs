@@ -372,3 +372,36 @@ async fn the_reviewers_container_needs_no_commands_and_goes_when_stopped() {
     assert!(!container.exists());
     assert!(t.e.box_server(&t.id).is_none());
 }
+
+#[tokio::test]
+async fn a_kept_container_stops_a_setup_that_runs_out_of_time() {
+    let t = review_with_recipe(true).await;
+    t.e.update(|s| {
+        let repo = &mut s.settings.repositories[0];
+        // Longer than the tests' three-second limit.
+        repo.setup_command = "(sleep 4; touch child) & sleep 4; touch late".into();
+        repo.dev_container.reviewer_tool = true;
+    })
+    .await;
+    run_keeping(&t, true).await.unwrap();
+    let setup = t.e.snapshot().await.reviews[0]
+        .checks
+        .clone()
+        .unwrap()
+        .setup
+        .unwrap();
+    assert!(setup.timed_out);
+    let server = t.e.box_server(&t.id).unwrap();
+    let copy = t
+        .docker
+        .join("containers")
+        .join(devcontainer::container(&t.id))
+        .join("fs")
+        .join(server.spec.folder.trim_start_matches('/'));
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    // The container stays for the reviewer, without the stopped setup.
+    assert!(copy.join("README.md").exists());
+    assert!(!copy.join("late").exists());
+    assert!(!copy.join("child").exists());
+    t.e.close_box(&t.id).await;
+}

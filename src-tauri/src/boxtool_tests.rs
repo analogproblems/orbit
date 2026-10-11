@@ -82,7 +82,10 @@ async fn runs_the_reviewers_commands_in_the_container() {
             json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
             call(2, json!({"command": "cat README.md"})),
             call(3, json!({"command": "echo broken >&2; exit 3"})),
-            call(4, json!({"command": "sleep 5", "timeout_seconds": 1})),
+            call(
+                4,
+                json!({"command": "(sleep 2; touch child) & sleep 2; touch late", "timeout_seconds": 1}),
+            ),
             call(5, json!({"command": " "})),
             json!({"jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {"name": "other"}}),
         ],
@@ -118,6 +121,18 @@ async fn runs_the_reviewers_commands_in_the_container() {
     assert!(failed.starts_with("failed with exit code 3"), "{failed}");
     assert!(failed.ends_with("broken"), "{failed}");
     assert!(text(&answers[4]).starts_with("stopped at its time limit"));
+    // Stopped in the container too, with what it started, so it can't
+    // change the copy after its time is up.
+    let stop = devcontainer::tests::calls(&state)
+        .into_iter()
+        .rfind(|c| c.last().map(String::as_str) == Some(devcontainer::STOP_ALL))
+        .unwrap();
+    assert_eq!(stop[1..4], ["exec", "--user", "root"]);
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let copy = state.join("containers/orbit-checks-r1/fs/workspaces/b");
+    assert!(copy.join("README.md").exists());
+    assert!(!copy.join("late").exists());
+    assert!(!copy.join("child").exists());
     assert_eq!(answers[5]["result"]["isError"], true);
     assert_eq!(answers[6]["error"]["code"], -32602);
     opened.remove().await;
@@ -197,10 +212,22 @@ async fn real_docker_runs_the_reviewers_commands() {
     };
     let answers = ask(
         &spec,
-        &[call(
-            1,
-            json!({"command": "id -un; pwd; cat README.md; wget -q -T 3 -O /dev/null http://example.com && echo online || echo offline"}),
-        )],
+        &[
+            call(
+                1,
+                json!({"command": "id -un; pwd; cat README.md; wget -q -T 3 -O /dev/null http://example.com && echo online || echo offline"}),
+            ),
+            call(
+                2,
+                json!({"command": "(sleep 2; touch child) & sleep 2; touch late", "timeout_seconds": 1}),
+            ),
+        ],
+    )
+    .await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let after = ask(
+        &spec,
+        &[call(3, json!({"command": "ls late child; echo done"}))],
     )
     .await;
     opened.remove().await;
@@ -218,4 +245,10 @@ async fn real_docker_runs_the_reviewers_commands() {
     ] {
         assert!(ran.contains(expected), "{ran}");
     }
+    assert!(text(&answers[1]).starts_with("stopped at its time limit"));
+    // Neither the command nor what it started outlived its time.
+    let after = text(&after[0]);
+    assert!(after.contains("done"), "{after}");
+    assert!(!after.contains("\nlate\n"), "{after}");
+    assert_eq!(after.matches("No such file").count(), 2, "{after}");
 }
