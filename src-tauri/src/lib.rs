@@ -186,6 +186,18 @@ mod desktop {
         engine.ask_buddy_anything(&question).await
     }
     #[tauri::command]
+    async fn forget_memory(
+        engine: State<'_, AppState>,
+        repo: Option<String>,
+        line: String,
+    ) -> Result<(), String> {
+        engine.forget_memory(repo.as_deref(), &line).await
+    }
+    #[tauri::command]
+    async fn clear_memory(engine: State<'_, AppState>) -> Result<(), String> {
+        engine.clear_memory().await
+    }
+    #[tauri::command]
     async fn use_proposal(
         engine: State<'_, AppState>,
         note_id: u64,
@@ -397,6 +409,8 @@ mod desktop {
                 ask_buddy,
                 ask_buddy_anything,
                 use_proposal,
+                forget_memory,
+                clear_memory,
                 publish_review,
                 publish_plan,
                 send_message,

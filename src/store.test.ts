@@ -247,6 +247,30 @@ describe("demo buddy", () => {
       "sync_now",
       "change_settings",
     ]);
+    // The demo remembers the question once, and you can forget it.
+    const line = "You've tried asking me something in the demo.";
+    expect(note.memory).toEqual([{ repo: null, line, kind: "remember" }]);
+    const memory = () => useOrbit.getState().snapshot.buddyFeed!.memory!;
+    expect(memory().general).toContain(line);
+    expect((await store.action("forget_memory", { repo: null, line })).ok).toBe(
+      true,
+    );
+    expect(memory().general).not.toContain(line);
+    expect(await store.action("forget_memory", { repo: null, line })).toEqual({
+      ok: false,
+      error: "Error: That line isn't there any more.",
+    });
+    expect(
+      (
+        await store.action("forget_memory", {
+          repo: "acme/api",
+          line: memory().repositories["acme/api"][0],
+        })
+      ).ok,
+    ).toBe(true);
+    expect(memory().repositories).toEqual({});
+    await store.action("clear_memory", {});
+    expect(memory()).toEqual({ general: [], repositories: {} });
     const tap = (proposalId: number) =>
       store.action("use_proposal", { noteId: note.id, proposalId });
     expect((await tap(1)).ok).toBe(true);

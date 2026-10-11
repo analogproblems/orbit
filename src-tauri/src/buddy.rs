@@ -1,9 +1,11 @@
 //! Bit, Orbit's buddy: its settings, a feed of short notes about the review
 //! loops in its own voice, a mood that follows them, the fixes it offers for
-//! what needs you, and quick answers about Orbit. Everything here is worked
-//! out from what Orbit already tracks; nothing here calls a model.
+//! what needs you, quick answers about Orbit, and the memory Bit keeps
+//! between questions. Everything here is worked out from what Orbit already
+//! tracks; nothing here calls a model.
 use crate::types::*;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// The colours Bit can be, as the app names them. The app maps each to a
 /// theme token.
@@ -66,6 +68,14 @@ pub const MAX_NOTES: usize = 50;
 pub const RULES: [&str; 3] = ["do_it", "ask_first", "leave_it"];
 /// Rounds a fix's Continue loop allows, as the button on the loops page does.
 pub const CONTINUE_ROUNDS: u32 = 2;
+/// Lines Bit's general memory holds.
+pub const MEMORY_GENERAL: usize = 20;
+/// Lines Bit's memory holds about each repository.
+pub const MEMORY_PER_REPO: usize = 10;
+/// The longest memory line, in characters.
+pub const MEMORY_LINE: usize = 200;
+/// The most changes one answer makes to Bit's memory.
+pub const MEMORY_CHANGES: usize = 10;
 
 /// One of Orbit's own controls, offered for something that needs you. A fix
 /// only uses Orbit: it never answers a reviewer's request, changes a
@@ -332,6 +342,10 @@ pub struct Note {
     /// For an answer to a question you typed, the buttons it offers.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub proposals: Vec<crate::ask::Proposal>,
+    /// For an answer to a question you typed, what it changed in Bit's
+    /// memory.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub memory: Vec<MemoryChange>,
     /// A question you typed that Bit is still answering.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pending: bool,
@@ -350,6 +364,7 @@ impl Note {
             question: None,
             lines: vec![],
             proposals: vec![],
+            memory: vec![],
             pending: false,
         }
     }
@@ -395,6 +410,117 @@ pub struct Feed {
     /// such as after updating Orbit, get no notes.
     pub seeded: bool,
     pub next_id: u64,
+    pub memory: Memory,
+}
+
+/// What Bit remembers between questions, in its own words: lines about you
+/// and Orbit in general, and lines about each repository. Bit adds and
+/// forgets lines itself as it answers what you type, within the limits
+/// above, and you can forget any line.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Memory {
+    pub general: Vec<String>,
+    /// By repository, as `owner/name`. A repository with no lines has no
+    /// entry.
+    pub repositories: BTreeMap<String, Vec<String>>,
+}
+impl Memory {
+    /// The lines about `repo`, or the general ones for none, if there are
+    /// any.
+    fn lines_mut(&mut self, repo: Option<&str>) -> Option<&mut Vec<String>> {
+        match repo {
+            None => Some(&mut self.general),
+            Some(repo) => self
+                .repositories
+                .iter_mut()
+                .find(|(name, _)| same_repo(name, repo))
+                .map(|(_, lines)| lines),
+        }
+    }
+    /// The name memory keeps `repo`'s lines under, if it has any.
+    pub fn knows(&self, repo: &str) -> Option<&str> {
+        self.repositories
+            .keys()
+            .find(|name| same_repo(name, repo))
+            .map(String::as_str)
+    }
+    /// Forgets a line, returning it as it was kept.
+    fn forget(&mut self, repo: Option<&str>, line: &str) -> Option<String> {
+        let lines = self.lines_mut(repo)?;
+        let at = lines.iter().position(|l| same_line(l, line))?;
+        let line = lines.remove(at);
+        self.repositories.retain(|_, lines| !lines.is_empty());
+        Some(line)
+    }
+}
+/// Whether two memory lines say the same, ignoring case.
+fn same_line(a: &str, b: &str) -> bool {
+    a.trim().to_lowercase() == b.trim().to_lowercase()
+}
+/// A change to Bit's memory: one an answer asks for, or, on the answer's
+/// note, one it made.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryChange {
+    /// The repository, or none for general memory.
+    pub repo: Option<String>,
+    pub line: String,
+    pub kind: MemoryKind,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryKind {
+    Remember,
+    Forget,
+    /// Not remembered: its place was full.
+    Full,
+}
+/// Makes an answer's changes to Bit's memory and returns those it made.
+/// Lines are forgotten first, so a full place can make room; a line already
+/// kept isn't added again, and one that doesn't fit is noted as not kept.
+fn change_memory(memory: &mut Memory, changes: Vec<MemoryChange>) -> Vec<MemoryChange> {
+    let (forget, remember): (Vec<_>, Vec<_>) = changes
+        .into_iter()
+        .take(MEMORY_CHANGES)
+        .partition(|c| c.kind == MemoryKind::Forget);
+    let mut made = vec![];
+    for change in forget {
+        if let Some(line) = memory.forget(change.repo.as_deref(), &change.line) {
+            made.push(MemoryChange { line, ..change });
+        }
+    }
+    for change in remember {
+        let (lines, max) = match change.repo.as_deref() {
+            None => (&mut memory.general, MEMORY_GENERAL),
+            Some(repo) => {
+                let name = memory.knows(repo).unwrap_or(repo).to_string();
+                (
+                    memory.repositories.entry(name).or_default(),
+                    MEMORY_PER_REPO,
+                )
+            }
+        };
+        if lines.iter().any(|l| same_line(l, &change.line)) {
+            continue;
+        }
+        if lines.len() >= max {
+            made.push(MemoryChange {
+                kind: MemoryKind::Full,
+                ..change
+            });
+            continue;
+        }
+        lines.push(change.line.clone());
+        made.push(change);
+    }
+    memory.repositories.retain(|_, lines| !lines.is_empty());
+    made
+}
+/// Forgets a line of Bit's memory you chose, general when `repo` is none.
+/// Returns whether it was there.
+pub fn forget(s: &mut Snapshot, repo: Option<&str>, line: &str) -> bool {
+    s.buddy_feed.memory.forget(repo, line).is_some()
 }
 
 /// A loop as Bit sees it now.
@@ -867,24 +993,28 @@ pub fn asked(s: &mut Snapshot, question: &str) -> u64 {
     );
     id
 }
-/// Fills in the answer to a question you typed.
-pub fn answered(s: &mut Snapshot, id: u64, text: String, proposals: Vec<crate::ask::Proposal>) {
-    if let Some(note) = s
-        .buddy_feed
-        .notes
-        .iter_mut()
-        .find(|n| n.id == id && n.pending)
-    {
+/// Fills in the answer to a question you typed, and makes the changes it
+/// asks for in Bit's memory, while the question is still waiting.
+pub fn answered(
+    s: &mut Snapshot,
+    id: u64,
+    text: String,
+    proposals: Vec<crate::ask::Proposal>,
+    memory: Vec<MemoryChange>,
+) {
+    let feed = &mut s.buddy_feed;
+    if let Some(note) = feed.notes.iter_mut().find(|n| n.id == id && n.pending) {
         note.at = now();
         note.text = text;
         note.proposals = proposals;
+        note.memory = change_memory(&mut feed.memory, memory);
         note.pending = false;
     }
 }
 /// Says why Bit couldn't answer a question you typed.
 pub fn not_answered(s: &mut Snapshot, id: u64, error: &str) {
     let text = say::no_answer(&s.settings.buddy.tone, error);
-    answered(s, id, text, vec![]);
+    answered(s, id, text, vec![], vec![]);
 }
 /// A question Orbit was answering when it closed gets no answer.
 pub fn recover(feed: &mut Feed) {

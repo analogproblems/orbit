@@ -537,6 +537,10 @@ fn the_app_offers_the_same_choices() {
     ];
     let asked = questions.map(|q| serde_json::to_value(q).unwrap());
     assert_eq!(list("questions"), names(asked.to_vec()));
+    assert_eq!(
+        fixture["memoryLimits"],
+        json!({"general": MEMORY_GENERAL, "perRepository": MEMORY_PER_REPO})
+    );
 }
 
 #[test]
@@ -721,7 +725,7 @@ fn a_question_orbit_closed_on_says_so() {
     assert!(!s.buddy_feed.notes[0].pending);
     assert_eq!(s.buddy_feed.notes[0].text, text);
     // An answer that arrives late doesn't replace it.
-    answered(&mut s, id, "Late.".into(), vec![]);
+    answered(&mut s, id, "Late.".into(), vec![], vec![]);
     assert_eq!(s.buddy_feed.notes[0].text, text);
     // Each tone says it couldn't answer in its own way.
     let said: std::collections::HashSet<String> = TONES
@@ -730,4 +734,81 @@ fn a_question_orbit_closed_on_says_so() {
         .collect();
     assert_eq!(said.len(), TONES.len());
     assert!(said.iter().all(|t| t.contains("Codex disconnected.")));
+}
+#[test]
+fn memory_keeps_to_its_limits_and_makes_room_by_forgetting_first() {
+    let (mut s, _) = snapshot();
+    let general = |line: &str, kind| MemoryChange {
+        repo: None,
+        line: line.into(),
+        kind,
+    };
+    let about = |repo: &str, line: &str, kind| MemoryChange {
+        repo: Some(repo.into()),
+        line: line.into(),
+        kind,
+    };
+    s.buddy_feed.memory.general = (0..MEMORY_GENERAL).map(|i| format!("Line {i}.")).collect();
+    s.buddy_feed.memory.repositories.insert(
+        "a/b".into(),
+        (0..MEMORY_PER_REPO).map(|i| format!("Fact {i}.")).collect(),
+    );
+    let id = asked(&mut s, "Remember more?");
+    answered(
+        &mut s,
+        id,
+        "Done.".into(),
+        vec![],
+        vec![
+            general("New line.", MemoryKind::Remember),
+            about("A/B", "Another fact.", MemoryKind::Remember),
+            // Already kept, in any case: not added twice.
+            general("line 3.", MemoryKind::Remember),
+            // Forgotten first, whatever the order, which makes room.
+            general("LINE 0.", MemoryKind::Forget),
+            general("Not kept.", MemoryKind::Forget),
+        ],
+    );
+    let memory = &s.buddy_feed.memory;
+    assert_eq!(memory.general.len(), MEMORY_GENERAL);
+    assert_eq!(memory.general[0], "Line 1.");
+    assert_eq!(memory.general.last().unwrap(), "New line.");
+    assert_eq!(memory.repositories["a/b"].len(), MEMORY_PER_REPO);
+    assert!(!memory.repositories["a/b"].contains(&"Another fact.".into()));
+    assert_eq!(
+        s.buddy_feed.notes.last().unwrap().memory,
+        [
+            general("Line 0.", MemoryKind::Forget),
+            general("New line.", MemoryKind::Remember),
+            about("A/B", "Another fact.", MemoryKind::Full),
+        ]
+    );
+
+    // A repository's last line forgotten leaves no empty entry, and you
+    // can forget a line yourself.
+    assert!(forget(&mut s, Some("A/B"), "fact 0."));
+    assert!(!forget(&mut s, Some("A/B"), "fact 0."));
+    for i in 1..MEMORY_PER_REPO {
+        assert!(forget(&mut s, Some("a/b"), &format!("Fact {i}.")));
+    }
+    assert!(s.buddy_feed.memory.repositories.is_empty());
+    assert!(forget(&mut s, None, "New line."));
+
+    // An answer that arrives after its question ended changes nothing.
+    let before = s.buddy_feed.memory.clone();
+    answered(
+        &mut s,
+        id,
+        "Late.".into(),
+        vec![],
+        vec![general("Late line.", MemoryKind::Remember)],
+    );
+    assert_eq!(s.buddy_feed.memory, before);
+}
+#[test]
+fn state_saved_before_memory_loads_with_none() {
+    let feed: Feed = serde_json::from_value(json!({"notes": [], "nextId": 3})).unwrap();
+    assert_eq!(feed.memory, Memory::default());
+    let saved = serde_json::to_value(Feed::default()).unwrap();
+    assert_eq!(saved["memory"], json!({"general": [], "repositories": {}}));
 }

@@ -688,6 +688,12 @@ export function freshDemo(): Snapshot {
           key: "sync:acme/dashboard",
         },
       ],
+      memory: {
+        general: ["You like short answers, with a button when there is one."],
+        repositories: {
+          "acme/api": ["Its reviews often flag missing tests for new routes."],
+        },
+      },
     },
     settings: {
       ...defaults,
@@ -924,12 +930,22 @@ export function demoAnswer(
 }
 /** Bit's answer to a typed question in the demo, which has no Codex to
  * think with. Its buttons show how answers offer Orbit's controls. */
-export function demoTypedAnswer(): Pick<BuddyNote, "text" | "proposals"> {
+export function demoTypedAnswer(): Pick<
+  BuddyNote,
+  "text" | "proposals" | "memory"
+> {
   return {
     text: "This is the demo, so I can't think about your question for real. In Orbit, Codex answers here using what Orbit knows, and I can offer buttons for Orbit's own controls. They only run when you tap them, like these:",
     proposals: [
       { id: 0, action: "sync_now" },
       { id: 1, action: "change_settings", settings: { pollSeconds: 300 } },
+    ],
+    memory: [
+      {
+        repo: null,
+        line: "You've tried asking me something in the demo.",
+        kind: "remember",
+      },
     ],
   };
 }

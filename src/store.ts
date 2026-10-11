@@ -19,6 +19,7 @@ import { call, download, follow, lostConnection, readToken } from "./remote";
 import {
   buddyOf,
   maxQuestion,
+  memoryLimits,
   questionLabels,
   type BuddyNote,
   type Question,
@@ -315,8 +316,21 @@ async function demoAction(
           (n) => n.id === id && n.pending,
         );
         if (!note) return;
+        const answer = demoTypedAnswer();
+        const memory = (demo.buddyFeed!.memory ??= {
+          general: [],
+          repositories: {},
+        });
+        // As Orbit does, a line already kept isn't remembered again.
+        answer.memory = answer.memory?.filter(
+          (c) =>
+            !memory.general.includes(c.line) &&
+            memory.general.length < memoryLimits.general,
+        );
+        for (const change of answer.memory ?? [])
+          memory.general.push(change.line);
         Object.assign(note, {
-          ...demoTypedAnswer(),
+          ...answer,
           pending: false,
           at: new Date().toISOString(),
         });
@@ -350,6 +364,24 @@ async function demoAction(
     // The demo may have been replaced while the control ran.
     const done = find();
     if (done) done.done = true;
+    commit();
+    return;
+  }
+  if (command === "forget_memory") {
+    const memory = demo.buddyFeed?.memory;
+    const repo = args.repo as string | null;
+    const lines = repo ? memory?.repositories[repo] : memory?.general;
+    const at = lines?.indexOf(String(args.line)) ?? -1;
+    if (!memory || !lines || at < 0)
+      throw Error("That line isn't there any more.");
+    lines.splice(at, 1);
+    if (repo && !lines.length) delete memory.repositories[repo];
+    commit();
+    return;
+  }
+  if (command === "clear_memory") {
+    if (demo.buddyFeed)
+      demo.buddyFeed.memory = { general: [], repositories: {} };
     commit();
     return;
   }

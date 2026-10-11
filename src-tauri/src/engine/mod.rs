@@ -181,6 +181,9 @@ pub struct Engine {
     asking: std::sync::Mutex<Option<ask::Asking>>,
     /// Answer buttons being used, by note and button, so each runs once.
     using: std::sync::Mutex<HashSet<(u64, u32)>>,
+    /// Counts the times you forgot something from Bit's memory, so an
+    /// answer to a question asked before can't bring it back.
+    memory_generation: std::sync::atomic::AtomicU64,
     _instance_lock: std::fs::File,
 }
 impl Engine {
@@ -318,6 +321,7 @@ impl Engine {
             fixing: std::sync::Mutex::new(vec![]),
             asking: std::sync::Mutex::new(None),
             using: std::sync::Mutex::new(HashSet::new()),
+            memory_generation: std::sync::atomic::AtomicU64::new(0),
             _instance_lock: instance_lock,
         }))
     }

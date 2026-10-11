@@ -58,6 +58,8 @@ pub const COMMANDS: &[&str] = &[
     "ask_buddy",
     "ask_buddy_anything",
     "use_proposal",
+    "forget_memory",
+    "clear_memory",
     "publish_review",
     "publish_plan",
     "send_message",
@@ -286,6 +288,13 @@ async fn dispatch(e: &Arc<Engine>, name: &str, a: &Value) -> Result<Value, Strin
         "use_proposal" => out(e
             .use_proposal(arg(a, "noteId")?, arg(a, "proposalId")?)
             .await?),
+        "forget_memory" => out(e
+            .forget_memory(
+                arg::<Option<String>>(a, "repo")?.as_deref(),
+                &arg::<String>(a, "line")?,
+            )
+            .await?),
+        "clear_memory" => out(e.clear_memory().await?),
         "publish_review" => out(e
             .publish(
                 &arg::<String>(a, "reviewId")?,
