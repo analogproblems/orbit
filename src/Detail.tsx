@@ -21,7 +21,13 @@ import {
   Token,
   VStack,
 } from "@astryxdesign/core";
-import { ArrowRight, ArrowUpRight, Play, Square } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  ArrowUpRight,
+  Play,
+  Square,
+} from "lucide-react";
 import { desktop, live, useOrbit } from "./store";
 import {
   activeStatuses,
@@ -59,6 +65,7 @@ export function Detail({
   onHistory,
   onSettings,
   onRepositories,
+  onBack,
 }: {
   pr: PullRequest;
   review?: Review;
@@ -70,6 +77,8 @@ export function Detail({
   onHistory: (id: string) => void;
   onSettings: () => void;
   onRepositories: () => void;
+  /** Returns to the pull request list, on phones where only one shows. */
+  onBack?: () => void;
 }) {
   const { snapshot: s, action, updateSettings } = useOrbit();
   const provider = repoProvider(s, pr.repo);
@@ -87,6 +96,17 @@ export function Detail({
       header={
         <LayoutHeader padding={4} hasDivider>
           <VStack gap={3}>
+            {onBack && (
+              <HStack>
+                <Button
+                  label="All pull requests"
+                  size="sm"
+                  variant="ghost"
+                  icon={<ArrowLeft />}
+                  onClick={onBack}
+                />
+              </HStack>
+            )}
             <HStack hAlign="between" vAlign="center">
               <Text color="secondary">
                 {pr.repo} / #{pr.number}
