@@ -1,7 +1,11 @@
 //! Questions you type to Bit, answered by Codex in a thread of their own:
 //! read-only, in an empty folder, with no network, no approvals and none of
 //! Codex's other tools. The answer's buttons run only when you tap them.
-use super::{publish::By, Engine};
+use super::{
+    extras::{self, sentence},
+    publish::By,
+    Engine,
+};
 use crate::{
     ask::{self, Action},
     buddy,
@@ -96,10 +100,7 @@ impl Engine {
         let rpc = self.client().await?;
         let folder = self.root.join("bit");
         std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
-        let codex_config = rpc
-            .request("config/read", json!({"cwd": folder}))
-            .await
-            .map_err(|e| format!("Codex couldn't read its settings: {e}"))?;
+        let codex_config = extras::codex_config(&rpc, &folder).await?;
         let thread = rpc
             .request(
                 "thread/start",
@@ -108,7 +109,7 @@ impl Engine {
                     "approvalPolicy": "never",
                     "sandbox": "read-only",
                     "model": selection.model,
-                    "config": ask::thread_config(&selection.effort, &codex_config["config"]),
+                    "config": ask::thread_config(&selection.effort, &codex_config),
                     "developerInstructions": instructions,
                 }),
             )
@@ -149,42 +150,19 @@ impl Engine {
     }
     /// Checks with Codex that no tool server is on for `thread`.
     async fn tools_off(&self, rpc: &crate::rpc::Rpc, thread: &str) -> Result<(), String> {
-        let unsure = |e: String| {
-            format!(
-                "I couldn't check that Codex's other tools are off: {}",
-                sentence(&e)
-            )
-        };
-        let mut on = vec![];
-        let mut cursor = Value::Null;
-        for _ in 0..20 {
-            let page = rpc
-                .request(
-                    "mcpServerStatus/list",
-                    json!({"threadId": thread, "detail": "toolsAndAuthOnly", "cursor": cursor}),
-                )
-                .await
-                .map_err(unsure)?;
-            if !page["data"].is_array() {
-                return Err(unsure("Codex didn't list them.".into()));
-            }
-            on.extend(ask::servers_on(&page));
-            cursor = page["nextCursor"].clone();
-            if cursor.is_null() {
-                break;
-            }
-        }
-        if !cursor.is_null() {
-            return Err(unsure("Codex listed too many.".into()));
-        }
-        if on.is_empty() {
-            Ok(())
-        } else {
-            Err(format!(
-                "Codex kept these tools on for my question, so I didn't ask it: {}.",
-                on.join(", ")
-            ))
-        }
+        extras::check(rpc, thread, None)
+            .await
+            .map_err(|left| match left {
+                extras::Left::Unsure(e) => format!(
+                    "I couldn't check that Codex's other tools are off: {}",
+                    sentence(&e)
+                ),
+                extras::Left::On(names) => format!(
+                    "Codex kept these tools on for my question, so I didn't ask it: {}.",
+                    names.join(", ")
+                ),
+                left @ extras::Left::Missing(_) => left.message("I didn't ask it"),
+            })
     }
     /// Changes the question being answered, if it is still `note`.
     fn asking_mut(&self, note: u64, f: impl FnOnce(&mut Asking)) -> Option<()> {
@@ -340,17 +318,6 @@ impl Engine {
             .await;
         let _ = self.flush().await;
         Ok(())
-    }
-}
-
-/// Text from elsewhere as a sentence, ending in a full stop if it has no
-/// ending of its own.
-fn sentence(text: &str) -> String {
-    let text = text.trim();
-    if text.ends_with(['.', '!', '?']) {
-        text.into()
-    } else {
-        format!("{text}.")
     }
 }
 

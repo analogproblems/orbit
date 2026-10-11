@@ -105,7 +105,10 @@ async fn a_typed_question_is_answered_in_a_thread_that_cant_change_anything() {
         start["config"]["mcp_servers"],
         json!({"notes": {"enabled": false}})
     );
-    for feature in crate::ask::FEATURES_OFF {
+    for feature in crate::extras::FEATURES_OFF
+        .iter()
+        .chain(&crate::ask::TOOLS_OFF)
+    {
         assert_eq!(start["config"]["features"][feature], false, "{feature}");
     }
     assert_eq!(

@@ -1,4 +1,4 @@
-use super::Engine;
+use super::{extras, Engine};
 use crate::types::*;
 use serde_json::json;
 use std::{
@@ -118,19 +118,35 @@ impl Engine {
             (old, selection, message_id)
         };
         let result = async {
-            self.flush().await.map_err(|e| format!("Could not save the pending question; no message was sent: {e}"))?;
+            self.flush().await.map_err(|e| {
+                format!("Could not save the pending question; no message was sent: {e}")
+            })?;
             if r.provider != Provider::Codex {
                 self.pending_message(id, &message_id).await?;
-                return self.send_cli_follow_up(&r, &selection, &message_id, text).await;
+                return self
+                    .send_cli_follow_up(&r, &selection, &message_id, text)
+                    .await;
             }
             let rpc = self.client().await?;
             let thread = r.thread_id.as_ref().unwrap();
             // v0.156.1 applies changed overrides to an idle loaded thread only
             // after its subscribers detach. Still verify the response exactly.
-            if r.legacy_chat_selection.is_some() && !r.messages.iter().any(|m| m.role == "user" && m.confirmed_selection.is_some()) {
-                rpc.request("thread/unsubscribe", json!({"threadId":thread})).await?;
+            if r.legacy_chat_selection.is_some()
+                && !r
+                    .messages
+                    .iter()
+                    .any(|m| m.role == "user" && m.confirmed_selection.is_some())
+            {
+                rpc.request("thread/unsubscribe", json!({"threadId":thread}))
+                    .await?;
             }
             self.pending_message(id, &message_id).await?;
+            // The extra tools you've added to Codex stay off, as for the review.
+            let mut config = extras::off(&rpc, &r.worktree).await?;
+            config.extend([
+                ("review_model".into(), json!(selection.model)),
+                ("model_reasoning_effort".into(), json!(selection.effort)),
+            ]);
             let resume = json!({
                 "threadId": thread,
                 "cwd": r.worktree,
@@ -138,42 +154,71 @@ impl Engine {
                 "approvalsReviewer": "user",
                 "sandbox": "workspace-write",
                 "model": selection.model,
-                "config": {"review_model":selection.model, "model_reasoning_effort":selection.effort},
+                "config": config,
             });
             let response = rpc.request("thread/resume", resume).await?;
             selection.verify_response(&response)?;
+            extras::check(&rpc, thread, None)
+                .await
+                .map_err(|left| left.message("your message wasn't sent"))?;
             {
                 let mut state = self.state.lock().await;
                 let mut next = state.clone();
-                let run = next.reviews.iter_mut().find(|r| r.id == id && r.before_follow_up.is_some() && active(&r.status)).ok_or("Follow-up was stopped.")?;
-                let message = run.messages.iter_mut().find(|m| m.id == message_id && m.delivery == Some(MessageDelivery::Pending)).ok_or("Follow-up was stopped.")?;
+                let run = next
+                    .reviews
+                    .iter_mut()
+                    .find(|r| r.id == id && r.before_follow_up.is_some() && active(&r.status))
+                    .ok_or("Follow-up was stopped.")?;
+                let message = run
+                    .messages
+                    .iter_mut()
+                    .find(|m| m.id == message_id && m.delivery == Some(MessageDelivery::Pending))
+                    .ok_or("Follow-up was stopped.")?;
                 message.confirmed_selection = Some(selection.clone());
-                self.persist(&next).map_err(|e| format!("Could not save confirmed chat settings; no message was sent: {e}"))?;
+                self.persist(&next).map_err(|e| {
+                    format!("Could not save confirmed chat settings; no message was sent: {e}")
+                })?;
                 *state = next;
                 self.changed.store(true, Ordering::SeqCst);
             }
             self.pending_message(id, &message_id).await?;
-            let turn = rpc.request("turn/start", json!({
-                "threadId":thread, "model":selection.model, "effort":selection.effort,
-                "input":[{"type":"text","text":text}],
-            })).await?;
+            let turn = rpc
+                .request(
+                    "turn/start",
+                    json!({
+                        "threadId":thread, "model":selection.model, "effort":selection.effort,
+                        "input":[{"type":"text","text":text}],
+                    }),
+                )
+                .await?;
             let mut accepted = false;
             self.update(|s| {
                 if let Some(run) = s.reviews.iter_mut().find(|r| r.id == id) {
                     if let Some(message) = run.messages.iter_mut().find(|m| m.id == message_id) {
-                        accepted = message.delivery == Some(MessageDelivery::Pending) && active(&run.status) && run.before_follow_up.is_some();
+                        accepted = message.delivery == Some(MessageDelivery::Pending)
+                            && active(&run.status)
+                            && run.before_follow_up.is_some();
                         message.delivery = Some(MessageDelivery::Sent);
-                        if accepted { run.turn_id = turn["turn"]["id"].as_str().map(str::to_owned); }
+                        if accepted {
+                            run.turn_id = turn["turn"]["id"].as_str().map(str::to_owned);
+                        }
                     }
                 }
-            }).await;
+            })
+            .await;
             if !accepted {
                 if let Some(turn_id) = turn["turn"]["id"].as_str() {
-                    let _ = rpc.request("turn/interrupt", json!({"threadId": thread, "turnId": turn_id})).await;
+                    let _ = rpc
+                        .request(
+                            "turn/interrupt",
+                            json!({"threadId": thread, "turnId": turn_id}),
+                        )
+                        .await;
                 }
             }
             Ok::<(), String>(())
-        }.await;
+        }
+        .await;
         if let Err(error) = &result {
             self.update(|s| {
                 if let Some(run) = s.reviews.iter_mut().find(|r| r.id == id) {

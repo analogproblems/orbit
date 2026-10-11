@@ -1,6 +1,6 @@
 use super::{
     events::{ReviewEvent, TurnEnd},
-    findings, rounds,
+    extras, findings, rounds,
     settings::matches_origin,
     worktrees::git,
     worktrees::prune_orbit_refs,
@@ -287,21 +287,27 @@ impl Engine {
         let selection = ModelSelection::requested(r);
         selection.validate_execution(&s)?;
         self.live(id).await?;
+        // The extra tools you've added to Codex stay off for the review.
+        let mut config = extras::off(rpc, worktree).await?;
+        config.extend([
+            ("review_model".into(), json!(selection.model)),
+            ("model_reasoning_effort".into(), json!(selection.effort)),
+            (
+                "sandbox_workspace_write".into(),
+                json!({
+                    "network_access": network_access,
+                    "exclude_tmpdir_env_var": true,
+                    "exclude_slash_tmp": true,
+                }),
+            ),
+        ]);
         let params = json!({
             "cwd": worktree,
             "approvalPolicy": "on-request",
             "approvalsReviewer": "user",
             "sandbox": "workspace-write",
             "model": selection.model,
-            "config": {
-                "review_model": selection.model,
-                "model_reasoning_effort": selection.effort,
-                "sandbox_workspace_write": {
-                    "network_access": network_access,
-                    "exclude_tmpdir_env_var": true,
-                    "exclude_slash_tmp": true,
-                },
-            },
+            "config": config,
             "developerInstructions": REVIEWER_INSTRUCTIONS,
         });
         let thread = rpc.request("thread/start", params).await?;
@@ -311,6 +317,9 @@ impl Engine {
             .to_string();
         let confirmed = async {
             selection.verify_response(&thread)?;
+            extras::check(rpc, &thread_id, None)
+                .await
+                .map_err(|left| left.message("the review didn't start"))?;
             // Persist confirmation before asking Codex to infer anything.
             {
                 let mut state = self.state.lock().await;

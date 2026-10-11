@@ -22,6 +22,27 @@ fn skills_list() -> Value {
          "scope": "user", "enabled": true, "pluginId": "codex-security@openai-curated"},
     ]}]})
 }
+/// Fixture options for a Codex with extras: a tool server of your own and
+/// another plugin with a server of its own.
+fn extras() -> Value {
+    let mut list = plugin_list(true);
+    list["marketplaces"][0]["plugins"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"id": "figma@openai-curated", "name": "figma", "installed": true}));
+    json!({
+        "responses": {"plugin/list": list},
+        "mcpServers": {"notes": {"command": "notes"}},
+        "mcpGlobal": {"data": [
+            {"name": "notes"}, {"name": "codex-security"}, {"name": "figma"},
+        ], "nextCursor": null},
+        "mcpStatus": {"data": [
+            {"name": "notes", "runtimeStatus": "disabled"},
+            {"name": "codex-security", "runtimeStatus": "connected"},
+            {"name": "figma", "runtimeStatus": "disabled"},
+        ], "nextCursor": null},
+    })
+}
 /// Connects an engine to the fixture Codex.
 async fn attach(e: &Arc<Engine>) -> Arc<Rpc> {
     let (tx, rx) = mpsc::channel(64);
@@ -250,6 +271,7 @@ async fn starts_the_skill_on_the_scan_copy_with_orbits_model() {
     scan.thread_id = None;
     scan.turn_id = None;
     e.update(|s| s.scans.push(scan)).await;
+    configure(&rpc, extras()).await;
     e.start_scan_thread(
         "scan-1",
         &worktree,
@@ -263,6 +285,28 @@ async fn starts_the_skill_on_the_scan_copy_with_orbits_model() {
         .iter()
         .find(|r| r["method"] == "thread/start")
         .unwrap();
+    // Of your extras, only Codex Security stays on, which Codex confirms.
+    let read = requests
+        .iter()
+        .find(|r| r["method"] == "config/read")
+        .unwrap();
+    assert_eq!(read["params"]["cwd"], json!(worktree));
+    let config = &thread["params"]["config"];
+    assert_eq!(config["mcp_servers"], json!({"notes": {"enabled": false}}));
+    assert_eq!(config["features"]["apps"], false);
+    assert_eq!(config["features"].get("plugins"), None);
+    assert_eq!(
+        config["plugins"],
+        json!({"figma@openai-curated": {"enabled": false, "mcp_servers": {
+            "notes": {"enabled": false}, "figma": {"enabled": false},
+        }}})
+    );
+    let checked = requests
+        .iter()
+        .filter(|r| r["method"] == "mcpServerStatus/list")
+        .collect::<Vec<_>>();
+    assert_eq!(checked[0]["params"]["threadId"], Value::Null);
+    assert_eq!(checked[1]["params"]["threadId"], "fixture-thread");
     assert_eq!(thread["params"]["approvalPolicy"], "never");
     assert_eq!(thread["params"]["model"], "model-a");
     assert_eq!(thread["params"]["config"]["model_reasoning_effort"], "high");
@@ -289,6 +333,72 @@ async fn starts_the_skill_on_the_scan_copy_with_orbits_model() {
     assert_eq!(s.scans[0].status, "running");
     assert_eq!(s.scans[0].thread_id.as_deref(), Some("fixture-thread"));
     assert_eq!(s.scans[0].turn_id.as_deref(), Some("fixture-turn"));
+}
+
+#[tokio::test]
+async fn a_scan_does_not_start_while_another_extra_is_on() {
+    let (d, e, rpc) = fixture().await;
+    let worktree = d.path().join("copy");
+    std::fs::create_dir_all(&worktree).unwrap();
+    let mut scan = running("scan-1", Some(&worktree));
+    scan.status = "preparing".into();
+    scan.thread_id = None;
+    scan.turn_id = None;
+    e.update(|s| s.scans.push(scan)).await;
+    let mut options = extras();
+    options["mcpStatus"] = json!({"data": [
+        {"name": "codex-security", "runtimeStatus": "connected"},
+        {"name": "figma", "runtimeStatus": "connected"},
+    ], "nextCursor": null});
+    configure(&rpc, options).await;
+    let error = e
+        .start_scan_thread(
+            "scan-1",
+            &worktree,
+            "codex-security:security-scan",
+            "/p/SKILL.md",
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error,
+        "Codex kept these extra tools on, so the scan didn't start: figma."
+    );
+    let methods: Vec<Value> = requests(&rpc)
+        .await
+        .iter()
+        .map(|r| r["method"].clone())
+        .collect();
+    assert!(methods.contains(&json!("thread/archive")));
+    assert!(!methods.contains(&json!("turn/start")));
+    assert_eq!(e.snapshot().await.scans[0].status, "preparing");
+
+    // Nor with Codex Security itself off or missing.
+    for security in [
+        json!([{"name": "codex-security", "runtimeStatus": "disabled"}]),
+        json!([]),
+    ] {
+        let mut options = extras();
+        options["mcpStatus"] = json!({"data": security, "nextCursor": null});
+        configure(&rpc, options).await;
+        let error = e
+            .start_scan_thread(
+                "scan-1",
+                &worktree,
+                "codex-security:security-scan",
+                "/p/SKILL.md",
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            "Codex didn't keep codex-security on, so the scan didn't start."
+        );
+        assert!(!requests(&rpc)
+            .await
+            .iter()
+            .any(|r| r["method"] == "turn/start"));
+    }
 }
 
 #[tokio::test]
