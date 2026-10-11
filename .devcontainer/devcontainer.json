@@ -1,0 +1,22 @@
+{
+  "name": "Orbit",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "postCreateCommand": "npm ci",
+  "forwardPorts": [1420],
+  "portsAttributes": {
+    "1420": {
+      "label": "Orbit demo (npm run dev)"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode"
+      ]
+    }
+  }
+}
