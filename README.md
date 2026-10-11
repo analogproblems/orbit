@@ -71,6 +71,10 @@ npm run diagnose   # Read-only GitHub/Codex connection check; no inference or co
 npm run tauri -- build --no-bundle  # Native executable (src-tauri/target/release/orbit on Linux)
 ```
 
+### Dev container
+
+[`.devcontainer/`](.devcontainer/devcontainer.json) describes a box with everything `npm run check` needs: Node 22, stable Rust with rustfmt and Clippy, the Linux libraries Tauri needs, Git and `gh`. Open the folder in VS Code and choose **Reopen in Container**, start a GitHub Codespace, or run `devcontainer up --workspace-folder .` with the [Dev Container CLI](https://github.com/devcontainers/cli). `npm ci` runs when the container is created. The box has no display, so use `npm run check` and the browser demo (`npm run dev`, port 1420 is forwarded) there, and `npm run desktop` on your own machine.
+
 UI code follows [`AGENTS.md`](AGENTS.md): Astryx components and tokens only. Run `npx astryx component <Name>` before using a component.
 
 ## Architecture
