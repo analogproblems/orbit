@@ -1,6 +1,6 @@
 # Orbit's development box: Ubuntu with the libraries Tauri 2 needs on Linux,
 # Node 22, stable Rust with rustfmt and Clippy, Git and the GitHub CLI.
-# `npm run check` passes inside it.
+# It is meant to hold everything `npm run check` needs.
 FROM node:22-bookworm-slim AS node
 
 FROM mcr.microsoft.com/devcontainers/base:ubuntu-24.04
