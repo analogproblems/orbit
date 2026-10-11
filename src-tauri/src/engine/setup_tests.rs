@@ -268,3 +268,70 @@ async fn a_download_carries_on_when_the_tap_goes_away() {
     e.use_proposal(note, 0).await.unwrap();
     assert_eq!(e.snapshot().await.settings.repositories.len(), 1);
 }
+
+#[tokio::test]
+async fn a_settings_button_doesnt_connect_a_repository_disconnected_since() {
+    let dir = tempfile::tempdir().unwrap();
+    let gh = fake_gh(dir.path());
+    let e = engine(dir.path());
+    let copy = dir.path().join("copy");
+    std::fs::create_dir(&copy).unwrap();
+    e.update(|s| {
+        let repo = Repository::new("acme/api", &copy.to_string_lossy());
+        s.settings.repositories.push(repo);
+    })
+    .await;
+    let patch = RepositoryPatch {
+        round_limit: Some(2),
+        autopilot: Some(true),
+        ..Default::default()
+    };
+    let note = offered(&e, "acme/api", patch, false).await;
+    // You disconnect it before tapping the old button.
+    e.disconnect_repository("acme/api").await.unwrap();
+    let error = crate::github::GH
+        .scope(gh, e.use_proposal(note, 0))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error,
+        "acme/api isn't connected any more. Ask Bit again if you want it connected."
+    );
+    assert_eq!(log(dir.path()), "");
+    assert!(!dir.path().join("state/clones").exists());
+    assert!(!dir.path().join("state/downloads").exists());
+    let s = e.snapshot().await;
+    assert!(s.settings.repositories.is_empty());
+    assert!(!s.buddy_feed.notes.last().unwrap().proposals[0].done);
+}
+
+#[tokio::test]
+async fn a_repository_connected_during_the_download_gets_the_change_instead() {
+    let dir = tempfile::tempdir().unwrap();
+    let gh = fake_gh(dir.path());
+    let e = engine(dir.path());
+    std::fs::write(dir.path().join("slow"), "").unwrap();
+    let patch = RepositoryPatch {
+        round_limit: Some(2),
+        ..Default::default()
+    };
+    let note = offered(&e, "acme/api", patch, true).await;
+    let tapped = e.clone();
+    let tap = tokio::spawn(
+        crate::github::GH.scope(gh, async move { tapped.use_proposal(note, 0).await }),
+    );
+    // Another window connects it while Orbit downloads its own copy.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    e.update(|s| {
+        let repo = Repository::new("Acme/API", "/elsewhere/api");
+        s.settings.repositories.push(repo);
+    })
+    .await;
+    tap.await.unwrap().unwrap();
+    let s = e.snapshot().await;
+    assert_eq!(s.settings.repositories.len(), 1);
+    let repo = &s.settings.repositories[0];
+    assert_eq!(repo.path, "/elsewhere/api");
+    assert_eq!(repo.round_limit, 2);
+    assert!(s.buddy_feed.notes.last().unwrap().proposals[0].done);
+}

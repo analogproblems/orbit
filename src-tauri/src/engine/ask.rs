@@ -374,7 +374,7 @@ impl Engine {
                     .as_deref()
                     .ok_or("This button isn't about a repository.")?;
                 let patch = p.repository.clone().unwrap_or_default();
-                self.set_up_repository(name, &patch).await
+                self.set_up_repository(name, &patch, p.connect).await
             }
         }?;
         // Done before the claim ends, so no tap gets in between.

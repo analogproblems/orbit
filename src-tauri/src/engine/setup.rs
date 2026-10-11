@@ -1,6 +1,9 @@
 //! Repositories Bit sets up when you tap an answer's button, and what Bit
 //! looks up about your repositories for a question you type.
-use super::{settings::checkout_io, Engine};
+use super::{
+    settings::{checkout_io, validate_checkout},
+    Engine,
+};
 use crate::{
     ask::Lookups,
     github,
@@ -14,7 +17,8 @@ const LIST_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl Engine {
     /// Sets up `name` as an answer's button asks. A connected repository
-    /// gets the change, checked like a change in Repositories. Otherwise
+    /// gets the change, checked like a change in Repositories. A button
+    /// that `connect`s, and only one, may connect a repository that isn't:
     /// Orbit downloads its own copy into its data folder, unless it has one
     /// already, and connects it with the defaults plus the change. Orbit's
     /// copy is kept up to date unless the change says otherwise. A download
@@ -24,9 +28,10 @@ impl Engine {
         self: &Arc<Self>,
         name: &str,
         patch: &RepositoryPatch,
+        connect: bool,
     ) -> Result<(), String> {
         let (e, name, patch) = (self.clone(), name.to_string(), patch.clone());
-        let work = async move { e.set_up(&name, &patch).await };
+        let work = async move { e.set_up(&name, &patch, connect).await };
         // Tests reach their stand-in for `gh` from the new task too.
         #[cfg(test)]
         let work = {
@@ -40,9 +45,22 @@ impl Engine {
         };
         tokio::spawn(work).await.map_err(|e| e.to_string())?
     }
-    async fn set_up(self: &Arc<Self>, name: &str, patch: &RepositoryPatch) -> Result<(), String> {
+    async fn set_up(
+        self: &Arc<Self>,
+        name: &str,
+        patch: &RepositoryPatch,
+        connect: bool,
+    ) -> Result<(), String> {
         if self.change_repository(name, patch).await? {
             return Ok(());
+        }
+        // A button that only changes settings never connects: its
+        // repository was disconnected since, and connecting it again takes
+        // a button that says so.
+        if !connect {
+            return Err(format!(
+                "{name} isn't connected any more. Ask Bit again if you want it connected."
+            ));
         }
         let _cloning = self.cloning.lock().await;
         let folder = setup::clone_folder(&self.root, name)?;
@@ -62,20 +80,34 @@ impl Engine {
                 .await
                 .map_err(|e| format!("Orbit couldn't put its copy of {name} in place: {e}"))?;
         }
-        let path = folder.to_string_lossy();
-        let mut repository = Repository::new(name, &path);
-        repository.keep_updated = true;
-        patch.apply(&mut repository);
-        // Connected meanwhile, such as from another window: change it instead.
-        if self.change_repository(name, patch).await? {
-            return Ok(());
-        }
-        self.save_repository(repository, None).await.map_err(|e| {
+        let not_connected = |e: String| {
             format!(
                 "Orbit's copy of {name}, in {}, couldn't be connected: {e}",
                 folder.display()
             )
-        })?;
+        };
+        let path = validate_checkout(name, &folder.to_string_lossy())
+            .await
+            .map_err(not_connected)?;
+        let mut repository = Repository::new(name, &path);
+        repository.keep_updated = true;
+        patch.apply(&mut repository);
+        {
+            let mut s = self.state.lock().await;
+            let mut settings = s.settings.clone();
+            match settings
+                .repositories
+                .iter_mut()
+                .find(|r| same_repo(&r.name, name))
+            {
+                // Connected meanwhile, such as from another window: it
+                // gets the change instead.
+                Some(connected) => patch.apply(connected),
+                None => settings.repositories.push(repository),
+            }
+            self.commit_settings(&mut s, settings)
+                .map_err(not_connected)?;
+        }
         // Its pull requests show up without waiting for the next sync.
         let e = self.clone();
         tokio::spawn(async move {
