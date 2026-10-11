@@ -1195,6 +1195,70 @@ describe("initial loading and repository errors", () => {
       ),
     ).toBeTruthy();
   });
+  it("flags dev container settings that can't be saved and forgets unsaved ones", async () => {
+    snapshot.settings.repositories[0].setupCommand = "npm ci";
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Repositories" }));
+    const open = async () => {
+      await user().click(
+        await screen.findByRole("button", { name: "Configure acme/orbit" }),
+      );
+      return screen.getByRole("dialog");
+    };
+    let dialog = await open();
+    await chooseOption(
+      within(dialog).getByRole("combobox", { name: "Reviewer" }),
+      "Claude",
+    );
+    const box = within(dialog).getByRole("switch", {
+      name: "Run setup and checks in the dev container",
+    });
+    // Claude can keep the setup command only in the dev container.
+    expect(
+      within(dialog).getByText(
+        /can only run a setup command in the dev container/,
+      ),
+    ).toBeTruthy();
+    await user().click(box);
+    expect(
+      within(dialog).queryByText(/can only run a setup command/),
+    ).toBeNull();
+    // The box needs a setup or a check command.
+    await user().clear(
+      within(dialog).getByRole("textbox", { name: /Environment setup/ }),
+    );
+    const check = within(dialog).getByRole("textbox", {
+      name: /Check command/,
+    });
+    await user().clear(check);
+    expect(check.getAttribute("aria-invalid")).toBe("true");
+    await user().click(check);
+    expect(
+      await within(dialog).findByText("Add a setup or check command to save."),
+    ).toBeTruthy();
+    await user().type(check, "npm test");
+    expect(check.getAttribute("aria-invalid")).not.toBe("true");
+    // Closing without saving keeps the saved settings.
+    await user().keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(invoke).not.toHaveBeenCalledWith(
+      "save_repository",
+      expect.anything(),
+    );
+    dialog = await open();
+    expect(
+      within(dialog).getByRole("switch", {
+        name: "Run setup and checks in the dev container",
+      }),
+    ).toHaveProperty("checked", false);
+    expect(
+      within(dialog).getByRole("textbox", { name: /Environment setup/ }),
+    ).toHaveProperty("value", "npm ci");
+    expect(
+      within(dialog).queryByRole("textbox", { name: /Check command/ }),
+    ).toBeNull();
+  });
+
   it("shows whether Docker and the Dev Container CLI are ready", async () => {
     snapshot.devContainers = {
       ready: false,
