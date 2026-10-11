@@ -76,16 +76,28 @@ impl Engine {
     }
     /// Connects a repository, or saves a connected one's settings. A new
     /// repository without a folder gets Orbit's own copy, downloaded into
-    /// its data folder and kept up to date; the download carries on even if
-    /// the window or browser that asked goes away.
+    /// its data folder and kept up to date. The whole save carries on even
+    /// if the window or browser that asked goes away, so a long download
+    /// still ends connected.
     pub async fn save_repository(
         self: &Arc<Self>,
+        repository: Repository,
+        original: Option<String>,
+    ) -> Result<Settings, String> {
+        let e = self.clone();
+        carry_on(async move { e.save_repository_now(repository, original).await }).await
+    }
+    async fn save_repository_now(
+        &self,
         mut repository: Repository,
         original: Option<String>,
     ) -> Result<Settings, String> {
         repository.name = repository.name.trim().into();
         repository.path = repository.path.trim().into();
+        // Held until the copy is connected, as for Bit's Connect button.
+        let mut _cloning = None;
         if original.is_none() && repository.path.is_empty() {
+            _cloning = Some(self.cloning.lock().await);
             let connected = self
                 .state
                 .lock()
@@ -97,12 +109,7 @@ impl Engine {
             if connected {
                 return Err("Each repository can only be configured once.".into());
             }
-            let (e, name) = (self.clone(), repository.name.clone());
-            let folder = carry_on(async move {
-                let _cloning = e.cloning.lock().await;
-                e.own_copy(&name).await
-            })
-            .await?;
+            let folder = self.own_copy(&repository.name).await?;
             repository.path = folder.to_string_lossy().into();
             repository.keep_updated = true;
         }

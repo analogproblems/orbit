@@ -17,6 +17,10 @@ echo "$*" >> {d}/log
 if [ "$1 $2" = "repo clone" ]; then
   [ -e {d}/clone-fails ] && {{ echo "repository not found" >&2; exit 1; }}
   [ -e {d}/slow ] && sleep 1
+  if [ -e {d}/gate ]; then
+    touch {d}/cloning
+    while [ ! -e {d}/release ]; do sleep 0.05; done
+  fi
   mkdir -p "$4" && cd "$4" && git init -q && git remote add origin "https://github.com/$3.git" && touch package-lock.json
   exit $?
 fi
@@ -548,4 +552,54 @@ async fn adding_a_repository_without_a_folder_downloads_orbits_own_copy() {
         .save_repository(emptied, Some("acme/api".into()))
         .await
         .is_err());
+}
+
+#[tokio::test]
+async fn a_download_from_repositories_connects_even_when_the_caller_goes_away() {
+    let dir = tempfile::tempdir().unwrap();
+    let gh = fake_gh(dir.path());
+    let e = engine(dir.path());
+    std::fs::write(dir.path().join("gate"), "").unwrap();
+    let saving = e.clone();
+    let caller = tokio::spawn(crate::github::GH.scope(gh, async move {
+        saving
+            .save_repository(Repository::new("acme/api", ""), None)
+            .await
+    }));
+    let wait_for = |file: &str| {
+        let file = dir.path().join(file);
+        async move {
+            for _ in 0..200 {
+                if file.exists() {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            panic!("{} never appeared", file.display());
+        }
+    };
+    // The browser goes away while Orbit downloads.
+    wait_for("cloning").await;
+    caller.abort();
+    assert!(caller.await.unwrap_err().is_cancelled());
+    std::fs::write(dir.path().join("release"), "").unwrap();
+    let mut connected = None;
+    for _ in 0..200 {
+        let s = e.snapshot().await;
+        if let Some(note) = s
+            .buddy_feed
+            .notes
+            .iter()
+            .find(|n| n.kind == NoteKind::Connected)
+        {
+            connected = Some((s.settings.repositories.clone(), note.repo.clone()));
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    let (repositories, noted) = connected.expect("the repository was never connected");
+    assert_eq!(repositories.len(), 1);
+    assert_eq!(repositories[0].name, "acme/api");
+    assert!(repositories[0].keep_updated);
+    assert_eq!(noted.as_deref(), Some("acme/api"));
 }
