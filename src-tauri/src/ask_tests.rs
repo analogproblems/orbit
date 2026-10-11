@@ -21,6 +21,7 @@ fn snapshot() -> Snapshot {
         approval_minutes: 0,
         keep_updated: false,
         provider: Default::default(),
+        dev_container: Default::default(),
     });
     let mut r = Review::new(&p, &Settings::default(), true);
     r.id = "run-1".into();

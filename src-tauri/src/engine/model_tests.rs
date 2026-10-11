@@ -141,6 +141,7 @@ async fn queued_selection_is_immutable_and_confirmation_is_durable_before_review
             approval_minutes: 0,
             keep_updated: false,
             provider: Default::default(),
+            dev_container: Default::default(),
         });
     })
     .await;
@@ -553,6 +554,7 @@ async fn rejected_settings_and_queue_writes_do_not_activate_unsaved_selections_o
             approval_minutes: 0,
             keep_updated: false,
             provider: Default::default(),
+            dev_container: Default::default(),
         });
     })
     .await;
@@ -1091,6 +1093,49 @@ async fn first_reviews_target_the_base_and_re_reviews_carry_custom_instructions(
         };
         assert_eq!(review["params"]["target"], expected);
         assert_eq!(review["params"].as_object().unwrap().len(), 3, "{review}");
+        rpc.shutdown().await;
+    }
+}
+#[tokio::test]
+async fn dev_container_results_go_into_custom_instructions() {
+    let checks = ContainerChecks {
+        image: "orbit-devcontainer:a.b-abc".into(),
+        network: false,
+        setup: None,
+        check: Some(CheckStep {
+            command: "npm test".into(),
+            exit_code: Some(1),
+            timed_out: false,
+            seconds: 3,
+            output: "1 failed".into(),
+        }),
+    };
+    for prompt in [None, Some("Review against base with the previous round.")] {
+        let (d, e, rpc, id) = fixture().await;
+        e.update(|s| {
+            s.reviews[0].review_prompt = prompt.map(str::to_owned);
+            s.reviews[0].checks = Some(checks.clone());
+        })
+        .await;
+        e.start_review_inference(&id, &rpc, d.path(), false)
+            .await
+            .unwrap();
+        let calls = requests(&rpc).await;
+        let target = &calls[1]["params"]["target"];
+        assert_eq!(target["type"], "custom");
+        let instructions = target["instructions"].as_str().unwrap();
+        let base = e.snapshot().await.reviews[0].base_sha.clone();
+        let start = match prompt {
+            // A first review asks for the base-branch review it would get.
+            None => format!("Review the code changes against the base branch '{base}'."),
+            Some(p) => p.to_string(),
+        };
+        assert!(instructions.starts_with(&start), "{instructions}");
+        assert!(
+            instructions.contains("Checks (`npm test`): failed with exit code 1"),
+            "{instructions}"
+        );
+        assert!(instructions.contains("<orbit-checks-"), "{instructions}");
         rpc.shutdown().await;
     }
 }

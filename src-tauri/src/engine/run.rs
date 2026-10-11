@@ -1,12 +1,12 @@
 use super::{
     events::{ReviewEvent, TurnEnd},
-    findings,
+    findings, rounds,
     settings::matches_origin,
     worktrees::git,
     worktrees::prune_orbit_refs,
     Engine,
 };
-use crate::{rpc::Rpc, types::*, usage::Usage};
+use crate::{devcontainer, rpc::Rpc, types::*, usage::Usage};
 use serde_json::{json, Value};
 use std::{
     path::Path,
@@ -82,7 +82,8 @@ impl Engine {
             .find(|c| same_repo(&c.name, &pr.repo))
             .ok_or("Repository configuration was removed")?
             .clone();
-        if r.provider != Provider::Codex && !repo.setup_command.trim().is_empty() {
+        let in_container = repo.dev_container.enabled;
+        if r.provider != Provider::Codex && !in_container && !repo.setup_command.trim().is_empty() {
             return Err(format!("This repository's setup command runs in the Codex sandbox, which {} reviews can't use. Clear the setup command or review this repository with Codex.", r.provider.label()));
         }
         let rpc = match r.provider {
@@ -159,6 +160,11 @@ impl Engine {
         self.live(id).await?;
         self.carry_previous_round(id, &pr, &worktree).await?;
         self.live(id).await?;
+        if in_container {
+            self.run_container_checks(id, &repo, &cwd, &worktree, &r.base_sha)
+                .await?;
+            self.live(id).await?;
+        }
         let Some(rpc) = rpc else {
             return self.start_cli_review(id, &worktree).await;
         };
@@ -169,7 +175,8 @@ impl Engine {
             "excludeTmpdirEnvVar": true,
             "excludeSlashTmp": true,
         });
-        if !repo.setup_command.trim().is_empty() {
+        // In a dev container, setup already ran there instead.
+        if !in_container && !repo.setup_command.trim().is_empty() {
             self.update(|s| {
                 if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
                     r.messages.push(Message::new(
@@ -329,8 +336,27 @@ impl Engine {
             self.release_unused_thread(id, rpc, &thread_id).await;
             return Err(error);
         }
-        // A re-review carries the previous round in custom instructions.
-        let target = match &r.review_prompt {
+        // A re-review carries the previous round in custom instructions, and
+        // checks run in a dev container add their results there too.
+        let instructions = match (&r.review_prompt, &r.checks) {
+            (Some(prompt), Some(checks)) => {
+                Some(format!("{prompt}\n\n{}", devcontainer::notes(checks)))
+            }
+            (Some(prompt), None) => Some(prompt.clone()),
+            (None, Some(checks)) => {
+                let merge_base = git(worktree, &["merge-base", &r.head_sha, &r.base_sha])
+                    .await
+                    .map(|m| m.trim().to_string())
+                    .unwrap_or_else(|_| r.base_sha.clone());
+                Some(format!(
+                    "{}\n\n{}",
+                    rounds::base_review(&r.base_sha, &merge_base),
+                    devcontainer::notes(checks)
+                ))
+            }
+            (None, None) => None,
+        };
+        let target = match instructions {
             Some(instructions) => json!({"type":"custom", "instructions":instructions}),
             None => json!({"type":"baseBranch", "branch":r.base_sha}),
         };
