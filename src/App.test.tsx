@@ -1116,6 +1116,45 @@ describe("Bit", () => {
 });
 
 describe("files and navigation", () => {
+  it("shows the inbox list and an opened pull request one at a time on a phone", async () => {
+    const wide = window.matchMedia;
+    window.matchMedia = vi.fn((media: string) => ({
+      ...wide(media),
+      matches: media.startsWith("(width <"),
+    })) as typeof window.matchMedia;
+    onTestFinished(() => {
+      window.matchMedia = wide;
+    });
+    await mount();
+    const pr = snapshot.prs[1];
+    const title = new RegExp(pr.title);
+    expect(
+      screen.queryByRole("region", { name: "Pull request inbox" }),
+    ).toBeNull();
+    expect(screen.queryByRole("heading", { name: pr.title })).toBeNull();
+    await user().click(screen.getByRole("button", { name: title }));
+    expect(screen.getByRole("heading", { name: pr.title })).toBeTruthy();
+    expect(screen.queryByPlaceholderText("Search pull requests…")).toBeNull();
+    await user().click(
+      screen.getByRole("button", { name: "All pull requests" }),
+    );
+    expect(screen.queryByRole("heading", { name: pr.title })).toBeNull();
+    expect(screen.getByPlaceholderText("Search pull requests…")).toBeTruthy();
+  });
+  it("keeps the inbox and the opened pull request side by side on wider screens", async () => {
+    await mount();
+    const inbox = screen.getByRole("region", { name: "Pull request inbox" });
+    expect(
+      screen.getByRole("heading", { name: snapshot.prs[0].title }),
+    ).toBeTruthy();
+    expect(
+      within(inbox).getByPlaceholderText("Search pull requests…"),
+    ).toBeTruthy();
+    // Only the menu's own item; the opened pull request has no back button.
+    expect(
+      screen.getAllByRole("button", { name: "All pull requests" }),
+    ).toHaveLength(1);
+  });
   it("retries failed files and discards responses from old head, base, and PR selections", async () => {
     const pending: ReturnType<typeof deferred<ChangedFile[]>>[] = [];
     invoke.mockImplementation((cmd, args) => {

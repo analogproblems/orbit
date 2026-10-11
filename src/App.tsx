@@ -29,6 +29,7 @@ import {
   TopNav,
   VStack,
 } from "@astryxdesign/core";
+import { useMediaQuery } from "@astryxdesign/core/hooks";
 import {
   Activity,
   BellRing,
@@ -117,6 +118,10 @@ export default function App() {
   const [filter, setFilter] = useState("all");
   const [repoFilter, setRepoFilter] = useState("all");
   const [collapsed, setCollapsed] = useState(() => window.innerWidth < 1100);
+  // Below the mobile menu breakpoint (Astryx md), the inbox shows its list
+  // and the opened pull request one at a time instead of side by side.
+  const phone = useMediaQuery("(width < 768px)");
+  const [showingPr, setShowingPr] = useState(false);
   const [publish, setPublish] = useState<Review | null>(null);
   const [confirmSensitive, setConfirmSensitive] = useState(false);
   const [publishError, setPublishError] = useState<string | null>(null);
@@ -175,6 +180,7 @@ export default function App() {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setPage("inbox");
+        setShowingPr(false);
         setFocusSearch((v) => v + 1);
       } else if ((e.metaKey || e.ctrlKey) && e.key === ",") {
         e.preventDefault();
@@ -188,7 +194,8 @@ export default function App() {
     if (page === "inbox" && focusSearch) searchRef.current?.focus();
   }, [page, focusSearch, loaded]);
   const knownPrs = [...s.prs, ...(s.historyPrs ?? [])];
-  const pr = knownPrs.find((p) => p.id === selected) ?? s.prs[0];
+  const chosen = knownPrs.find((p) => p.id === selected);
+  const pr = chosen ?? s.prs[0];
   const review =
     (selectedReview
       ? s.reviews.find((r) => r.id === selectedReview && r.prId === pr?.id)
@@ -220,6 +227,7 @@ export default function App() {
     setSelectedReview(r?.id ?? null);
     setTab(r ? "chat" : "overview");
     setPage("inbox");
+    setShowingPr(true);
   };
   // Bit's setup help, while Bit is on.
   const setUpWithBit = buddyOf(s.settings).enabled
@@ -270,6 +278,36 @@ export default function App() {
     settings: "Settings",
     buddy: buddyOf(s.settings).name,
   };
+  const inbox = (
+    <Inbox
+      selected={phone ? chosen?.id : pr?.id}
+      search={search}
+      setSearch={setSearch}
+      filter={filter}
+      setFilter={setFilter}
+      repoFilter={repoFilter}
+      setRepoFilter={setRepoFilter}
+      searchRef={searchRef}
+      onChoose={choose}
+      onRepositories={() => setPage("repositories")}
+      onSetUp={setUpWithBit}
+    />
+  );
+  const detail = (p: PullRequest, onBack?: () => void) => (
+    <Detail
+      pr={p}
+      review={review}
+      tab={tab}
+      setTab={setTab}
+      busy={busy}
+      onStart={() => void start()}
+      onPublish={setPublish}
+      onHistory={setSelectedReview}
+      onSettings={() => setPage("settings")}
+      onRepositories={() => setPage("repositories")}
+      onBack={onBack}
+    />
+  );
   return (
     <>
       <AppShell
@@ -425,7 +463,10 @@ export default function App() {
                 icon={<GitPullRequest />}
                 isSelected={page === "inbox"}
                 endContent={<Badge label={s.prs.length} />}
-                onClick={() => setPage("inbox")}
+                onClick={() => {
+                  setPage("inbox");
+                  setShowingPr(false);
+                }}
               />
               <SideNavItem
                 label="Repositories"
@@ -548,57 +589,42 @@ export default function App() {
                 <Spinner label="Loading your workspace…" />
               </VStack>
             ) : page === "inbox" ? (
-              <Layout
-                start={
-                  <LayoutPanel
-                    className="inbox-panel"
-                    label="Pull request inbox"
-                    role="region"
-                    width="clamp(280px, 27vw, 380px)"
-                    padding={0}
-                    hasDivider
-                    isScrollable={false}
-                  >
-                    <Inbox
-                      selected={pr?.id}
-                      search={search}
-                      setSearch={setSearch}
-                      filter={filter}
-                      setFilter={setFilter}
-                      repoFilter={repoFilter}
-                      setRepoFilter={setRepoFilter}
-                      searchRef={searchRef}
-                      onChoose={choose}
-                      onRepositories={() => setPage("repositories")}
-                      onSetUp={setUpWithBit}
-                    />
-                  </LayoutPanel>
-                }
-                content={
-                  pr ? (
-                    <Detail
-                      pr={pr}
-                      review={review}
-                      tab={tab}
-                      setTab={setTab}
-                      busy={busy}
-                      onStart={() => void start()}
-                      onPublish={setPublish}
-                      onHistory={setSelectedReview}
-                      onSettings={() => setPage("settings")}
-                      onRepositories={() => setPage("repositories")}
-                    />
-                  ) : (
-                    <LayoutContent>
-                      <EmptyState
-                        icon={<InboxIcon />}
-                        title="A little perspective on every pull request."
-                        description="Choose a pull request to see its changes, start a review, and keep the conversation going."
-                      />
-                    </LayoutContent>
-                  )
-                }
-              />
+              phone ? (
+                showingPr && chosen ? (
+                  detail(chosen, () => setShowingPr(false))
+                ) : (
+                  inbox
+                )
+              ) : (
+                <Layout
+                  start={
+                    <LayoutPanel
+                      className="inbox-panel"
+                      label="Pull request inbox"
+                      role="region"
+                      width="clamp(280px, 27vw, 380px)"
+                      padding={0}
+                      hasDivider
+                      isScrollable={false}
+                    >
+                      {inbox}
+                    </LayoutPanel>
+                  }
+                  content={
+                    pr ? (
+                      detail(pr)
+                    ) : (
+                      <LayoutContent>
+                        <EmptyState
+                          icon={<InboxIcon />}
+                          title="A little perspective on every pull request."
+                          description="Choose a pull request to see its changes, start a review, and keep the conversation going."
+                        />
+                      </LayoutContent>
+                    )
+                  }
+                />
+              )
             ) : (
               <LayoutContent padding={0}>
                 <Suspense fallback={<Spinner label="Loading page…" />}>
