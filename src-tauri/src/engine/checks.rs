@@ -156,11 +156,19 @@ impl Engine {
             } else {
                 None
             };
-            // The container goes when the review ends, however it ends.
-            self.boxes
-                .lock()
-                .unwrap()
-                .insert(id.to_string(), ReviewBox { opened, server });
+            if opened.removed() {
+                self.say(
+                    id,
+                    "A command ran out of time and couldn't be stopped inside the dev container, so Orbit removed it. The reviewer can't run commands there in this review.".into(),
+                )
+                .await;
+            } else {
+                // The container goes when the review ends, however it ends.
+                self.boxes
+                    .lock()
+                    .unwrap()
+                    .insert(id.to_string(), ReviewBox { opened, server });
+            }
             checks
         } else {
             self.say(id, running(repo, &image)).await;

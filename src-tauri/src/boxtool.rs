@@ -195,7 +195,7 @@ async fn call(spec: &Spec, arguments: &Value) -> Value {
         .as_u64()
         .map(|s| Duration::from_secs(s.clamp(1, MAX_TIMEOUT.as_secs())))
         .unwrap_or(DEFAULT_TIMEOUT);
-    let step = devcontainer::exec(
+    let ran = devcontainer::exec(
         &spec.docker,
         &spec.container,
         spec.user.as_deref(),
@@ -204,12 +204,16 @@ async fn call(spec: &Spec, arguments: &Value) -> Value {
         timeout,
     )
     .await;
-    match step {
-        Ok(step) if gone(&step) => {
+    match ran {
+        Ok(ran) if ran.removed => error(format!(
+            "{}\nThe dev container is gone now, so this tool can't be used again in this review.",
+            result(&ran.step)
+        )),
+        Ok(ran) if gone(&ran.step) => {
             error("The review's dev container is gone: it only runs while the review does.".into())
         }
-        Ok(step) => json!({
-            "content": [{"type": "text", "text": result(&step)}],
+        Ok(ran) => json!({
+            "content": [{"type": "text", "text": result(&ran.step)}],
             "isError": false,
         }),
         Err(e) => error(e),

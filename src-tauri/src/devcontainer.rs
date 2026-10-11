@@ -219,6 +219,9 @@ pub struct Opened {
     pub folder: String,
     image: String,
     network: bool,
+    /// A command that ran out of time couldn't be stopped, so Docker
+    /// removed the container.
+    removed: std::sync::atomic::AtomicBool,
 }
 
 /// Starts a new container from `image` and copies the worktree into it.
@@ -244,6 +247,7 @@ pub async fn open(tools: &Tools, plan: &Run<'_>) -> Result<Opened, String> {
         folder,
         image: plan.image.to_string(),
         network: plan.network,
+        removed: Default::default(),
     })
 }
 impl Opened {
@@ -256,6 +260,7 @@ impl Opened {
             folder: "/workspaces/b".into(),
             image: IMAGE.into(),
             network: false,
+            removed: Default::default(),
         }
     }
     /// The container's name.
@@ -264,6 +269,11 @@ impl Opened {
     }
     pub fn network(&self) -> bool {
         self.network
+    }
+    /// Whether Docker removed the container, because a command that ran out
+    /// of time couldn't be stopped in it.
+    pub fn removed(&self) -> bool {
+        self.removed.load(std::sync::atomic::Ordering::SeqCst)
     }
     /// Runs the setup command and then the check command; an empty one is
     /// skipped, and the checks don't run when setup failed.
@@ -274,7 +284,7 @@ impl Opened {
         check: &str,
     ) -> Result<ContainerChecks, String> {
         let step = |command: String, timeout: Duration| async move {
-            exec(
+            let ran = exec(
                 &tools.docker,
                 self.name(),
                 self.user.as_deref(),
@@ -282,7 +292,12 @@ impl Opened {
                 &command,
                 timeout,
             )
-            .await
+            .await?;
+            if ran.removed {
+                self.removed
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            Ok::<_, String>(ran.step)
         };
         let setup = match setup.trim() {
             "" => None,
@@ -450,14 +465,38 @@ async fn copy_in(
     Ok(())
 }
 /// Kills every process in a container but its first, the `sleep` that keeps
-/// it running. The shell's own `kill`, since images needn't have one.
-pub const STOP_ALL: &str = "kill -KILL -1";
+/// it running, then waits up to ten seconds until none is left but zombies,
+/// which that `sleep` never reaps, and says `stopped`. It uses only the
+/// shell, since images needn't have `kill` or `ps`.
+pub const STOP_ALL: &str = r#"kill -KILL -1 2>/dev/null
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  left=
+  for p in /proc/[0-9]*; do
+    p=${p#/proc/}
+    if [ "$p" = 1 ] || [ "$p" = $$ ]; then continue; fi
+    read -r stat 2>/dev/null < "/proc/$p/stat" || continue
+    case $stat in *") Z "*|*") X "*) ;; *) left=$p ;; esac
+  done
+  if [ -z "$left" ]; then echo stopped; exit 0; fi
+  sleep 1
+done
+exit 1"#;
+
+/// A command run in a container.
+pub struct Ran {
+    pub step: CheckStep,
+    /// It ran out of time and couldn't be stopped in the container, so
+    /// Docker removed the container.
+    pub removed: bool,
+}
 
 /// Runs `command` with the shell in `folder` of the container `name`, as
 /// `user`, and stops it after `timeout`. Stopping `docker exec` on this
 /// computer leaves the command running in the container, so a command that
-/// runs out of time is stopped there too, with everything else it started,
-/// before this returns.
+/// runs out of time is stopped there too, with everything else running
+/// there, before this returns. When that can't be confirmed, such as when
+/// the container has no room for another process, Docker removes the
+/// container, which stops them without starting anything in it.
 pub async fn exec(
     docker: &Launcher,
     name: &str,
@@ -465,7 +504,7 @@ pub async fn exec(
     folder: &str,
     command: &str,
     timeout: Duration,
-) -> Result<CheckStep, String> {
+) -> Result<Ran, String> {
     let mut args = vec!["exec"];
     if let Some(user) = user {
         args.extend(["--user", user]);
@@ -473,20 +512,43 @@ pub async fn exec(
     args.extend(["--workdir", folder, name, "/bin/sh", "-c", command]);
     let started = Instant::now();
     let out = run(docker, &args, timeout).await?;
-    if out.timed_out {
-        let _ = run(
-            docker,
-            &["exec", "--user", "root", name, "/bin/sh", "-c", STOP_ALL],
-            DOCKER_TIMEOUT,
-        )
-        .await;
-    }
-    Ok(CheckStep {
+    let mut step = CheckStep {
         command: command.to_string(),
         exit_code: if out.timed_out { None } else { out.status },
         timed_out: out.timed_out,
         seconds: started.elapsed().as_secs(),
         output: out.output,
+    };
+    if !out.timed_out {
+        return Ok(Ran {
+            step,
+            removed: false,
+        });
+    }
+    let stopped = run(
+        docker,
+        &["exec", "--user", "root", name, "/bin/sh", "-c", STOP_ALL],
+        DOCKER_TIMEOUT,
+    )
+    .await
+    .is_ok_and(|out| out.status == Some(0) && out.output.trim_end().ends_with("stopped"));
+    if stopped {
+        return Ok(Ran {
+            step,
+            removed: false,
+        });
+    }
+    let out = run(docker, &["rm", "--force", name], DOCKER_TIMEOUT).await?;
+    require(
+        &out,
+        "remove a dev container whose command it couldn't stop",
+    )?;
+    step.output.push_str(
+        "\n[Orbit couldn't stop this command inside the dev container, so it removed the container.]",
+    );
+    Ok(Ran {
+        step,
+        removed: true,
     })
 }
 /// Runs a Docker command that has to work.

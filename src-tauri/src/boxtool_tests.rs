@@ -142,6 +142,52 @@ async fn runs_the_reviewers_commands_in_the_container() {
     assert!(text(&answers[0]).contains("only runs while the review does"));
 }
 
+#[tokio::test]
+async fn a_command_that_cant_be_stopped_removes_the_container() {
+    let d = tempfile::tempdir().unwrap();
+    let (state, worktree) = (d.path().join("docker"), d.path().join("worktree"));
+    std::fs::create_dir_all(&worktree).unwrap();
+    let opened = opened(&state, &worktree).await;
+    let spec = spec(&state, &opened);
+    // No room in the container to start the command that stops the others.
+    std::fs::write(state.join("stop-fails"), "").unwrap();
+    // The fake runs commands on this computer, so these land here.
+    let (late, child) = (d.path().join("late"), d.path().join("child"));
+    let command = format!(
+        "(sleep 2; touch '{}') & sleep 2; touch '{}'",
+        child.display(),
+        late.display()
+    );
+    let answers = ask(
+        &spec,
+        &[
+            call(1, json!({"command": command, "timeout_seconds": 1})),
+            call(2, json!({"command": "ls"})),
+        ],
+    )
+    .await;
+    let stopped = text(&answers[0]);
+    assert_eq!(answers[0]["result"]["isError"], true);
+    assert!(
+        stopped.starts_with("stopped at its time limit"),
+        "{stopped}"
+    );
+    assert!(stopped.contains("so it removed the container"), "{stopped}");
+    assert!(stopped.contains("can't be used again"), "{stopped}");
+    let rm = devcontainer::tests::calls(&state)
+        .into_iter()
+        .rfind(|c| c[1] == "rm")
+        .unwrap();
+    assert_eq!(rm[2..], ["--force", "orbit-checks-r1"]);
+    assert!(!state.join("containers/orbit-checks-r1").exists());
+    // Nothing it started outlived it, and the tool says the box is gone.
+    assert!(text(&answers[1]).contains("only runs while the review does"));
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert!(!late.exists());
+    assert!(!child.exists());
+    opened.remove().await;
+}
+
 #[test]
 fn reviewers_start_orbit_as_the_server() {
     let spec = Spec {
@@ -230,6 +276,20 @@ async fn real_docker_runs_the_reviewers_commands() {
         &[call(3, json!({"command": "ls late child; echo done"}))],
     )
     .await;
+    // A command that fills the container's process limit and outlives its
+    // time is still stopped from inside: the shell that stops it needs no
+    // new process, and Docker starts it past the limit.
+    let full = ask(
+        &spec,
+        &[
+            call(
+                4,
+                json!({"command": "sleep 60 & (while :; do sleep 300 & done) 2>/tmp/fill; wait", "timeout_seconds": 5}),
+            ),
+            call(5, json!({"command": "cat /tmp/fill; echo alive"})),
+        ],
+    )
+    .await;
     opened.remove().await;
     let _ = tools
         .docker
@@ -251,4 +311,8 @@ async fn real_docker_runs_the_reviewers_commands() {
     assert!(after.contains("done"), "{after}");
     assert!(!after.contains("\nlate\n"), "{after}");
     assert_eq!(after.matches("No such file").count(), 2, "{after}");
+    assert!(text(&full[0]).starts_with("stopped at its time limit"));
+    let alive = text(&full[1]);
+    assert!(alive.contains("can't fork"), "{alive}");
+    assert!(alive.ends_with("alive"), "{alive}");
 }

@@ -405,3 +405,31 @@ async fn a_kept_container_stops_a_setup_that_runs_out_of_time() {
     assert!(!copy.join("child").exists());
     t.e.close_box(&t.id).await;
 }
+
+#[tokio::test]
+async fn a_setup_that_cant_be_stopped_costs_the_reviewer_its_container() {
+    let t = review_with_recipe(true).await;
+    t.e.update(|s| {
+        let repo = &mut s.settings.repositories[0];
+        repo.setup_command = "sleep 5".into();
+        repo.dev_container.reviewer_tool = true;
+    })
+    .await;
+    std::fs::create_dir_all(&t.docker).unwrap();
+    std::fs::write(t.docker.join("stop-fails"), "").unwrap();
+    run_keeping(&t, true).await.unwrap();
+    let r = t.e.snapshot().await.reviews[0].clone();
+    let setup = r.checks.unwrap().setup.unwrap();
+    assert!(setup.timed_out);
+    assert!(setup.output.contains("so it removed the container"));
+    assert!(r
+        .messages
+        .iter()
+        .any(|m| m.text.contains("The reviewer can't run commands there")));
+    assert!(t.e.box_server(&t.id).is_none());
+    assert!(!t
+        .docker
+        .join("containers")
+        .join(devcontainer::container(&t.id))
+        .exists());
+}
