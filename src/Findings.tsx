@@ -2,6 +2,7 @@ import {
   Banner,
   Button,
   HStack,
+  StatusDot,
   Text,
   Token,
   VStack,
@@ -22,6 +23,8 @@ import {
 } from "./findingIndex";
 import {
   categoryLabels,
+  checkOutcome,
+  checkPassed,
   claimSummary,
   commitPlaceNotes,
   countNote,
@@ -33,6 +36,8 @@ import {
   providerLabels,
   shortId,
   type AuthorClaim,
+  type CheckStep,
+  type ContainerChecks,
   type Finding,
   type PriorStatus,
   type Review,
@@ -297,6 +302,33 @@ function SinceLastRound({
 }
 
 /** Orbit's verdict when it has one, else the model's (older reviews). */
+/** How the setup and checks went in the dev container. */
+export function ContainerResults({ checks }: { checks: ContainerChecks }) {
+  const steps = [
+    ["Setup", checks.setup],
+    ["Checks", checks.check],
+  ].filter((entry): entry is [string, CheckStep] => entry[1] !== null);
+  const skipped =
+    !checks.check && checks.setup !== null && !checkPassed(checks.setup);
+  return (
+    <VStack gap={1}>
+      {steps.map(([name, step]) => (
+        <HStack key={name} gap={2} vAlign="center">
+          <StatusDot
+            variant={checkPassed(step) ? "success" : "error"}
+            label={`${name} ${checkPassed(step) ? "passed" : "failed"}`}
+          />
+          <Text type="supporting">
+            {name} in the dev container ({step.command}): {checkOutcome(step)}
+          </Text>
+        </HStack>
+      ))}
+      {skipped && (
+        <Text type="supporting">Checks didn't run, because setup failed.</Text>
+      )}
+    </VStack>
+  );
+}
 function verdictLine(review: Review, count: number) {
   const findings = `${count} ${count === 1 ? "finding" : "findings"}`;
   if (review.orbitVerdict === "clean")
@@ -343,6 +375,7 @@ export function Findings({
           title="Unstructured run"
           description="Orbit could not save these findings as a list. The report above is complete."
         />
+        {review.checks && <ContainerResults checks={review.checks} />}
         {declined}
       </VStack>
     );
@@ -374,6 +407,7 @@ export function Findings({
           verticalAlign="top"
         />
       )}
+      {review.checks && <ContainerResults checks={review.checks} />}
       {notChecked(review).length > 0 && (
         <Text type="supporting">
           Not checked: {notChecked(review).join("; ")}

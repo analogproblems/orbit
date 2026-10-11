@@ -56,6 +56,59 @@ describe("structured findings", () => {
       ),
     ).toBeTruthy();
   });
+  it("shows how the setup and checks went in the dev container", () => {
+    const checks = {
+      image: "orbit-devcontainer:acme.orbit-abc",
+      network: false,
+      setup: {
+        command: "npm ci",
+        exitCode: 0,
+        timedOut: false,
+        seconds: 38,
+        output: "",
+      },
+      check: {
+        command: "npm test",
+        exitCode: 1,
+        timedOut: false,
+        seconds: 64,
+        output: "1 failed",
+      },
+    };
+    render(<Findings review={review({ checks })} />);
+    expect(
+      screen.getByText("Setup in the dev container (npm ci): passed in 38s"),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Checks in the dev container (npm test): failed with exit code 1 after 64s",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByLabelText("Checks failed")).toBeTruthy();
+    cleanup();
+    render(
+      <Findings
+        review={review({
+          checks: {
+            ...checks,
+            setup: { ...checks.setup, exitCode: null, timedOut: true },
+            check: null,
+          },
+        })}
+      />,
+    );
+    expect(
+      screen.getByText(
+        "Setup in the dev container (npm ci): stopped at its time limit after 38s",
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByText("Checks didn't run, because setup failed."),
+    ).toBeTruthy();
+    cleanup();
+    render(<Findings review={review({ checks: null })} />);
+    expect(screen.queryByText(/in the dev container/)).toBeNull();
+  });
   it("shows what older reviews could not run", () => {
     render(
       <Findings

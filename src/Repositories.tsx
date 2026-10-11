@@ -237,6 +237,23 @@ function CloneUpdateStatus({ update }: { update?: CloneUpdate }) {
     </HStack>
   );
 }
+/** How a repository's reviews are set up, in one line. */
+function environment(repo: Repository) {
+  const container = repo.devContainer?.enabled;
+  if (repo.provider && repo.provider !== "codex")
+    return `Reviewed by ${providerLabels[repo.provider]} · Sandboxed worktree · ${
+      container
+        ? `Setup and checks in dev container · ${repo.networkAccess ? "Container network enabled" : "No network"}`
+        : "No network"
+    }`;
+  return `Reviewed by Codex · ${
+    container
+      ? "Setup and checks in dev container"
+      : repo.setupCommand
+        ? "Custom environment setup"
+        : "Host tools + isolated worktree"
+  } · ${repo.networkAccess ? "Sandbox network enabled" : "Sandbox network disabled"}`;
+}
 export function Repositories({ onScans }: { onScans?: () => void } = {}) {
   const formId = useId();
   const [scanning, setScanning] = useState<string | null>(null);
@@ -281,6 +298,8 @@ export function Repositories({ onScans }: { onScans?: () => void } = {}) {
   };
   const reviewer = editing?.provider ?? "codex";
   const cliReviewer = reviewer !== "codex";
+  const inContainer = editing?.devContainer?.enabled ?? false;
+  const checkCommand = editing?.devContainer?.checkCommand ?? "";
   const close = (open: boolean) => {
     if (!open && !busy) setEditing(null);
   };
@@ -336,19 +355,7 @@ export function Repositories({ onScans }: { onScans?: () => void } = {}) {
                     )}
                   />
                 )}
-                <Text color="secondary">
-                  {repo.provider && repo.provider !== "codex"
-                    ? `Reviewed by ${providerLabels[repo.provider]} · Sandboxed worktree · No network`
-                    : `Reviewed by Codex · ${
-                        repo.setupCommand
-                          ? "Custom environment setup"
-                          : "Host tools + isolated worktree"
-                      } · ${
-                        repo.networkAccess
-                          ? "Sandbox network enabled"
-                          : "Sandbox network disabled"
-                      }`}
-                </Text>
+                <Text color="secondary">{environment(repo)}</Text>
                 <Switch
                   label={`Automatic reviews for ${repo.name}`}
                   value={repo.automatic}
@@ -495,7 +502,29 @@ export function Repositories({ onScans }: { onScans?: () => void } = {}) {
                             : "Codex reviews in its sandbox, using the model and effort in Settings."
                       }
                     />
-                    {(!cliReviewer || editing.setupCommand) && (
+                    <Switch
+                      label="Run setup and checks in the dev container"
+                      value={inContainer}
+                      isDisabled={busy}
+                      onChange={(enabled) =>
+                        setEditing({
+                          ...editing,
+                          devContainer: { checkCommand, enabled },
+                        })
+                      }
+                      description="Orbit builds a box from the base branch's .devcontainer/devcontainer.json, never the pull request's, copies the pull request into it, and runs the setup and check commands there, with none of your files or sign-ins. The reviewer gets the results and still works in its own sandbox. Needs Docker and the Dev Container CLI."
+                      status={
+                        inContainer && !s.devContainers?.ready
+                          ? {
+                              type: "warning",
+                              message:
+                                s.devContainers?.error ??
+                                "Docker or the Dev Container CLI isn't connected yet. Check Settings → Connections.",
+                            }
+                          : undefined
+                      }
+                    />
+                    {(!cliReviewer || inContainer || editing.setupCommand) && (
                       <TextArea
                         label="Environment setup"
                         isOptional
@@ -505,26 +534,67 @@ export function Repositories({ onScans }: { onScans?: () => void } = {}) {
                         onChange={(setupCommand) =>
                           setEditing({ ...editing, setupCommand })
                         }
-                        description="Runs in the new worktree, inside the Codex sandbox. Uses /bin/sh on Unix or PowerShell on Windows. Five-minute timeout. Setup can run code from the pull request, such as package install scripts; prefer options like --ignore-scripts."
+                        description={
+                          inContainer
+                            ? "Runs first in the dev container, with /bin/sh, as the recipe's user. Fifteen-minute timeout. If it fails, the checks are skipped and the reviewer is told."
+                            : "Runs in the new worktree, inside the Codex sandbox. Uses /bin/sh on Unix or PowerShell on Windows. Five-minute timeout. Setup can run code from the pull request, such as package install scripts; prefer options like --ignore-scripts."
+                        }
                         status={
-                          cliReviewer
+                          cliReviewer && !inContainer
                             ? {
                                 type: "error",
-                                message: `${providerLabels[reviewer]} reviews can't run a setup command. Clear it to save.`,
+                                message: `${providerLabels[reviewer]} reviews can only run a setup command in the dev container. Turn it on or clear the command to save.`,
                               }
                             : undefined
                         }
                       />
                     )}
-                    {!cliReviewer && (
+                    {inContainer && (
+                      <TextInput
+                        label="Check command"
+                        placeholder="e.g. npm test"
+                        value={checkCommand}
+                        isDisabled={busy}
+                        onChange={(command) =>
+                          setEditing({
+                            ...editing,
+                            devContainer: {
+                              enabled: true,
+                              checkCommand: command,
+                            },
+                          })
+                        }
+                        description="Runs after setup in the dev container. Thirty-minute timeout. The reviewer gets its result and the end of its output, and reports failures this pull request caused."
+                        status={
+                          !checkCommand.trim() && !editing.setupCommand.trim()
+                            ? {
+                                type: "error",
+                                message:
+                                  "Add a setup or check command to save.",
+                              }
+                            : undefined
+                        }
+                      />
+                    )}
+                    {(!cliReviewer || inContainer) && (
                       <Switch
-                        label="Allow sandbox network access"
+                        label={
+                          cliReviewer
+                            ? "Allow network access in the dev container"
+                            : "Allow sandbox network access"
+                        }
                         value={editing.networkAccess}
                         isDisabled={busy}
                         onChange={(networkAccess) =>
                           setEditing({ ...editing, networkAccess })
                         }
-                        description="Enable when setup needs to download dependencies. Setup and the review agent can then reach the network, including code from the pull request."
+                        description={
+                          cliReviewer
+                            ? "Enable when setup needs to download dependencies. Code from the pull request in the dev container can then reach the network. The reviewer still has none."
+                            : inContainer
+                              ? "Enable when setup needs to download dependencies. The dev container and the review agent can then reach the network, including code from the pull request."
+                              : "Enable when setup needs to download dependencies. Setup and the review agent can then reach the network, including code from the pull request."
+                        }
                       />
                     )}
                     <Selector

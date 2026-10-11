@@ -17,7 +17,7 @@ import {
   Token,
   VStack,
 } from "@astryxdesign/core";
-import { Code2, GitBranch, RefreshCw } from "lucide-react";
+import { Code2, Container, GitBranch, RefreshCw } from "lucide-react";
 import { useOrbit, live } from "./store";
 import {
   defaultEffort,
@@ -110,6 +110,37 @@ export function SettingsPage() {
             />
             <CliConnection provider="claude" />
             <CliConnection provider="antigravity" />
+            <ListItem
+              label="Docker and Dev Container CLI"
+              startContent={<Container />}
+              description={
+                <Text color="secondary">
+                  {s.devContainers?.error ||
+                    (s.devContainers?.ready
+                      ? `Runs setup and checks in dev containers · ${s.devContainers.version}.`
+                      : "Install and start Docker, then run npm install -g @devcontainers/cli, to run a repository's setup and checks in its dev container.")}
+                </Text>
+              }
+              endContent={
+                <HStack gap={2} vAlign="center">
+                  <StatusDot
+                    label="Dev container connection"
+                    variant={
+                      s.devContainers?.ready
+                        ? "success"
+                        : draft.repositories.some(
+                              (r) => r.devContainer?.enabled,
+                            )
+                          ? "warning"
+                          : "neutral"
+                    }
+                  />
+                  <Text color="secondary" type="supporting">
+                    {s.devContainers?.ready ? "Connected" : "Not connected"}
+                  </Text>
+                </HStack>
+              }
+            />
             <ListItem
               label="GitHub CLI"
               startContent={<GitBranch />}
