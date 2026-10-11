@@ -10,7 +10,13 @@ use crate::{
     setup::{self, RepositoryPatch},
     types::*,
 };
-use std::{collections::BTreeMap, path::Path, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    future::Future,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 /// What a repository's copy at `path` holds, or why Orbit can't tell.
 async fn copy_facts(path: &str) -> Result<setup::CloneFacts, String> {
@@ -23,6 +29,25 @@ async fn copy_facts(path: &str) -> Result<setup::CloneFacts, String> {
 }
 /// How long Bit waits for GitHub to list your repositories.
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Runs `work` in a task of its own, so a download carries on even if the
+/// window or browser waiting for it goes away.
+pub(super) async fn carry_on<T: Send + 'static>(
+    work: impl Future<Output = Result<T, String>> + Send + 'static,
+) -> Result<T, String> {
+    // Tests reach their stand-in for `gh` from the new task too.
+    #[cfg(test)]
+    let work = {
+        let gh = github::GH.try_with(|p| p.clone()).ok();
+        async move {
+            match gh {
+                Some(gh) => github::GH.scope(gh, work).await,
+                None => work.await,
+            }
+        }
+    };
+    tokio::spawn(work).await.map_err(|e| e.to_string())?
+}
 
 impl Engine {
     /// Sets up `name` as an answer's button asks. A connected repository
@@ -40,19 +65,7 @@ impl Engine {
         connect: bool,
     ) -> Result<(), String> {
         let (e, name, patch) = (self.clone(), name.to_string(), patch.clone());
-        let work = async move { e.set_up(&name, &patch, connect).await };
-        // Tests reach their stand-in for `gh` from the new task too.
-        #[cfg(test)]
-        let work = {
-            let gh = github::GH.try_with(|p| p.clone()).ok();
-            async move {
-                match gh {
-                    Some(gh) => github::GH.scope(gh, work).await,
-                    None => work.await,
-                }
-            }
-        };
-        tokio::spawn(work).await.map_err(|e| e.to_string())?
+        carry_on(async move { e.set_up(&name, &patch, connect).await }).await
     }
     async fn set_up(
         self: &Arc<Self>,
@@ -72,23 +85,7 @@ impl Engine {
             ));
         }
         let _cloning = self.cloning.lock().await;
-        let folder = setup::clone_folder(&self.root, name)?;
-        if !folder.exists() {
-            // Downloaded elsewhere, then moved into place whole, so a
-            // download cut short is never connected as a copy.
-            let download = setup::download_folder(&self.root, name)?;
-            let _ = tokio::fs::remove_dir_all(&download).await;
-            for f in [&download, &folder] {
-                let parent = f.parent().ok_or("Invalid folder")?;
-                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-            }
-            github::clone(name, &download)
-                .await
-                .map_err(|e| format!("Orbit couldn't download {name}: {e}"))?;
-            tokio::fs::rename(&download, &folder)
-                .await
-                .map_err(|e| format!("Orbit couldn't put its copy of {name} in place: {e}"))?;
-        }
+        let folder = self.own_copy(name).await?;
         let not_connected = |e: String| {
             format!(
                 "Orbit's copy of {name}, in {}, couldn't be connected: {e}",
@@ -128,6 +125,29 @@ impl Engine {
             let _ = e.poll().await;
         });
         Ok(())
+    }
+    /// Orbit's own copy of `name`, in its data folder: downloaded with the
+    /// GitHub CLI unless it's there already. It is downloaded elsewhere,
+    /// then moved into place whole, so a download cut short is never used
+    /// as a copy. Callers hold `cloning`.
+    pub(super) async fn own_copy(&self, name: &str) -> Result<PathBuf, String> {
+        let folder = setup::clone_folder(&self.root, name)?;
+        if folder.exists() {
+            return Ok(folder);
+        }
+        let download = setup::download_folder(&self.root, name)?;
+        let _ = tokio::fs::remove_dir_all(&download).await;
+        for f in [&download, &folder] {
+            let parent = f.parent().ok_or("Invalid folder")?;
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        github::clone(name, &download)
+            .await
+            .map_err(|e| format!("Orbit couldn't download {name}: {e}"))?;
+        tokio::fs::rename(&download, &folder)
+            .await
+            .map_err(|e| format!("Orbit couldn't put its copy of {name} in place: {e}"))?;
+        Ok(folder)
     }
     /// Changes a connected repository's settings, returning whether it is
     /// connected.

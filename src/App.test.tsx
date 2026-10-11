@@ -517,6 +517,64 @@ describe("PR review regressions", () => {
     ).toBeTruthy();
   });
 
+  it("adds a repository without a folder as Orbit's own copy", async () => {
+    const repos = [{ name: "acme/web", description: "", private: true }];
+    invoke.mockImplementation((cmd, args) =>
+      cmd === "list_repositories"
+        ? Promise.resolve(repos)
+        : cmd === "save_repository"
+          ? Promise.resolve(snapshot.settings)
+          : backend(cmd, args),
+    );
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Repositories" }));
+    await user().click(
+      await screen.findByRole("button", { name: "Add repository" }),
+    );
+    const dialog = screen.getByRole("dialog", { name: "Connect a repository" });
+    await user().click(
+      within(dialog).getByRole("button", { name: "Refresh repositories" }),
+    );
+    await user().click(
+      within(dialog).getByRole("combobox", {
+        name: "Search your repositories",
+      }),
+    );
+    await user().click(
+      await screen.findByRole("option", { name: /acme\/web/ }),
+    );
+    const path = within(dialog).getByRole("textbox", {
+      name: /Local checkout path/,
+    });
+    expect(path).toHaveProperty("value", "");
+    // Orbit keeps its own copy up to date.
+    const keep = within(dialog).getByRole("switch", {
+      name: "Keep this clone up to date",
+    });
+    expect(keep).toHaveProperty("checked", true);
+    expect(keep).toHaveProperty("disabled", true);
+    await user().click(
+      within(dialog).getByRole("button", { name: "Download and connect" }),
+    );
+    const saved = invoke.mock.calls.find(([cmd]) => cmd === "save_repository");
+    expect(saved?.[1]).toMatchObject({
+      repository: { name: "acme/web", path: "" },
+      original: null,
+    });
+    // With a folder, it's an ordinary save.
+    await user().click(
+      await screen.findByRole("button", { name: "Add repository" }),
+    );
+    const again = screen.getByRole("dialog", { name: "Connect a repository" });
+    await user().type(
+      within(again).getByRole("textbox", { name: /Local checkout path/ }),
+      "/Users/you/web",
+    );
+    expect(
+      within(again).getByRole("button", { name: "Save repository" }),
+    ).toBeTruthy();
+  });
+
   it("bounds live timestamp timers for a long inbox and conversation", () => {
     vi.useFakeTimers();
     try {
@@ -636,6 +694,54 @@ describe("Bit", () => {
       within(chat()).getAllByRole("button", { name: "Open loop" })[1],
     );
     expect(await screen.findByRole("list", { name: "Rounds" })).toBeTruthy();
+  });
+
+  it("points a new workspace to Bit's setup help", async () => {
+    const answer = async (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd !== "ask_buddy") return backend(cmd, args);
+      const question = args!.question as Question;
+      const notes = snapshot.buddyFeed!.notes;
+      notes.push({
+        id: 100 + notes.length,
+        at: new Date().toISOString(),
+        kind: "answer",
+        prId: null,
+        reviewId: null,
+        repo: null,
+        question: questionLabels[question],
+        ...demoAnswer(snapshot, question),
+      });
+      emit();
+    };
+    invoke.mockImplementation(answer);
+    const repositories = snapshot.settings.repositories;
+    snapshot.settings.repositories = [];
+    snapshot.prs = [];
+    await mount();
+    await user().click(
+      await screen.findByRole("button", { name: "Set up with Bit" }),
+    );
+    expect(invoke).toHaveBeenCalledWith("ask_buddy", { question: "setup" });
+    const chat = await screen.findByRole("log", { name: "Bit's notes" });
+    expect(
+      await within(chat).findByText(
+        "No repositories are connected yet, and GitHub lists none of yours to connect. You can add one under Repositories.",
+      ),
+    ).toBeTruthy();
+    // A command in a line shows as code.
+    act(() => {
+      snapshot.settings.repositories = repositories.map((r) => ({
+        ...r,
+        setupCommand: "npm ci",
+      }));
+      emit();
+    });
+    await user().click(screen.getByRole("button", { name: "Help me set up" }));
+    expect(
+      (await within(chat).findAllByText("npm ci")).some(
+        (e) => e.tagName === "CODE",
+      ),
+    ).toBe(true);
   });
 
   it("answers quick questions and offers fixes as buttons", async () => {

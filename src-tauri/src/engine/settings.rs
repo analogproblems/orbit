@@ -1,6 +1,10 @@
-use super::Engine;
+use super::{setup::carry_on, Engine};
 use crate::{github, types::*};
-use std::{path::Path, sync::atomic::Ordering, time::Duration};
+use std::{
+    path::Path,
+    sync::{atomic::Ordering, Arc},
+    time::Duration,
+};
 
 impl Engine {
     pub(super) fn commit_settings(
@@ -70,13 +74,38 @@ impl Engine {
         self.commit_settings(&mut s, settings)?;
         Ok(s.settings.clone())
     }
+    /// Connects a repository, or saves a connected one's settings. A new
+    /// repository without a folder gets Orbit's own copy, downloaded into
+    /// its data folder and kept up to date; the download carries on even if
+    /// the window or browser that asked goes away.
     pub async fn save_repository(
-        &self,
+        self: &Arc<Self>,
         mut repository: Repository,
         original: Option<String>,
     ) -> Result<Settings, String> {
         repository.name = repository.name.trim().into();
         repository.path = repository.path.trim().into();
+        if original.is_none() && repository.path.is_empty() {
+            let connected = self
+                .state
+                .lock()
+                .await
+                .settings
+                .repositories
+                .iter()
+                .any(|r| same_repo(&r.name, &repository.name));
+            if connected {
+                return Err("Each repository can only be configured once.".into());
+            }
+            let (e, name) = (self.clone(), repository.name.clone());
+            let folder = carry_on(async move {
+                let _cloning = e.cloning.lock().await;
+                e.own_copy(&name).await
+            })
+            .await?;
+            repository.path = folder.to_string_lossy().into();
+            repository.keep_updated = true;
+        }
         let validate = {
             let s = self.state.lock().await;
             original

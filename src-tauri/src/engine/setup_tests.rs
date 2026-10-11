@@ -495,3 +495,57 @@ async fn a_reviewer_that_isnt_connected_needs_you_until_it_is() {
         (NoteKind::Fixed, "It's connected again. All good!")
     );
 }
+
+#[tokio::test]
+async fn adding_a_repository_without_a_folder_downloads_orbits_own_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let gh = fake_gh(dir.path());
+    let e = engine(dir.path());
+    let added = Repository::new(" acme/api ", "  ");
+    let settings = crate::github::GH
+        .scope(gh.clone(), e.save_repository(added.clone(), None))
+        .await
+        .unwrap();
+    let folder = dir.path().join("state/clones/acme/api");
+    assert!(folder.join("package-lock.json").is_file());
+    assert!(!dir.path().join("state/downloads/acme/api").exists());
+    let repo = &settings.repositories[0];
+    assert_eq!(repo.name, "acme/api");
+    assert_eq!(
+        Path::new(&repo.path),
+        std::fs::canonicalize(&folder).unwrap()
+    );
+    assert!(repo.keep_updated);
+    // Bit follows up as for any new repository.
+    let s = e.snapshot().await;
+    assert_eq!(s.buddy_feed.notes.last().unwrap().kind, NoteKind::Connected);
+
+    // Adding it again doesn't download anything.
+    std::fs::remove_file(dir.path().join("log")).unwrap();
+    let error = crate::github::GH
+        .scope(gh.clone(), e.save_repository(added, None))
+        .await
+        .unwrap_err();
+    assert_eq!(error, "Each repository can only be configured once.");
+    assert_eq!(log(dir.path()), "");
+
+    // A download that fails says why and connects nothing.
+    std::fs::write(dir.path().join("clone-fails"), "").unwrap();
+    let error = crate::github::GH
+        .scope(gh, e.save_repository(Repository::new("acme/web", ""), None))
+        .await
+        .unwrap_err();
+    assert!(
+        error.starts_with("Orbit couldn't download acme/web:"),
+        "{error}"
+    );
+    assert_eq!(e.snapshot().await.settings.repositories.len(), 1);
+
+    // A connected repository still needs its folder.
+    let mut emptied = e.snapshot().await.settings.repositories[0].clone();
+    emptied.path.clear();
+    assert!(e
+        .save_repository(emptied, Some("acme/api".into()))
+        .await
+        .is_err());
+}

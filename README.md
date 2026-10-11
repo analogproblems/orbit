@@ -31,7 +31,7 @@ If a desktop shortcut can't find the CLIs or their sign-ins, launch Orbit from a
 ## Connect your repositories
 
 1. Open **Settings** and check that GitHub and Codex show **Connected** and that a model and effort are selected.
-2. Open **Repositories → Add repository**. Pick the repository and enter the absolute path to an existing local clone. Optionally add a setup command for new worktrees, such as `npm ci --ignore-scripts --cache .cache/npm`. The clone does not need to be up to date; turn on **Keep this clone up to date** to have Orbit fast-forward it on each sync.
+2. Open **Repositories → Add repository**, or tap **Set up with Bit** to be walked through it. Pick the repository and enter the absolute path to an existing local clone, or leave the path empty and Orbit downloads and keeps up to date its own copy. Optionally add a setup command for new worktrees, such as `npm ci --ignore-scripts --cache .cache/npm`. The clone does not need to be up to date; turn on **Keep this clone up to date** to have Orbit fast-forward it on each sync.
 3. Open **All pull requests**, select a pull request, and click **Start review**. Follow it in **Review chat**, then use **Publish review** to post it.
 4. To run the loop, turn on **Automatic reviews** for the repository and **Autopilot** in the header. Turn on **Automatically publish findings** in Settings if Orbit should post without asking.
 

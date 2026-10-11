@@ -515,11 +515,27 @@ export function BuddyPage({
               density="compact"
               aria-label={`${buddy.name}'s notes`}
               emptyState={
-                <EmptyState
-                  title="Nothing to report yet"
-                  description={`${buddy.name} will note each round, each clean loop, and anything that needs you. Ask a question below any time.`}
-                  isCompact
-                />
+                setupNeeded ? (
+                  <EmptyState
+                    title="Let's get you set up"
+                    description={`${buddy.name} can check your connections and walk you through connecting a repository, one tap at a time.`}
+                    isCompact
+                    actions={
+                      <Button
+                        label={questionLabels.setup}
+                        variant="primary"
+                        isLoading={asking === "setup"}
+                        onClick={() => void ask("setup")}
+                      />
+                    }
+                  />
+                ) : (
+                  <EmptyState
+                    title="Nothing to report yet"
+                    description={`${buddy.name} will note each round, each clean loop, and anything that needs you. Ask a question below any time.`}
+                    isCompact
+                  />
+                )
               }
             >
               {notes.flatMap((note, index) => {

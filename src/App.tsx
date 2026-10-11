@@ -221,6 +221,13 @@ export default function App() {
     setTab(r ? "chat" : "overview");
     setPage("inbox");
   };
+  // Bit's setup help, while Bit is on.
+  const setUpWithBit = buddyOf(s.settings).enabled
+    ? () => {
+        setPage("buddy");
+        void action("ask_buddy", { question: "setup" });
+      }
+    : undefined;
   const handlers = {
     onChoose: choose,
     onRepositories: () => setPage("repositories"),
@@ -563,6 +570,7 @@ export default function App() {
                       searchRef={searchRef}
                       onChoose={choose}
                       onRepositories={() => setPage("repositories")}
+                      onSetUp={setUpWithBit}
                     />
                   </LayoutPanel>
                 }
@@ -612,7 +620,10 @@ export default function App() {
                       }}
                     />
                   ) : page === "repositories" ? (
-                    <Repositories onScans={() => setPage("scans")} />
+                    <Repositories
+                      onScans={() => setPage("scans")}
+                      onSetUp={setUpWithBit}
+                    />
                   ) : page === "buddy" ? (
                     <BuddyPage
                       onSettings={() => setPage("settings")}
