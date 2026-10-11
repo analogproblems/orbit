@@ -226,6 +226,39 @@ pub struct Review {
     /// Requests Orbit declined because no one approved them in time.
     #[serde(default)]
     pub declined_approvals: Vec<String>,
+    /// The setup and checks Orbit ran in the repository's dev container
+    /// before the review, which the reviewer is given. None when the
+    /// repository doesn't use its dev container.
+    #[serde(default)]
+    pub checks: Option<ContainerChecks>,
+}
+/// What running the setup and checks in a dev container produced.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContainerChecks {
+    /// The image they ran in, named after the recipe it was built from.
+    pub image: String,
+    pub network: bool,
+    pub setup: Option<CheckStep>,
+    /// None when there is no check command, or setup failed.
+    pub check: Option<CheckStep>,
+}
+/// One command run in a dev container.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckStep {
+    pub command: String,
+    /// None when it was stopped at its time limit or couldn't report one.
+    pub exit_code: Option<i32>,
+    pub timed_out: bool,
+    pub seconds: u64,
+    /// The end of what it printed, standard output and error together.
+    pub output: String,
+}
+impl CheckStep {
+    pub fn passed(&self) -> bool {
+        self.exit_code == Some(0) && !self.timed_out
+    }
 }
 /// Where publication will put each finding of a structured run, shown before
 /// it is published.
@@ -677,6 +710,7 @@ impl Review {
             review_id: None,
             inline_comments: vec![],
             declined_approvals: vec![],
+            checks: None,
         }
     }
     /// Credential-like text in the report and in the structured findings.
@@ -822,6 +856,19 @@ pub struct Repository {
     /// Who reviews this repository's pull requests.
     #[serde(default)]
     pub provider: Provider,
+    /// Run the setup and check commands in the repository's dev container.
+    #[serde(default)]
+    pub dev_container: DevContainer,
+}
+/// Running a repository's setup and checks in its dev container, built from
+/// the base commit's `.devcontainer/` (see `crate::devcontainer`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DevContainer {
+    pub enabled: bool,
+    /// Runs after the setup command, such as `npm test`. Empty runs only
+    /// the setup command.
+    pub check_command: String,
 }
 pub const MAX_APPROVAL_MINUTES: u32 = 1440;
 fn default_round_limit() -> u32 {
@@ -1014,10 +1061,25 @@ impl Settings {
             if repo.setup_command.len() > 10000 {
                 return Err("Setup command is too long.".into());
             }
-            if repo.provider != Provider::Codex && !repo.setup_command.trim().is_empty() {
+            if repo.dev_container.check_command.len() > 10000 {
+                return Err("Check command is too long.".into());
+            }
+            if repo.provider != Provider::Codex
+                && !repo.dev_container.enabled
+                && !repo.setup_command.trim().is_empty()
+            {
                 return Err(format!(
-                    "{} reviews can't run a setup command. Clear the setup command for {} or review it with Codex.",
+                    "{} reviews can't run a setup command outside a dev container. Clear the setup command for {}, run it in the repository's dev container, or review it with Codex.",
                     repo.provider.label(),
+                    repo.name
+                ));
+            }
+            if repo.dev_container.enabled
+                && repo.setup_command.trim().is_empty()
+                && repo.dev_container.check_command.trim().is_empty()
+            {
+                return Err(format!(
+                    "Add a setup or check command for {}'s dev container, or turn it off.",
                     repo.name
                 ));
             }
@@ -1098,6 +1160,8 @@ pub struct Snapshot {
     pub claude_models: Vec<Value>,
     /// The Antigravity CLI, as last checked.
     pub antigravity: CliStatus,
+    /// Docker and the Dev Container CLI, as last checked.
+    pub dev_containers: CliStatus,
     /// The models Antigravity offered when last checked, in the shape of
     /// `models`.
     pub antigravity_models: Vec<Value>,
@@ -1381,6 +1445,7 @@ pub(crate) mod tests {
             approval_minutes: 0,
             keep_updated: false,
             provider: Default::default(),
+            dev_container: Default::default(),
         });
         assert!(eligible(&p, &s));
         let mut fork = p.clone();
@@ -1522,6 +1587,7 @@ pub(crate) mod tests {
             approval_minutes: 0,
             keep_updated: false,
             provider: Provider::Claude,
+            dev_container: Default::default(),
         });
         assert!(s.validate().unwrap_err().contains("setup command"));
         s.repositories[0].setup_command = " ".into();
@@ -1529,5 +1595,37 @@ pub(crate) mod tests {
         s.repositories[0].setup_command = "npm ci".into();
         s.repositories[0].provider = Provider::Codex;
         assert!(s.validate().is_ok());
+    }
+    #[test]
+    fn a_dev_container_runs_setup_for_any_reviewer_but_needs_a_command() {
+        let mut s = Settings::default();
+        s.repositories.push(Repository {
+            name: "acme/app".into(),
+            path: "/tmp/app".into(),
+            automatic: false,
+            setup_command: "npm ci".into(),
+            network_access: false,
+            round_limit: 4,
+            approval_minutes: 0,
+            keep_updated: false,
+            provider: Provider::Antigravity,
+            dev_container: DevContainer {
+                enabled: true,
+                check_command: String::new(),
+            },
+        });
+        assert!(s.validate().is_ok());
+        s.repositories[0].setup_command = String::new();
+        let error = s.validate().unwrap_err();
+        assert!(error.contains("Add a setup or check command"), "{error}");
+        s.repositories[0].dev_container.check_command = "npm test".into();
+        assert!(s.validate().is_ok());
+        s.repositories[0].dev_container.check_command = "x".repeat(10001);
+        assert!(s.validate().unwrap_err().contains("too long"));
+        // Older settings have no dev container, and stay as they were.
+        let mut saved = serde_json::to_value(&s.repositories[0]).unwrap();
+        saved.as_object_mut().unwrap().remove("devContainer");
+        let repo: Repository = serde_json::from_value(saved).unwrap();
+        assert_eq!(repo.dev_container, DevContainer::default());
     }
 }

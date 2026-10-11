@@ -87,6 +87,7 @@ async fn antigravity_review(mode: &str) -> Setup {
             approval_minutes: 0,
             keep_updated: false,
             provider: Provider::Antigravity,
+            dev_container: Default::default(),
         });
         let mut review = Review::new(&pr, &s.settings, false);
         review.status = "preparing".into();
@@ -570,4 +571,38 @@ async fn refuses_a_large_change_whose_file_the_pull_request_already_has() {
         std::fs::read_to_string(t.worktree.join(".orbit-change.diff")).unwrap(),
         "x"
     );
+}
+
+#[tokio::test]
+async fn the_review_prompt_carries_dev_container_results() {
+    let t = antigravity_review("ok").await;
+    let log = logged(&t, "ok");
+    t.e.update(|s| {
+        s.reviews[0].checks = Some(ContainerChecks {
+            image: "orbit-devcontainer:a.b-abc".into(),
+            network: false,
+            setup: None,
+            check: Some(CheckStep {
+                command: "cargo test".into(),
+                exit_code: Some(101),
+                timed_out: false,
+                seconds: 9,
+                output: "test parse ... FAILED".into(),
+            }),
+        })
+    })
+    .await;
+    t.e.start_cli_review(&t.id, &t.worktree).await.unwrap();
+    wait_until(&t.e, |r| r.status == "ready").await;
+    let calls = calls(&log);
+    let (_, review) = &calls[0];
+    assert!(review.contains("fn first() {}"), "{review}");
+    assert!(
+        review.contains("Checks (`cargo test`): failed with exit code 101"),
+        "{review}"
+    );
+    assert!(review.contains("  test parse ... FAILED"), "{review}");
+    // The extraction turn doesn't repeat them.
+    let (_, extraction) = &calls[1];
+    assert!(!extraction.contains("orbit-checks-"), "{extraction}");
 }

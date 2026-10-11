@@ -23,6 +23,7 @@ async fn claude_review(mode: &str) -> (tempfile::TempDir, Arc<Engine>, String, P
             approval_minutes: 0,
             keep_updated: false,
             provider: Provider::Claude,
+            dev_container: Default::default(),
         });
         let mut review = Review::new(&pr, &s.settings, false);
         review.status = "preparing".into();
@@ -352,6 +353,7 @@ async fn state_saved_before_providers_restores_as_codex() {
         approval_minutes: 0,
         keep_updated: false,
         provider: Provider::Codex,
+        dev_container: Default::default(),
     });
     let mut review = Review::new(&pr, &s.settings, false);
     review.status = "ready".into();
@@ -410,4 +412,60 @@ async fn refuses_to_review_without_claudes_sandbox() {
         .count();
     assert_eq!(turns, 1);
     assert!(e.cli_turns.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn extraction_weighs_dev_container_results_with_read_only_tools() {
+    let (d, e, id, worktree) = claude_review("ok").await;
+    let log = d.path().join("calls.log");
+    e.use_claude(fake(&format!("ok@{}", log.display())));
+    e.update(|s| {
+        s.reviews[0].checks = Some(ContainerChecks {
+            image: "orbit-devcontainer:a.b-abc".into(),
+            network: false,
+            setup: None,
+            check: Some(CheckStep {
+                command: "npm test".into(),
+                exit_code: Some(1),
+                timed_out: false,
+                seconds: 2,
+                output: "expected 2, got 3".into(),
+            }),
+        })
+    })
+    .await;
+    e.start_cli_review(&id, &worktree).await.unwrap();
+    wait_until(&e, |r| r.status == "ready").await;
+    let calls = calls(&log);
+    let (review, extraction) = (&calls[0], &calls[1]);
+    // `/code-review` runs as it always does.
+    assert_eq!(
+        after(review, "-p"),
+        format!("/code-review high {}...HEAD", "b".repeat(40))
+    );
+    let prompt = after(extraction, "-p");
+    assert!(
+        prompt.contains("The repository's checks also ran"),
+        "{prompt}"
+    );
+    assert!(prompt.contains("  expected 2, got 3"), "{prompt}");
+    // No earlier round, so nothing to classify.
+    assert!(!prompt.contains("This pull request was reviewed before"));
+    assert!(after(extraction, "--tools").contains("Read"));
+    assert!(!after(extraction, "--tools").contains("Edit"));
+}
+
+#[tokio::test]
+async fn claude_reviews_may_run_setup_in_a_dev_container() {
+    let (_d, e, id, _worktree) = claude_review("ok").await;
+    e.update(|s| {
+        let repo = &mut s.settings.repositories[0];
+        repo.setup_command = "npm ci".into();
+        repo.dev_container.enabled = true;
+    })
+    .await;
+    // Preparation gets past the setup command and stops at the clone, which
+    // has no `origin` in this test.
+    let error = e.prepare(&id).await.unwrap_err();
+    assert!(!error.contains("setup command"), "{error}");
 }
