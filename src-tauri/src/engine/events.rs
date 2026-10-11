@@ -62,6 +62,22 @@ impl ReviewEvent {
                     .unwrap_or("command")
                     .to_string(),
             ),
+            "item/started" if in_box(&p["item"]) => Self::CommandStarted(box_command(
+                p["item"]["arguments"]["command"]
+                    .as_str()
+                    .unwrap_or("command"),
+            )),
+            "item/completed" if in_box(&p["item"]) => {
+                let item = &p["item"];
+                Self::CommandOutput(match item["result"]["content"].as_array() {
+                    Some(content) => content
+                        .iter()
+                        .filter_map(|c| c["text"].as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    None => text(&item["error"]["message"]),
+                })
+            }
             "item/completed" => {
                 let item = &p["item"];
                 match item["type"].as_str().unwrap_or("") {
@@ -85,6 +101,17 @@ impl ReviewEvent {
     }
 }
 
+/// Whether a Codex item is a call to Orbit's dev container tool.
+fn in_box(item: &Value) -> bool {
+    item["type"] == "mcpToolCall"
+        && item["server"] == crate::boxtool::SERVER
+        && item["tool"] == crate::boxtool::TOOL
+}
+/// A command the reviewer ran in the dev container, as the chat shows it.
+pub(super) fn box_command(command: &str) -> String {
+    format!("{command} (in the dev container)")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,6 +133,30 @@ mod tests {
         );
         assert_eq!(
             event("item/started", json!({"item":{"type":"reasoning"}})),
+            ReviewEvent::Activity
+        );
+        // Calls to Orbit's dev container tool show like commands.
+        let call = json!({"type":"mcpToolCall","server":"orbit_box","tool":"run","arguments":{"command":"npm test"}});
+        assert_eq!(
+            event("item/started", json!({"item": call})),
+            ReviewEvent::CommandStarted("npm test (in the dev container)".into())
+        );
+        let mut done = call.clone();
+        done["result"] = json!({"content":[{"type":"text","text":"passed in 3s"}]});
+        assert_eq!(
+            event("item/completed", json!({"item": done})),
+            ReviewEvent::CommandOutput("passed in 3s".into())
+        );
+        let mut failed = call.clone();
+        failed["error"] = json!({"message":"refused"});
+        assert_eq!(
+            event("item/completed", json!({"item": failed})),
+            ReviewEvent::CommandOutput("refused".into())
+        );
+        let mut other = call;
+        other["server"] = json!("someone_else");
+        assert_eq!(
+            event("item/started", json!({"item": other})),
             ReviewEvent::Activity
         );
         assert_eq!(

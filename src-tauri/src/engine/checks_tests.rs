@@ -103,6 +103,7 @@ async fn review_with_recipe(recipe: bool) -> Setup {
             dev_container: DevContainer {
                 enabled: true,
                 check_command: "cat setup.txt".into(),
+                reviewer_tool: false,
             },
         });
         let mut review = Review::new(&pr, &s.settings, false);
@@ -126,8 +127,11 @@ async fn review_with_recipe(recipe: bool) -> Setup {
     }
 }
 async fn run(t: &Setup) -> Result<(), String> {
+    run_keeping(t, false).await
+}
+async fn run_keeping(t: &Setup, keep: bool) -> Result<(), String> {
     let repo = t.e.snapshot().await.settings.repositories[0].clone();
-    t.e.run_container_checks(&t.id, &repo, &t.clone, &t.worktree, &t.base)
+    t.e.run_container_checks(&t.id, &repo, &t.clone, &t.worktree, &t.base, keep)
         .await
 }
 
@@ -251,7 +255,7 @@ async fn stopping_a_review_stops_its_running_setup_and_removes_its_container() {
             t.base.clone(),
         );
         tokio::spawn(async move {
-            e.run_container_checks(&id, &repo, &clone, &worktree, &base)
+            e.run_container_checks(&id, &repo, &clone, &worktree, &base, false)
                 .await
         })
     };
@@ -306,4 +310,65 @@ async fn reports_docker_and_removes_leftovers_at_launch() {
     let status = t.e.snapshot().await.dev_containers;
     assert!(!status.ready);
     assert!(status.error.unwrap().contains("Docker daemon"));
+}
+
+#[tokio::test]
+async fn keeps_the_container_for_the_reviewer_until_the_review_ends() {
+    let t = review_with_recipe(true).await;
+    run_keeping(&t, true).await.unwrap();
+    let r = t.e.snapshot().await.reviews[0].clone();
+    // The checks still ran first, and their results are kept.
+    assert!(r.checks.as_ref().unwrap().check.as_ref().unwrap().passed());
+    assert!(r.messages.iter().any(|m| m
+        .text
+        .contains("The reviewer can run its own commands there")));
+    let container = t
+        .docker
+        .join("containers")
+        .join(devcontainer::container(&t.id));
+    assert!(container.exists());
+    let server = t.e.box_server(&t.id).unwrap();
+    assert_eq!(server.spec.container, devcontainer::container(&t.id));
+    let repo = t.e.snapshot().await.prs[0].repo.clone();
+    assert_eq!(
+        server.spec.folder,
+        format!("/workspaces/{}", repo.rsplit('/').next().unwrap())
+    );
+    // The setup's files are there for the reviewer.
+    assert!(container
+        .join("fs")
+        .join(server.spec.folder.trim_start_matches('/'))
+        .join("setup.txt")
+        .exists());
+    // A running review keeps it; an ended one loses it.
+    t.e.close_boxes().await;
+    assert!(container.exists());
+    t.e.update(|s| s.reviews[0].status = "ready".into()).await;
+    t.e.close_boxes().await;
+    assert!(!container.exists());
+    assert!(t.e.box_server(&t.id).is_none());
+}
+
+#[tokio::test]
+async fn the_reviewers_container_needs_no_commands_and_goes_when_stopped() {
+    let t = review_with_recipe(true).await;
+    t.e.update(|s| {
+        let repo = &mut s.settings.repositories[0];
+        repo.setup_command.clear();
+        repo.dev_container.check_command.clear();
+        repo.dev_container.reviewer_tool = true;
+    })
+    .await;
+    run_keeping(&t, true).await.unwrap();
+    let r = t.e.snapshot().await.reviews[0].clone();
+    assert!(r.checks.is_none());
+    assert!(!r.messages.iter().any(|m| m.text.starts_with("Running ")));
+    let container = t
+        .docker
+        .join("containers")
+        .join(devcontainer::container(&t.id));
+    assert!(container.exists());
+    t.e.cancel(&t.id).await.unwrap();
+    assert!(!container.exists());
+    assert!(t.e.box_server(&t.id).is_none());
 }

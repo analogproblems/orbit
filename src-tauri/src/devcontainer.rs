@@ -202,16 +202,110 @@ pub struct Run<'a> {
 /// Copies the worktree into a new container from `image`, runs the setup
 /// command and then the check command, and removes the container.
 pub async fn run_checks(tools: &Tools, plan: Run<'_>) -> Result<ContainerChecks, String> {
-    let user = user(tools, plan.image).await?;
-    let container = Container::new(tools, plan.id);
-    let result = async {
-        container.start(&plan).await?;
-        in_container(tools, &plan, &container.name, user).await
-    }
-    .await;
-    container.remove().await;
+    let opened = open(tools, &plan).await?;
+    let result = opened.checks(tools, plan.setup, plan.check).await;
+    opened.remove().await;
     result
 }
+
+/// A review's container with the pull request copied in, kept while the
+/// reviewer can run commands in it (see `crate::boxtool`). It is removed by
+/// `remove`, or when this is dropped.
+pub struct Opened {
+    container: Container,
+    /// Who commands run as; None is the image's default, root.
+    pub user: Option<String>,
+    /// The copy of the pull request in the container.
+    pub folder: String,
+    image: String,
+    network: bool,
+}
+
+/// Starts a new container from `image` and copies the worktree into it.
+pub async fn open(tools: &Tools, plan: &Run<'_>) -> Result<Opened, String> {
+    let user = user(tools, plan.image).await?;
+    let container = Container::new(tools, plan.id);
+    let folder = format!(
+        "/workspaces/{}",
+        plan.repo.rsplit('/').next().unwrap_or("repository")
+    );
+    let prepared = async {
+        container.start(plan).await?;
+        copy_in(tools, plan, &container.name, user.as_deref(), &folder).await
+    }
+    .await;
+    if let Err(error) = prepared {
+        container.remove().await;
+        return Err(error);
+    }
+    Ok(Opened {
+        container,
+        user,
+        folder,
+        image: plan.image.to_string(),
+        network: plan.network,
+    })
+}
+impl Opened {
+    /// A container for review `id` that was never started, for tests.
+    #[cfg(test)]
+    pub fn unstarted(tools: &Tools, id: &str) -> Self {
+        Self {
+            container: Container::new(tools, id),
+            user: None,
+            folder: "/workspaces/b".into(),
+            image: IMAGE.into(),
+            network: false,
+        }
+    }
+    /// The container's name.
+    pub fn name(&self) -> &str {
+        &self.container.name
+    }
+    pub fn network(&self) -> bool {
+        self.network
+    }
+    /// Runs the setup command and then the check command; an empty one is
+    /// skipped, and the checks don't run when setup failed.
+    pub async fn checks(
+        &self,
+        tools: &Tools,
+        setup: &str,
+        check: &str,
+    ) -> Result<ContainerChecks, String> {
+        let step = |command: String, timeout: Duration| async move {
+            exec(
+                &tools.docker,
+                self.name(),
+                self.user.as_deref(),
+                &self.folder,
+                &command,
+                timeout,
+            )
+            .await
+        };
+        let setup = match setup.trim() {
+            "" => None,
+            command => Some(step(command.into(), SETUP_TIMEOUT).await?),
+        };
+        let check = match check.trim() {
+            "" => None,
+            _ if setup.as_ref().is_some_and(|s| !s.passed()) => None,
+            command => Some(step(command.into(), CHECK_TIMEOUT).await?),
+        };
+        Ok(ContainerChecks {
+            image: self.image.clone(),
+            network: self.network,
+            setup,
+            check,
+        })
+    }
+    /// Removes the container.
+    pub async fn remove(self) {
+        self.container.remove().await;
+    }
+}
+
 /// The container of a review's checks.
 pub fn container(id: &str) -> String {
     format!("orbit-checks-{id}")
@@ -302,19 +396,18 @@ async fn remove(docker: &Launcher, name: &str, starting: &tokio::sync::Mutex<()>
     let _ = run(docker, &["rm", "--force", name], DOCKER_TIMEOUT).await;
 }
 
-async fn in_container(
+/// Copies the worktree into the container's workspace `folder`, owned by
+/// `user`.
+async fn copy_in(
     tools: &Tools,
     plan: &Run<'_>,
     name: &str,
-    user: Option<String>,
-) -> Result<ContainerChecks, String> {
-    let folder = format!(
-        "/workspaces/{}",
-        plan.repo.rsplit('/').next().unwrap_or("repository")
-    );
+    user: Option<&str>,
+    folder: &str,
+) -> Result<(), String> {
     docker(
         tools,
-        &["exec", "--user", "root", name, "mkdir", "-p", &folder],
+        &["exec", "--user", "root", name, "mkdir", "-p", folder],
         "make the workspace folder",
     )
     .await?;
@@ -346,55 +439,39 @@ async fn in_container(
     )
     .await?;
     // `docker cp` leaves the files to root.
-    if let Some(user) = user.as_deref().filter(|u| !is_root(u)) {
+    if let Some(user) = user.filter(|u| !is_root(u)) {
         docker(
             tools,
-            &["exec", "--user", "root", name, "chown", "-R", user, &folder],
+            &["exec", "--user", "root", name, "chown", "-R", user, folder],
             "give the workspace folder to the container's user",
         )
         .await?;
     }
-    let step = |command: &str, timeout: Duration| {
-        let mut args = vec!["exec".to_string()];
-        if let Some(user) = &user {
-            args.extend(["--user".into(), user.clone()]);
-        }
-        args.extend([
-            "--workdir".into(),
-            folder.clone(),
-            name.to_string(),
-            "/bin/sh".into(),
-            "-c".into(),
-            command.to_string(),
-        ]);
-        let command = command.to_string();
-        async move {
-            let args: Vec<&str> = args.iter().map(String::as_str).collect();
-            let started = Instant::now();
-            let out = run(&tools.docker, &args, timeout).await?;
-            Ok::<_, String>(CheckStep {
-                command,
-                exit_code: if out.timed_out { None } else { out.status },
-                timed_out: out.timed_out,
-                seconds: started.elapsed().as_secs(),
-                output: out.output,
-            })
-        }
-    };
-    let setup = match plan.setup.trim() {
-        "" => None,
-        command => Some(step(command, SETUP_TIMEOUT).await?),
-    };
-    let check = match plan.check.trim() {
-        "" => None,
-        _ if setup.as_ref().is_some_and(|s| !s.passed()) => None,
-        command => Some(step(command, CHECK_TIMEOUT).await?),
-    };
-    Ok(ContainerChecks {
-        image: plan.image.to_string(),
-        network: plan.network,
-        setup,
-        check,
+    Ok(())
+}
+/// Runs `command` with the shell in `folder` of the container `name`, as
+/// `user`, and stops it after `timeout`.
+pub async fn exec(
+    docker: &Launcher,
+    name: &str,
+    user: Option<&str>,
+    folder: &str,
+    command: &str,
+    timeout: Duration,
+) -> Result<CheckStep, String> {
+    let mut args = vec!["exec"];
+    if let Some(user) = user {
+        args.extend(["--user", user]);
+    }
+    args.extend(["--workdir", folder, name, "/bin/sh", "-c", command]);
+    let started = Instant::now();
+    let out = run(docker, &args, timeout).await?;
+    Ok(CheckStep {
+        command: command.to_string(),
+        exit_code: if out.timed_out { None } else { out.status },
+        timed_out: out.timed_out,
+        seconds: started.elapsed().as_secs(),
+        output: out.output,
     })
 }
 /// Runs a Docker command that has to work.

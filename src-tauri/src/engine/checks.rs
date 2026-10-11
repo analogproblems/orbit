@@ -4,8 +4,14 @@ use super::{
     worktrees::{git, remove_worktree},
     Engine,
 };
-use crate::{devcontainer, types::*};
+use crate::{boxtool, devcontainer, types::*};
 use std::path::Path;
+
+/// A review's dev container, kept while the reviewer can run commands in it.
+pub(super) struct ReviewBox {
+    opened: devcontainer::Opened,
+    pub(super) server: boxtool::Server,
+}
 
 impl Engine {
     /// Checks Docker and the Dev Container CLI, and records whether
@@ -50,8 +56,10 @@ impl Engine {
     }
     /// Runs the repository's setup and check commands on the review's
     /// worktree in its dev container, built from the base commit's recipe,
-    /// and keeps the results for the reviewer. A failing command is a
-    /// result; a container that can't be built or started fails the review.
+    /// and keeps the results for the reviewer. With `keep`, the container
+    /// stays for the reviewer's own commands until the review ends. A
+    /// failing command is a result; a container that can't be built or
+    /// started fails the review.
     pub(super) async fn run_container_checks(
         &self,
         id: &str,
@@ -59,6 +67,7 @@ impl Engine {
         clone: &Path,
         worktree: &Path,
         base_sha: &str,
+        keep: bool,
     ) -> Result<(), String> {
         let tools = self.dev_tools.lock().unwrap().clone();
         let recipe = git(
@@ -100,36 +109,67 @@ impl Engine {
             }
         }
         self.live(id).await?;
-        self.say(
+        let plan = devcontainer::Run {
             id,
-            format!(
-                "Running {} in the dev container {image}, with network access {}.",
-                match (
-                    repo.setup_command.trim().is_empty(),
-                    repo.dev_container.check_command.trim().is_empty()
-                ) {
-                    (false, false) => "the setup and check commands",
-                    (false, true) => "the setup command",
-                    _ => "the check command",
-                },
-                if repo.network_access { "on" } else { "off" }
-            ),
-        )
-        .await;
-        let checks = devcontainer::run_checks(
-            &tools,
-            devcontainer::Run {
+            image: &image,
+            repo: &repo.name,
+            worktree,
+            network: repo.network_access,
+            setup: &repo.setup_command,
+            check: &repo.dev_container.check_command,
+        };
+        let commands = !repo.setup_command.trim().is_empty()
+            || !repo.dev_container.check_command.trim().is_empty();
+        let checks = if keep {
+            let opened = devcontainer::open(&tools, &plan).await?;
+            let server = boxtool::Server::new(boxtool::Spec {
+                docker: tools.docker.clone(),
+                container: opened.name().into(),
+                user: opened.user.clone(),
+                folder: opened.folder.clone(),
+                network: opened.network(),
+            });
+            let server = match server {
+                Ok(server) => server,
+                Err(error) => {
+                    opened.remove().await;
+                    return Err(error);
+                }
+            };
+            self.say(
                 id,
-                image: &image,
-                repo: &repo.name,
-                worktree,
-                network: repo.network_access,
-                setup: &repo.setup_command,
-                check: &repo.dev_container.check_command,
-            },
-        )
-        .await?;
+                format!(
+                    "Started the dev container {image}, with network access {}. The reviewer can run its own commands there during the review.",
+                    on_off(repo.network_access)
+                ),
+            )
+            .await;
+            let checks = if commands {
+                self.say(id, running(repo, &image)).await;
+                match opened.checks(&tools, plan.setup, plan.check).await {
+                    Ok(checks) => Some(checks),
+                    Err(error) => {
+                        opened.remove().await;
+                        return Err(error);
+                    }
+                }
+            } else {
+                None
+            };
+            // The container goes when the review ends, however it ends.
+            self.boxes
+                .lock()
+                .unwrap()
+                .insert(id.to_string(), ReviewBox { opened, server });
+            checks
+        } else {
+            self.say(id, running(repo, &image)).await;
+            Some(devcontainer::run_checks(&tools, plan).await?)
+        };
         self.live(id).await?;
+        let Some(checks) = checks else {
+            return Ok(());
+        };
         let summary = devcontainer::summary(&checks);
         self.update(|s| {
             if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
@@ -176,12 +216,92 @@ impl Engine {
         }
         built
     }
-    async fn say(&self, id: &str, text: String) {
+    /// The reviewer's tool for a review whose container is kept.
+    pub(super) fn box_server(&self, id: &str) -> Option<boxtool::Server> {
+        self.boxes.lock().unwrap().get(id).map(|b| b.server.clone())
+    }
+    /// Keeps a container for review `id`'s reviewer, for tests.
+    #[cfg(test)]
+    pub(super) fn keep_box(&self, id: &str, opened: devcontainer::Opened) -> boxtool::Server {
+        let server = boxtool::Server::new(boxtool::Spec {
+            docker: self.dev_tools.lock().unwrap().docker.clone(),
+            container: opened.name().into(),
+            user: opened.user.clone(),
+            folder: opened.folder.clone(),
+            network: opened.network(),
+        })
+        .unwrap();
+        self.boxes.lock().unwrap().insert(
+            id.into(),
+            ReviewBox {
+                opened,
+                server: server.clone(),
+            },
+        );
+        server
+    }
+    /// Removes the containers of reviews that have ended.
+    pub(super) async fn close_boxes(&self) {
+        if self.boxes.lock().unwrap().is_empty() {
+            return;
+        }
+        let running: Vec<String> = {
+            let s = self.state.lock().await;
+            s.reviews
+                .iter()
+                .filter(|r| active(&r.status))
+                .map(|r| r.id.clone())
+                .collect()
+        };
+        let ended: Vec<ReviewBox> = {
+            let mut boxes = self.boxes.lock().unwrap();
+            let ids: Vec<String> = boxes
+                .keys()
+                .filter(|id| !running.contains(id))
+                .cloned()
+                .collect();
+            ids.iter().filter_map(|id| boxes.remove(id)).collect()
+        };
+        for ended in ended {
+            ended.opened.remove().await;
+        }
+    }
+    /// Removes a review's container now, such as when it is stopped.
+    pub(super) async fn close_box(&self, id: &str) {
+        let ended = self.boxes.lock().unwrap().remove(id);
+        if let Some(ended) = ended {
+            ended.opened.remove().await;
+        }
+    }
+    pub(super) async fn say(&self, id: &str, text: String) {
         self.update(|s| {
             if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
                 r.messages.push(Message::new("system", text));
             }
         })
         .await;
+    }
+}
+
+/// What runs in the container, as the review's chat says it.
+fn running(repo: &Repository, image: &str) -> String {
+    format!(
+        "Running {} in the dev container {image}, with network access {}.",
+        match (
+            repo.setup_command.trim().is_empty(),
+            repo.dev_container.check_command.trim().is_empty()
+        ) {
+            (false, false) => "the setup and check commands",
+            (false, true) => "the setup command",
+            _ => "the check command",
+        },
+        on_off(repo.network_access)
+    )
+}
+fn on_off(on: bool) -> &'static str {
+    if on {
+        "on"
+    } else {
+        "off"
     }
 }

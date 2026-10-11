@@ -241,15 +241,20 @@ function CloneUpdateStatus({ update }: { update?: CloneUpdate }) {
 /** How a repository's reviews are set up, in one line. */
 function environment(repo: Repository) {
   const container = repo.devContainer?.enabled;
+  const inBox = container
+    ? repo.devContainer?.reviewerTool && repo.provider !== "antigravity"
+      ? "Reviewer runs commands in dev container"
+      : "Setup and checks in dev container"
+    : "";
   if (repo.provider && repo.provider !== "codex")
     return `Reviewed by ${providerLabels[repo.provider]} · Sandboxed worktree · ${
       container
-        ? `Setup and checks in dev container · ${repo.networkAccess ? "Container network enabled" : "No network"}`
+        ? `${inBox} · ${repo.networkAccess ? "Container network enabled" : "No network"}`
         : "No network"
     }`;
   return `Reviewed by Codex · ${
     container
-      ? "Setup and checks in dev container"
+      ? inBox
       : repo.setupCommand
         ? "Custom environment setup"
         : "Host tools + isolated worktree"
@@ -308,6 +313,7 @@ export function Repositories({
   const cliReviewer = reviewer !== "codex";
   const inContainer = editing?.devContainer?.enabled ?? false;
   const checkCommand = editing?.devContainer?.checkCommand ?? "";
+  const reviewerTool = editing?.devContainer?.reviewerTool ?? false;
   const close = (open: boolean) => {
     if (!open && !busy) setEditing(null);
   };
@@ -536,7 +542,7 @@ export function Repositories({
                       onChange={(enabled) =>
                         setEditing({
                           ...editing,
-                          devContainer: { checkCommand, enabled },
+                          devContainer: { checkCommand, enabled, reviewerTool },
                         })
                       }
                       description="Orbit builds a box from the base branch's .devcontainer/devcontainer.json, never the pull request's, copies the pull request into it, and runs the setup and check commands there, with none of your files or sign-ins. The reviewer gets the results and still works in its own sandbox. Needs Docker and the Dev Container CLI."
@@ -588,16 +594,46 @@ export function Repositories({
                             devContainer: {
                               enabled: true,
                               checkCommand: command,
+                              reviewerTool,
                             },
                           })
                         }
                         description="Runs after setup in the dev container. Thirty-minute timeout. The reviewer gets its result and the end of its output, and reports failures this pull request caused."
                         status={
-                          !checkCommand.trim() && !editing.setupCommand.trim()
+                          !checkCommand.trim() &&
+                          !editing.setupCommand.trim() &&
+                          !reviewerTool
                             ? {
                                 type: "error",
                                 message:
-                                  "Add a setup or check command to save.",
+                                  "Add a setup or check command, or let the reviewer run commands, to save.",
+                              }
+                            : undefined
+                        }
+                      />
+                    )}
+                    {inContainer && (
+                      <Switch
+                        label="Let the reviewer run commands in the dev container"
+                        value={reviewerTool}
+                        isDisabled={busy}
+                        onChange={(on) =>
+                          setEditing({
+                            ...editing,
+                            devContainer: {
+                              enabled: true,
+                              checkCommand,
+                              reviewerTool: on,
+                            },
+                          })
+                        }
+                        description="Orbit keeps the dev container for the whole review and gives the reviewer a tool to run its own commands there, such as tests, a build or the code itself, to check what it finds. The reviewer keeps running on this computer with your sign-in, which never goes into the container. The container is removed when the review ends."
+                        status={
+                          reviewerTool && reviewer === "antigravity"
+                            ? {
+                                type: "warning",
+                                message:
+                                  "Antigravity can't be given this tool, so its reviews won't use it. Codex and Claude reviews can.",
                               }
                             : undefined
                         }

@@ -1,6 +1,7 @@
 pub mod antigravity;
 pub mod ask;
 pub mod attention;
+pub mod boxtool;
 pub mod buddy;
 pub mod claude;
 pub mod cli;

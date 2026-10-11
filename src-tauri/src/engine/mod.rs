@@ -121,8 +121,8 @@ type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// (`set_up_repository`); `state` → `synced_repos`
 /// (`schedule`); `state` → `fixing` (`flush`); `state` → `asking`
 /// (`ask_buddy_anything`); `state` → `using` (`use_proposal`). `preparing`,
-/// `recovered_publications`, `status_sender`, `sending_statuses` and
-/// `stopping_scans` (`std` mutexes, like `preparing` and `fixing`) are
+/// `recovered_publications`, `status_sender`, `sending_statuses`,
+/// `boxes` and `stopping_scans` (`std` mutexes, like `preparing` and `fixing`) are
 /// otherwise only taken on their own.
 ///
 /// Known exception: `clean_worktrees_with` briefly holds a `git_lock` try-lock
@@ -175,6 +175,9 @@ pub struct Engine {
     antigravity: std::sync::Mutex<crate::antigravity::Setup>,
     /// How Docker and the Dev Container CLI are started; tests use fakes.
     dev_tools: std::sync::Mutex<crate::devcontainer::Tools>,
+    /// Dev containers kept for reviewers' own commands, by review; removed
+    /// when the review ends.
+    boxes: std::sync::Mutex<HashMap<String, checks::ReviewBox>>,
     /// One dev container image is built at a time, so two reviews of a
     /// repository don't build the same image.
     building: Mutex<()>,
@@ -323,6 +326,7 @@ impl Engine {
             claude_launcher: std::sync::Mutex::new(crate::claude::launcher()),
             antigravity: std::sync::Mutex::new(crate::antigravity::Setup::default()),
             dev_tools: std::sync::Mutex::new(Default::default()),
+            boxes: Default::default(),
             building: Mutex::new(()),
             cli_turns: std::sync::Mutex::new(HashMap::new()),
             fixing: std::sync::Mutex::new(vec![]),
@@ -511,6 +515,7 @@ impl Engine {
             self.schedule().await;
         }
         self.expire_approvals().await;
+        self.close_boxes().await;
         self.sync_commit_statuses().await;
     }
     pub async fn storage_usage(&self) -> Result<storage::StorageUsage, String> {
@@ -543,6 +548,10 @@ impl Engine {
             rpc.shutdown().await;
         }
         self.stop_all_cli_turns().await;
+        let ids: Vec<String> = self.boxes.lock().unwrap().keys().cloned().collect();
+        for id in ids {
+            self.close_box(&id).await;
+        }
         let _ = self.flush().await;
     }
 }

@@ -1502,8 +1502,18 @@ describe("initial loading and repository errors", () => {
     expect(check.getAttribute("aria-invalid")).toBe("true");
     await user().click(check);
     expect(
-      await within(dialog).findByText("Add a setup or check command to save."),
+      await within(dialog).findByText(
+        "Add a setup or check command, or let the reviewer run commands, to save.",
+      ),
     ).toBeTruthy();
+    // Or the reviewer runs its own commands there, which is off by default.
+    const tool = within(dialog).getByRole("switch", {
+      name: "Let the reviewer run commands in the dev container",
+    });
+    expect(tool).toHaveProperty("checked", false);
+    await user().click(tool);
+    expect(check.getAttribute("aria-invalid")).not.toBe("true");
+    await user().click(tool);
     await user().type(check, "npm test");
     expect(check.getAttribute("aria-invalid")).not.toBe("true");
     // Closing without saving keeps the saved settings.

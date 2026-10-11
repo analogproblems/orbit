@@ -1149,6 +1149,54 @@ async fn dev_container_results_go_into_custom_instructions() {
     }
 }
 #[tokio::test]
+async fn the_dev_container_tool_joins_the_review_thread() {
+    for prompt in [None, Some("Review against base with the previous round.")] {
+        let (d, e, rpc, id) = fixture().await;
+        let tools = crate::devcontainer::tests::fake(&d.path().join("docker"));
+        e.use_dev_tools(tools.clone());
+        e.update(|s| s.reviews[0].review_prompt = prompt.map(str::to_owned))
+            .await;
+        let server = e.keep_box(&id, crate::devcontainer::Opened::unstarted(&tools, &id));
+        // Codex lists Orbit's tool server for the thread, and no other.
+        let on = json!({"data":[{"name":crate::boxtool::SERVER,"runtimeStatus":"connected"}],"nextCursor":null});
+        configure(&rpc, json!({"mcpStatus": on})).await;
+        e.start_review_inference(&id, &rpc, d.path(), false)
+            .await
+            .unwrap();
+        let calls = requests(&rpc).await;
+        assert_eq!(calls[0]["method"], "thread/start");
+        assert_eq!(
+            calls[0]["params"]["config"]["mcp_servers"][crate::boxtool::SERVER],
+            server.codex()
+        );
+        let target = &calls[1]["params"]["target"];
+        assert_eq!(target["type"], "custom");
+        let instructions = target["instructions"].as_str().unwrap();
+        let start = match prompt {
+            None => "Review the code changes against the base branch".to_string(),
+            Some(p) => p.to_string(),
+        };
+        assert!(instructions.starts_with(&start), "{instructions}");
+        assert!(instructions.ends_with(&server.notes()), "{instructions}");
+        rpc.shutdown().await;
+    }
+}
+#[tokio::test]
+async fn a_review_with_the_tool_stops_when_codex_leaves_it_out() {
+    let (d, e, rpc, id) = fixture().await;
+    let tools = crate::devcontainer::tests::fake(&d.path().join("docker"));
+    e.use_dev_tools(tools.clone());
+    e.keep_box(&id, crate::devcontainer::Opened::unstarted(&tools, &id));
+    // Codex didn't start Orbit's tool server.
+    let error = e
+        .start_review_inference(&id, &rpc, d.path(), false)
+        .await
+        .unwrap_err();
+    assert!(error.contains("didn't keep orbit_box on"), "{error}");
+    assert_no_inference(&requests(&rpc).await);
+    rpc.shutdown().await;
+}
+#[tokio::test]
 async fn reads_the_usage_meter_and_hides_it_without_usage_windows() {
     let (_d, e, rpc, _) = fixture().await;
     let window = json!({"usedPercent":42,"windowDurationMins":10080,"resetsAt":1_800_000_000});
