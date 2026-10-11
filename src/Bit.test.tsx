@@ -4,7 +4,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import options from "../test-fixtures/buddy-options.json";
 import { Bit, bitColours, bitHats, moodLabels } from "./Bit";
-import { buddyTones, type BuddyHat, type Mood } from "./types";
+import {
+  buddyTones,
+  defaultBuddy,
+  fixLabels,
+  fixRuleLabels,
+  questionLabels,
+  type BuddyHat,
+  type Mood,
+} from "./types";
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
@@ -18,6 +26,15 @@ describe("Bit", () => {
     expect(Object.keys(bitColours)).toEqual(options.colours);
     expect(hats).toEqual(options.hats);
     expect(Object.keys(buddyTones)).toEqual(options.tones);
+    expect(Object.keys(fixRuleLabels)).toEqual(options.rules);
+    expect(Object.keys(fixLabels)).toEqual(options.fixes);
+    expect(Object.keys(questionLabels)).toEqual(options.questions);
+    // Every fix but a settings change has a rule, which starts on Ask first,
+    // under the same names the engine saves and accepts.
+    expect(Object.keys(defaultBuddy.rules)).toEqual(
+      options.fixes.filter((f) => f !== "turn_on_autopilot"),
+    );
+    expect(defaultBuddy.rules).toEqual(options.defaultRules);
   });
 
   it("draws every hat in every mood with theme colours only", () => {

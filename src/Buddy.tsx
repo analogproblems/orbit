@@ -1,7 +1,13 @@
 import { useState } from "react";
 import {
+  Banner,
   Button,
   Card,
+  ChatLayout,
+  ChatMessage,
+  ChatMessageBubble,
+  ChatMessageList,
+  ChatMessageMetadata,
   ClickableCard,
   EmptyState,
   Grid,
@@ -26,13 +32,21 @@ import {
   buddyMood,
   buddyOf,
   buddyTones,
+  fixDescriptions,
+  fixLabels,
+  fixRuleLabels,
   moodReason,
+  offeredFix,
+  questionLabels,
   withPatch,
   type Buddy,
   type BuddyHat,
   type BuddyNote,
   type BuddyTone,
+  type FixRule,
   type Mood,
+  type Question,
+  type RuledFix,
   type SettingsPatch,
 } from "./types";
 import { Bit, bitColours, bitHats, moodLabels } from "./Bit";
@@ -65,7 +79,8 @@ export function BuddyCard({
   const buddy = useBuddy();
   if (!buddy.enabled) return null;
   const mood = buddyMood(s);
-  const latest = s.buddyFeed?.notes.at(-1);
+  // What Bit last noticed; answers stay on its page.
+  const latest = s.buddyFeed?.notes.filter((n) => n.kind !== "answer").at(-1);
   if (collapsed)
     return (
       <SideNavItem
@@ -97,7 +112,119 @@ export function BuddyCard({
   );
 }
 
-/** Bit's notes, newest first. */
+/** A button for an open item's fix, unless you asked Bit to leave it to
+ * you, with the error if it fails. */
+function FixButton({ itemKey }: { itemKey: string | null | undefined }) {
+  const { snapshot: s, action } = useOrbit();
+  const [error, setError] = useState<string | null>(null);
+  const offered = offeredFix(s, itemKey);
+  if (!offered) return null;
+  return (
+    <VStack gap={2}>
+      <HStack>
+        <Button
+          label={fixLabels[offered.fix]}
+          size="sm"
+          clickAction={async () => {
+            setError(null);
+            const result = await action(
+              "use_fix",
+              { key: offered.item.key },
+              { quiet: true },
+            );
+            if (!result.ok) setError(result.error);
+          }}
+        />
+      </HStack>
+      {error && <Banner status="error" title={error} />}
+    </VStack>
+  );
+}
+
+/** Where a note leads: its loop, the repositories, or settings. Answers
+ * lead nowhere; their lines carry their own buttons. */
+function noteLink(note: BuddyNote) {
+  if (note.kind === "answer") return undefined;
+  if (note.prId) return "Open loop";
+  if (note.repo) return "Open repositories";
+  if (note.key || note.kind === "fixing" || note.kind === "fixed")
+    return "Open settings";
+  return undefined;
+}
+
+/** One note from Bit, with what it lists, its button and where it leads. */
+function NoteMessage({
+  note,
+  age,
+  onNote,
+}: {
+  note: BuddyNote;
+  age: number;
+  onNote: (note: BuddyNote) => void;
+}) {
+  const { snapshot: s } = useOrbit();
+  const buddy = useBuddy();
+  const link = noteLink(note);
+  return (
+    <ChatMessage
+      sender="assistant"
+      avatar={
+        <Bit
+          mood={buddyMood(s)}
+          colour={buddy.colour}
+          hat={buddy.hat}
+          size="xs"
+        />
+      }
+    >
+      <ChatMessageBubble
+        variant="ghost"
+        width="100%"
+        name={
+          <Text type="supporting" weight="semibold" color="secondary">
+            {buddy.name}
+          </Text>
+        }
+        metadata={
+          <ChatMessageMetadata
+            timestamp={<Timestamp value={note.at} {...recentTimestamp(age)} />}
+            footer={
+              link && (
+                <Button
+                  label={link}
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onNote(note)}
+                />
+              )
+            }
+          />
+        }
+      >
+        <VStack gap={2}>
+          <Text>{note.text}</Text>
+          {!!note.lines?.length && (
+            <List hasDividers aria-label={note.text}>
+              {note.lines.map((line, index) => (
+                <ListItem
+                  key={index}
+                  label={<Text>{line.text}</Text>}
+                  description={<FixButton itemKey={line.key} />}
+                />
+              ))}
+            </List>
+          )}
+          <FixButton itemKey={note.key} />
+        </VStack>
+      </ChatMessageBubble>
+    </ChatMessage>
+  );
+}
+
+const questions = Object.keys(questionLabels) as Question[];
+
+/** Bit's page: its face and mood, then one conversation that every window
+ * shares, with Bit's notes, your questions and Bit's answers. */
 export function BuddyPage({
   onNote,
   onSettings,
@@ -105,64 +232,113 @@ export function BuddyPage({
   onNote: (note: BuddyNote) => void;
   onSettings: () => void;
 }) {
-  const { snapshot: s } = useOrbit();
+  const { snapshot: s, action } = useOrbit();
   const buddy = useBuddy();
   const mood = buddyMood(s);
-  const notes = [...(s.buddyFeed?.notes ?? [])].reverse();
+  const notes = s.buddyFeed?.notes ?? [];
+  const [asking, setAsking] = useState<Question | null>(null);
+  const ask = async (question: Question) => {
+    setAsking(question);
+    await action("ask_buddy", { question });
+    setAsking(null);
+  };
   return (
-    <VStack gap={6} padding={6} maxWidth={760} className="content-page">
-      <HStack gap={4} vAlign="center">
-        <Bit
-          mood={mood}
-          colour={buddy.colour}
-          hat={buddy.hat}
-          size="lg"
-          label={`${buddy.name}, ${moodLabels[mood].toLowerCase()}`}
-        />
-        <VStack gap={2}>
-          <Heading level={2}>
-            {buddy.enabled
-              ? `${buddy.name} is ${moodLabels[mood].toLowerCase()}.`
-              : `${buddy.name} is turned off.`}
-          </Heading>
-          <Text color="secondary">
-            {buddy.enabled
-              ? moodReason(s, mood)
-              : "Turn your buddy on in Settings to get notes about your review loops."}
-          </Text>
-          <HStack>
-            <Button
-              label={
-                buddy.enabled ? `Customize ${buddy.name}` : "Open Settings"
-              }
-              variant="secondary"
-              onClick={onSettings}
-            />
-          </HStack>
-        </VStack>
-      </HStack>
-      {buddy.enabled &&
-        (notes.length ? (
-          <List hasDividers aria-label={`${buddy.name}'s notes`}>
-            {notes.map((note, index) => (
-              <ListItem
-                key={note.id}
-                label={note.text}
-                description={
-                  <Text type="supporting" color="secondary">
-                    <Timestamp value={note.at} {...recentTimestamp(index)} />
-                  </Text>
-                }
-                onClick={() => onNote(note)}
-              />
-            ))}
-          </List>
-        ) : (
-          <EmptyState
-            title="Nothing to report yet"
-            description={`${buddy.name} will note each round, each clean loop, and anything that needs you.`}
+    <VStack height="100%" className="buddy-page">
+      <VStack
+        gap={4}
+        padding={6}
+        paddingBlockEnd={2}
+        maxWidth={760}
+        className="content-page"
+      >
+        <HStack gap={4} vAlign="center">
+          <Bit
+            mood={mood}
+            colour={buddy.colour}
+            hat={buddy.hat}
+            size="lg"
+            label={`${buddy.name}, ${moodLabels[mood].toLowerCase()}`}
           />
-        ))}
+          <VStack gap={2}>
+            <Heading level={2}>
+              {buddy.enabled
+                ? `${buddy.name} is ${moodLabels[mood].toLowerCase()}.`
+                : `${buddy.name} is turned off.`}
+            </Heading>
+            <Text color="secondary">
+              {buddy.enabled
+                ? moodReason(s, mood)
+                : "Turn your buddy on in Settings to get notes about your review loops."}
+            </Text>
+            <HStack>
+              <Button
+                label={
+                  buddy.enabled ? `Customize ${buddy.name}` : "Open Settings"
+                }
+                variant="secondary"
+                onClick={onSettings}
+              />
+            </HStack>
+          </VStack>
+        </HStack>
+      </VStack>
+      {buddy.enabled && (
+        <VStack maxWidth={760} className="content-page buddy-chat">
+          <ChatLayout
+            composer={
+              <VStack gap={2} padding={3} className="buddy-chat-composer">
+                <Text type="supporting" color="secondary">
+                  Ask {buddy.name}
+                </Text>
+                <HStack gap={2} wrap="wrap">
+                  {questions.map((question) => (
+                    <Button
+                      key={question}
+                      label={questionLabels[question]}
+                      size="sm"
+                      variant="secondary"
+                      isLoading={asking === question}
+                      isDisabled={!!asking && asking !== question}
+                      onClick={() => void ask(question)}
+                    />
+                  ))}
+                </HStack>
+              </VStack>
+            }
+          >
+            <ChatMessageList
+              density="compact"
+              aria-label={`${buddy.name}'s notes`}
+              emptyState={
+                <EmptyState
+                  title="Nothing to report yet"
+                  description={`${buddy.name} will note each round, each clean loop, and anything that needs you. Ask a question below any time.`}
+                  isCompact
+                />
+              }
+            >
+              {notes.flatMap((note, index) => {
+                const message = (
+                  <NoteMessage
+                    key={note.id}
+                    note={note}
+                    age={notes.length - 1 - index}
+                    onNote={onNote}
+                  />
+                );
+                return note.question
+                  ? [
+                      <ChatMessage key={`${note.id}-asked`} sender="user">
+                        <ChatMessageBubble>{note.question}</ChatMessageBubble>
+                      </ChatMessage>,
+                      message,
+                    ]
+                  : [message];
+              })}
+            </ChatMessageList>
+          </ChatLayout>
+        </VStack>
+      )}
     </VStack>
   );
 }
@@ -348,7 +524,57 @@ export function BuddySettings() {
           </HStack>
           <SaveFeedback saveKey="buddy.personality" />
         </VStack>
+        <BuddyRules />
       </VStack>
     </Card>
+  );
+}
+
+const ruledFixes = Object.keys(fixDescriptions) as RuledFix[];
+
+/** What the buddy does about each fix it can do on its own. */
+function BuddyRules() {
+  const { updateSettings, saves } = useOrbit();
+  const buddy = useBuddy();
+  const key = (fix: RuledFix) => `buddy.rules.${fix}`;
+  return (
+    <VStack gap={4}>
+      <VStack gap={2}>
+        <Heading level={4}>What {buddy.name} can do</Heading>
+        <Text color="secondary">
+          When something needs you, {buddy.name} can use Orbit’s own controls.
+          With <Text weight="semibold">Do it</Text>, {buddy.name} does it and
+          tells you. With <Text weight="semibold">Ask first</Text>, a button
+          waits for your tap. With <Text weight="semibold">Leave it to me</Text>
+          , there’s no button.
+        </Text>
+        <Text color="secondary">
+          {buddy.name} never answers a reviewer’s request to run a command or
+          change files, never changes a repository’s setup or access, and never
+          touches the code under review. Turning autopilot back on always waits
+          for your tap.
+        </Text>
+      </VStack>
+      {ruledFixes.map((fix) => (
+        <VStack key={fix} gap={2}>
+          <Selector
+            label={fixLabels[fix]}
+            description={fixDescriptions[fix]}
+            value={buddy.rules[fix]}
+            isDisabled={saves[key(fix)]?.state === "saving"}
+            options={(Object.entries(fixRuleLabels) as [FixRule, string][]).map(
+              ([value, label]) => ({ value, label }),
+            )}
+            onChange={(rule) =>
+              void updateSettings(
+                { buddy: { rules: { [fix]: rule as FixRule } } },
+                key(fix),
+              )
+            }
+          />
+          <SaveFeedback saveKey={key(fix)} />
+        </VStack>
+      ))}
+    </VStack>
   );
 }

@@ -1,6 +1,15 @@
 import {
+  activeStatuses,
   defaults,
+  loopStatusLabels,
+  sameRepo,
+  scanActive,
   selectionError,
+  type BuddyNote,
+  type BuddyNoteLine,
+  type Fix,
+  type LoopStatus,
+  type Question,
   type Finding,
   type Model,
   type ModelSelection,
@@ -572,6 +581,7 @@ export function freshDemo(): Snapshot {
         approvalId: null,
         repo: null,
         reason: "Round limit reached.",
+        fix: "continue_loop",
       },
       {
         key: "sync:acme/dashboard",
@@ -582,6 +592,7 @@ export function freshDemo(): Snapshot {
         repo: "acme/dashboard",
         reason:
           "acme/dashboard failed to sync 3 times in a row: GitHub returned 404 Not Found.",
+        fix: "sync_now",
       },
     ],
     loopStates: [
@@ -639,6 +650,7 @@ export function freshDemo(): Snapshot {
           reviewId: limited[0].id,
           repo: null,
           text: `Could you take a look at ${label(prs[1])}? Round limit reached.`,
+          key: `loop:${prs[1].id}:Round limit reached.`,
         },
         {
           id: 4,
@@ -648,6 +660,7 @@ export function freshDemo(): Snapshot {
           reviewId: null,
           repo: "acme/dashboard",
           text: "Heads up! acme/dashboard failed to sync 3 times in a row: GitHub returned 404 Not Found.",
+          key: "sync:acme/dashboard",
         },
       ],
     },
@@ -738,4 +751,144 @@ export function demoWorkspace(): Snapshot {
   s.historyPrs = history.prs;
   s.reviews.push(...history.reviews);
   return s;
+}
+
+const plural = (n: number, one: string, many: string) =>
+  `${n} ${n === 1 ? one : many}`;
+/** `orbit#41` for a PR the demo knows. */
+function prLabel(s: Snapshot, prId: string | null) {
+  const p = [...s.prs, ...(s.historyPrs ?? [])].find((p) => p.id === prId);
+  return p ? `${p.repo.split("/")[1]}#${p.number}` : (prId ?? "");
+}
+const line = (
+  text: string,
+  prId: string | null = null,
+  key: string | null = null,
+): BuddyNoteLine => ({ text, prId, key });
+/** What Bit says when a fix goes through, as the engine words it in the
+ * cheerful tone. */
+export function demoFixed(s: Snapshot, fix: Fix, prId: string | null) {
+  const pr = prLabel(s, prId) || "this pull request";
+  return {
+    continue_loop: `Gave ${pr} two more rounds!`,
+    review_again: `Queued a new review of ${pr}. Fingers crossed!`,
+    publish: `Published the report on ${pr}! 📬`,
+    sync_now: "Synced with GitHub. All good again!",
+    turn_on_autopilot: "Autopilot is back on!",
+  }[fix];
+}
+/** Bit's answer to a quick question, from the demo's state, as the engine
+ * words it in the cheerful tone. */
+export function demoAnswer(
+  s: Snapshot,
+  question: Question,
+): Pick<BuddyNote, "text" | "lines"> {
+  const items = s.attention ?? [];
+  const autopilot = (text: string) =>
+    s.settings.automatic
+      ? text
+      : `Autopilot is off, so nothing is reviewed automatically. ${text}`;
+  if (question === "needs_you") {
+    const lines = items.map((a) =>
+      line(
+        a.prId ? `${prLabel(s, a.prId)}: ${a.reason}` : a.reason,
+        a.prId,
+        a.key,
+      ),
+    );
+    return {
+      text: lines.length
+        ? `${plural(lines.length, "thing needs you", "things need you")}. Here's the list:`
+        : "Nothing needs you right now. 🎉",
+      lines,
+    };
+  }
+  if (question === "running") {
+    const lines: BuddyNoteLine[] = [];
+    if (s.polling) lines.push(line("Syncing with GitHub."));
+    for (const r of s.reviews.filter((r) =>
+      activeStatuses.includes(r.status),
+    )) {
+      const state =
+        {
+          queued: "is queued",
+          preparing: "is getting ready",
+          awaitingApproval: "is waiting for your approval",
+        }[r.status as string] ?? "is running";
+      lines.push(
+        line(
+          `${prLabel(s, r.prId)}: ${r.automatic ? "a round" : "a review"} ${state}.`,
+          r.prId,
+        ),
+      );
+    }
+    for (const scan of (s.scans ?? []).filter(scanActive))
+      lines.push(line(`${scan.repo}: a security scan is running.`));
+    return {
+      text: autopilot(
+        lines.length
+          ? `${plural(lines.length, "thing is running", "things are running")}. Here's what:`
+          : "Nothing is running. All quiet!",
+      ),
+      lines,
+    };
+  }
+  if (question === "loops") {
+    const open = (s.loopStates ?? []).filter((l) => !l.closed && l.rounds > 0);
+    const status = (l: { status: LoopStatus }) =>
+      l.status === "waiting_for_author"
+        ? "waiting for the author"
+        : l.status === "stopped"
+          ? "paused"
+          : loopStatusLabels[l.status].toLowerCase();
+    const lines = open.map((l) => {
+      const reason = l.status === "needs_you" && l.reason ? ` ${l.reason}` : "";
+      const about = items.filter((a) => a.prId === l.prId);
+      const item = about.find((a) => a.fix) ?? about[0];
+      return line(
+        `${prLabel(s, l.prId)}: round ${l.rounds} of ${l.roundLimit}, ${status(l)}.${reason}`,
+        l.prId,
+        item?.key ?? null,
+      );
+    });
+    const order: LoopStatus[] = [
+      "needs_you",
+      "reviewing",
+      "waiting_for_author",
+      "clean",
+      "stopped",
+    ];
+    const counts = order.flatMap((kind) => {
+      const n = open.filter((l) => l.status === kind).length;
+      return n ? [`${n} ${status({ status: kind })}`] : [];
+    });
+    return {
+      text: open.length
+        ? `${plural(open.length, "loop is open", "loops are open")}: ${counts.join(", ")}. Here's each one:`
+        : "No loops are open right now.",
+      lines,
+    };
+  }
+  const repositories = s.settings.repositories;
+  const lines = repositories.map((repo) => {
+    const open = s.prs.filter((p) => sameRepo(p.repo, repo.name)).length;
+    const item = items.find(
+      (a) =>
+        a.kind === "sync_failing" && !!a.repo && sameRepo(a.repo, repo.name),
+    );
+    const failing = item ? ` ${item.reason}` : "";
+    return line(
+      `${repo.name}: ${plural(open, "open pull request", "open pull requests")}, autopilot ${repo.automatic ? "on" : "off"}.${failing}`,
+      null,
+      item?.key ?? null,
+    );
+  });
+  return {
+    text: autopilot(
+      repositories.length
+        ? `You have ${plural(repositories.length, "repository", "repositories")}. Here's how they're doing:`
+        : "No repositories yet. Add one under Repositories and I'll keep an eye on it!",
+    ),
+    lines,
+  };
 }

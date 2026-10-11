@@ -97,15 +97,16 @@ async fn publication_waits_for_a_running_follow_up() {
 
 /// Publication against a fake `gh`, which is a shell script.
 #[cfg(unix)]
-mod fake_gh {
+pub(super) mod fake_gh {
     use super::super::test_support::*;
     use crate::types::*;
 
     /// A stand-in for `gh` that answers from files in `dir`: the PR from
     /// `pr.json`, and a one-file diff. The diff waits for `release` when `pause`
     /// exists; with `reject`, the first review POST waits for `release-post` and
-    /// is refused as GitHub refuses a comment on a line outside the diff.
-    fn fake_gh(dir: &std::path::Path) -> std::path::PathBuf {
+    /// is refused as GitHub refuses a comment on a line outside the diff; with
+    /// `fail`, every review POST fails as an outage does.
+    pub(in crate::engine) fn fake_gh(dir: &std::path::Path) -> std::path::PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let d = dir.display();
         let script = format!(
@@ -114,6 +115,10 @@ mod fake_gh {
     case "$*" in
       *"--method POST repos/a/b/pulls/1/reviews"*)
         cat > {d}/posted
+        if [ -e {d}/fail ]; then
+          echo "gh: Bad Gateway (HTTP 502)" >&2
+          exit 1
+        fi
         if [ -e {d}/reject ] && [ ! -e {d}/rejected ]; then
           touch {d}/rejected
           while [ ! -e {d}/release-post ]; do sleep 0.01; done
@@ -140,7 +145,7 @@ mod fake_gh {
         set_head(dir, 'a');
         path
     }
-    fn set_head(dir: &std::path::Path, sha: char) {
+    pub(in crate::engine) fn set_head(dir: &std::path::Path, sha: char) {
         let pr = serde_json::json!({
             "state": "open", "number": 1, "title": "Fix", "html_url": "https://github.com/a/b/pull/1",
             "user": {"login": "a"}, "author_association": "MEMBER",
@@ -149,7 +154,7 @@ mod fake_gh {
         });
         std::fs::write(dir.join("pr.json"), pr.to_string()).unwrap();
     }
-    async fn wait_for_file(path: std::path::PathBuf) {
+    pub(in crate::engine) async fn wait_for_file(path: std::path::PathBuf) {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while !path.exists() {
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -159,7 +164,7 @@ mod fake_gh {
         .unwrap_or_else(|_| panic!("{} never appeared", path.display()));
     }
     /// An automatic, structured review of a trusted PR, ready to publish.
-    async fn structured_autopost() -> (
+    pub(in crate::engine) async fn structured_autopost() -> (
         tempfile::TempDir,
         std::sync::Arc<crate::engine::Engine>,
         String,
@@ -182,7 +187,7 @@ mod fake_gh {
         .await;
         (d, e, id)
     }
-    fn posts(dir: &std::path::Path) -> usize {
+    pub(in crate::engine) fn posts(dir: &std::path::Path) -> usize {
         std::fs::read_to_string(dir.join("log"))
             .unwrap_or_default()
             .matches("--method POST")

@@ -1,7 +1,8 @@
 //! Everything that is waiting on the developer, gathered in one list: the
 //! app counts it in the sidebar and lists it, and each item has a stable key
-//! so it is announced once while it stays open.
-use crate::types::*;
+//! so it is announced once while it stays open. Where one of Orbit's own
+//! controls resolves an item, the item names it as its fix.
+use crate::{buddy::Fix, types::*};
 
 /// Consecutive failed syncs before a repository needs the developer.
 pub const SYNC_FAILURES: u32 = 3;
@@ -28,6 +29,7 @@ fn item(
         approval_id: None,
         repo: None,
         reason,
+        fix: None,
     }
 }
 fn approval_reason(method: &str) -> &'static str {
@@ -46,9 +48,28 @@ fn latest_automatic<'a>(s: &'a Snapshot, pr: &PullRequest) -> Option<&'a Review>
         .filter(|r| r.pr_id == pr.id && r.automatic && !r.superseded)
         .max_by(|a, b| a.created_at.cmp(&b.created_at))
 }
+/// Publish, for a report automatic publication wouldn't hold: current, free
+/// of credentials, and from a PR whose source Orbit trusts.
+fn publish_fix(s: &Snapshot, pr: &PullRequest, r: &Review) -> Option<Fix> {
+    (r.status == "ready"
+        && r.before_follow_up.is_none()
+        && publishable(r, pr)
+        && r.sensitive.is_empty()
+        && trusted_source(pr, &s.settings.trusted_authors))
+    .then_some(Fix::Publish)
+}
 /// Why the PR's latest automatic run needs the developer, if it does.
 fn run_item(s: &Snapshot, pr: &PullRequest) -> Option<Attention> {
     let r = latest_automatic(s, pr)?;
+    let fix = match r.status.as_str() {
+        // Review again starts a review, so not while one is running.
+        "failed" | "cancelled" => (!s
+            .reviews
+            .iter()
+            .any(|r| r.pr_id == pr.id && active(&r.status)))
+        .then_some(Fix::ReviewAgain),
+        _ => publish_fix(s, pr, r),
+    };
     let (kind, key, reason) = match r.status.as_str() {
         "failed" => (
             AttentionKind::Failed,
@@ -64,13 +85,16 @@ fn run_item(s: &Snapshot, pr: &PullRequest) -> Option<Attention> {
         }
         _ => return None,
     };
-    Some(item(
-        format!("{key}:{}", r.id),
-        kind,
-        Some(&pr.id),
-        Some(&r.id),
-        reason,
-    ))
+    Some(Attention {
+        fix,
+        ..item(
+            format!("{key}:{}", r.id),
+            kind,
+            Some(&pr.id),
+            Some(&r.id),
+            reason,
+        )
+    })
 }
 
 /// Counts each repository's failed syncs in a row. A sync that succeeds, or
@@ -96,31 +120,40 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
     let mut out = vec![];
     if let Some(error) = &s.state_write_error {
         if !s.settings.automatic {
-            out.push(item(
-                "autopilot-paused".into(),
-                AttentionKind::AutopilotPaused,
-                None,
-                None,
-                format!("Autopilot was turned off because Orbit could not save its state: {error}"),
-            ));
+            out.push(Attention {
+                fix: Some(Fix::TurnOnAutopilot),
+                ..item(
+                    "autopilot-paused".into(),
+                    AttentionKind::AutopilotPaused,
+                    None,
+                    None,
+                    format!(
+                        "Autopilot was turned off because Orbit could not save its state: {error}"
+                    ),
+                )
+            });
         }
     }
     if s.poll_failures >= SYNC_FAILURES {
-        out.push(item(
-            "sync:github".into(),
-            AttentionKind::SyncFailing,
-            None,
-            None,
-            format!(
-                "Orbit could not sync with GitHub {} times in a row: {}",
-                s.poll_failures,
-                s.github_error.as_deref().unwrap_or("unknown error")
-            ),
-        ));
+        out.push(Attention {
+            fix: Some(Fix::SyncNow),
+            ..item(
+                "sync:github".into(),
+                AttentionKind::SyncFailing,
+                None,
+                None,
+                format!(
+                    "Orbit could not sync with GitHub {} times in a row: {}",
+                    s.poll_failures,
+                    s.github_error.as_deref().unwrap_or("unknown error")
+                ),
+            )
+        });
     }
     for f in s.sync_failures.iter().filter(|f| f.count >= SYNC_FAILURES) {
         out.push(Attention {
             repo: Some(f.repo.clone()),
+            fix: Some(Fix::SyncNow),
             ..item(
                 format!("sync:{}", f.repo.to_ascii_lowercase()),
                 AttentionKind::SyncFailing,
@@ -167,14 +200,24 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
         else {
             continue;
         };
-        let latest = latest_automatic(s, pr).map(|r| r.id.as_str());
-        out.push(item(
-            format!("loop:{}:{reason}", pr.id),
-            AttentionKind::Loop,
-            Some(&pr.id),
-            latest,
-            reason,
-        ));
+        let latest = latest_automatic(s, pr);
+        let fix = match reason.as_str() {
+            "Round limit reached." => Some(Fix::ContinueLoop),
+            "The report is waiting for you to publish it." => {
+                latest.and_then(|r| publish_fix(s, pr, r))
+            }
+            _ => None,
+        };
+        out.push(Attention {
+            fix,
+            ..item(
+                format!("loop:{}:{reason}", pr.id),
+                AttentionKind::Loop,
+                Some(&pr.id),
+                latest.map(|r| r.id.as_str()),
+                reason,
+            )
+        });
     }
     out
 }
@@ -185,7 +228,7 @@ pub struct Notice {
     pub title: String,
     pub body: String,
 }
-fn notice(s: &Snapshot, a: Attention) -> Notice {
+pub fn notice(s: &Snapshot, a: Attention) -> Notice {
     let title = match a.kind {
         AttentionKind::Approval => "A review needs your approval",
         AttentionKind::Held => "A report was held back",
@@ -205,10 +248,15 @@ fn notice(s: &Snapshot, a: Attention) -> Notice {
         item: a,
     }
 }
-/// The snapshot as it will be once each follow-up chat ends. A follow-up
-/// runs a finished review again for a while, then restores its outcome.
-fn after_follow_ups(s: &Snapshot) -> std::borrow::Cow<'_, Snapshot> {
-    if !s.reviews.iter().any(|r| r.before_follow_up.is_some()) {
+/// The snapshot without what hides a review's outcome for a while: a
+/// follow-up runs a finished review again, then restores its outcome; a
+/// publication claims a ready report, then posts it or leaves it ready.
+fn settled(s: &Snapshot) -> std::borrow::Cow<'_, Snapshot> {
+    if !s
+        .reviews
+        .iter()
+        .any(|r| r.before_follow_up.is_some() || r.status == "publishing")
+    {
         return std::borrow::Cow::Borrowed(s);
     }
     let mut s = s.clone();
@@ -216,6 +264,8 @@ fn after_follow_ups(s: &Snapshot) -> std::borrow::Cow<'_, Snapshot> {
         if let Some(before) = &r.before_follow_up {
             r.status = before.status.clone();
             r.error = before.error.clone();
+        } else if r.status == "publishing" {
+            r.status = "ready".into();
         }
     }
     std::borrow::Cow::Owned(s)
@@ -223,9 +273,10 @@ fn after_follow_ups(s: &Snapshot) -> std::borrow::Cow<'_, Snapshot> {
 /// Records which open items have been announced and returns a notice for
 /// each one that is new, with whether the record changed. A resolved item
 /// leaves the record, so it is announced again if it opens again later. An
-/// item a follow-up chat hides only while it runs stays in the record.
+/// item a follow-up chat or a publication hides only while it runs stays in
+/// the record, so a publication that fails doesn't announce it again.
 pub fn announce(s: &mut Snapshot) -> (Vec<Notice>, bool) {
-    let open = items(&after_follow_ups(s));
+    let open = items(&settled(s));
     let keys: Vec<String> = open.iter().map(|a| a.key.clone()).collect();
     let changed = keys != s.announced;
     let fresh: Vec<Attention> = open

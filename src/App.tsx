@@ -267,7 +267,7 @@ export default function App() {
     <>
       <AppShell
         contentPadding={0}
-        mobileNav={false}
+        mobileNav={{ breakpoint: "md" }}
         variant="surface"
         sideNav={
           <SideNav

@@ -1245,6 +1245,9 @@ pub struct Attention {
     pub approval_id: Option<Value>,
     pub repo: Option<String>,
     pub reason: String,
+    /// The control that resolves it, which Bit offers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fix: Option<crate::buddy::Fix>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

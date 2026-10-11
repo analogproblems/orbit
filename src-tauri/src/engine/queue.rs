@@ -7,10 +7,18 @@ use std::{
 };
 
 impl Engine {
+    /// Syncs with GitHub, unless a sync is already running.
     pub async fn poll(&self) -> Result<(), String> {
-        let Ok(_guard) = self.poll_lock.try_lock() else {
+        let Ok(guard) = self.poll_lock.try_lock() else {
             return Ok(());
         };
+        self.poll_holding(guard).await
+    }
+    /// Syncs with GitHub, holding the sync lock.
+    pub(super) async fn poll_holding(
+        &self,
+        _guard: tokio::sync::MutexGuard<'_, ()>,
+    ) -> Result<(), String> {
         self.update(|s| s.polling = true).await;
         let _ = self.flush().await;
         let result = async {
@@ -97,7 +105,17 @@ impl Engine {
         result
     }
     pub async fn enqueue(&self, pr_id: &str, automatic: bool) -> Result<String, String> {
+        self.enqueue_if(pr_id, automatic, |_| Ok(())).await
+    }
+    /// Like `enqueue`, once `check` passes under the same lock.
+    pub(super) async fn enqueue_if(
+        &self,
+        pr_id: &str,
+        automatic: bool,
+        check: impl FnOnce(&Snapshot) -> Result<(), String>,
+    ) -> Result<String, String> {
         let mut s = self.state.lock().await;
+        check(&s)?;
         let pr = s
             .prs
             .iter()
@@ -288,10 +306,20 @@ impl Engine {
     }
     /// Resumes a stopped loop and allows `rounds` more automatic rounds.
     pub async fn continue_loop(&self, pr_id: &str, rounds: u32) -> Result<(), String> {
+        self.continue_loop_if(pr_id, rounds, |_| Ok(())).await
+    }
+    /// Like `continue_loop`, once `check` passes under the same lock.
+    pub(super) async fn continue_loop_if(
+        &self,
+        pr_id: &str,
+        rounds: u32,
+        check: impl FnOnce(&Snapshot) -> Result<(), String>,
+    ) -> Result<(), String> {
         if !(1..=10).contains(&rounds) {
             return Err("Continue for 1 to 10 more rounds.".into());
         }
         let mut s = self.state.lock().await;
+        check(&s)?;
         let pr = s
             .prs
             .iter()

@@ -24,11 +24,11 @@ import { neutralTheme } from "@astryxdesign/theme-neutral/built";
 import App from "./App";
 import { Chat } from "./Chat";
 import { Inbox } from "./Inbox";
-import { freshDemo } from "./demo";
+import { demoAnswer, freshDemo } from "./demo";
 import { useOrbit } from "./store";
 import type { RemoteAccessStatus } from "./RemoteAccess";
-import { withPatch } from "./types";
-import type { Snapshot, SettingsPatch, ChangedFile } from "./types";
+import { buddyOf, questionLabels, withPatch } from "./types";
+import type { Snapshot, SettingsPatch, ChangedFile, Question } from "./types";
 
 const { invoke, listeners } = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -606,7 +606,7 @@ describe("publication", () => {
   });
 });
 describe("Bit", () => {
-  it("lists Bit's notes newest first and opens what each one is about", async () => {
+  it("shows Bit's notes as a conversation and opens what each one is about", async () => {
     await mount();
     await user().click(screen.getByRole("button", { name: "Bit" }));
     expect(
@@ -614,20 +614,128 @@ describe("Bit", () => {
         name: /^Bit is (happy|busy|worried|sleepy)\.$/,
       }),
     ).toBeTruthy();
-    const notes = () =>
-      within(screen.getByRole("list", { name: "Bit's notes" })).getAllByRole(
-        "listitem",
-      );
-    expect(notes()).toHaveLength(4);
-    expect(notes()[0].textContent).toContain("acme/dashboard failed to sync");
-    expect(notes()[3].textContent).toContain("is clean after 3 rounds!");
-    await user().click(within(notes()[0]).getByText(/failed to sync/));
+    const chat = () => screen.getByRole("log", { name: "Bit's notes" });
+    const text = chat().textContent!;
+    expect(text.indexOf("is clean after 3 rounds!")).toBeLessThan(
+      text.indexOf("acme/dashboard failed to sync"),
+    );
+    await user().click(
+      within(chat()).getByRole("button", { name: "Open repositories" }),
+    );
     expect(
       screen.getByRole("heading", { level: 1, name: "Repositories" }),
     ).toBeTruthy();
     await user().click(screen.getByRole("button", { name: "Bit" }));
-    await user().click(within(notes()[2]).getByText(/blocking findings/));
+    await user().click(
+      within(chat()).getAllByRole("button", { name: "Open loop" })[1],
+    );
     expect(await screen.findByRole("list", { name: "Rounds" })).toBeTruthy();
+  });
+
+  it("answers quick questions and offers fixes as buttons", async () => {
+    invoke.mockImplementation(async (cmd, args) => {
+      const a = args as Record<string, string>;
+      if (cmd === "ask_buddy") {
+        const notes = snapshot.buddyFeed!.notes;
+        notes.push({
+          id: 100 + notes.length,
+          at: new Date().toISOString(),
+          kind: "answer",
+          prId: null,
+          reviewId: null,
+          repo: null,
+          question: questionLabels[a.question as Question],
+          ...demoAnswer(snapshot, a.question as Question),
+        });
+        emit();
+        return;
+      }
+      if (cmd === "use_fix") {
+        snapshot.attention = snapshot.attention!.filter((i) => i.key !== a.key);
+        emit();
+        return;
+      }
+      return backend(cmd, args);
+    });
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Bit" }));
+    const chat = () => screen.getByRole("log", { name: "Bit's notes" });
+    // The Needs you notes offer their fixes while the items are open.
+    expect(
+      within(chat()).getAllByRole("button", { name: "Continue loop" }),
+    ).toHaveLength(1);
+    await user().click(screen.getByRole("button", { name: "What needs me?" }));
+    expect(invoke).toHaveBeenCalledWith("ask_buddy", {
+      question: "needs_you",
+    });
+    const answer = await within(chat()).findByRole("list", {
+      name: "2 things need you. Here's the list:",
+    });
+    expect(within(answer).getAllByRole("listitem")[0].textContent).toContain(
+      "Round limit reached.",
+    );
+    expect(within(chat()).getByText("What needs me?")).toBeTruthy();
+    await user().click(
+      within(answer).getByRole("button", { name: "Continue loop" }),
+    );
+    expect(invoke).toHaveBeenCalledWith("use_fix", {
+      key: snapshot.buddyFeed!.notes.at(-1)!.lines![0].key,
+    });
+    // Once fixed, the item's buttons go.
+    await waitFor(() =>
+      expect(
+        within(chat()).queryAllByRole("button", { name: "Continue loop" }),
+      ).toHaveLength(0),
+    );
+    expect(
+      within(chat()).getAllByRole("button", { name: "Sync now" }),
+    ).toHaveLength(2);
+    // Leave it to me: no buttons.
+    snapshot.settings.buddy = {
+      ...buddyOf(snapshot.settings),
+      rules: { ...buddyOf(snapshot.settings).rules, sync_now: "leave_it" },
+    };
+    act(emit);
+    expect(
+      within(chat()).queryAllByRole("button", { name: "Sync now" }),
+    ).toHaveLength(0);
+  });
+
+  it("reaches Bit from the menu on a phone-sized screen", async () => {
+    const wide = window.matchMedia;
+    window.matchMedia = vi.fn((media: string) => ({
+      ...wide(media),
+      matches: media.startsWith("(width <"),
+    })) as typeof window.matchMedia;
+    onTestFinished(() => {
+      window.matchMedia = wide;
+    });
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Open navigation" }));
+    await user().click(
+      within(await screen.findByRole("dialog")).getByRole("button", {
+        name: "Bit",
+      }),
+    );
+    expect(
+      await screen.findByRole("heading", { name: /^Bit is / }),
+    ).toBeTruthy();
+  });
+
+  it("sets what Bit may do on its own in Settings", async () => {
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Settings" }));
+    await chooseOption(
+      await screen.findByRole("combobox", { name: /^Publish report/ }),
+      "Do it",
+    );
+    expect(invoke).toHaveBeenCalledWith("update_settings", {
+      patch: { buddy: { rules: { publish: "do_it" } } },
+    });
+    expect(buddyOf(snapshot.settings).rules).toMatchObject({
+      publish: "do_it",
+      continue_loop: "ask_first",
+    });
   });
 
   it("renames, dresses and hides Bit from Settings, keeping a failed name", async () => {

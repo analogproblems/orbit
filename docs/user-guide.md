@@ -332,14 +332,47 @@ Orbit also shows a desktop notification once when an item first appears, and not
 
 ### Bit, your buddy
 
-Bit is Orbit's buddy: a small planet with a face, at the bottom of the sidebar. It shows its latest note, or just its face when the sidebar is collapsed. Select it to open its notes, newest first. Bit writes a note when:
+Bit is Orbit's buddy: a small planet with a face, at the bottom of the sidebar. It shows its latest note, or just its face when the sidebar is collapsed. Select it to open its page: one conversation with Bit, newest at the bottom, that the desktop window and every browser [using Orbit from your phone or laptop](#use-orbit-from-your-phone-or-laptop) share. Bit writes a note when:
 
 - a round starts, and when it finishes, with how many blocking findings it found, or that it failed or had no findings list;
 - a loop comes out clean, with its blocking findings round by round, such as `4 → 1 → 0`;
 - a loop is stopped or continued;
 - something new needs you, with the same reason as the **Needs you** list.
 
-Selecting a note opens that pull request's loop, **Repositories** for a repository's sync problem, or **Settings** otherwise. Bit keeps its last 50 notes, and they survive a restart. When Orbit starts for the first time with Bit, it looks at the loops already running and starts noting from there, rather than retelling their history.
+**Open loop** under a note opens that pull request's loop; **Open repositories** opens Repositories for a repository's sync problem, and **Open settings** opens Settings for anything else. Bit keeps its last 50 notes, answers included, and they survive a restart. When Orbit starts for the first time with Bit, it looks at the loops already running and starts noting from there, rather than retelling their history.
+
+#### Ask Bit
+
+The buttons under the conversation ask Bit a question. It answers straight away from what Orbit knows, without any AI:
+
+- **What needs me?** lists the **Needs you** items.
+- **What's running?** lists reviews, syncs and security scans in progress.
+- **How are my loops?** lists each open loop with its round and state.
+- **How are my repositories?** lists each repository with its open pull requests, whether Autopilot reviews it, and any failed syncs.
+
+Your question and Bit's answer join the conversation, so every window sees them.
+
+#### Bit's buttons
+
+When something needs you and one of Orbit's own controls fixes it, Bit's note about it, and any answer that lists it, carries a button for that control while the item stays open:
+
+| Button                     | Offered when                                                                                                                                                                                                                                                          |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Continue loop**          | A loop reaches its round limit. Allows two more rounds, like **Continue loop** on the loops page.                                                                                                                                                                     |
+| **Review again**           | An automatic review failed or was interrupted, and nothing else is running on the pull request. Starts a review like **Review again** in the pull request: it doesn't count as a round, and its report waits for you.                                                 |
+| **Publish report**         | A report is waiting for you to publish it, or its publication was held. Never for a report the credential check flagged, or one from a pull request automatic publication wouldn't trust: read those first. Bit checks this again with GitHub just before publishing. |
+| **Sync now**               | Syncing with GitHub, or a repository, failed 3 times in a row.                                                                                                                                                                                                        |
+| **Turn autopilot back on** | A failed save turned Autopilot off.                                                                                                                                                                                                                                   |
+
+Bit never offers a button to answer a reviewer's request to run a command or change files, never changes a repository's setup command, network access or browser access, and never touches the code under review. When a button's action fails, its error shows under the button.
+
+In **Settings → Buddy → What Bit can do**, each button except **Turn autopilot back on** has a rule. Every rule starts on **Ask first**:
+
+- **Do it**: when the item first opens, Bit uses the control itself instead of a desktop notification. It notes that it's on it, then that it's done. Right before acting, Bit checks again that the item still needs you, that Bit is still on and that the rule is still **Do it**. Before publishing, it also checks with GitHub that the pull request still comes from a source automatic publication would trust. If the item has closed in the meantime, Bit lets it go. If the fix doesn't work, or isn't Bit's to do any more, Bit says why, offers the button, and the item is notified as usual. Bit does it once per item, not again after a restart.
+- **Ask first**: Bit offers the button and waits for your tap.
+- **Leave it to me**: Bit offers no button. The item still appears in **Needs you** with its usual action.
+
+Turning Autopilot back on changes settings, so it always waits for your tap. With Bit turned off, Bit does nothing on its own.
 
 Bit's face shows its mood: **worried** while anything needs you, **busy** while a review runs, **sleepy** when Autopilot is off or there are no pull requests, and **happy** otherwise.
 
@@ -351,6 +384,7 @@ In **Settings → Buddy** you can preview each mood and change:
 - **Hat**: one of 20, or none: party hat, top hat, beanie, crown, propeller cap, wizard hat, cowboy hat, chef's hat, baseball cap, graduation cap, beret, flower, bow, halo, headphones, Santa hat, Viking helmet, cat ears, antennae, or space helmet.
 - **Tone**: how the notes sound: **Cheerful** ("On it! Round 2 of orbit#41 is underway."), **Calm**, or **Dry**.
 - **Personality**: your own description of Bit, up to 4000 characters, saved with **Save personality**. It will shape how Bit chats once that arrives; today it changes nothing.
+- **What Bit can do**: the rule for each of Bit's buttons, as above.
 
 Bit moves only while it is busy: its moon circles and a propeller cap spins. With your system set to reduce motion, both stay still.
 
@@ -384,6 +418,7 @@ By default an approval waits for you however long it takes. For a repository, yo
 | Buddy: hat                             | None                               | None or one of 20 hats.                                                                                           |
 | Buddy: tone                            | Cheerful                           | Cheerful, calm, or dry.                                                                                           |
 | Buddy: personality                     | Empty                              | Up to 4000 characters.                                                                                            |
+| Buddy: rules                           | Ask first                          | Do it, ask first, or leave it to me, for Continue loop, Review again, Publish report and Sync now.                |
 
 Settings switches and selections save immediately. Changing the model saves that model and its explicit supported default effort in the same update. **Choose a model** and **Choose an effort** are placeholders, not executable default choices. **Saving…**, **Saved**, or an error with **Retry saving** shows the result. **Saved** clears after 2.5 seconds; errors remain until resolved. After a failed write, controls return to the active values. The unapplied request is listed beside its error and **Retry saving**, and survives page navigation along with typed account input. Retry after resolving the failure. If a model change fails, effort stays disabled until you retry successfully or choose a model again; this prevents a later retry from resetting a newly selected effort.
 
@@ -408,6 +443,8 @@ While Orbit runs on your computer, you can open the same workspace in a browser 
 The link works like a key. Anyone with it can do everything you can in the desktop window, including running repository setup commands on this computer. Only open it on your own devices. **Make a new link** signs out every browser that uses the old one. You can only change these controls from the desktop app.
 
 Your computer has to stay on with Orbit running. Desktop notifications appear on the computer only, but **Needs you** shows every item in the browser too. When the connection drops, the browser says so and reconnects on its own.
+
+On a phone-sized screen, the sidebar moves into a menu: tap the menu button at the top right to reach every page, including Bit.
 
 ## Restart, retained data, and cleanup
 

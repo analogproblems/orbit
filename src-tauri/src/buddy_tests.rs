@@ -155,6 +155,72 @@ fn a_failed_round_says_so_and_its_needs_you_item_follows() {
     let note = s.buddy_feed.notes.last().unwrap();
     assert_eq!(note.pr_id.as_deref(), Some("a/b#1"));
     assert_eq!(note.review_id.as_deref(), Some("run-1"));
+    // The note names its item, so the app can offer the item's fix.
+    assert_eq!(note.key.as_deref(), Some("failed:run-1"));
+}
+#[test]
+fn an_item_bit_fixes_on_its_own_is_noted_as_handled() {
+    let (mut s, p) = seeded();
+    s.settings.buddy.rules.review_again = "do_it".into();
+    s.reviews.push(round(&p, 1));
+    step(&mut s);
+    s.reviews[0].status = "failed".into();
+    s.reviews[0].error = Some("Codex exited.".into());
+    let item = crate::attention::items(&s).remove(0);
+    assert_eq!(will_fix(&s, &item), Some(Fix::ReviewAgain));
+    assert_eq!(
+        step(&mut s)[1],
+        (
+            NoteKind::Fixing,
+            "b#1: Codex exited. I'm on it!".to_string()
+        )
+    );
+    // No button while Bit is on it.
+    assert_eq!(s.buddy_feed.notes.last().unwrap().key, None);
+
+    fixed(&mut s, &item, Fix::ReviewAgain);
+    not_fixed(&mut s, &item, Fix::ReviewAgain, "Codex isn't connected.");
+    let last: Vec<_> = s.buddy_feed.notes.iter().rev().take(2).collect();
+    assert_eq!(
+        (last[1].kind, last[1].text.as_str(), last[1].key.as_deref()),
+        (
+            NoteKind::Fixed,
+            "Queued a new review of b#1. Fingers crossed!",
+            None
+        )
+    );
+    assert_eq!(
+        (last[0].kind, last[0].text.as_str(), last[0].key.as_deref()),
+        (
+            NoteKind::NeedsYou,
+            "I tried to review b#1 again, but it didn't work: Codex isn't connected.",
+            Some("failed:run-1")
+        )
+    );
+
+    // Leave it to me, Ask first, or Bit off: Bit doesn't do it.
+    for (rule, enabled) in [("leave_it", true), ("ask_first", true), ("do_it", false)] {
+        s.settings.buddy.rules.review_again = rule.into();
+        s.settings.buddy.enabled = enabled;
+        assert_eq!(will_fix(&s, &item), None, "{rule} {enabled}");
+    }
+}
+#[test]
+fn bit_never_does_a_settings_change_on_its_own() {
+    let (mut s, _) = seeded();
+    s.state_write_error = Some("disk full".into());
+    s.settings.automatic = false;
+    let item = crate::attention::items(&s).remove(0);
+    assert_eq!(item.fix, Some(Fix::TurnOnAutopilot));
+    for rule in RULES {
+        s.settings.buddy.rules = Rules {
+            continue_loop: rule.into(),
+            review_again: rule.into(),
+            publish: rule.into(),
+            sync_now: rule.into(),
+        };
+        assert_eq!(will_fix(&s, &item), None, "{rule}");
+    }
 }
 #[test]
 fn a_follow_up_chat_on_a_finished_round_repeats_nothing() {
@@ -305,6 +371,8 @@ fn every_tone_has_a_line_for_every_kind_of_note() {
         NoteKind::NeedsYou,
         NoteKind::Stopped,
         NoteKind::Continued,
+        NoteKind::Fixing,
+        NoteKind::Fixed,
     ];
     let cheerful = samples("cheerful");
     for tone in TONES {
@@ -384,6 +452,25 @@ fn settings_check_the_name_and_choices() {
     patch.apply(&mut b);
     assert_eq!((b.name.as_str(), b.hat.as_str()), ("Orbie", "wizard"));
     assert!(serde_json::from_value::<BuddyPatch>(json!({"mood": "happy"})).is_err());
+
+    // Every rule starts on Ask first; a patch changes only the rules it names.
+    assert!(RULES
+        .iter()
+        .all(|r| ["do_it", "ask_first", "leave_it"].contains(r)));
+    assert_eq!(b.rules, Rules::default());
+    assert_eq!(b.rules.of(Fix::Publish), "ask_first");
+    let patch: BuddyPatch = serde_json::from_value(json!({"rules": {"publish": "do_it"}})).unwrap();
+    patch.apply(&mut b);
+    assert_eq!(b.rules.of(Fix::Publish), "do_it");
+    assert_eq!(b.rules.of(Fix::ContinueLoop), "ask_first");
+    assert!(b.validate().is_ok());
+    let mut bad = b.clone();
+    bad.rules.sync_now = "always".into();
+    assert_eq!(
+        bad.validate().unwrap_err(),
+        "'always' isn't one of the buddy's rules."
+    );
+    assert!(serde_json::from_value::<BuddyPatch>(json!({"rules": {"approve": "do_it"}})).is_err());
 }
 #[test]
 fn saved_state_from_another_version_falls_back_to_defaults() {
@@ -402,6 +489,20 @@ fn saved_state_from_another_version_falls_back_to_defaults() {
         ("lime", "none", "cheerful")
     );
     assert!(b.validate().is_ok());
+    // Older state has no rules; newer state may name a rule or a fix this
+    // version doesn't know.
+    let mut b: Buddy = serde_json::from_value(
+        json!({"rules": {"publish": "do_it", "sync_now": "sometimes", "approve": "do_it"}}),
+    )
+    .unwrap();
+    b.normalize();
+    assert_eq!(
+        b.rules,
+        Rules {
+            publish: "do_it".into(),
+            ..Rules::default()
+        }
+    );
 }
 #[test]
 fn the_app_offers_the_same_choices() {
@@ -418,4 +519,194 @@ fn the_app_offers_the_same_choices() {
     assert_eq!(list("colours"), COLOURS);
     assert_eq!(list("hats"), HATS);
     assert_eq!(list("tones"), TONES);
+    assert_eq!(list("rules"), RULES);
+    let names = |values: Vec<serde_json::Value>| -> Vec<String> {
+        values
+            .into_iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect()
+    };
+    let fixes = FIXES.map(|f| serde_json::to_value(f).unwrap());
+    assert_eq!(list("fixes"), names(fixes.to_vec()));
+    let questions = [
+        Question::NeedsYou,
+        Question::Running,
+        Question::Loops,
+        Question::Repositories,
+    ];
+    let asked = questions.map(|q| serde_json::to_value(q).unwrap());
+    assert_eq!(list("questions"), names(asked.to_vec()));
+}
+
+#[test]
+fn rules_use_the_names_the_app_sends() {
+    // The app keys rules by fix name, both for what it reads and for the one
+    // rule at a time it saves.
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../test-fixtures/buddy-options.json")).unwrap();
+    let defaults = &fixture["defaultRules"];
+    assert_eq!(serde_json::to_value(Rules::default()).unwrap(), *defaults);
+    let ruled = FIXES.into_iter().filter(|&f| f != Fix::TurnOnAutopilot);
+    for fix in ruled {
+        let name = serde_json::to_value(fix).unwrap();
+        let name = name.as_str().unwrap();
+        assert!(defaults.get(name).is_some(), "{name} has no rule");
+        let mut b = Buddy::default();
+        let patch: BuddyPatch = serde_json::from_value(json!({"rules": {name: "do_it"}})).unwrap();
+        patch.apply(&mut b);
+        assert_eq!(b.rules.of(fix), "do_it", "{name}");
+        let saved = serde_json::to_value(&b).unwrap();
+        assert_eq!(saved["rules"][name], "do_it", "{name}");
+        let loaded: Buddy = serde_json::from_value(saved).unwrap();
+        assert_eq!(loaded.rules.of(fix), "do_it", "{name}");
+    }
+}
+
+fn ask_and_read(
+    s: &mut Snapshot,
+    question: Question,
+) -> (String, Vec<String>, Vec<Option<String>>) {
+    ask(s, question);
+    let note = s.buddy_feed.notes.last().unwrap();
+    assert_eq!(note.kind, NoteKind::Answer);
+    assert_eq!(note.question.as_deref(), Some(question.text()));
+    (
+        note.text.clone(),
+        note.lines.iter().map(|l| l.text.clone()).collect(),
+        note.lines.iter().map(|l| l.key.clone()).collect(),
+    )
+}
+#[test]
+fn quick_answers_come_from_orbits_state() {
+    let (mut s, p) = seeded();
+    assert_eq!(
+        ask_and_read(&mut s, Question::NeedsYou),
+        (
+            "Nothing needs you right now. 🎉".to_string(),
+            vec![],
+            vec![]
+        )
+    );
+    assert_eq!(
+        ask_and_read(&mut s, Question::Running).0,
+        "Nothing is running. All quiet!"
+    );
+    assert_eq!(
+        ask_and_read(&mut s, Question::Loops).0,
+        "No loops are open right now."
+    );
+
+    // A loop at its round limit, a round running on another PR, a sync.
+    s.settings.repositories[0].round_limit = 1;
+    let mut r = round(&p, 1);
+    finish(&mut r, 2);
+    s.reviews.push(r);
+    let mut other = p.clone();
+    other.id = "a/b#2".into();
+    other.number = 2;
+    s.prs.push(other.clone());
+    s.loops.push(LoopControl {
+        pr_id: other.id.clone(),
+        stopped: false,
+        extra_rounds: 1,
+    });
+    let mut running = round(&other, 2);
+    running.status = "queued".into();
+    s.reviews.push(running);
+    s.polling = true;
+    s.sync_failures.push(SyncFailure {
+        repo: "a/b".into(),
+        count: 1,
+        error: "timeout".into(),
+    });
+
+    let limit = Some("loop:a/b#1:Round limit reached.".to_string());
+    assert_eq!(
+        ask_and_read(&mut s, Question::NeedsYou),
+        (
+            "1 thing needs you. Here's the list:".to_string(),
+            vec!["b#1: Round limit reached.".to_string()],
+            vec![limit.clone()]
+        )
+    );
+    assert_eq!(
+        ask_and_read(&mut s, Question::Running),
+        (
+            "2 things are running. Here's what:".to_string(),
+            vec![
+                "Syncing with GitHub.".to_string(),
+                "b#2: round 1 is queued.".to_string()
+            ],
+            vec![None, None]
+        )
+    );
+    assert_eq!(
+        ask_and_read(&mut s, Question::Loops),
+        (
+            "2 loops are open: 1 needs you, 1 reviewing. Here's each one:".to_string(),
+            vec![
+                "b#1: round 1 of 1, needs you. Round limit reached.".to_string(),
+                "b#2: round 1 of 2, reviewing.".to_string()
+            ],
+            vec![limit, None]
+        )
+    );
+    assert_eq!(
+        ask_and_read(&mut s, Question::Repositories),
+        (
+            "You have 1 repository. Here's how they're doing:".to_string(),
+            vec![
+                "a/b: 2 open pull requests, autopilot on. The last sync failed: timeout"
+                    .to_string()
+            ],
+            vec![None]
+        )
+    );
+
+    // Calm and dry say it their way; autopilot being off is mentioned.
+    s.settings.buddy.tone = "calm".into();
+    s.settings.automatic = false;
+    assert_eq!(
+        ask_and_read(&mut s, Question::NeedsYou).0,
+        "1 thing needs you:"
+    );
+    assert_eq!(
+        ask_and_read(&mut s, Question::Repositories).0,
+        "Autopilot is off, so nothing is reviewed automatically. 1 repository:"
+    );
+    s.settings.buddy.tone = "dry".into();
+    s.settings.repositories.clear();
+    assert_eq!(
+        ask_and_read(&mut s, Question::Repositories).0,
+        "Autopilot is off, so nothing is reviewed automatically. No repositories. Hard to review nothing."
+    );
+}
+#[test]
+fn every_tone_answers_every_question_its_own_way() {
+    for n in [0, 1, 3] {
+        for tone in ["calm", "dry"] {
+            for (cheerful, other) in [
+                (
+                    say::needs_you_answer("cheerful", n),
+                    say::needs_you_answer(tone, n),
+                ),
+                (
+                    say::running_answer("cheerful", n),
+                    say::running_answer(tone, n),
+                ),
+                (
+                    say::repositories_answer("cheerful", n),
+                    say::repositories_answer(tone, n),
+                ),
+            ] {
+                assert_ne!(cheerful, other, "{tone} {n}");
+            }
+        }
+    }
+    for summary in [None, Some("1 loop is open: 1 clean.")] {
+        assert_ne!(
+            say::loops_answer("cheerful", summary),
+            say::loops_answer("dry", summary)
+        );
+    }
 }

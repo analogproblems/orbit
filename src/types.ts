@@ -359,7 +359,40 @@ export interface Buddy {
   tone: BuddyTone;
   /** Saved now, used once Bit can chat. */
   personality: string;
+  /** What Bit does about each fix it can do on its own. */
+  rules: BuddyRules;
 }
+/** One of Orbit's own controls, offered for something that needs you. */
+export type Fix =
+  | "continue_loop"
+  | "review_again"
+  | "publish"
+  | "sync_now"
+  | "turn_on_autopilot";
+/** The fixes Bit can do on its own. Changing settings always asks first. */
+export type RuledFix = Exclude<Fix, "turn_on_autopilot">;
+export type FixRule = "do_it" | "ask_first" | "leave_it";
+export type BuddyRules = Record<RuledFix, FixRule>;
+export const fixLabels: Record<Fix, string> = {
+  continue_loop: "Continue loop",
+  review_again: "Review again",
+  publish: "Publish report",
+  sync_now: "Sync now",
+  turn_on_autopilot: "Turn autopilot back on",
+};
+export const fixDescriptions: Record<RuledFix, string> = {
+  continue_loop: "When a loop reaches its round limit, allow two more rounds.",
+  review_again:
+    "When an automatic review fails or is interrupted, start a new review. It doesn't count as a round, and its report waits for you.",
+  publish:
+    "When a report is waiting for you, publish it. Never a report with text that looks like credentials, or one from a pull request automatic publication wouldn't trust.",
+  sync_now: "When syncing keeps failing, sync again.",
+};
+export const fixRuleLabels: Record<FixRule, string> = {
+  do_it: "Do it",
+  ask_first: "Ask first",
+  leave_it: "Leave it to me",
+};
 export const defaultBuddy: Buddy = {
   enabled: true,
   name: "Bit",
@@ -367,6 +400,12 @@ export const defaultBuddy: Buddy = {
   hat: "none",
   tone: "cheerful",
   personality: "",
+  rules: {
+    continue_loop: "ask_first",
+    review_again: "ask_first",
+    publish: "ask_first",
+    sync_now: "ask_first",
+  },
 };
 export const buddyTones: Record<BuddyTone, string> = {
   cheerful: "Cheerful",
@@ -379,7 +418,25 @@ export type NoteKind =
   | "clean"
   | "needs_you"
   | "stopped"
-  | "continued";
+  | "continued"
+  | "fixing"
+  | "fixed"
+  | "answer";
+/** A question Bit answers straight from Orbit's state. */
+export type Question = "needs_you" | "running" | "loops" | "repositories";
+export const questionLabels: Record<Question, string> = {
+  needs_you: "What needs me?",
+  running: "What's running?",
+  loops: "How are my loops?",
+  repositories: "How are my repositories?",
+};
+/** A line of an answer. */
+export interface BuddyNoteLine {
+  text: string;
+  prId: string | null;
+  /** The Needs you item the line is about. */
+  key: string | null;
+}
 /** A line in Bit's feed, in its own voice. */
 export interface BuddyNote {
   id: number;
@@ -390,6 +447,12 @@ export interface BuddyNote {
   /** The repository a workspace item is about. */
   repo: string | null;
   text: string;
+  /** The Needs you item the note is about, whose fix it can offer. */
+  key?: string | null;
+  /** For an answer, the question you asked. */
+  question?: string | null;
+  /** For an answer, a line for each thing it lists. */
+  lines?: BuddyNoteLine[];
 }
 export interface BuddyFeed {
   /** Oldest first, at most 50. */
@@ -397,7 +460,27 @@ export interface BuddyFeed {
 }
 /** The buddy's settings, with defaults for anything missing. */
 export function buddyOf(settings: Settings): Buddy {
-  return { ...defaultBuddy, ...settings.buddy };
+  return {
+    ...defaultBuddy,
+    ...settings.buddy,
+    rules: { ...defaultBuddy.rules, ...settings.buddy?.rules },
+  };
+}
+/** The fix to offer as a button for an item that is still open, unless
+ * you asked Bit to leave it to you. */
+export function offeredFix(
+  s: Snapshot,
+  key: string | null | undefined,
+): { item: Attention; fix: Fix } | undefined {
+  const item = s.attention?.find((a) => a.key === key);
+  const fix = item?.fix;
+  if (!item || !fix) return undefined;
+  if (
+    fix !== "turn_on_autopilot" &&
+    buddyOf(s.settings).rules[fix] === "leave_it"
+  )
+    return undefined;
+  return { item, fix };
 }
 /** Bit's mood as the engine worked it out, or the same rules applied here
  * when it didn't (the demo). */
@@ -431,10 +514,16 @@ export function moodReason(s: Snapshot, mood: Mood): string {
  * fields change, including inside the buddy. */
 export function withPatch(settings: Settings, patch: SettingsPatch): Settings {
   const { buddy, ...rest } = patch;
+  if (!buddy) return { ...settings, ...rest };
+  const current = buddyOf(settings);
   return {
     ...settings,
     ...rest,
-    ...(buddy ? { buddy: { ...buddyOf(settings), ...buddy } } : {}),
+    buddy: {
+      ...current,
+      ...buddy,
+      rules: { ...current.rules, ...buddy.rules },
+    },
   };
 }
 export interface CommitStatus {
@@ -454,7 +543,9 @@ export interface CommitCheck {
 }
 export type SettingsPatch = Partial<
   Omit<Settings, "repositories" | "buddy">
-> & { buddy?: Partial<Buddy> };
+> & {
+  buddy?: Partial<Omit<Buddy, "rules">> & { rules?: Partial<BuddyRules> };
+};
 export type ActionResult<T> =
   { ok: true; data: T } | { ok: false; error: string };
 export interface StorageUsage {
@@ -527,6 +618,8 @@ export interface Attention {
   approvalId: string | number | null;
   repo: string | null;
   reason: string;
+  /** The control that resolves it, which Bit offers. */
+  fix?: Fix | null;
 }
 export const attentionLabels: Record<AttentionKind, string> = {
   approval: "Approval",

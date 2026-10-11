@@ -195,6 +195,34 @@ describe("demo buddy", () => {
       hat: "wizard",
     });
   });
+
+  it("answers questions and uses fixes in the feed", async () => {
+    const store = useOrbit.getState();
+    await store.action("reset_demo");
+    const last = () => useOrbit.getState().snapshot.buddyFeed!.notes.at(-1)!;
+    expect((await store.action("ask_buddy", { question: "loops" })).ok).toBe(
+      true,
+    );
+    expect(last()).toMatchObject({
+      kind: "answer",
+      question: "How are my loops?",
+      text: "3 loops are open: 1 needs you, 1 waiting for the author, 1 clean. Here's each one:",
+    });
+    const key = last().lines![0].key!;
+    expect(last().lines![0].text).toMatch(
+      /^orbit#\d+: round 4 of 4, needs you\. Round limit reached\.$/,
+    );
+    expect((await store.action("use_fix", { key })).ok).toBe(true);
+    const s = useOrbit.getState().snapshot;
+    expect(s.attention!.some((a) => a.key === key)).toBe(false);
+    expect(last()).toMatchObject({ kind: "fixed" });
+    expect(last().text).toMatch(/^Gave orbit#\d+ two more rounds!$/);
+    const again = await store.action("use_fix", { key });
+    expect(again).toEqual({
+      ok: false,
+      error: "Error: This doesn't need you any more.",
+    });
+  });
 });
 
 describe("save feedback", () => {

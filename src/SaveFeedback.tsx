@@ -1,6 +1,13 @@
 import { Banner, Button, Spinner, Text, VStack } from "@astryxdesign/core";
 import { useOrbit } from "./store";
-import type { Buddy, SettingsPatch } from "./types";
+import {
+  fixLabels,
+  fixRuleLabels,
+  type Buddy,
+  type FixRule,
+  type RuledFix,
+  type SettingsPatch,
+} from "./types";
 
 export function SaveFeedback({ saveKey }: { saveKey?: string }) {
   const { saves, retrySave, snapshot } = useOrbit();
@@ -31,15 +38,26 @@ export function SaveFeedback({ saveKey }: { saveKey?: string }) {
       hat: "Buddy's hat",
       tone: "Buddy's tone",
       personality: "Buddy's personality",
+      rules: "Buddy's rules",
     };
+    const buddyEntries = (
+      buddy: NonNullable<SettingsPatch["buddy"]>,
+    ): [string, unknown, string][] =>
+      Object.entries(buddy).flatMap(([field, v]) =>
+        field === "rules"
+          ? Object.entries(v as Record<RuledFix, FixRule>).map(
+              ([fix, rule]): [string, unknown, string] => [
+                fix,
+                fixRuleLabels[rule],
+                `${fixLabels[fix as RuledFix]} rule`,
+              ],
+            )
+          : [[field, v, buddyLabels[field as keyof Buddy]]],
+      );
     return Object.entries(patch)
-      .flatMap(([key, value]) =>
+      .flatMap(([key, value]): [string, unknown, string][] =>
         key === "buddy"
-          ? Object.entries(value as Partial<Buddy>).map(([field, v]) => [
-              field,
-              v,
-              buddyLabels[field as keyof Buddy],
-            ])
+          ? buddyEntries(value as NonNullable<SettingsPatch["buddy"]>)
           : [[key, value, labels[key as keyof SettingsPatch]]],
       )
       .map(([key, value, label]) => {
