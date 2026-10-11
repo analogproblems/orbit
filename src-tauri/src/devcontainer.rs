@@ -127,26 +127,37 @@ pub async fn build(tools: &Tools, folder: &Path, image: &str) -> Result<(), Stri
     Ok(())
 }
 
-/// The user the recipe asks commands to run as (`remoteUser`, else
-/// `containerUser`), from the metadata the Dev Container CLI puts on the
-/// image. None runs as the image's own user.
-pub async fn user(tools: &Tools, image: &str) -> Option<String> {
+/// The user commands run as: the recipe's `remoteUser`, else its
+/// `containerUser`, from the metadata the Dev Container CLI puts on the
+/// image, else the image's own user, such as a Dockerfile's `USER`. None is
+/// root.
+pub async fn user(tools: &Tools, image: &str) -> Result<Option<String>, String> {
     let out = run(
         &tools.docker,
-        &[
-            "image",
-            "inspect",
-            "--format",
-            "{{ index .Config.Labels \"devcontainer.metadata\" }}",
-            image,
-        ],
+        &["image", "inspect", "--format", "{{json .Config}}", image],
         DOCKER_TIMEOUT,
     )
-    .await
-    .ok()?;
-    user_from_metadata(&out.output)
+    .await?;
+    require(&out, "read the dev container's user")?;
+    user_from_config(&out.output)
 }
-pub fn user_from_metadata(metadata: &str) -> Option<String> {
+pub fn user_from_config(config: &str) -> Result<Option<String>, String> {
+    let config: serde_json::Value = serde_json::from_str(config.trim())
+        .map_err(|e| format!("Docker gave an unreadable image configuration: {e}"))?;
+    let metadata = config["Labels"]["devcontainer.metadata"]
+        .as_str()
+        .unwrap_or_default();
+    let user = user_from_metadata(metadata)
+        .or_else(|| config["User"].as_str().map(str::to_owned))
+        .filter(|u| !u.is_empty());
+    match user {
+        Some(user) if !valid_user(&user) => Err(format!(
+            "The dev container's user, {user:?}, isn't a user name or ID Orbit can use."
+        )),
+        user => Ok(user),
+    }
+}
+fn user_from_metadata(metadata: &str) -> Option<String> {
     // A list of the recipe's layers, or a single object when there is one.
     let entries = match serde_json::from_str(metadata.trim()).ok()? {
         serde_json::Value::Array(entries) => entries,
@@ -156,11 +167,14 @@ pub fn user_from_metadata(metadata: &str) -> Option<String> {
         entries
             .iter()
             .rev()
-            .find_map(|e| e[key].as_str().map(str::to_owned))
+            .find_map(|e| e[key].as_str().filter(|u| !u.is_empty()))
+            .map(str::to_owned)
     };
-    find("remoteUser")
-        .or_else(|| find("containerUser"))
-        .filter(|u| valid_user(u))
+    find("remoteUser").or_else(|| find("containerUser"))
+}
+/// Whether a user is root, by name or ID, with or without a group.
+fn is_root(user: &str) -> bool {
+    matches!(user.split(':').next(), Some("root" | "0"))
 }
 /// A user name or `uid[:gid]` that can't be read as an option.
 fn valid_user(user: &str) -> bool {
@@ -188,40 +202,112 @@ pub struct Run<'a> {
 /// Copies the worktree into a new container from `image`, runs the setup
 /// command and then the check command, and removes the container.
 pub async fn run_checks(tools: &Tools, plan: Run<'_>) -> Result<ContainerChecks, String> {
-    let name = container(plan.id);
-    let result = in_container(tools, &plan, &name).await;
-    let _ = run(&tools.docker, &["rm", "--force", &name], DOCKER_TIMEOUT).await;
+    let user = user(tools, plan.image).await?;
+    let container = Container::new(tools, plan.id);
+    let result = async {
+        container.start(&plan).await?;
+        in_container(tools, &plan, &container.name, user).await
+    }
+    .await;
+    container.remove().await;
     result
 }
 /// The container of a review's checks.
 pub fn container(id: &str) -> String {
     format!("orbit-checks-{id}")
 }
+
+/// A review's container, which is removed when this is dropped too. Stopping
+/// a review drops its checks, which stops the `docker` commands on this
+/// computer but not the container or the commands running in it.
+struct Container {
+    docker: Launcher,
+    name: String,
+    /// Held while `docker run` runs, so removal waits for a container that
+    /// Docker is still creating.
+    starting: Arc<tokio::sync::Mutex<()>>,
+    removed: bool,
+}
+impl Container {
+    fn new(tools: &Tools, id: &str) -> Self {
+        Self {
+            docker: tools.docker.clone(),
+            name: container(id),
+            starting: Default::default(),
+            removed: false,
+        }
+    }
+    /// Starts the container. `docker run` runs as a task of its own, so that
+    /// stopping the review can't cut it off once Docker has the request.
+    async fn start(&self, plan: &Run<'_>) -> Result<(), String> {
+        let mut args: Vec<String> = [
+            "run",
+            "--detach",
+            "--rm",
+            "--name",
+            &self.name,
+            "--label",
+            &format!("{LABEL}={}", plan.id),
+            "--security-opt",
+            "no-new-privileges",
+            "--pids-limit",
+            "4096",
+        ]
+        .map(String::from)
+        .into();
+        if !plan.network {
+            args.extend(["--network".into(), "none".into()]);
+        }
+        args.extend([
+            "--entrypoint".into(),
+            "sleep".into(),
+            plan.image.into(),
+            LIFETIME.as_secs().to_string(),
+        ]);
+        let starting = self.starting.clone().lock_owned().await;
+        let docker = self.docker.clone();
+        let out = tokio::spawn(async move {
+            let _starting = starting;
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            run(&docker, &args, DOCKER_TIMEOUT).await
+        })
+        .await
+        .map_err(|e| format!("Docker could not start the dev container: {e}"))??;
+        require(&out, "start the dev container")
+    }
+    async fn remove(mut self) {
+        remove(&self.docker, &self.name, &self.starting).await;
+        self.removed = true;
+    }
+}
+impl Drop for Container {
+    fn drop(&mut self) {
+        if self.removed {
+            return;
+        }
+        // Without a runtime, Orbit is quitting: the container removes itself
+        // after its lifetime, or at the next launch.
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let (docker, name, starting) = (
+                self.docker.clone(),
+                self.name.clone(),
+                self.starting.clone(),
+            );
+            runtime.spawn(async move { remove(&docker, &name, &starting).await });
+        }
+    }
+}
+async fn remove(docker: &Launcher, name: &str, starting: &tokio::sync::Mutex<()>) {
+    let _started = starting.lock().await;
+    let _ = run(docker, &["rm", "--force", name], DOCKER_TIMEOUT).await;
+}
+
 async fn in_container(
     tools: &Tools,
     plan: &Run<'_>,
     name: &str,
+    user: Option<String>,
 ) -> Result<ContainerChecks, String> {
-    let label = format!("{LABEL}={}", plan.id);
-    let lifetime = LIFETIME.as_secs().to_string();
-    let mut args = vec![
-        "run",
-        "--detach",
-        "--rm",
-        "--name",
-        name,
-        "--label",
-        &label,
-        "--security-opt",
-        "no-new-privileges",
-        "--pids-limit",
-        "4096",
-    ];
-    if !plan.network {
-        args.extend(["--network", "none"]);
-    }
-    args.extend(["--entrypoint", "sleep", plan.image, &lifetime]);
-    docker(tools, &args, "start the dev container").await?;
     let folder = format!(
         "/workspaces/{}",
         plan.repo.rsplit('/').next().unwrap_or("repository")
@@ -259,8 +345,8 @@ async fn in_container(
         "prepare the workspace folder",
     )
     .await?;
-    let user = user(tools, plan.image).await;
-    if let Some(user) = user.as_deref().filter(|u| *u != "root" && *u != "0") {
+    // `docker cp` leaves the files to root.
+    if let Some(user) = user.as_deref().filter(|u| !is_root(u)) {
         docker(
             tools,
             &["exec", "--user", "root", name, "chown", "-R", user, &folder],
@@ -313,7 +399,10 @@ async fn in_container(
 }
 /// Runs a Docker command that has to work.
 async fn docker(tools: &Tools, args: &[&str], what: &str) -> Result<(), String> {
-    let out = run(&tools.docker, args, DOCKER_TIMEOUT).await?;
+    require(&run(&tools.docker, args, DOCKER_TIMEOUT).await?, what)
+}
+/// Whether a Docker command worked; `what` it was doing goes in the error.
+fn require(out: &Output, what: &str) -> Result<(), String> {
     if out.timed_out {
         return Err(format!("Docker took too long to {what}."));
     }

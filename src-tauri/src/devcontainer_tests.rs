@@ -25,8 +25,8 @@ pub(crate) fn calls(state: &Path) -> Vec<Vec<String>> {
         .map(|l| serde_json::from_str(l).unwrap())
         .collect()
 }
-/// Marks `image` as built, as a build would.
-pub(crate) fn built(state: &Path, image: &str) {
+/// Marks `image` as built from `recipe`, as a build would.
+pub(crate) fn built(state: &Path, image: &str, recipe: &str) {
     let images = state.join("images");
     std::fs::create_dir_all(&images).unwrap();
     let name: String = image
@@ -39,8 +39,20 @@ pub(crate) fn built(state: &Path, image: &str) {
             _ => format!("%{b:02X}"),
         })
         .collect();
-    std::fs::write(images.join(name), "{}").unwrap();
+    std::fs::write(images.join(name), recipe).unwrap();
 }
+/// Waits up to ten seconds for `done`.
+pub(crate) async fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
+    for _ in 0..200 {
+        if done() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("Timed out waiting for {what}");
+}
+const IMAGE_ABC: &str = "orbit-devcontainer:a.b-abc";
+const DEV: &str = r#"{"remoteUser":"dev"}"#;
 fn step(command: &str, exit_code: Option<i32>, output: &str) -> CheckStep {
     CheckStep {
         command: command.into(),
@@ -61,7 +73,7 @@ async fn checks(
         &fake(state),
         Run {
             id: "r1",
-            image: "orbit-devcontainer:a.b-abc",
+            image: IMAGE_ABC,
             repo: "a/b",
             worktree,
             network,
@@ -95,27 +107,49 @@ fn images_are_named_after_the_repository_and_recipe() {
 }
 
 #[test]
-fn commands_run_as_the_recipes_user() {
+fn commands_run_as_the_recipes_user_else_the_images() {
+    let config = |metadata: &str, user: &str| {
+        user_from_config(
+            &serde_json::json!({
+                "User": user,
+                "Labels": {"devcontainer.metadata": metadata},
+            })
+            .to_string(),
+        )
+    };
     let metadata =
         r#"[{"id":"x","remoteUser":"root"},{"containerUser":"app"},{"remoteUser":"dev"}]"#;
-    assert_eq!(user_from_metadata(metadata).as_deref(), Some("dev"));
+    assert_eq!(config(metadata, "image").unwrap().as_deref(), Some("dev"));
     assert_eq!(
-        user_from_metadata(r#"[{"containerUser":"app"}]"#).as_deref(),
+        config(r#"[{"containerUser":"app"}]"#, "")
+            .unwrap()
+            .as_deref(),
         Some("app")
     );
-    assert_eq!(user_from_metadata(r#"[{"id":"x"}]"#), None);
     // The CLI writes a single layer as an object.
     assert_eq!(
-        user_from_metadata(r#"{"remoteUser":"nobody"}"#).as_deref(),
+        config(r#"{"remoteUser":"nobody"}"#, "").unwrap().as_deref(),
         Some("nobody")
     );
-    assert_eq!(user_from_metadata("<no value>"), None);
-    // A name that could be read as an option is ignored.
+    // Without either, the image's own user, such as a Dockerfile's USER.
     assert_eq!(
-        user_from_metadata(r#"[{"remoteUser":"--privileged"}]"#),
+        config(r#"[{"id":"x","remoteUser":""}]"#, "1000:1000")
+            .unwrap()
+            .as_deref(),
+        Some("1000:1000")
+    );
+    assert_eq!(config(r#"[{"id":"x"}]"#, "").unwrap(), None);
+    assert_eq!(
+        user_from_config(r#"{"User":"","Labels":null}"#).unwrap(),
         None
     );
-    assert_eq!(user_from_metadata(r#"[{"remoteUser":"a b"}]"#), None);
+    // A name that could be read as an option is refused.
+    let error = config(r#"[{"remoteUser":"--privileged"}]"#, "").unwrap_err();
+    assert!(error.contains("--privileged"), "{error}");
+    assert!(config("[]", "a b").is_err());
+    assert!(user_from_config("<no value>").is_err());
+    assert!(is_root("root") && is_root("0:0") && is_root("root:staff"));
+    assert!(!is_root("1000") && !is_root("rooter"));
 }
 
 #[test]
@@ -206,7 +240,7 @@ async fn setup_and_checks_run_on_a_copy_in_a_closed_container() {
     let d = tempfile::tempdir().unwrap();
     let state = d.path().join("docker");
     let worktree = worktree(d.path());
-    built(&state, "orbit-devcontainer:a.b-abc");
+    built(&state, IMAGE_ABC, DEV);
     let result = checks(
         &state,
         &worktree,
@@ -261,11 +295,73 @@ async fn setup_and_checks_run_on_a_copy_in_a_closed_container() {
 }
 
 #[tokio::test]
+async fn a_dockerfile_user_gets_the_workspace() {
+    let d = tempfile::tempdir().unwrap();
+    let state = d.path().join("docker");
+    let worktree = worktree(d.path());
+    // The recipe sets no user, but its Dockerfile has `USER app`.
+    built(&state, IMAGE_ABC, r#"{"dockerfileUser":"app"}"#);
+    let result = checks(&state, &worktree, false, "true", "true")
+        .await
+        .unwrap();
+    assert!(result.check.unwrap().passed());
+    let calls = calls(&state);
+    assert!(
+        calls.iter().any(|c| c.ends_with(&[
+            "chown".into(),
+            "-R".into(),
+            "app".into(),
+            "/workspaces/b".into()
+        ])),
+        "{calls:?}"
+    );
+    for call in calls.iter().filter(|c| c.contains(&"/bin/sh".to_string())) {
+        assert_eq!(
+            call[call.iter().position(|a| a == "--user").unwrap() + 1],
+            "app"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_image_that_cant_be_read_fails_before_a_container_starts() {
+    let d = tempfile::tempdir().unwrap();
+    let state = d.path().join("docker");
+    let worktree = worktree(d.path());
+    let error = checks(&state, &worktree, false, "true", "true")
+        .await
+        .unwrap_err();
+    assert!(error.contains("read the dev container's user"), "{error}");
+    assert!(error.contains("No such image"), "{error}");
+    assert!(!calls(&state).iter().any(|c| c[1] == "run"));
+}
+
+#[tokio::test]
+async fn a_container_still_starting_when_stopped_is_removed_once_it_starts() {
+    let d = tempfile::tempdir().unwrap();
+    let state = d.path().join("docker");
+    let worktree = worktree(d.path());
+    built(&state, IMAGE_ABC, DEV);
+    // Docker creates the container a second after `docker run`.
+    std::fs::write(state.join("slow-start"), "").unwrap();
+    let task = {
+        let (state, worktree) = (state.clone(), worktree.clone());
+        tokio::spawn(async move { checks(&state, &worktree, false, "true", "").await })
+    };
+    wait_for("docker run", || calls(&state).iter().any(|c| c[1] == "run")).await;
+    task.abort();
+    wait_for("docker rm", || calls(&state).iter().any(|c| c[1] == "rm")).await;
+    // Removal waited for the container, so it doesn't turn up later.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(!state.join("containers/orbit-checks-r1").exists());
+}
+
+#[tokio::test]
 async fn a_failed_setup_skips_the_checks() {
     let d = tempfile::tempdir().unwrap();
     let state = d.path().join("docker");
     let worktree = worktree(d.path());
-    built(&state, "orbit-devcontainer:a.b-abc");
+    built(&state, IMAGE_ABC, DEV);
     let result = checks(
         &state,
         &worktree,
@@ -290,7 +386,7 @@ async fn a_step_is_stopped_at_its_time_limit() {
     let d = tempfile::tempdir().unwrap();
     let state = d.path().join("docker");
     let worktree = worktree(d.path());
-    built(&state, "orbit-devcontainer:a.b-abc");
+    built(&state, IMAGE_ABC, DEV);
     let result = checks(&state, &worktree, false, "", "sleep 30")
         .await
         .unwrap();
@@ -308,13 +404,15 @@ async fn a_container_that_cant_start_fails_and_is_removed() {
     let d = tempfile::tempdir().unwrap();
     let state = d.path().join("docker");
     let worktree = worktree(d.path());
-    // Docker refuses every command, as it does for an image that's gone.
+    // Docker reads the image but won't start it.
     let tools = Tools {
         docker: Launcher {
             program: "node".into(),
             prefix: vec![
                 "-e".into(),
-                "process.stderr.write('Unable to find image'); process.exit(125)".into(),
+                "if (process.argv.includes('inspect')) console.log('{}'); \
+                 else { process.stderr.write('Unable to find image'); process.exit(125) }"
+                    .into(),
             ],
         },
         devcontainer: fake(&state).devcontainer,
@@ -393,7 +491,10 @@ async fn real_docker_runs_checks_in_a_closed_container() {
     let image = image("orbit/test", &id().replace('-', ""));
     build(&tools, &recipe, &image).await.unwrap();
     assert!(exists(&tools, &image).await);
-    assert_eq!(user(&tools, &image).await.as_deref(), Some("nobody"));
+    assert_eq!(
+        user(&tools, &image).await.unwrap().as_deref(),
+        Some("nobody")
+    );
     let worktree = worktree(d.path());
     let result = run_checks(
         &tools,
@@ -418,4 +519,114 @@ async fn real_docker_runs_checks_in_a_closed_container() {
         assert!(check.output.contains(expected), "{}", check.output);
     }
     assert!(!worktree.join("installed.txt").exists());
+}
+
+/// Like the test above, for a recipe whose Dockerfile sets the user.
+#[tokio::test]
+#[ignore = "needs Docker, the Dev Container CLI and the alpine:3.20 image"]
+async fn real_docker_gives_a_dockerfile_user_the_workspace() {
+    let d = tempfile::tempdir().unwrap();
+    let recipe = d.path().join("recipe");
+    std::fs::create_dir_all(recipe.join(".devcontainer")).unwrap();
+    std::fs::write(
+        recipe.join(".devcontainer/devcontainer.json"),
+        r#"{"build":{"dockerfile":"Dockerfile"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        recipe.join(".devcontainer/Dockerfile"),
+        "FROM alpine:3.20\nRUN adduser -D app\nUSER app\n",
+    )
+    .unwrap();
+    let tools = Tools::default();
+    let image = image("orbit/test", &id().replace('-', ""));
+    build(&tools, &recipe, &image).await.unwrap();
+    let user = user(&tools, &image).await;
+    let worktree = worktree(d.path());
+    let result = run_checks(
+        &tools,
+        Run {
+            id: &id(),
+            image: &image,
+            repo: "orbit/test",
+            worktree: &worktree,
+            network: false,
+            setup: "mkdir target && echo built > target/out.txt",
+            check: "id -un; cat target/out.txt",
+        },
+    )
+    .await;
+    let _ = run(&tools.docker, &["image", "rm", &image], DOCKER_TIMEOUT).await;
+    assert_eq!(user.unwrap().as_deref(), Some("app"));
+    let result = result.unwrap();
+    let setup = result.setup.unwrap();
+    assert!(setup.passed(), "{setup:?}");
+    let check = result.check.unwrap();
+    assert!(check.passed(), "{check:?}");
+    assert!(check.output.contains("app\nbuilt"), "{}", check.output);
+}
+
+/// Like the tests above: stops checks while a command runs in the container.
+#[tokio::test]
+#[ignore = "needs Docker, the Dev Container CLI and the alpine:3.20 image"]
+async fn real_docker_removes_the_container_of_stopped_checks() {
+    let d = tempfile::tempdir().unwrap();
+    let recipe = d.path().join("recipe");
+    std::fs::create_dir_all(recipe.join(".devcontainer")).unwrap();
+    std::fs::write(
+        recipe.join(".devcontainer/devcontainer.json"),
+        r#"{"image":"alpine:3.20","remoteUser":"nobody"}"#,
+    )
+    .unwrap();
+    let tools = Tools::default();
+    let image = image("orbit/test", &id().replace('-', ""));
+    build(&tools, &recipe, &image).await.unwrap();
+    let review = id();
+    let name = container(&review);
+    let task = {
+        let (tools, image, worktree, review) = (
+            tools.clone(),
+            image.clone(),
+            worktree(d.path()),
+            review.clone(),
+        );
+        tokio::spawn(async move {
+            run_checks(
+                &tools,
+                Run {
+                    id: &review,
+                    image: &image,
+                    repo: "orbit/test",
+                    worktree: &worktree,
+                    network: false,
+                    setup: "sleep 601",
+                    check: "",
+                },
+            )
+            .await
+        })
+    };
+    let top_args = ["top", name.as_str()];
+    let top = || run(&tools.docker, &top_args, DOCKER_TIMEOUT);
+    for _ in 0..200 {
+        if top().await.is_ok_and(|out| out.output.contains("601")) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(top().await.unwrap().output.contains("601"));
+    task.abort();
+    let filter = format!("name=^{name}$");
+    let ps_args = ["ps", "--all", "--quiet", "--filter", filter.as_str()];
+    let listed = || run(&tools.docker, &ps_args, DOCKER_TIMEOUT);
+    let mut gone = false;
+    for _ in 0..200 {
+        if listed().await.unwrap().output.trim().is_empty() {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let _ = run(&tools.docker, &["image", "rm", &image], DOCKER_TIMEOUT).await;
+    assert!(gone, "{name} is still there");
 }

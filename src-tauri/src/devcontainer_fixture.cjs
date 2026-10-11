@@ -3,10 +3,13 @@
 // run in it with the host's shell. Usage: node devcontainer_fixture.cjs
 // <state folder> <docker|devcontainer> <arguments...>. Each call is logged
 // as a JSON line in <state>/log. Files in the state folder change behaviour:
-// `no-daemon` fails `docker version`, `build-fails` fails builds.
+// `no-daemon` fails `docker version`, `build-fails` fails builds, and
+// `slow-start` makes a container appear a second after `docker run`.
+// Like Docker's daemon, a started container and the commands run in it keep
+// going when this script is stopped; `docker rm` stops them.
 const fs = require("node:fs");
 const path = require("node:path");
-const { spawnSync } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 
 const [state, tool, ...args] = process.argv.slice(2);
 fs.mkdirSync(state, { recursive: true });
@@ -55,8 +58,22 @@ switch (command) {
   case "image": {
     const image = rest[rest.length - 1];
     if (!fs.existsSync(imageFile(image))) fail(`No such image: ${image}`);
-    if (after(rest, "--format").includes("devcontainer.metadata")) {
-      console.log(JSON.stringify([{ id: "base" }, { remoteUser: "dev" }]));
+    if (after(rest, "--format") === "{{json .Config}}") {
+      // An image's users come from its recipe: `remoteUser` and
+      // `containerUser` go in the Dev Container CLI's metadata, and the
+      // fake-only `dockerfileUser` plays a Dockerfile's USER.
+      const recipe = JSON.parse(fs.readFileSync(imageFile(image), "utf8"));
+      const users = {};
+      for (const key of ["remoteUser", "containerUser"]) {
+        if (recipe[key]) users[key] = recipe[key];
+      }
+      const metadata = JSON.stringify([{ id: "base" }, users]);
+      console.log(
+        JSON.stringify({
+          User: recipe.dockerfileUser ?? "",
+          Labels: { "devcontainer.metadata": metadata },
+        }),
+      );
     } else {
       console.log("sha256:fake");
     }
@@ -64,10 +81,21 @@ switch (command) {
   }
   case "run": {
     const name = after(rest, "--name");
-    fs.mkdirSync(root(name), { recursive: true });
-    fs.writeFileSync(
-      path.join(containers, name, "run.json"),
-      JSON.stringify(rest),
+    const create = `
+      const fs = require("node:fs");
+      fs.mkdirSync(${JSON.stringify(root(name))}, { recursive: true });
+      fs.writeFileSync(
+        ${JSON.stringify(path.join(containers, name, "run.json"))},
+        ${JSON.stringify(JSON.stringify(rest))},
+      );`;
+    // The "daemon" creates the container, even if this script is stopped.
+    const delay = has("slow-start") ? 1000 : 0;
+    spawnSync(
+      process.execPath,
+      ["-e", `setTimeout(() => {${create}}, ${delay})`],
+      {
+        stdio: "inherit",
+      },
     );
     console.log("container-id");
     break;
@@ -92,22 +120,34 @@ switch (command) {
     } else if (program === "chown") {
       // Nothing to change in a folder.
     } else if (program === "/bin/sh") {
-      const result = spawnSync(argv[1], {
+      // In its own process group, which `docker rm` stops.
+      const child = spawn(argv[1], {
         cwd: inside(name, workdir),
         shell: true,
         stdio: "inherit",
+        detached: true,
       });
-      process.exit(result.status ?? 1);
+      fs.appendFileSync(path.join(containers, name, "pids"), `${child.pid}\n`);
+      child.on("exit", (code) => process.exit(code ?? 1));
     } else {
       fail(`unknown program ${program}`);
     }
     break;
   }
   case "rm": {
-    fs.rmSync(path.join(containers, rest[rest.length - 1]), {
-      recursive: true,
-      force: true,
-    });
+    const container = path.join(containers, rest[rest.length - 1]);
+    const pids = path.join(container, "pids");
+    if (fs.existsSync(pids)) {
+      for (const pid of fs.readFileSync(pids, "utf8").split("\n")) {
+        try {
+          if (pid) process.kill(-Number(pid), "SIGKILL");
+        } catch {
+          // It finished already.
+        }
+      }
+    }
+    if (!fs.existsSync(container)) fail(`No such container: ${rest.at(-1)}`);
+    fs.rmSync(container, { recursive: true, force: true });
     break;
   }
   case "ps":

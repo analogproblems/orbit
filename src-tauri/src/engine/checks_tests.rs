@@ -1,11 +1,15 @@
 use super::{test_support::*, worktrees::git, Engine};
 use crate::{
-    devcontainer::tests::{calls, fake},
+    devcontainer::{
+        self,
+        tests::{calls, fake, wait_for},
+    },
     types::*,
 };
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 struct Setup {
@@ -222,6 +226,50 @@ async fn a_stopped_review_runs_nothing() {
         .await;
     assert!(run(&t).await.is_err());
     assert!(calls(&t.docker).is_empty());
+}
+
+#[tokio::test]
+async fn stopping_a_review_stops_its_running_setup_and_removes_its_container() {
+    let t = review_with_recipe(true).await;
+    let started = t.worktree.with_file_name("started");
+    let finished = t.worktree.with_file_name("finished");
+    let setup = format!(
+        "touch '{}' && sleep 2 && touch '{}'",
+        started.display(),
+        finished.display()
+    );
+    t.e.update(|s| s.settings.repositories[0].setup_command = setup)
+        .await;
+    let repo = t.e.snapshot().await.settings.repositories[0].clone();
+    // Prepared like a queued review, so Stop aborts it.
+    let task = {
+        let (e, id, clone, worktree, base) = (
+            t.e.clone(),
+            t.id.clone(),
+            t.clone.clone(),
+            t.worktree.clone(),
+            t.base.clone(),
+        );
+        tokio::spawn(async move {
+            e.run_container_checks(&id, &repo, &clone, &worktree, &base)
+                .await
+        })
+    };
+    t.e.preparing
+        .lock()
+        .unwrap()
+        .insert(t.id.clone(), task.abort_handle());
+    wait_for("the setup command", || started.exists()).await;
+    t.e.cancel(&t.id).await.unwrap();
+    assert!(task.await.unwrap_err().is_cancelled());
+    let container = t
+        .docker
+        .join("containers")
+        .join(devcontainer::container(&t.id));
+    wait_for("the container's removal", || !container.exists()).await;
+    // The setup command stopped with its container.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert!(!finished.exists());
 }
 
 #[tokio::test]
