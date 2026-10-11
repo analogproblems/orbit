@@ -240,6 +240,7 @@ async fn a_tapped_button_is_checked_again() {
                 settings: Some(json!({"trustedAuthors": ["mallory"]})),
                 done: false,
             }],
+            vec![],
         );
         id
     };
@@ -319,7 +320,7 @@ async fn a_button_runs_once_even_when_two_windows_tap_it_at_once() {
             settings: None,
             done: false,
         };
-        answered(&mut s, id, "Tap below.".into(), vec![sync]);
+        answered(&mut s, id, "Tap below.".into(), vec![sync], vec![]);
         id
     };
     let gh = counting_gh(dir.path());
@@ -353,4 +354,62 @@ async fn a_button_runs_once_even_when_two_windows_tap_it_at_once() {
         "That's done already."
     );
     assert_eq!(syncs(), 2);
+}
+#[tokio::test]
+async fn bit_keeps_what_it_remembers_until_you_forget_it() {
+    let (dir, e, _rpc) = fixture().await;
+    e.update(|s| {
+        let mut repo: Repository = serde_json::from_value(json!({
+            "name": "a/b", "path": "/tmp/a-b", "automatic": false,
+            "setupCommand": "", "networkAccess": false,
+        }))
+        .unwrap();
+        repo.round_limit = 4;
+        s.settings.repositories.push(repo);
+    })
+    .await;
+    e.ask_buddy_anything("Please remember I like short answers.")
+        .await
+        .unwrap();
+    let reply = json!({
+        "answer": "Got it.",
+        "proposals": [],
+        "memory": {"forget": [], "remember": [
+            {"repository": null, "line": "Jason likes short answers."},
+            {"repository": "A/B", "line": "Reviews often flag missing tests."},
+        ]},
+    });
+    codex_says(&e, &reply.to_string(), "completed").await;
+    let s = e.snapshot().await;
+    assert_eq!(s.buddy_feed.memory.general, ["Jason likes short answers."]);
+    assert_eq!(
+        s.buddy_feed.memory.repositories["a/b"],
+        ["Reviews often flag missing tests."]
+    );
+    assert_eq!(last(&s).memory.len(), 2);
+    // Saved with the state, and shown to Codex next time.
+    let saved: Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("state").join("state.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        saved["buddyFeed"]["memory"]["general"],
+        json!(["Jason likes short answers."])
+    );
+    assert_eq!(
+        crate::ask::briefing(&s)["memory"]["repositories"]["a/b"],
+        json!(["Reviews often flag missing tests."])
+    );
+
+    e.forget_memory(Some("A/B"), "reviews often flag missing tests.")
+        .await
+        .unwrap();
+    let s = e.snapshot().await;
+    assert!(s.buddy_feed.memory.repositories.is_empty());
+    assert_eq!(
+        e.forget_memory(None, "Not a line.").await.unwrap_err(),
+        "That line isn't there any more."
+    );
+    e.clear_memory().await.unwrap();
+    assert_eq!(e.snapshot().await.buddy_feed.memory, Memory::default());
 }

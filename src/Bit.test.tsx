@@ -10,6 +10,7 @@ import {
   defaultBuddy,
   fixLabels,
   fixRuleLabels,
+  memoryLimits,
   questionLabels,
   type BuddyHat,
   type Mood,
@@ -31,6 +32,7 @@ describe("Bit", () => {
     expect(Object.keys(fixLabels)).toEqual(options.fixes);
     expect(Object.keys(questionLabels)).toEqual(options.questions);
     expect(Object.keys(actionLabels)).toEqual(options.actions);
+    expect(memoryLimits).toEqual(options.memoryLimits);
     // Every fix but a settings change has a rule, which starts on Ask first,
     // under the same names the engine saves and accepts.
     expect(Object.keys(defaultBuddy.rules)).toEqual(

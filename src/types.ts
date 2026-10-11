@@ -492,6 +492,9 @@ export interface BuddyNote {
   lines?: BuddyNoteLine[];
   /** For an answer to a question you typed, the buttons it offers. */
   proposals?: Proposal[];
+  /** For an answer to a question you typed, what it changed in Bit's
+   * memory. */
+  memory?: MemoryChange[];
   /** A question you typed that Bit is still answering. */
   pending?: boolean;
 }
@@ -531,6 +534,34 @@ export const maxQuestion = 2000;
 export interface BuddyFeed {
   /** Oldest first, at most 50. */
   notes: BuddyNote[];
+  memory?: BuddyMemory;
+}
+/** What Bit remembers between questions, in its own words. Bit adds and
+ * forgets lines as it answers what you type; you can forget any line. */
+export interface BuddyMemory {
+  general: string[];
+  /** By repository, as owner/name. */
+  repositories: Record<string, string[]>;
+}
+/** The most lines Bit keeps in general and about each repository. */
+export const memoryLimits = { general: 20, perRepository: 10 };
+/** A change an answer made to Bit's memory, or couldn't make because there
+ * was no room. */
+export interface MemoryChange {
+  /** The repository, or null for general memory. */
+  repo: string | null;
+  line: string;
+  kind: "remember" | "forget" | "full";
+}
+const memoryChangeLabels: Record<MemoryChange["kind"], string> = {
+  remember: "Remembered",
+  forget: "Forgot",
+  full: "No room to remember",
+};
+/** How an answer shows a change to Bit's memory. */
+export function memoryChangeText(change: MemoryChange): string {
+  const about = change.repo ? ` (${change.repo})` : "";
+  return `${memoryChangeLabels[change.kind]}${about}: ${change.line}`;
 }
 /** The buddy's settings, with defaults for anything missing. */
 export function buddyOf(settings: Settings): Buddy {

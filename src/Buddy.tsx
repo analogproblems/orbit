@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import {
+  AlertDialog,
   Banner,
   Button,
   Card,
@@ -16,6 +17,7 @@ import {
   Grid,
   Heading,
   HStack,
+  IconButton,
   Kbd,
   List,
   ListItem,
@@ -33,6 +35,7 @@ import {
   Token,
   VStack,
 } from "@astryxdesign/core";
+import { Trash2 } from "lucide-react";
 import { useOrbit } from "./store";
 import {
   actionLabels,
@@ -43,6 +46,8 @@ import {
   fixLabels,
   fixRuleLabels,
   maxQuestion,
+  memoryChangeText,
+  memoryLimits,
   moodReason,
   offeredFix,
   questionLabels,
@@ -284,6 +289,11 @@ function NoteMessage({
               noteId={note.id}
               proposal={proposal}
             />
+          ))}
+          {note.memory?.map((change, index) => (
+            <Text key={index} type="supporting" color="secondary">
+              {memoryChangeText(change)}
+            </Text>
           ))}
           <FixButton itemKey={note.key} />
         </VStack>
@@ -673,8 +683,109 @@ export function BuddySettings() {
           <SaveFeedback saveKey="buddy.personality" />
         </VStack>
         <BuddyRules />
+        <BuddyMemory />
       </VStack>
     </Card>
+  );
+}
+
+/** What Bit remembers between questions, with a button to forget each line
+ * and one to forget everything. */
+function BuddyMemory() {
+  const { snapshot: s, action } = useOrbit();
+  const buddy = useBuddy();
+  const [error, setError] = useState<string | null>(null);
+  const [clearing, setClearing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const memory = s.buddyFeed?.memory;
+  const places: [string, string | null, string[], number][] = [
+    ["General", null, memory?.general ?? [], memoryLimits.general],
+    ...Object.entries(memory?.repositories ?? {}).map(
+      ([repo, lines]): [string, string | null, string[], number] => [
+        repo,
+        repo,
+        lines,
+        memoryLimits.perRepository,
+      ],
+    ),
+  ];
+  const kept = places.filter(([, , lines]) => lines.length);
+  const run = async (command: string, args: Record<string, unknown>) => {
+    setError(null);
+    setBusy(true);
+    const result = await action(command, args, { quiet: true });
+    setBusy(false);
+    if (!result.ok) setError(result.error);
+    return result.ok;
+  };
+  return (
+    <VStack gap={4}>
+      <VStack gap={2}>
+        <Heading level={4}>What {buddy.name} remembers</Heading>
+        <Text color="secondary">
+          {buddy.name} keeps short notes between the questions you type: up to{" "}
+          {memoryLimits.general} lines in general and{" "}
+          {memoryLimits.perRepository} about each repository. It adds and
+          forgets lines itself as it answers, and each answer shows what
+          changed. Forget anything you’d rather it didn’t keep.
+        </Text>
+      </VStack>
+      {kept.length ? (
+        kept.map(([title, repo, lines, limit]) => (
+          <VStack key={title} gap={2}>
+            <HStack gap={2} vAlign="center">
+              <Text weight="semibold">{title}</Text>
+              <Token label={`${lines.length} of ${limit}`} size="sm" />
+            </HStack>
+            <List hasDividers aria-label={`${buddy.name}'s memory: ${title}`}>
+              {lines.map((line) => (
+                <ListItem
+                  key={line}
+                  label={<Text>{line}</Text>}
+                  endContent={
+                    <IconButton
+                      label={`Forget “${line}”`}
+                      tooltip="Forget"
+                      size="sm"
+                      variant="ghost"
+                      icon={<Trash2 />}
+                      isDisabled={busy}
+                      onClick={() => void run("forget_memory", { repo, line })}
+                    />
+                  }
+                />
+              ))}
+            </List>
+          </VStack>
+        ))
+      ) : (
+        <Text color="secondary">Nothing yet.</Text>
+      )}
+      {error && <Banner status="error" title={error} />}
+      {!!kept.length && (
+        <HStack>
+          <Button
+            label="Forget everything"
+            variant="secondary"
+            isDisabled={busy}
+            onClick={() => setClearing(true)}
+          />
+        </HStack>
+      )}
+      <AlertDialog
+        isOpen={clearing}
+        onOpenChange={setClearing}
+        title="Forget everything"
+        description={`${buddy.name} forgets every line it remembers, in general and about each repository.`}
+        actionLabel="Forget everything"
+        isActionLoading={busy}
+        onAction={async () => {
+          if (busy) return;
+          await run("clear_memory", {});
+          setClearing(false);
+        }}
+      />
+    </VStack>
   );
 }
 

@@ -765,9 +765,20 @@ describe("Bit", () => {
         { id: 0, action: "change_settings", settings: { pollSeconds: 600 } },
         { id: 1, action: "stop_loop", prId: snapshot.prs[0].id },
       ],
+      memory: [
+        { repo: null, line: "You check in from your phone.", kind: "remember" },
+        { repo: "acme/api", line: "Uses npm.", kind: "forget" },
+        { repo: "acme/api", line: "Runs on Node 22.", kind: "full" },
+      ],
     });
     act(emit);
     expect(within(chat()).queryByText("Thinking…")).toBeNull();
+    for (const text of [
+      "Remembered: You check in from your phone.",
+      "Forgot (acme/api): Uses npm.",
+      "No room to remember (acme/api): Runs on Node 22.",
+    ])
+      expect(within(chat()).getByText(text)).toBeTruthy();
     expect(within(chat()).getByText("every ten minutes").tagName).toBe(
       "STRONG",
     );
@@ -836,6 +847,67 @@ describe("Bit", () => {
       publish: "do_it",
       continue_loop: "ask_first",
     });
+  });
+
+  it("shows what Bit remembers in Settings and forgets what you choose", async () => {
+    invoke.mockImplementation(async (cmd, args) => {
+      const memory = snapshot.buddyFeed!.memory!;
+      if (cmd === "forget_memory") {
+        const { repo, line } = args as { repo: string | null; line: string };
+        const lines = repo ? memory.repositories[repo] : memory.general;
+        lines.splice(lines.indexOf(line), 1);
+        if (repo && !lines.length) delete memory.repositories[repo];
+        emit();
+        return;
+      }
+      if (cmd === "clear_memory") {
+        snapshot.buddyFeed!.memory = { general: [], repositories: {} };
+        emit();
+        return;
+      }
+      return backend(cmd, args);
+    });
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Settings" }));
+    const general = await screen.findByRole("list", {
+      name: "Bit's memory: General",
+    });
+    expect(
+      within(general).getByText(
+        "You like short answers, with a button when there is one.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText("1 of 20")).toBeTruthy();
+    expect(screen.getByText("1 of 10")).toBeTruthy();
+    const line = "Its reviews often flag missing tests for new routes.";
+    await user().click(
+      within(
+        screen.getByRole("list", { name: "Bit's memory: acme/api" }),
+      ).getByRole("button", { name: `Forget “${line}”` }),
+    );
+    expect(invoke).toHaveBeenCalledWith("forget_memory", {
+      repo: "acme/api",
+      line,
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("list", { name: "Bit's memory: acme/api" }),
+      ).toBeNull(),
+    );
+    // Forgetting everything asks first.
+    await user().click(
+      screen.getByRole("button", { name: "Forget everything" }),
+    );
+    expect(invoke.mock.calls.some(([c]) => c === "clear_memory")).toBe(false);
+    const confirm = await screen.findByRole("alertdialog");
+    await user().click(
+      within(confirm).getByRole("button", { name: "Forget everything" }),
+    );
+    expect(invoke).toHaveBeenCalledWith("clear_memory", {});
+    expect(await screen.findByText("Nothing yet.")).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Forget everything" }),
+    ).toBeNull();
   });
 
   it("renames, dresses and hides Bit from Settings, keeping a failed name", async () => {

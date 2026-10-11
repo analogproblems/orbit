@@ -240,7 +240,7 @@ impl Engine {
             }
         }
         self.update(|s| match reply.and_then(|reply| ask::answer(s, &reply)) {
-            Ok((text, proposals)) => buddy::answered(s, note, text, proposals),
+            Ok(a) => buddy::answered(s, note, a.text, a.proposals, a.memory),
             Err(error) => buddy::not_answered(s, note, &error),
         })
         .await;
@@ -252,6 +252,24 @@ impl Engine {
         if let Some(note) = note {
             self.answer_done(note, Err(why.into())).await;
         }
+    }
+    /// Forgets a line of Bit's memory: one about `repo`, or a general one
+    /// when it is none.
+    pub async fn forget_memory(&self, repo: Option<&str>, line: &str) -> Result<(), String> {
+        let mut found = false;
+        self.update(|s| found = buddy::forget(s, repo, line)).await;
+        if !found {
+            return Err("That line isn't there any more.".into());
+        }
+        let _ = self.flush().await;
+        Ok(())
+    }
+    /// Forgets everything Bit remembers.
+    pub async fn clear_memory(&self) -> Result<(), String> {
+        self.update(|s| s.buddy_feed.memory = Default::default())
+            .await;
+        let _ = self.flush().await;
+        Ok(())
     }
     /// Uses a button from an answer, after checking it against Orbit's
     /// state now, as the same control elsewhere in the app does. A button

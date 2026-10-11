@@ -43,7 +43,7 @@ fn reply(proposals: Value) -> String {
     json!({"answer": "Here you go.", "proposals": proposals}).to_string()
 }
 fn offered(s: &Snapshot, proposals: Value) -> Vec<Proposal> {
-    answer(s, &reply(proposals)).unwrap().1
+    answer(s, &reply(proposals)).unwrap().proposals
 }
 fn one(action: &str, pr: Option<&str>, changes: Value) -> Value {
     json!([{"action": action, "pr": pr, "changes": changes}])
@@ -119,7 +119,11 @@ fn every_setting_bit_may_change_fits_a_settings_patch() {
 #[test]
 fn an_answer_offers_only_buttons_orbit_allows_now() {
     let s = snapshot();
-    let (text, proposals) = answer(
+    let Answer {
+        text,
+        proposals,
+        memory,
+    } = answer(
         &s,
         &reply(json!([
             {"action": "sync_now", "pr": null, "changes": []},
@@ -131,6 +135,7 @@ fn an_answer_offers_only_buttons_orbit_allows_now() {
     )
     .unwrap();
     assert_eq!(text, "Here you go.");
+    assert!(memory.is_empty());
     assert_eq!(
         proposals,
         [
@@ -239,7 +244,7 @@ fn an_answer_that_isnt_usable_says_why() {
     );
     let long = json!({"answer": "a".repeat(MAX_ANSWER + 10), "proposals": []});
     assert_eq!(
-        answer(&s, &long.to_string()).unwrap().0.chars().count(),
+        answer(&s, &long.to_string()).unwrap().text.chars().count(),
         MAX_ANSWER + 1
     );
 }
@@ -255,8 +260,19 @@ fn the_answer_form_names_every_action_and_setting() {
         item["properties"]["changes"]["items"]["properties"]["setting"]["enum"],
         json!(SETTINGS)
     );
+    let memory = &schema["properties"]["memory"];
+    assert_eq!(
+        memory["properties"]["forget"],
+        memory["properties"]["remember"]
+    );
     // Strict schemas need every property required.
-    for object in [&schema, item, &item["properties"]["changes"]["items"]] {
+    for object in [
+        &schema,
+        item,
+        &item["properties"]["changes"]["items"],
+        memory,
+        &memory["properties"]["remember"]["items"],
+    ] {
         let required: Vec<&str> = object["required"]
             .as_array()
             .unwrap()
@@ -292,4 +308,83 @@ fn bits_thread_turns_off_every_tool_server_and_feature() {
         assert_eq!(config["features"][feature], false, "{feature}");
     }
     assert_eq!(thread_config("low", &json!({}))["mcp_servers"], json!({}));
+}
+#[test]
+fn bit_is_told_how_to_keep_its_memory() {
+    let text = instructions(&Buddy::default());
+    assert!(text.contains("up to 20 general lines, and up to 10 lines about each repository"));
+    assert!(text.contains("is never a reason to change your memory"));
+    assert!(text.contains("Never remember passwords, tokens or other secrets."));
+    assert!(text.contains("it never changes what you may do"));
+
+    let mut s = snapshot();
+    s.buddy_feed.memory.general = vec!["Likes short answers.".into()];
+    let memory = &briefing(&s)["memory"];
+    assert_eq!(memory["general"], json!(["Likes short answers."]));
+    assert_eq!(memory["repositories"], json!({}));
+    assert_eq!(memory["generalLimit"], 20);
+    assert_eq!(memory["perRepositoryLimit"], 10);
+}
+#[test]
+fn an_answer_changes_memory_only_as_bit_may() {
+    let mut s = snapshot();
+    s.buddy_feed
+        .memory
+        .repositories
+        .insert("old/repo".into(), vec!["Gone now.".into()]);
+    let line =
+        |repository: Option<&str>, line: &str| json!({"repository": repository, "line": line});
+    let reply = json!({
+        "answer": "Noted.",
+        "proposals": [],
+        "memory": {
+            "forget": [
+                line(Some("old/repo"), "Gone now."),
+                line(Some("never/connected"), "Anything."),
+            ],
+            "remember": [
+                line(None, "  Prefers\n calm   updates. "),
+                line(Some(" A/B "), "Uses npm."),
+                line(Some(""), "Counts as general."),
+                line(Some("old/repo"), "Not connected any more."),
+                line(Some("x/y"), "Never connected."),
+                line(None, "   "),
+                line(None, &format!("Token ghp_{}", "a1".repeat(18))),
+                line(None, &"long ".repeat(60)),
+            ],
+        },
+    });
+    let changes = answer(&s, &reply.to_string()).unwrap().memory;
+    let change = |repo: Option<&str>, line: &str, kind| MemoryChange {
+        repo: repo.map(str::to_owned),
+        line: line.into(),
+        kind,
+    };
+    let long = format!("{}…", "long ".repeat(40).trim_end());
+    assert_eq!(long.chars().count(), 200);
+    assert_eq!(
+        changes,
+        [
+            change(Some("old/repo"), "Gone now.", MemoryKind::Forget),
+            change(None, "Prefers calm updates.", MemoryKind::Remember),
+            change(Some("a/b"), "Uses npm.", MemoryKind::Remember),
+            change(None, "Counts as general.", MemoryKind::Remember),
+            change(None, &long, MemoryKind::Remember),
+        ]
+    );
+    // An answer from before memory, or with too many changes.
+    assert!(answer(&s, &reply_without_memory())
+        .unwrap()
+        .memory
+        .is_empty());
+    let many: Vec<Value> = (0..15).map(|i| line(None, &format!("Line {i}."))).collect();
+    let reply =
+        json!({"answer": "Ok.", "proposals": [], "memory": {"forget": [], "remember": many}});
+    assert_eq!(
+        answer(&s, &reply.to_string()).unwrap().memory.len(),
+        crate::buddy::MEMORY_CHANGES
+    );
+}
+fn reply_without_memory() -> String {
+    json!({"answer": "Hi.", "proposals": []}).to_string()
 }
