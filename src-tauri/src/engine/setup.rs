@@ -6,12 +6,21 @@ use super::{
 };
 use crate::{
     ask::Lookups,
-    github,
+    github, guide,
     setup::{self, RepositoryPatch},
     types::*,
 };
 use std::{collections::BTreeMap, path::Path, sync::Arc, time::Duration};
 
+/// What a repository's copy at `path` holds, or why Orbit can't tell.
+async fn copy_facts(path: &str) -> Result<setup::CloneFacts, String> {
+    let path = path.to_string();
+    checkout_io(
+        move || setup::clone_facts(Path::new(&path)),
+        Duration::from_secs(5),
+    )
+    .await
+}
 /// How long Bit waits for GitHub to list your repositories.
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -92,14 +101,15 @@ impl Engine {
         let mut repository = Repository::new(name, &path);
         repository.keep_updated = true;
         patch.apply(&mut repository);
-        {
+        let added = {
             let mut s = self.state.lock().await;
             let mut settings = s.settings.clone();
-            match settings
+            let connected = settings
                 .repositories
                 .iter_mut()
-                .find(|r| same_repo(&r.name, name))
-            {
+                .find(|r| same_repo(&r.name, name));
+            let added = connected.is_none();
+            match connected {
                 // Connected meanwhile, such as from another window: it
                 // gets the change instead.
                 Some(connected) => patch.apply(connected),
@@ -107,6 +117,10 @@ impl Engine {
             }
             self.commit_settings(&mut s, settings)
                 .map_err(not_connected)?;
+            added
+        };
+        if added {
+            self.note_connected(name, &path).await;
         }
         // Its pull requests show up without waiting for the next sync.
         let e = self.clone();
@@ -132,25 +146,22 @@ impl Engine {
         Ok(true)
     }
     /// What a question's summary needs beyond Orbit's state: what each
-    /// connected repository's copy holds, and your GitHub repositories that
-    /// aren't connected. A look that fails or takes too long says why
-    /// instead.
-    pub(super) async fn look_up(&self, connected: Vec<Repository>) -> Lookups {
+    /// connected repository's copy holds, and, when `list`, your GitHub
+    /// repositories that aren't connected. A look that fails or takes too
+    /// long says why instead.
+    pub(super) async fn look_up(&self, connected: Vec<Repository>, list: bool) -> Lookups {
         let names: Vec<String> = connected.iter().map(|r| r.name.clone()).collect();
         let clones = async {
             let mut clones = BTreeMap::new();
             for r in connected {
-                let path = r.path.clone();
-                let facts = checkout_io(
-                    move || setup::clone_facts(Path::new(&path)),
-                    Duration::from_secs(5),
-                )
-                .await;
-                clones.insert(r.name, facts);
+                clones.insert(r.name, copy_facts(&r.path).await);
             }
             clones
         };
         let listed = async {
+            if !list {
+                return Ok(vec![]);
+            }
             let unconnected = |repos: Vec<RepositorySummary>| {
                 repos
                     .into_iter()
@@ -167,5 +178,40 @@ impl Engine {
             clones,
             connectable,
         }
+    }
+    /// Checks every connection again, as Settings' Reconnect does: the
+    /// reviewers, Codex, then GitHub with a sync. Fails with what still
+    /// isn't connected.
+    pub(super) async fn check_connections(self: &Arc<Self>) -> Result<(), String> {
+        self.check_reviewers().await;
+        let _ = self.connect().await;
+        if self.poll().await.is_ok() {
+            self.update_clones_soon();
+        }
+        let s = self.state.lock().await;
+        let off: Vec<String> = guide::connections(&s)
+            .into_iter()
+            .filter(|c| !c.ready)
+            .map(|c| match c.error {
+                Some(e) => format!("{} still isn't connected: {}", c.name, e.trim()),
+                None => format!("{} still isn't connected. {}", c.name, c.how),
+            })
+            .collect();
+        if off.is_empty() {
+            Ok(())
+        } else {
+            Err(off.join(" "))
+        }
+    }
+    /// Bit's note that `name`, at `path`, was just connected, with buttons
+    /// for its next steps.
+    pub(super) async fn note_connected(&self, name: &str, path: &str) {
+        if !self.state.lock().await.settings.buddy.enabled {
+            return;
+        }
+        let facts = copy_facts(path).await;
+        self.update(|s| crate::buddy::connected(s, name, Some(&facts)))
+            .await;
+        let _ = self.flush().await;
     }
 }

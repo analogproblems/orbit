@@ -405,9 +405,11 @@ export type Fix =
   | "review_again"
   | "publish"
   | "sync_now"
-  | "turn_on_autopilot";
-/** The fixes Bit can do on its own. Changing settings always asks first. */
-export type RuledFix = Exclude<Fix, "turn_on_autopilot">;
+  | "turn_on_autopilot"
+  | "check_connections";
+/** The fixes Bit can do on its own. Changing settings and checking
+ * connections always ask first. */
+export type RuledFix = Exclude<Fix, "turn_on_autopilot" | "check_connections">;
 export type FixRule = "do_it" | "ask_first" | "leave_it";
 export type BuddyRules = Record<RuledFix, FixRule>;
 export const fixLabels: Record<Fix, string> = {
@@ -416,6 +418,7 @@ export const fixLabels: Record<Fix, string> = {
   publish: "Publish report",
   sync_now: "Sync now",
   turn_on_autopilot: "Turn autopilot back on",
+  check_connections: "Check again",
 };
 export const fixDescriptions: Record<RuledFix, string> = {
   continue_loop: "When a loop reaches its round limit, allow two more rounds.",
@@ -458,14 +461,17 @@ export type NoteKind =
   | "continued"
   | "fixing"
   | "fixed"
-  | "answer";
+  | "answer"
+  | "connected";
 /** A question Bit answers straight from Orbit's state. */
-export type Question = "needs_you" | "running" | "loops" | "repositories";
+export type Question =
+  "needs_you" | "running" | "loops" | "repositories" | "setup";
 export const questionLabels: Record<Question, string> = {
   needs_you: "What needs me?",
   running: "What's running?",
   loops: "How are my loops?",
   repositories: "How are my repositories?",
+  setup: "Help me set up",
 };
 /** A line of an answer. */
 export interface BuddyNoteLine {
@@ -507,7 +513,8 @@ export type Action =
   | "publish"
   | "sync_now"
   | "change_settings"
-  | "set_up_repository";
+  | "set_up_repository"
+  | "check_connections";
 export const actionLabels: Record<Action, string> = {
   continue_loop: "Continue loop",
   stop_loop: "Stop loop",
@@ -516,6 +523,7 @@ export const actionLabels: Record<Action, string> = {
   sync_now: "Sync now",
   change_settings: "Change settings",
   set_up_repository: "Set up repository",
+  check_connections: "Check again",
 };
 /** A change to a repository's settings from one of Bit's answers. Only
  * what is given changes. */
@@ -627,10 +635,16 @@ export function offeredFix(
   if (!item || !fix) return undefined;
   if (
     fix !== "turn_on_autopilot" &&
+    fix !== "check_connections" &&
     buddyOf(s.settings).rules[fix] === "leave_it"
   )
     return undefined;
   return { item, fix };
+}
+/** Whether Orbit still needs setting up: GitHub or Codex isn't connected,
+ * or no repository is. Bit's setup help stands out until it doesn't. */
+export function needsSetup(s: Snapshot) {
+  return !s.githubUser || !s.codexReady || !s.settings.repositories.length;
 }
 /** Bit's mood as the engine worked it out, or the same rules applied here
  * when it didn't (the demo). */
@@ -756,7 +770,13 @@ export const loopStatusLabels: Record<LoopStatus, string> = {
   stopped: "Stopped",
 };
 export type AttentionKind =
-  "approval" | "held" | "failed" | "loop" | "autopilot_paused" | "sync_failing";
+  | "approval"
+  | "held"
+  | "failed"
+  | "loop"
+  | "autopilot_paused"
+  | "sync_failing"
+  | "disconnected";
 /** Something only the developer can resolve. */
 export interface Attention {
   /** Stays the same while the item is open. */
@@ -778,6 +798,7 @@ export const attentionLabels: Record<AttentionKind, string> = {
   loop: "Loop",
   autopilot_paused: "Autopilot paused",
   sync_failing: "Sync failing",
+  disconnected: "Not connected",
 };
 export interface AttentionHandlers {
   onChoose: (p: PullRequest, r?: Review) => void;
@@ -793,7 +814,11 @@ export function attentionAction(
   go: AttentionHandlers,
 ): (() => void) | undefined {
   if (a.kind === "sync_failing" && a.repo) return go.onRepositories;
-  if (a.kind === "autopilot_paused" || a.kind === "sync_failing")
+  if (
+    a.kind === "autopilot_paused" ||
+    a.kind === "sync_failing" ||
+    a.kind === "disconnected"
+  )
     return go.onSettings;
   const p = [...s.prs, ...(s.historyPrs ?? [])].find((p) => p.id === a.prId);
   const r = s.reviews.find((r) => r.id === a.reviewId);

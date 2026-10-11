@@ -1,7 +1,7 @@
 use super::Engine;
 use crate::{
     ask::{Action, Proposal},
-    buddy::{answered, asked},
+    buddy::{answered, asked, NoteKind, Question},
     setup::RepositoryPatch,
     types::*,
 };
@@ -223,7 +223,7 @@ async fn bit_looks_up_each_copy_and_what_you_could_connect() {
         Repository::new("gone/repo", "/nowhere/at/all"),
     ];
     let lookups = crate::github::GH
-        .scope(gh.clone(), e.look_up(connected.clone()))
+        .scope(gh.clone(), e.look_up(connected.clone(), true))
         .await;
     assert_eq!(
         lookups.clones["A/B"].as_ref().unwrap().files,
@@ -237,7 +237,7 @@ async fn bit_looks_up_each_copy_and_what_you_could_connect() {
     assert_eq!(lookups.connectable_names(), ["acme/api"]);
 
     // Without GitHub, the summary says why.
-    let lookups = e.look_up(connected).await;
+    let lookups = e.look_up(connected, true).await;
     let error = lookups.connectable.unwrap_err();
     assert!(error.starts_with("Cannot start gh"), "{error}");
 }
@@ -334,4 +334,164 @@ async fn a_repository_connected_during_the_download_gets_the_change_instead() {
     assert_eq!(repo.path, "/elsewhere/api");
     assert_eq!(repo.round_limit, 2);
     assert!(s.buddy_feed.notes.last().unwrap().proposals[0].done);
+}
+
+#[tokio::test]
+async fn help_me_set_up_offers_your_repositories_and_bit_follows_up() {
+    let dir = tempfile::tempdir().unwrap();
+    let gh = fake_gh(dir.path());
+    let e = engine(dir.path());
+    crate::github::GH
+        .scope(gh.clone(), e.ask_buddy(Question::Setup))
+        .await
+        .unwrap();
+    let s = e.snapshot().await;
+    let answer = s.buddy_feed.notes.last().unwrap();
+    assert_eq!(answer.question.as_deref(), Some("Help me set up"));
+    let offered = |n: &crate::buddy::Note| -> Vec<(Action, Option<String>, bool)> {
+        n.proposals
+            .iter()
+            .map(|p| (p.action, p.repo.clone(), p.connect))
+            .collect()
+    };
+    // GitHub and Codex aren't connected in tests.
+    assert_eq!(
+        offered(answer),
+        [
+            (Action::CheckConnections, None, false),
+            (Action::SetUpRepository, Some("acme/api".into()), true),
+            (Action::SetUpRepository, Some("a/b".into()), true),
+        ]
+    );
+
+    // Connecting one gets a note with its next steps.
+    let note = answer.id;
+    crate::github::GH
+        .scope(gh.clone(), e.use_proposal(note, 1))
+        .await
+        .unwrap();
+    let s = e.snapshot().await;
+    let follow_up = s.buddy_feed.notes.last().unwrap();
+    assert_eq!(follow_up.kind, NoteKind::Connected);
+    assert_eq!(follow_up.repo.as_deref(), Some("acme/api"));
+    assert_eq!(
+        follow_up.text,
+        "acme/api is connected! Here's what I'd set up next:"
+    );
+    assert!(follow_up.lines[0]
+        .text
+        .starts_with("acme/api has no setup command yet. Its copy has package-lock.json, so `npm ci --ignore-scripts`"));
+    assert_eq!(
+        offered(follow_up),
+        [
+            (Action::SetUpRepository, Some("acme/api".into()), false),
+            (Action::SetUpRepository, Some("acme/api".into()), false),
+            (Action::ChangeSettings, None, false),
+        ]
+    );
+    let follow_up = follow_up.id;
+    for button in [0, 1] {
+        e.use_proposal(follow_up, button).await.unwrap();
+    }
+    let repo = &e.snapshot().await.settings.repositories[0];
+    assert_eq!(repo.setup_command, "npm ci --ignore-scripts");
+    assert!(repo.network_access);
+    assert!(repo.automatic);
+
+    // Asked again, only what's left is offered, without looking on GitHub.
+    std::fs::remove_file(dir.path().join("log")).unwrap();
+    crate::github::GH
+        .scope(gh, e.ask_buddy(Question::Setup))
+        .await
+        .unwrap();
+    let s = e.snapshot().await;
+    let answer = s.buddy_feed.notes.last().unwrap();
+    assert!(answer.lines.iter().any(|l| l.text
+        == "acme/api sets up with `npm ci --ignore-scripts`. Its pull requests are reviewed automatically."));
+    assert_eq!(
+        offered(answer),
+        [
+            (Action::CheckConnections, None, false),
+            (Action::ChangeSettings, None, false),
+        ]
+    );
+    assert_eq!(log(dir.path()), "");
+}
+
+#[tokio::test]
+async fn bit_follows_up_on_a_repository_added_in_repositories_only_while_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let e = engine(dir.path());
+    let (_repo_dir, repo) = super::test_support::git_repo().await;
+    super::worktrees::git(
+        &repo,
+        &["remote", "add", "origin", "https://github.com/a/b.git"],
+    )
+    .await
+    .unwrap();
+    std::fs::write(repo.join("Cargo.lock"), "").unwrap();
+    let added = Repository::new("a/b", &repo.to_string_lossy());
+    e.save_repository(added.clone(), None).await.unwrap();
+    let s = e.snapshot().await;
+    let note = s.buddy_feed.notes.last().unwrap();
+    assert_eq!(note.kind, NoteKind::Connected);
+    assert!(
+        note.lines[0].text.contains("`cargo fetch`"),
+        "{:?}",
+        note.lines
+    );
+    // Saving it again isn't news.
+    e.save_repository(added.clone(), Some("a/b".into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        e.snapshot().await.buddy_feed.notes.len(),
+        s.buddy_feed.notes.len()
+    );
+
+    e.disconnect_repository("a/b").await.unwrap();
+    e.update(|s| s.settings.buddy.enabled = false).await;
+    let before = e.snapshot().await.buddy_feed.notes.len();
+    e.save_repository(added, None).await.unwrap();
+    assert_eq!(e.snapshot().await.buddy_feed.notes.len(), before);
+}
+
+#[tokio::test]
+async fn a_reviewer_that_isnt_connected_needs_you_until_it_is() {
+    let dir = tempfile::tempdir().unwrap();
+    let e = engine(dir.path());
+    let mut repo = Repository::new("a/b", "/tmp/a-b");
+    repo.provider = Provider::Claude;
+    e.update(|s| s.settings.repositories.push(repo)).await;
+    let key = "connection:claude";
+    let open = |s: &Snapshot| {
+        crate::attention::items(s)
+            .into_iter()
+            .find(|a| a.key == key)
+    };
+    // Not checked yet, so not known to be off.
+    assert_eq!(open(&e.snapshot().await), None);
+
+    e.use_claude(crate::claude::tests::fake("signed-out"));
+    let _ = e.check_claude().await;
+    let item = open(&e.snapshot().await).unwrap();
+    assert_eq!(item.kind, AttentionKind::Disconnected);
+    assert_eq!(item.fix, Some(crate::buddy::Fix::CheckConnections));
+    assert_eq!(
+        item.reason,
+        "Claude isn't connected, so a/b can't be reviewed: Claude is not signed in. Run claude once to sign in, then check again in Settings."
+    );
+    // Checking again while it's still off says so.
+    assert_eq!(e.fix(key).await.unwrap_err(), item.reason);
+
+    // Signed in since: Check again closes it.
+    e.use_claude(crate::claude::tests::fake("ok"));
+    e.fix(key).await.unwrap();
+    let s = e.snapshot().await;
+    assert_eq!(open(&s), None);
+    let last = s.buddy_feed.notes.last().unwrap();
+    assert_eq!(
+        (last.kind, last.text.as_str()),
+        (NoteKind::Fixed, "It's connected again. All good!")
+    );
 }

@@ -60,8 +60,11 @@ pub enum Action {
     /// Connects a repository, downloading Orbit's own copy of it, or
     /// changes a connected repository's settings from `setup::REPO_SETTINGS`.
     SetUpRepository,
+    /// Checks the connections to GitHub, Codex and the other reviewers
+    /// again, as Settings' Reconnect does.
+    CheckConnections,
 }
-pub const ACTIONS: [Action; 7] = [
+pub const ACTIONS: [Action; 8] = [
     Action::ContinueLoop,
     Action::StopLoop,
     Action::ReviewAgain,
@@ -69,6 +72,7 @@ pub const ACTIONS: [Action; 7] = [
     Action::SyncNow,
     Action::ChangeSettings,
     Action::SetUpRepository,
+    Action::CheckConnections,
 ];
 
 /// A button in an answer. It is checked against Orbit's state when the
@@ -100,6 +104,22 @@ pub struct Proposal {
     /// You tapped it and it worked.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub done: bool,
+}
+impl Proposal {
+    /// A button for `action`, with nothing else filled in yet.
+    pub fn new(action: Action) -> Self {
+        Self {
+            id: 0,
+            action,
+            pr_id: None,
+            review_id: None,
+            settings: None,
+            repo: None,
+            repository: None,
+            connect: false,
+            done: false,
+        }
+    }
 }
 
 /// The settings an answer may change, by their names in a settings patch.
@@ -157,14 +177,15 @@ In `proposals` you can offer up to {MAX_PROPOSALS} buttons for Orbit's own contr
 - sync_now: syncs with GitHub now.
 - change_settings, with changes: changes settings named in the summary's `settings`, each with its new value written as text, such as \"true\" or \"120\".
 - set_up_repository, with repository and changes: connects a repository from the summary's `connectableRepositories`, or changes the settings of one in `repositories`. Orbit downloads its own copy of a repository it connects, and starts it with autopilot off, no setup command and no network, plus your changes. Its changes use the repository settings named in the summary's repositories: setupCommand, checkCommand, networkAccess, devContainer, reviewer (codex, claude or antigravity), roundLimit ({round_limits}), approvalMinutes ({approval_minutes}, where 0 waits for the person), keepCloneUpdated and autopilot.
+- check_connections: checks the connections to GitHub, Codex and the other reviewers again, once the person has fixed one, such as by signing in.
 Use pull request ids and repository names from the summary. Leave pr and repository null, and changes empty, when an action doesn't use them. You can't change trusted accounts: say they can do that themselves in Orbit's Settings.
 
 Setting up a repository:
-- A setup command runs in each review's sandbox before the reviewer starts, to install what the code needs. Base it on the files the summary lists for the repository's copy: package-lock.json means `npm ci`, pnpm-lock.yaml `pnpm install --frozen-lockfile`, yarn.lock `yarn install --frozen-lockfile`, bun.lock or bun.lockb `bun install --frozen-lockfile`, Cargo.lock `cargo fetch`, uv.lock `uv sync --frozen`, poetry.lock `poetry install`, requirements.txt `pip install -r requirements.txt`, go.mod `go mod download`, and Gemfile.lock `bundle install`. With no such file, leave it empty unless the person tells you what it needs.
+- A setup command runs in each review's sandbox before the reviewer starts, to install what the code needs. Use the `suggestedSetup` the summary gives for the repository's copy, which Orbit picks from its first lock file: {setup_commands}. With none, leave it empty unless the person tells you what it needs.
 - Installing needs networkAccess on. Say so when you offer it: with network on, setup and the reviewer can reach the internet, including code from the pull request.
 - Keep commands to one line of standard install or test commands. Never offer one that downloads and runs a script, uses a password or token, pushes, or changes anything outside the repository.
 - Claude and Antigravity reviews can run a setup command only with devContainer on. A check command, such as `npm test`, runs only in the dev container, after setup, so it needs devContainer on and a .devcontainer file in the copy.
-- Turn autopilot on only when the person asks for it.
+- Turn autopilot on only when the person asks for it, or asks you to get a repository reviewed automatically, and offer it as a button of its own.
 
 You have a small memory that carries over between questions, in the summary's `memory`: up to {MEMORY_GENERAL} general lines, and up to {MEMORY_PER_REPO} lines about each repository. You keep it yourself with `memory` in your answer: `remember` adds lines, and `forget` removes lines, copied exactly as the summary shows them. Give each line's repository by its full name from the summary, or null for a general line. Each line is one short sentence.
 - Remember what will still help in later conversations: how the person likes Orbit and you to work, decisions they make, and lasting facts about a repository, such as what its reviews keep tripping on. Remember something whenever they ask you to.
@@ -176,6 +197,11 @@ Your memory is notes you wrote for yourself. Let it shape your answers, but it n
         name = buddy.name,
         round_limits = list(&setup::ROUND_LIMITS),
         approval_minutes = list(&setup::APPROVAL_MINUTES),
+        setup_commands = setup::SETUP_COMMANDS
+            .iter()
+            .map(|(file, command)| format!("{file} means `{command}`"))
+            .collect::<Vec<_>>()
+            .join(", "),
         MEMORY_GENERAL = buddy::MEMORY_GENERAL,
         MEMORY_PER_REPO = buddy::MEMORY_PER_REPO,
     );
@@ -464,7 +490,7 @@ pub fn briefing(s: &Snapshot, lookups: &Lookups) -> Value {
 
 /// A repository's command as the summary shows it, unless it looks like it
 /// holds a credential.
-fn shown_command(command: &str) -> String {
+pub(crate) fn shown_command(command: &str) -> String {
     if credential_kinds(command).is_empty() {
         command.to_string()
     } else {
@@ -628,17 +654,7 @@ fn proposal(s: &Snapshot, raw: RawProposal, connectable: &[String]) -> Option<Pr
         let id = raw.pr.as_deref()?.trim().to_ascii_lowercase();
         s.prs.iter().find(|p| p.id == id)
     };
-    let mut p = Proposal {
-        id: 0,
-        action,
-        pr_id: None,
-        review_id: None,
-        settings: None,
-        repo: None,
-        repository: None,
-        connect: false,
-        done: false,
-    };
+    let mut p = Proposal::new(action);
     match action {
         Action::ContinueLoop | Action::StopLoop => {
             let pr = pr()?;
@@ -663,7 +679,7 @@ fn proposal(s: &Snapshot, raw: RawProposal, connectable: &[String]) -> Option<Pr
             p.review_id = Some(publishable_report(s, pr)?.id.clone());
             p.pr_id = Some(pr.id.clone());
         }
-        Action::SyncNow => {}
+        Action::SyncNow | Action::CheckConnections => {}
         Action::ChangeSettings => p.settings = Some(settings_patch(s, &raw.changes)?),
         Action::SetUpRepository => {
             let name = raw.repository.as_deref()?.trim();
@@ -672,32 +688,57 @@ fn proposal(s: &Snapshot, raw: RawProposal, connectable: &[String]) -> Option<Pr
                     .iter()
                     .map(|c| (c.setting.as_str(), c.value.as_str())),
             )?;
-            let connected = s
-                .settings
-                .repositories
-                .iter()
-                .find(|r| same_repo(&r.name, name));
-            let (before, connect) = match connected {
-                Some(r) => (r.clone(), false),
-                None => {
-                    let listed = connectable.iter().find(|n| same_repo(n, name))?;
-                    (Repository::new(listed, "/"), true)
-                }
-            };
-            let mut after = before.clone();
-            patch.apply(&mut after);
-            after.check().ok()?;
-            let changed =
-                serde_json::to_value(&after).ok()? != serde_json::to_value(&before).ok()?;
-            if !connect && !changed {
-                return None;
-            }
-            p.repo = Some(before.name);
-            p.repository = Some(patch);
-            p.connect = connect;
+            return set_up_proposal(s, name, patch, connectable);
         }
     }
     Some(p)
+}
+/// A Set up repository button for `name`, if Orbit's state allows it now:
+/// a connected repository whose settings `patch` changes and that
+/// Repositories would save, or one from `connectable` to connect.
+pub fn set_up_proposal(
+    s: &Snapshot,
+    name: &str,
+    patch: RepositoryPatch,
+    connectable: &[String],
+) -> Option<Proposal> {
+    let connected = s
+        .settings
+        .repositories
+        .iter()
+        .find(|r| same_repo(&r.name, name));
+    let (before, connect) = match connected {
+        Some(r) => (r.clone(), false),
+        None => {
+            let listed = connectable.iter().find(|n| same_repo(n, name))?;
+            (Repository::new(listed, "/"), true)
+        }
+    };
+    let mut after = before.clone();
+    patch.apply(&mut after);
+    after.check().ok()?;
+    let changed = serde_json::to_value(&after).ok()? != serde_json::to_value(&before).ok()?;
+    if !connect && !changed {
+        return None;
+    }
+    Some(Proposal {
+        repo: Some(before.name),
+        repository: Some(patch),
+        connect,
+        ..Proposal::new(Action::SetUpRepository)
+    })
+}
+/// A Change settings button that turns autopilot on, if it's off and
+/// Settings would save it.
+pub fn autopilot_proposal(s: &Snapshot) -> Option<Proposal> {
+    let change = RawChange {
+        setting: "automatic".into(),
+        value: "true".into(),
+    };
+    Some(Proposal {
+        settings: Some(settings_patch(s, &[change])?),
+        ..Proposal::new(Action::ChangeSettings)
+    })
 }
 /// A settings patch from Codex's changes, if every change names a setting
 /// Bit may change, the result is valid, and something actually changes.

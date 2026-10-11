@@ -9,6 +9,7 @@ import {
   type BuddyNoteLine,
   type Fix,
   type LoopStatus,
+  type Proposal,
   type Question,
   type Finding,
   type Model,
@@ -811,6 +812,7 @@ export function demoFixed(s: Snapshot, fix: Fix, prId: string | null) {
     publish: `Published the report on ${pr}! 📬`,
     sync_now: "Synced with GitHub. All good again!",
     turn_on_autopilot: "Autopilot is back on!",
+    check_connections: "It's connected again. All good!",
   }[fix];
 }
 /** Bit's answer to a quick question, from the demo's state, as the engine
@@ -818,7 +820,8 @@ export function demoFixed(s: Snapshot, fix: Fix, prId: string | null) {
 export function demoAnswer(
   s: Snapshot,
   question: Question,
-): Pick<BuddyNote, "text" | "lines"> {
+): Pick<BuddyNote, "text" | "lines" | "proposals"> {
+  if (question === "setup") return demoSetup(s);
   const items = s.attention ?? [];
   const autopilot = (text: string) =>
     s.settings.automatic
@@ -926,6 +929,64 @@ export function demoAnswer(
         : "No repositories yet. Add one under Repositories and I'll keep an eye on it!",
     ),
     lines,
+  };
+}
+/** Bit's setup help in the demo, where everything is connected and no
+ * copy suggests a setup command, as the engine words it in the cheerful
+ * tone. */
+function demoSetup(
+  s: Snapshot,
+): Pick<BuddyNote, "text" | "lines" | "proposals"> {
+  const lines = [
+    line(`GitHub: connected as @${s.githubUser ?? "demo"}.`),
+    line("Codex: connected."),
+  ];
+  const proposals: Proposal[] = [];
+  const repositories = s.settings.repositories;
+  if (!repositories.length)
+    lines.push(
+      line(
+        "No repositories are connected yet, and GitHub lists none of yours to connect. You can add one under Repositories.",
+      ),
+    );
+  for (const repo of repositories) {
+    const command = repo.setupCommand.trim();
+    const setup = command
+      ? `${repo.name} sets up with \`${command}\`.`
+      : `${repo.name} has no setup command, and nothing in its copy suggests one, so reviews use only what's already installed on the computer running Orbit.`;
+    if (repo.automatic) {
+      lines.push(
+        line(`${setup} Its pull requests are reviewed automatically.`),
+      );
+      continue;
+    }
+    proposals.push({
+      id: proposals.length,
+      action: "set_up_repository",
+      repo: repo.name,
+      repository: { autopilot: true },
+    });
+    lines.push(line(`${setup} Automatic reviews are off.`));
+  }
+  if (!s.settings.automatic && repositories.length) {
+    proposals.push({
+      id: proposals.length,
+      action: "change_settings",
+      settings: { automatic: true },
+    });
+    lines.push(
+      line(
+        "Autopilot is off for all of Orbit, so nothing is reviewed automatically.",
+      ),
+    );
+  }
+  const toDo = proposals.length + (repositories.length ? 0 : 1);
+  return {
+    text: toDo
+      ? `Let's get you set up! ${plural(toDo, "thing", "things")} to do. Tap a button when you're ready:`
+      : "You're all set! Everything's connected and ready. 🎉",
+    lines,
+    proposals,
   };
 }
 /** Bit's answer to a typed question in the demo, which has no Codex to

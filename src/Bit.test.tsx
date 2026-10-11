@@ -33,10 +33,13 @@ describe("Bit", () => {
     expect(Object.keys(questionLabels)).toEqual(options.questions);
     expect(Object.keys(actionLabels)).toEqual(options.actions);
     expect(memoryLimits).toEqual(options.memoryLimits);
-    // Every fix but a settings change has a rule, which starts on Ask first,
-    // under the same names the engine saves and accepts.
+    // Every fix but a settings change or checking connections has a rule,
+    // which starts on Ask first, under the same names the engine saves and
+    // accepts.
     expect(Object.keys(defaultBuddy.rules)).toEqual(
-      options.fixes.filter((f) => f !== "turn_on_autopilot"),
+      options.fixes.filter(
+        (f) => f !== "turn_on_autopilot" && f !== "check_connections",
+      ),
     );
     expect(defaultBuddy.rules).toEqual(options.defaultRules);
   });

@@ -213,7 +213,10 @@ function problems(
   run: (command: string, args: Record<string, unknown>) => void,
 ): Problem[] {
   const out: Problem[] = [];
-  if (!s.codexReady)
+  // A connection a repository needs is a Needs you item, listed below.
+  const listed = (key: string) =>
+    !!s.attention?.some((a) => a.key === `connection:${key}`);
+  if (!s.codexReady && !listed("codex"))
     out.push({
       key: "codex",
       title: "Codex is disconnected",
@@ -225,6 +228,7 @@ function problems(
     const name = providerLabels[provider];
     if (
       !status?.ready &&
+      !listed(provider) &&
       s.settings.repositories.some((r) => r.provider === provider)
     )
       out.push({

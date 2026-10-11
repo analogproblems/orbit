@@ -506,6 +506,7 @@ fn the_summary_shows_each_copy_and_what_could_be_connected() {
         files: vec!["package-lock.json".into()],
         scripts: vec!["test".into()],
         package_manager: None,
+        suggested_setup: Some("npm ci --ignore-scripts".into()),
     };
     let lookups = Lookups {
         clones: [("a/b".to_string(), Ok(facts))].into(),
@@ -520,7 +521,11 @@ fn the_summary_shows_each_copy_and_what_could_be_connected() {
     let repo = &b["repositories"][0];
     assert_eq!(
         repo["copy"],
-        json!({"files": ["package-lock.json"], "scripts": ["test"]})
+        json!({
+            "files": ["package-lock.json"],
+            "scripts": ["test"],
+            "suggestedSetup": "npm ci --ignore-scripts",
+        })
     );
     assert_eq!(
         repo["checkCommand"],
@@ -557,9 +562,9 @@ fn bit_is_told_how_to_set_up_a_repository_safely() {
     assert!(text.contains("- set_up_repository, with repository and changes:"));
     assert!(text.contains("roundLimit (1, 2, 3, 4, 5, 6, 8, 10)"));
     assert!(text.contains("approvalMinutes (0, 5, 15, 30, 60, 120"));
-    assert!(text.contains("package-lock.json means `npm ci`"));
+    assert!(text.contains("package-lock.json means `npm ci --ignore-scripts`"));
     assert!(text.contains("including code from the pull request"));
     assert!(text.contains("Never offer one that downloads and runs a script"));
-    assert!(text.contains("Turn autopilot on only when the person asks for it."));
+    assert!(text.contains("Turn autopilot on only when the person asks for it, or asks you to get a repository reviewed automatically"));
     assert!(!text.contains("setup command, network access or browser access"));
 }

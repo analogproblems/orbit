@@ -223,6 +223,35 @@ describe("demo buddy", () => {
       error: "Error: This doesn't need you any more.",
     });
   });
+  it("walks through setup and taps each step", async () => {
+    const store = useOrbit.getState();
+    await store.action("reset_demo");
+    const last = () => useOrbit.getState().snapshot.buddyFeed!.notes.at(-1)!;
+    await store.action("ask_buddy", { question: "setup" });
+    const note = last();
+    expect(note).toMatchObject({ kind: "answer", question: "Help me set up" });
+    expect(note.text).toMatch(/^Let's get you set up! \d things? to do\./);
+    expect(note.lines!.map((l) => l.text)).toContain(
+      "acme/api sets up with `npm ci`. Automatic reviews are off.",
+    );
+    for (const p of note.proposals!)
+      expect(
+        (
+          await store.action("use_proposal", {
+            noteId: note.id,
+            proposalId: p.id,
+          })
+        ).ok,
+      ).toBe(true);
+    const s = useOrbit.getState().snapshot;
+    expect(s.settings.automatic).toBe(true);
+    expect(s.settings.repositories.every((r) => r.automatic)).toBe(true);
+    await store.action("ask_buddy", { question: "setup" });
+    expect(last().text).toBe(
+      "You're all set! Everything's connected and ready. 🎉",
+    );
+    expect(last().proposals).toEqual([]);
+  });
   it("answers a typed question after thinking, and taps its buttons once", async () => {
     const store = useOrbit.getState();
     const last = () => useOrbit.getState().snapshot.buddyFeed!.notes.at(-1)!;

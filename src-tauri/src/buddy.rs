@@ -3,7 +3,7 @@
 //! what needs you, quick answers about Orbit, and the memory Bit keeps
 //! between questions. Everything here is worked out from what Orbit already
 //! tracks; nothing here calls a model.
-use crate::types::*;
+use crate::{setup::CloneFacts, types::*};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -96,6 +96,10 @@ pub enum Fix {
     /// Turns autopilot back on after a failed save turned it off. A change
     /// to settings, so it always waits for your tap.
     TurnOnAutopilot,
+    /// Checks the connections again, for one a repository needs that
+    /// isn't connected. It always waits for your tap: what fixes it is
+    /// usually signing in on the computer first.
+    CheckConnections,
 }
 
 /// The rule for each fix Bit can do on its own, keyed by the fix's own name
@@ -126,7 +130,7 @@ impl Rules {
             Fix::ReviewAgain => &self.review_again,
             Fix::Publish => &self.publish,
             Fix::SyncNow => &self.sync_now,
-            Fix::TurnOnAutopilot => "ask_first",
+            Fix::TurnOnAutopilot | Fix::CheckConnections => "ask_first",
         }
     }
     fn each(&self) -> [&str; 4] {
@@ -316,6 +320,8 @@ pub enum NoteKind {
     Fixed,
     /// Bit's answer to a question you asked.
     Answer,
+    /// A repository was connected, with its next steps.
+    Connected,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -723,16 +729,19 @@ mod say {
             ("calm", Fix::Publish) => format!("Published the report on {pr}."),
             ("calm", Fix::SyncNow) => "Syncing works again.".into(),
             ("calm", Fix::TurnOnAutopilot) => "Autopilot is on again.".into(),
+            ("calm", Fix::CheckConnections) => "That's connected again.".into(),
             ("dry", Fix::ContinueLoop) => format!("{pr} gets two more rounds."),
             ("dry", Fix::ReviewAgain) => format!("{pr} is queued for another go."),
             ("dry", Fix::Publish) => format!("{pr}'s report is out."),
             ("dry", Fix::SyncNow) => "Synced. Finally.".into(),
             ("dry", Fix::TurnOnAutopilot) => "Autopilot: on.".into(),
+            ("dry", Fix::CheckConnections) => "Reconnected. Good.".into(),
             (_, Fix::ContinueLoop) => format!("Gave {pr} two more rounds!"),
             (_, Fix::ReviewAgain) => format!("Queued a new review of {pr}. Fingers crossed!"),
             (_, Fix::Publish) => format!("Published the report on {pr}! 📬"),
             (_, Fix::SyncNow) => "Synced with GitHub. All good again!".into(),
             (_, Fix::TurnOnAutopilot) => "Autopilot is back on!".into(),
+            (_, Fix::CheckConnections) => "It's connected again. All good!".into(),
         }
     }
     pub fn not_done(tone: &str, fix: Fix, pr: &str, error: &str) -> String {
@@ -742,12 +751,34 @@ mod say {
             Fix::Publish => format!("publish the report on {pr}"),
             Fix::SyncNow => "sync with GitHub".into(),
             Fix::TurnOnAutopilot => "turn autopilot back on".into(),
+            Fix::CheckConnections => "reconnect".into(),
         };
         let error = error.trim();
         match tone {
             "calm" => format!("Couldn't {what}: {error}"),
             "dry" => format!("Tried to {what}. No luck: {error}"),
             _ => format!("I tried to {what}, but it didn't work: {error}"),
+        }
+    }
+    pub fn setup_answer(tone: &str, to_do: u32) -> String {
+        let things = plural(to_do, "thing", "things");
+        match (tone, to_do) {
+            ("calm", 0) => "Everything is set up.".into(),
+            ("dry", 0) => "All set. Nothing for me to do.".into(),
+            (_, 0) => "You're all set! Everything's connected and ready. 🎉".into(),
+            ("calm", _) => format!("{things} left to set up:"),
+            ("dry", _) => format!("{things} to sort out:"),
+            _ => format!("Let's get you set up! {things} to do. Tap a button when you're ready:"),
+        }
+    }
+    pub fn connected(tone: &str, repo: &str, to_do: u32) -> String {
+        match (tone, to_do) {
+            ("calm", 0) => format!("{repo} is connected and ready."),
+            ("dry", 0) => format!("{repo} is in. Nothing else to do."),
+            (_, 0) => format!("{repo} is connected and ready to go!"),
+            ("calm", _) => format!("{repo} is connected. Next steps:"),
+            ("dry", _) => format!("{repo} is in. A couple of things:"),
+            _ => format!("{repo} is connected! Here's what I'd set up next:"),
         }
     }
     /// A question you typed that Bit couldn't answer.
@@ -815,12 +846,13 @@ pub(crate) fn samples(tone: &str) -> Vec<(NoteKind, String)> {
 }
 /// Every fix, for tests.
 #[cfg(test)]
-pub(crate) const FIXES: [Fix; 5] = [
+pub(crate) const FIXES: [Fix; 6] = [
     Fix::ContinueLoop,
     Fix::ReviewAgain,
     Fix::Publish,
     Fix::SyncNow,
     Fix::TurnOnAutopilot,
+    Fix::CheckConnections,
 ];
 
 /// Compares the loops with what Bit last saw and writes a note for each
@@ -1054,6 +1086,9 @@ pub enum Question {
     Running,
     Loops,
     Repositories,
+    /// Where setup stands, with buttons for what's left: the one question
+    /// that needs `Lookups`.
+    Setup,
 }
 impl Question {
     pub fn text(self) -> &'static str {
@@ -1062,19 +1097,52 @@ impl Question {
             Question::Running => "What's running?",
             Question::Loops => "How are my loops?",
             Question::Repositories => "How are my repositories?",
+            Question::Setup => "Help me set up",
         }
     }
 }
 /// Answers a question and adds the answer to the feed, where every window
 /// sees it.
-pub fn ask(s: &mut Snapshot, question: Question) {
-    let (text, lines) = answer(s, question);
+pub fn ask(s: &mut Snapshot, question: Question, lookups: &crate::ask::Lookups) {
+    let (text, lines, proposals) = answer(s, question, lookups);
     append(
         &mut s.buddy_feed,
         vec![Note {
             question: Some(question.text().into()),
             lines,
+            proposals,
             ..Note::new(NoteKind::Answer, text)
+        }],
+    );
+}
+/// Notes that `repo` was connected, with buttons for its next steps, while
+/// Bit is on.
+pub fn connected(s: &mut Snapshot, repo: &str, facts: Option<&Result<CloneFacts, String>>) {
+    if !s.settings.buddy.enabled {
+        return;
+    }
+    let guide = crate::guide::connected(s, repo, facts);
+    let Some(name) = s
+        .settings
+        .repositories
+        .iter()
+        .find(|r| same_repo(&r.name, repo))
+        .map(|r| r.name.clone())
+    else {
+        return;
+    };
+    let text = say::connected(&s.settings.buddy.tone, &name, guide.to_do);
+    append(
+        &mut s.buddy_feed,
+        vec![Note {
+            repo: Some(name),
+            lines: guide
+                .lines
+                .into_iter()
+                .map(|t| line(t, None, None))
+                .collect(),
+            proposals: guide.proposals,
+            ..Note::new(NoteKind::Connected, text)
         }],
     );
 }
@@ -1093,8 +1161,12 @@ fn autopilot_off(s: &Snapshot, text: String) -> String {
         format!("Autopilot is off, so nothing is reviewed automatically. {text}")
     }
 }
-/// What Bit says, and a line for each thing it lists.
-fn answer(s: &Snapshot, question: Question) -> (String, Vec<NoteLine>) {
+/// What Bit says, a line for each thing it lists, and its buttons.
+fn answer(
+    s: &Snapshot,
+    question: Question,
+    lookups: &crate::ask::Lookups,
+) -> (String, Vec<NoteLine>, Vec<crate::ask::Proposal>) {
     let tone = s.settings.buddy.tone.as_str();
     let items = crate::attention::items(s);
     let pr_or_id = |id: &str| pr_label(s, Some(id)).unwrap_or_else(|| id.to_string());
@@ -1110,7 +1182,11 @@ fn answer(s: &Snapshot, question: Question) -> (String, Vec<NoteLine>) {
                     line(text, a.pr_id.as_deref(), Some(a))
                 })
                 .collect();
-            (say::needs_you_answer(tone, lines.len() as u32), lines)
+            (
+                say::needs_you_answer(tone, lines.len() as u32),
+                lines,
+                vec![],
+            )
         }
         Question::Running => {
             let mut lines = vec![];
@@ -1144,7 +1220,7 @@ fn answer(s: &Snapshot, question: Question) -> (String, Vec<NoteLine>) {
                 lines.push(line(text, None, None));
             }
             let text = say::running_answer(tone, lines.len() as u32);
-            (autopilot_off(s, text), lines)
+            (autopilot_off(s, text), lines, vec![])
         }
         Question::Loops => {
             let open: Vec<LoopState> = crate::review_loop::states(s)
@@ -1207,7 +1283,7 @@ fn answer(s: &Snapshot, question: Question) -> (String, Vec<NoteLine>) {
                     counts.join(", ")
                 )
             });
-            (say::loops_answer(tone, summary.as_deref()), lines)
+            (say::loops_answer(tone, summary.as_deref()), lines, vec![])
         }
         Question::Repositories => {
             let mut lines = vec![];
@@ -1244,7 +1320,16 @@ fn answer(s: &Snapshot, question: Question) -> (String, Vec<NoteLine>) {
                 lines.push(line(text, None, item));
             }
             let text = say::repositories_answer(tone, s.settings.repositories.len() as u32);
-            (autopilot_off(s, text), lines)
+            (autopilot_off(s, text), lines, vec![])
+        }
+        Question::Setup => {
+            let guide = crate::guide::setup(s, lookups);
+            let lines = guide
+                .lines
+                .into_iter()
+                .map(|t| line(t, None, None))
+                .collect();
+            (say::setup_answer(tone, guide.to_do), lines, guide.proposals)
         }
     }
 }

@@ -76,7 +76,7 @@ impl Engine {
         };
         let _ = self.flush().await;
         // The question shows while Bit looks up your repositories.
-        let lookups = self.look_up(connected).await;
+        let lookups = self.look_up(connected, true).await;
         let names = lookups.connectable_names();
         if self.asking_mut(note, |a| a.connectable = names).is_none() {
             return Ok(());
@@ -376,6 +376,7 @@ impl Engine {
                 let patch = p.repository.clone().unwrap_or_default();
                 self.set_up_repository(name, &patch, p.connect).await
             }
+            Action::CheckConnections => self.check_connections().await,
         }?;
         // Done before the claim ends, so no tap gets in between.
         self.update(|s| buddy::proposal_done(s, note, proposal))
