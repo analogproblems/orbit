@@ -104,7 +104,8 @@ pub(super) mod fake_gh {
     /// A stand-in for `gh` that answers from files in `dir`: the PR from
     /// `pr.json`, and a one-file diff. The diff waits for `release` when `pause`
     /// exists; with `reject`, the first review POST waits for `release-post` and
-    /// is refused as GitHub refuses a comment on a line outside the diff.
+    /// is refused as GitHub refuses a comment on a line outside the diff; with
+    /// `fail`, every review POST fails as an outage does.
     pub(in crate::engine) fn fake_gh(dir: &std::path::Path) -> std::path::PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let d = dir.display();
@@ -114,6 +115,10 @@ pub(super) mod fake_gh {
     case "$*" in
       *"--method POST repos/a/b/pulls/1/reviews"*)
         cat > {d}/posted
+        if [ -e {d}/fail ]; then
+          echo "gh: Bad Gateway (HTTP 502)" >&2
+          exit 1
+        fi
         if [ -e {d}/reject ] && [ ! -e {d}/rejected ]; then
           touch {d}/rejected
           while [ ! -e {d}/release-post ]; do sleep 0.01; done

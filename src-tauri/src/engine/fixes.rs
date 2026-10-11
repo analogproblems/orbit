@@ -48,49 +48,52 @@ impl Engine {
         let _ = self.flush().await;
         Ok(())
     }
-    /// Does the fixes Bit does on its own, for items that just opened, and
-    /// notes how each went. A fix that fails, or that stopped being Bit's to
-    /// do, while its item is still open is handed back to you: noted with
-    /// its button, and notified as the item would have been. One whose item
-    /// closed meanwhile is dropped.
+    /// Does the fixes Bit does on its own, for items that just opened, each
+    /// in its own task.
     pub(super) fn do_fixes(self: &Arc<Self>) -> Vec<tokio::task::JoinHandle<()>> {
         let queued = std::mem::take(&mut *self.fixing.lock().unwrap());
-        let mut tasks = vec![];
-        for (item, fix) in queued {
-            let e = self.clone();
-            tasks.push(tokio::spawn(async move {
-                let result = e.run_fix(&item, fix, true).await;
-                let mut handed_back = false;
-                e.update(|s| match &result {
-                    Ok(()) => crate::buddy::fixed(s, &item, fix),
-                    Err(error) => {
-                        handed_back = crate::attention::items(s).iter().any(|a| a.key == item.key);
-                        if handed_back {
-                            crate::buddy::not_fixed(s, &item, fix, error);
-                        }
-                    }
-                })
-                .await;
+        queued
+            .into_iter()
+            .map(|(item, fix)| {
+                let e = self.clone();
+                tokio::spawn(async move { e.do_fix(item, fix).await })
+            })
+            .collect()
+    }
+    /// Does a fix on Bit's own and notes how it went. A fix that fails, or
+    /// that stopped being Bit's to do, while its item is still open is
+    /// handed back to you: noted with its button, and notified as the item
+    /// would have been. One whose item closed meanwhile is dropped.
+    pub(super) async fn do_fix(self: &Arc<Self>, item: Attention, fix: Fix) {
+        let result = self.run_fix(&item, fix, true).await;
+        let mut handed_back = false;
+        self.update(|s| match &result {
+            Ok(()) => crate::buddy::fixed(s, &item, fix),
+            Err(error) => {
+                handed_back = crate::attention::items(s).iter().any(|a| a.key == item.key);
                 if handed_back {
-                    let notice = {
-                        let s = e.state.lock().await;
-                        s.settings
-                            .notify
-                            .then(|| crate::attention::notice(&s, item.clone()))
-                    };
-                    if let (Some(notice), Some(notify)) = (notice, e.notifier.get()) {
-                        notify(&notice);
-                    }
+                    crate::buddy::not_fixed(s, &item, fix, error);
                 }
-            }));
+            }
+        })
+        .await;
+        if handed_back {
+            let notice = {
+                let s = self.state.lock().await;
+                s.settings
+                    .notify
+                    .then(|| crate::attention::notice(&s, item.clone()))
+            };
+            if let (Some(notice), Some(notify)) = (notice, self.notifier.get()) {
+                notify(&notice);
+            }
         }
-        tasks
     }
     /// Uses one of Orbit's own controls. None of them answers a reviewer's
     /// request or touches a repository's setup or the code under review.
     /// A fix Bit does `on_its_own` goes ahead only while it is still Bit's to
-    /// do, checked again under the same lock as the change, or for a
-    /// publication, again before each write.
+    /// do, checked again under the same lock as the change, after waiting
+    /// for a sync already running, or for a publication, before each write.
     pub(super) async fn run_fix(
         self: &Arc<Self>,
         item: &Attention,
@@ -122,8 +125,12 @@ impl Engine {
                     .ok_or("There's no report to publish.")?;
                 self.publish_by(id, By::Bit(&still)).await
             }
+            // Once any sync already running ends, so the result is this
+            // sync's.
             Fix::SyncNow => {
-                let synced = self.sync_now().await;
+                let turn = self.poll_lock.lock().await;
+                still(&*self.state.lock().await)?;
+                let synced = self.poll_holding(turn).await;
                 if synced.is_ok() {
                     self.update_clones_soon();
                 }
@@ -132,7 +139,7 @@ impl Engine {
                     .into_iter()
                     .find(|a| a.key == item.key)
                 {
-                    Some(still) => Err(still.reason),
+                    Some(open) => Err(open.reason),
                     None => synced,
                 }
             }

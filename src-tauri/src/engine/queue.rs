@@ -14,13 +14,11 @@ impl Engine {
         };
         self.poll_holding(guard).await
     }
-    /// Syncs with GitHub once any sync already running ends, so the result
-    /// is this sync's.
-    pub(super) async fn sync_now(&self) -> Result<(), String> {
-        let guard = self.poll_lock.lock().await;
-        self.poll_holding(guard).await
-    }
-    async fn poll_holding(&self, _guard: tokio::sync::MutexGuard<'_, ()>) -> Result<(), String> {
+    /// Syncs with GitHub, holding the sync lock.
+    pub(super) async fn poll_holding(
+        &self,
+        _guard: tokio::sync::MutexGuard<'_, ()>,
+    ) -> Result<(), String> {
         self.update(|s| s.polling = true).await;
         let _ = self.flush().await;
         let result = async {

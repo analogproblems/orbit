@@ -228,10 +228,12 @@ mod publishing {
     use crate::github::GH;
 
     /// A structured report from a member's PR whose automatic publication
-    /// wasn't confirmed, so Bit offers Publish, with Bit's rule for it.
+    /// wasn't confirmed, so Bit offers Publish, with Bit's rule for it. It is
+    /// the only thing that needs you.
     async fn held(rule: &str) -> (tempfile::TempDir, Arc<Engine>, Attention) {
         let (d, e, id) = structured_autopost().await;
         e.update(|s| {
+            s.reviews[0].orbit_verdict = Some(Verdict::ChangesRequested);
             s.reviews[0].error = Some("Comment not confirmed: timed out.".into());
             s.settings.buddy.rules.publish = rule.into();
         })
@@ -241,6 +243,7 @@ mod publishing {
             .find(|a| a.key == format!("held:{id}"))
             .unwrap();
         assert_eq!(item.fix, Some(Fix::Publish));
+        assert_eq!(crate::attention::items(&e.snapshot().await).len(), 1);
         (d, e, item)
     }
     /// What GitHub says about the PR's author from now on.
@@ -283,6 +286,76 @@ mod publishing {
             .unwrap();
         assert_eq!(posts(d.path()), 1);
         assert_eq!(e.snapshot().await.reviews[0].status, "posted");
+    }
+    #[tokio::test]
+    async fn a_failed_publication_is_tried_once_then_handed_back() {
+        let (d, e, item) = held("do_it").await;
+        let shown = Arc::new(Mutex::new(vec![]));
+        let titles = shown.clone();
+        e.on_notice(move |n| titles.lock().unwrap().push(n.title.clone()));
+        e.update(|s| s.settings.notify = true).await;
+        let gh = fake_gh(d.path());
+        std::fs::write(d.path().join("fail"), "").unwrap();
+        e.flush().await.unwrap();
+        let queued = std::mem::take(&mut *e.fixing.lock().unwrap());
+        assert_eq!(queued.len(), 1);
+        assert!(shown.lock().unwrap().is_empty());
+        GH.scope(gh, async {
+            for (queued, fix) in queued {
+                e.do_fix(queued, fix).await;
+            }
+            // Later looks don't take the report for a new item.
+            for _ in 0..3 {
+                e.flush().await.unwrap();
+                assert!(e.fixing.lock().unwrap().is_empty());
+            }
+        })
+        .await;
+        assert_eq!(posts(d.path()), 1);
+        assert_eq!(*shown.lock().unwrap(), ["A report was held back"]);
+        let s = e.snapshot().await;
+        let note = s.buddy_feed.notes.last().unwrap();
+        assert_eq!(
+            (note.kind, note.key.as_deref()),
+            (NoteKind::NeedsYou, Some(item.key.as_str()))
+        );
+        assert_eq!(s.reviews[0].status, "ready");
+    }
+    #[tokio::test]
+    async fn a_queued_sync_checks_again_once_the_running_sync_ends() {
+        let (d, e) = autopilot_engine(trusted_pr()).await;
+        e.update(|s| {
+            s.poll_failures = crate::attention::SYNC_FAILURES;
+            s.github_error = Some("timed out".into());
+            s.settings.buddy.rules.sync_now = "do_it".into();
+        })
+        .await;
+        let item = crate::attention::items(&e.snapshot().await)
+            .into_iter()
+            .find(|a| a.key == "sync:github")
+            .unwrap();
+        let gh = fake_gh(d.path());
+        // A sync is running; the rule changes before it ends.
+        let running = e.poll_lock.lock().await;
+        let revoke = async {
+            e.update(|s| s.settings.buddy.rules.sync_now = "ask_first".into())
+                .await;
+            drop(running);
+        };
+        let (result, ()) = GH
+            .scope(gh, async {
+                tokio::join!(e.run_fix(&item, Fix::SyncNow, true), revoke)
+            })
+            .await;
+        assert_eq!(
+            result.unwrap_err(),
+            "My rule for this isn't Do it any more."
+        );
+        // No sync started, so no GitHub requests and no clone updates.
+        assert!(!d.path().join("log").exists());
+        let s = e.snapshot().await;
+        assert!(!s.polling);
+        assert_eq!(s.poll_failures, crate::attention::SYNC_FAILURES);
     }
     #[tokio::test]
     async fn bit_checks_again_before_it_writes() {

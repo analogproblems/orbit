@@ -248,10 +248,15 @@ pub fn notice(s: &Snapshot, a: Attention) -> Notice {
         item: a,
     }
 }
-/// The snapshot as it will be once each follow-up chat ends. A follow-up
-/// runs a finished review again for a while, then restores its outcome.
-fn after_follow_ups(s: &Snapshot) -> std::borrow::Cow<'_, Snapshot> {
-    if !s.reviews.iter().any(|r| r.before_follow_up.is_some()) {
+/// The snapshot without what hides a review's outcome for a while: a
+/// follow-up runs a finished review again, then restores its outcome; a
+/// publication claims a ready report, then posts it or leaves it ready.
+fn settled(s: &Snapshot) -> std::borrow::Cow<'_, Snapshot> {
+    if !s
+        .reviews
+        .iter()
+        .any(|r| r.before_follow_up.is_some() || r.status == "publishing")
+    {
         return std::borrow::Cow::Borrowed(s);
     }
     let mut s = s.clone();
@@ -259,6 +264,8 @@ fn after_follow_ups(s: &Snapshot) -> std::borrow::Cow<'_, Snapshot> {
         if let Some(before) = &r.before_follow_up {
             r.status = before.status.clone();
             r.error = before.error.clone();
+        } else if r.status == "publishing" {
+            r.status = "ready".into();
         }
     }
     std::borrow::Cow::Owned(s)
@@ -266,9 +273,10 @@ fn after_follow_ups(s: &Snapshot) -> std::borrow::Cow<'_, Snapshot> {
 /// Records which open items have been announced and returns a notice for
 /// each one that is new, with whether the record changed. A resolved item
 /// leaves the record, so it is announced again if it opens again later. An
-/// item a follow-up chat hides only while it runs stays in the record.
+/// item a follow-up chat or a publication hides only while it runs stays in
+/// the record, so a publication that fails doesn't announce it again.
 pub fn announce(s: &mut Snapshot) -> (Vec<Notice>, bool) {
-    let open = items(&after_follow_ups(s));
+    let open = items(&settled(s));
     let keys: Vec<String> = open.iter().map(|a| a.key.clone()).collect();
     let changed = keys != s.announced;
     let fresh: Vec<Attention> = open
