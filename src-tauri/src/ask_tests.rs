@@ -286,16 +286,9 @@ fn bits_thread_turns_off_every_tool_server_and_feature() {
     );
     assert_eq!(config["model_reasoning_effort"], "low");
     assert_eq!(config["web_search"], "disabled");
-    assert_eq!(
-        config["features"].as_object().unwrap().len(),
-        FEATURES_OFF.len()
-    );
+    // The extras and Codex's standard tools.
+    for feature in crate::extras::FEATURES_OFF.iter().chain(&TOOLS_OFF) {
+        assert_eq!(config["features"][feature], false, "{feature}");
+    }
     assert_eq!(thread_config("low", &json!({}))["mcp_servers"], json!({}));
-    // Any server not switched off for the thread counts as on.
-    let page = json!({"data": [
-        {"name": "notes", "runtimeStatus": "disabled"},
-        {"name": "mail", "runtimeStatus": "starting"},
-        {"name": "apps", "runtimeStatus": null},
-    ]});
-    assert_eq!(servers_on(&page), ["mail", "apps"]);
 }

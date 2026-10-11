@@ -18,6 +18,7 @@ mod cli_review;
 mod clones;
 mod connection;
 mod events;
+mod extras;
 mod findings;
 mod fixes;
 mod inline;

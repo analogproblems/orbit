@@ -1,4 +1,5 @@
 use super::{
+    extras,
     settings::matches_origin,
     worktrees::{git, prune_orbit_refs, remove_worktree},
     Engine,
@@ -232,6 +233,19 @@ impl Engine {
             effort: scan.effort.clone(),
         };
         selection.validate_execution(&*self.state.lock().await)?;
+        // Of the extra tools you've added to Codex, only Codex Security
+        // stays on for the scan.
+        let mut config = extras::off_but_scans(&rpc, worktree).await?;
+        config.extend([
+            ("model_reasoning_effort".into(), json!(selection.effort)),
+            (
+                "sandbox_workspace_write".into(),
+                json!({
+                    "network_access": false,
+                    "writable_roots": [scan_root],
+                }),
+            ),
+        ]);
         let thread = rpc
             .request(
                 "thread/start",
@@ -242,13 +256,7 @@ impl Engine {
                     "approvalPolicy": "never",
                     "sandbox": "workspace-write",
                     "model": selection.model,
-                    "config": {
-                        "model_reasoning_effort": selection.effort,
-                        "sandbox_workspace_write": {
-                            "network_access": false,
-                            "writable_roots": [scan_root],
-                        },
-                    },
+                    "config": config,
                     "developerInstructions": SCANNER_INSTRUCTIONS,
                 }),
             )
@@ -257,7 +265,13 @@ impl Engine {
             .as_str()
             .ok_or("Codex did not create a thread")?
             .to_string();
-        if let Err(error) = selection.verify_response(&thread) {
+        let checked = match selection.verify_response(&thread) {
+            Ok(()) => extras::check(&rpc, &thread_id, Some(scans::PLUGIN))
+                .await
+                .map_err(|left| left.message("the scan didn't start")),
+            Err(error) => Err(error),
+        };
+        if let Err(error) = checked {
             let _ = rpc
                 .request_timeout("thread/archive", json!({"threadId": thread_id}), 10)
                 .await;

@@ -44,13 +44,22 @@ async fn fixture() -> (tempfile::TempDir, Arc<Engine>, Arc<Rpc>, String) {
 async fn configure(rpc: &Rpc, options: Value) {
     rpc.request("fixture/configure", options).await.unwrap();
 }
+/// The requests the fixture saw, but for reading Codex's settings for a
+/// thread's folder and checking its tool servers, which `extras_tests`
+/// covers.
 async fn requests(rpc: &Rpc) -> Vec<Value> {
     rpc.request("fixture/requests", json!({}))
         .await
         .unwrap()
         .as_array()
         .unwrap()
-        .clone()
+        .iter()
+        .filter(|r| {
+            let extras = r["method"] == "config/read" && r["params"]["cwd"].is_string();
+            !extras && r["method"] != "mcpServerStatus/list"
+        })
+        .cloned()
+        .collect()
 }
 async fn wait_for_request(rpc: &Rpc, method: &str) {
     tokio::time::timeout(Duration::from_secs(3), async {
@@ -1201,4 +1210,150 @@ async fn usage_is_shown_but_never_saved() {
     let shown = serde_json::to_value(e.shown_snapshot().await).unwrap();
     assert_eq!(shown["usage"]["rateLimits"]["planType"], "pro");
     rpc.shutdown().await;
+}
+
+/// Every request the fixture saw, the extras' reads and checks included.
+async fn every_request(rpc: &Rpc) -> Vec<Value> {
+    rpc.request("fixture/requests", json!({}))
+        .await
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .clone()
+}
+fn methods(calls: &[Value]) -> Vec<&str> {
+    calls
+        .iter()
+        .map(|r| r["method"].as_str().unwrap())
+        .collect()
+}
+/// Asserts thread settings switch off the extras: here, the fixture's one
+/// tool server of your own, and the extra features.
+fn assert_extras_off(config: &Value) {
+    assert_eq!(config["mcp_servers"], json!({"notes": {"enabled": false}}));
+    for feature in crate::extras::FEATURES_OFF {
+        assert_eq!(config["features"][feature], false, "{feature}");
+    }
+}
+#[tokio::test]
+async fn reviews_chats_and_findings_run_without_your_extra_tools() {
+    let extras = json!({"mcpServers": {"notes": {"command": "notes"}}});
+    let (d, e, rpc, id) = fixture().await;
+    configure(&rpc, extras.clone()).await;
+    e.start_review_inference(&id, &rpc, d.path(), false)
+        .await
+        .unwrap();
+    let calls = every_request(&rpc).await;
+    // Codex confirms the extras are off before the review starts.
+    assert_eq!(
+        methods(&calls),
+        [
+            "config/read",
+            "thread/start",
+            "mcpServerStatus/list",
+            "review/start"
+        ]
+    );
+    assert_eq!(calls[0]["params"]["cwd"], json!(d.path()));
+    assert_extras_off(&calls[1]["params"]["config"]);
+    assert_eq!(calls[1]["params"]["config"]["review_model"], "model-a");
+    assert_eq!(calls[2]["params"]["threadId"], "fixture-thread");
+    rpc.shutdown().await;
+
+    let (d, e, rpc, id) = fixture().await;
+    completed(&e, false).await;
+    configure(&rpc, extras.clone()).await;
+    e.message(&id, "Explain").await.unwrap();
+    let calls = every_request(&rpc).await;
+    assert_eq!(
+        methods(&calls),
+        [
+            "config/read",
+            "thread/resume",
+            "mcpServerStatus/list",
+            "turn/start"
+        ]
+    );
+    assert_eq!(calls[0]["params"]["cwd"], json!(d.path()));
+    assert_extras_off(&calls[1]["params"]["config"]);
+    assert_eq!(
+        calls[1]["params"]["config"]["model_reasoning_effort"],
+        "high"
+    );
+    rpc.shutdown().await;
+
+    let (d, e, rpc, id) = fixture().await;
+    awaiting_extraction(&e).await;
+    configure(&rpc, extras).await;
+    e.extract_findings(&id).await;
+    let calls = every_request(&rpc).await;
+    assert_eq!(
+        methods(&calls),
+        [
+            "config/read",
+            "thread/resume",
+            "mcpServerStatus/list",
+            "turn/start"
+        ]
+    );
+    assert_eq!(calls[0]["params"]["cwd"], json!(d.path()));
+    assert_extras_off(&calls[1]["params"]["config"]);
+    rpc.shutdown().await;
+}
+#[tokio::test]
+async fn nothing_runs_while_codex_keeps_an_extra_on_or_cannot_say() {
+    let on = json!({"mcpStatus": {"data": [
+        {"name": "notes", "runtimeStatus": "disabled"},
+        {"name": "figma", "runtimeStatus": "connected"},
+    ], "nextCursor": null}});
+    let unsure = json!({"errors": {"mcpServerStatus/list": "unknown method"}});
+    for (options, why) in [
+        (on, "Codex kept these extra tools on, so {}: figma."),
+        (
+            unsure,
+            "Orbit couldn't check that Codex's extra tools are off, so {}: unknown method.",
+        ),
+    ] {
+        let (d, e, rpc, id) = fixture().await;
+        configure(&rpc, options.clone()).await;
+        let error = e
+            .start_review_inference(&id, &rpc, d.path(), false)
+            .await
+            .unwrap_err();
+        assert_eq!(error, why.replace("{}", "the review didn't start"));
+        let calls = requests(&rpc).await;
+        assert_no_inference(&calls);
+        assert_eq!(calls.last().unwrap()["method"], "thread/archive");
+        assert!(e.snapshot().await.reviews[0]
+            .confirmed_review_selection
+            .is_none());
+        rpc.shutdown().await;
+
+        let (_d, e, rpc, id) = fixture().await;
+        completed(&e, false).await;
+        configure(&rpc, options.clone()).await;
+        let error = e.message(&id, "Explain").await.unwrap_err();
+        assert!(
+            error.contains(&why.replace("{}", "your message wasn't sent")),
+            "{error}"
+        );
+        assert_no_inference(&requests(&rpc).await);
+        let r = e.snapshot().await.reviews.remove(0);
+        assert_eq!(r.status, "posted");
+        assert_eq!(r.messages[0].delivery, Some(MessageDelivery::Failed));
+        rpc.shutdown().await;
+
+        let (_d, e, rpc, id) = fixture().await;
+        awaiting_extraction(&e).await;
+        configure(&rpc, options).await;
+        e.extract_findings(&id).await;
+        assert_no_inference(&requests(&rpc).await);
+        let r = e.snapshot().await.reviews.remove(0);
+        let error = r.error.unwrap_or_default();
+        assert!(
+            error.contains(&why.replace("{}", "the findings weren't read")),
+            "{error}"
+        );
+        rpc.shutdown().await;
+    }
 }

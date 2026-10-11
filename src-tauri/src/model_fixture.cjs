@@ -51,9 +51,13 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
             model: options.effectiveModel ?? null,
             model_reasoning_effort: options.effectiveEffort ?? null,
             ...(options.mcpServers && { mcp_servers: options.mcpServers }),
+            ...(options.plugins && { plugins: options.plugins }),
           },
         });
       case "mcpServerStatus/list":
+        // Codex's own tool servers, with no thread.
+        if (!m.params.threadId && options.mcpGlobal)
+          return send(m.id, options.mcpGlobal);
         // A thread's tool servers, one page per call; the last one repeats.
         return send(
           m.id,

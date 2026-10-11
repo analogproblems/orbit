@@ -1,7 +1,7 @@
 //! After a review turn, the reviewer restates its findings as JSON in one
 //! more turn on the same thread. The Markdown report stays the record of the
 //! review; the JSON is stored beside it for the review loop.
-use super::Engine;
+use super::{extras, Engine};
 use crate::{rpc::Rpc, types::*};
 use serde_json::{json, Value};
 use std::{
@@ -448,6 +448,12 @@ impl Engine {
             .ok_or("The review has no Codex thread.")?;
         let rpc: Arc<Rpc> = self.client().await?;
         self.extracting(id).await?;
+        // The extra tools you've added to Codex stay off, as for the review.
+        let mut config = extras::off(&rpc, &r.worktree).await?;
+        config.extend([
+            ("review_model".into(), json!(selection.model)),
+            ("model_reasoning_effort".into(), json!(selection.effort)),
+        ]);
         let resume = json!({
             "threadId": thread,
             "cwd": r.worktree,
@@ -455,10 +461,13 @@ impl Engine {
             "approvalsReviewer": "user",
             "sandbox": "workspace-write",
             "model": selection.model,
-            "config": {"review_model":selection.model, "model_reasoning_effort":selection.effort},
+            "config": config,
         });
         let response = rpc.request("thread/resume", resume).await?;
         selection.verify_response(&response)?;
+        extras::check(&rpc, &thread, None)
+            .await
+            .map_err(|left| left.message("the findings weren't read"))?;
         {
             let mut state = self.state.lock().await;
             let mut next = state.clone();
