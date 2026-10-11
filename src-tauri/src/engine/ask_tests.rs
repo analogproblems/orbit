@@ -238,6 +238,9 @@ async fn a_tapped_button_is_checked_again() {
                 pr_id: None,
                 review_id: None,
                 settings: Some(json!({"trustedAuthors": ["mallory"]})),
+                repo: None,
+                repository: None,
+                connect: false,
                 done: false,
             }],
             vec![],
@@ -318,6 +321,9 @@ async fn a_button_runs_once_even_when_two_windows_tap_it_at_once() {
             pr_id: None,
             review_id: None,
             settings: None,
+            repo: None,
+            repository: None,
+            connect: false,
             done: false,
         };
         answered(&mut s, id, "Tap below.".into(), vec![sync], vec![]);
@@ -397,7 +403,7 @@ async fn bit_keeps_what_it_remembers_until_you_forget_it() {
         json!(["Jason likes short answers."])
     );
     assert_eq!(
-        crate::ask::briefing(&s)["memory"]["repositories"]["a/b"],
+        crate::ask::briefing(&s, &crate::ask::Lookups::default())["memory"]["repositories"]["a/b"],
         json!(["Reviews often flag missing tests."])
     );
 
@@ -499,4 +505,39 @@ async fn an_answer_cant_refill_a_memory_you_cleared_while_it_was_coming() {
     assert_eq!(last(&s).text, "You like long answers.");
     assert_eq!(s.buddy_feed.memory, Memory::default());
     assert_eq!(saved_memory(&dir)["general"], json!([]));
+}
+
+#[tokio::test]
+async fn bit_can_offer_to_connect_a_repository_github_lists() {
+    let (dir, e, rpc) = fixture().await;
+    let gh = super::setup_tests::fake_gh(dir.path());
+    crate::github::GH
+        .scope(gh, e.ask_buddy_anything("Can you set up acme/api?"))
+        .await
+        .unwrap();
+    let turn = &sent(&rpc, "turn/start").await[0];
+    let prompt = turn["input"][0]["text"].as_str().unwrap();
+    assert!(
+        prompt.contains("\"connectableRepositories\": [\n"),
+        "{prompt}"
+    );
+    assert!(prompt.contains("\"name\": \"acme/api\""));
+    let reply = json!({
+        "answer": "Tap to connect it.",
+        "proposals": [
+            {"action": "set_up_repository", "pr": null, "repository": "acme/api", "changes": [
+                {"setting": "setupCommand", "value": "npm ci"},
+                {"setting": "networkAccess", "value": "true"},
+            ]},
+            {"action": "set_up_repository", "pr": null, "repository": "someone/else", "changes": []},
+        ],
+    });
+    codex_says(&e, &reply.to_string(), "completed").await;
+    let note = last(&e.snapshot().await);
+    assert_eq!(note.proposals.len(), 1);
+    let p = &note.proposals[0];
+    assert_eq!(p.repo.as_deref(), Some("acme/api"));
+    assert!(p.connect);
+    // Nothing is connected before a tap.
+    assert!(e.snapshot().await.settings.repositories.is_empty());
 }

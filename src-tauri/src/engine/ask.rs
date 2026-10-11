@@ -28,8 +28,11 @@ pub(super) struct Asking {
     turn: Option<String>,
     /// Codex's latest message, its answer once the turn completes.
     text: String,
-    /// `Engine::memory_generation` when the question's summary was made.
+    /// `Engine::memory_generation` when the question was asked, before its
+    /// summary was made.
     memory_generation: u64,
+    /// The repositories the question's summary offered to connect.
+    connectable: Vec<String>,
 }
 
 impl Engine {
@@ -43,7 +46,7 @@ impl Engine {
                 ask::MAX_QUESTION
             ));
         }
-        let (note, prompt, instructions, selection) = {
+        let (note, selection, connected) = {
             let mut s = self.state.lock().await;
             let name = s.settings.buddy.name.clone();
             if !s.settings.buddy.enabled {
@@ -59,8 +62,6 @@ impl Engine {
             selection.validate_execution(&s).map_err(|e| {
                 format!("{name} answers typed questions with Codex, which isn't ready: {e}")
             })?;
-            let prompt = ask::prompt(&s, question);
-            let instructions = ask::instructions(&s.settings.buddy);
             let note = buddy::asked(&mut s, question);
             *self.asking.lock().unwrap() = Some(Asking {
                 note,
@@ -68,11 +69,25 @@ impl Engine {
                 turn: None,
                 text: String::new(),
                 memory_generation: self.memory_generation.load(Ordering::SeqCst),
+                connectable: vec![],
             });
             self.dirty.store(true, Ordering::SeqCst);
-            (note, prompt, instructions, selection)
+            (note, selection, s.settings.repositories.clone())
         };
         let _ = self.flush().await;
+        // The question shows while Bit looks up your repositories.
+        let lookups = self.look_up(connected).await;
+        let names = lookups.connectable_names();
+        if self.asking_mut(note, |a| a.connectable = names).is_none() {
+            return Ok(());
+        }
+        let (prompt, instructions) = {
+            let s = self.state.lock().await;
+            (
+                ask::prompt(&s, question, &lookups),
+                ask::instructions(&s.settings.buddy),
+            )
+        };
         if let Err(error) = self
             .start_answer(note, &prompt, &instructions, &selection)
             .await
@@ -242,17 +257,20 @@ impl Engine {
                 });
             }
         }
-        self.update(|s| match reply.and_then(|reply| ask::answer(s, &reply)) {
-            Ok(a) => {
-                // Something you forgot since the question was asked stays
-                // forgotten: the answer's memory changes are dropped.
-                let fresh =
-                    asking.memory_generation == self.memory_generation.load(Ordering::SeqCst);
-                let memory = if fresh { a.memory } else { vec![] };
-                buddy::answered(s, note, a.text, a.proposals, memory)
-            }
-            Err(error) => buddy::not_answered(s, note, &error),
-        })
+        let connectable = &asking.connectable;
+        self.update(
+            |s| match reply.and_then(|r| ask::answer(s, &r, connectable)) {
+                Ok(a) => {
+                    // Something you forgot since the question was asked stays
+                    // forgotten: the answer's memory changes are dropped.
+                    let fresh =
+                        asking.memory_generation == self.memory_generation.load(Ordering::SeqCst);
+                    let memory = if fresh { a.memory } else { vec![] };
+                    buddy::answered(s, note, a.text, a.proposals, memory)
+                }
+                Err(error) => buddy::not_answered(s, note, &error),
+            },
+        )
         .await;
         let _ = self.flush().await;
     }
@@ -349,6 +367,14 @@ impl Engine {
                     return Err("Change trusted accounts in Settings yourself.".into());
                 }
                 self.update_settings(patch).await.map(|_| ())
+            }
+            Action::SetUpRepository => {
+                let name = p
+                    .repo
+                    .as_deref()
+                    .ok_or("This button isn't about a repository.")?;
+                let patch = p.repository.clone().unwrap_or_default();
+                self.set_up_repository(name, &patch, p.connect).await
             }
         }?;
         // Done before the claim ends, so no tap gets in between.

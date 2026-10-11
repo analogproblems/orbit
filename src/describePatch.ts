@@ -1,9 +1,11 @@
 import {
   fixLabels,
   fixRuleLabels,
+  providerLabels,
   type Buddy,
   type FixRule,
   type Model,
+  type RepositoryPatch,
   type RuledFix,
   type SettingsPatch,
 } from "./types";
@@ -83,6 +85,42 @@ export function describePatch(patch: SettingsPatch, models: Model[]): string {
                     ? value.join(", ") || "None"
                     : value;
       return `${label}: ${display}`;
+    })
+    .join("; ");
+}
+
+const repositoryLabels: Record<keyof RepositoryPatch, string> = {
+  setupCommand: "Setup command",
+  checkCommand: "Check command",
+  networkAccess: "Network access",
+  devContainer: "Dev container",
+  reviewer: "Reviewer",
+  roundLimit: "Automatic rounds per pull request",
+  approvalMinutes: "Approval time limit",
+  keepCloneUpdated: "Keep the copy up to date",
+  autopilot: "Automatic reviews",
+};
+
+/** A repository change in words, such as "Setup command: npm ci; Network
+ * access: On". Commands are shown exactly as they would be saved. */
+export function describeRepositoryPatch(patch: RepositoryPatch): string {
+  return (Object.entries(patch) as [keyof RepositoryPatch, unknown][])
+    .map(([key, value]) => {
+      const display =
+        typeof value === "boolean"
+          ? value
+            ? "On"
+            : "Off"
+          : key === "reviewer"
+            ? providerLabels[value as keyof typeof providerLabels]
+            : key === "approvalMinutes"
+              ? value
+                ? `Decline after ${value} minutes`
+                : "Wait for me"
+              : key === "setupCommand" || key === "checkCommand"
+                ? value || "None"
+                : value;
+      return `${repositoryLabels[key]}: ${display}`;
     })
     .join("; ");
 }

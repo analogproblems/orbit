@@ -939,6 +939,12 @@ export function demoTypedAnswer(): Pick<
     proposals: [
       { id: 0, action: "sync_now" },
       { id: 1, action: "change_settings", settings: { pollSeconds: 300 } },
+      {
+        id: 2,
+        action: "set_up_repository",
+        repo: "acme/dashboard",
+        repository: { setupCommand: "npm ci", networkAccess: true },
+      },
     ],
     memory: [
       {

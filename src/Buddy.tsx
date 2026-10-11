@@ -66,7 +66,7 @@ import {
 import { Bit, bitColours, bitHats, moodLabels } from "./Bit";
 import { SaveFeedback } from "./SaveFeedback";
 import { SafeMarkdown } from "./SafeMarkdown";
-import { describePatch } from "./describePatch";
+import { describePatch, describeRepositoryPatch } from "./describePatch";
 import { recentTimestamp } from "./timestamps";
 
 /** The buddy as it will be once saves in progress land. */
@@ -169,9 +169,14 @@ function ProposalButton({
   const { snapshot: s, action } = useOrbit();
   const [error, setError] = useState<string | null>(null);
   const pr = proposal.prId?.split("/").pop();
-  const label = pr
-    ? `${actionLabels[proposal.action]}: ${pr}`
-    : actionLabels[proposal.action];
+  const label =
+    proposal.action === "set_up_repository"
+      ? `${proposal.connect ? "Connect" : "Set up"} ${proposal.repo}`
+      : pr
+        ? `${actionLabels[proposal.action]}: ${pr}`
+        : actionLabels[proposal.action];
+  const repoChange =
+    proposal.repository && describeRepositoryPatch(proposal.repository);
   return (
     <VStack gap={2}>
       <HStack gap={2} vAlign="center" wrap="wrap">
@@ -194,6 +199,18 @@ function ProposalButton({
       {proposal.settings && (
         <Text type="supporting" color="secondary">
           {describePatch(proposal.settings, s.models)}
+        </Text>
+      )}
+      {proposal.connect && (
+        <Text type="supporting" color="secondary">
+          Orbit downloads its own copy of {proposal.repo} and connects it with
+          automatic reviews off, no setup command and no network, unless changed
+          here.
+        </Text>
+      )}
+      {repoChange && (
+        <Text type="supporting" color="secondary">
+          {repoChange}
         </Text>
       )}
       {error && <Banner status="error" title={error} />}
@@ -809,9 +826,9 @@ function BuddyRules() {
         </Text>
         <Text color="secondary">
           {buddy.name} never answers a reviewer’s request to run a command or
-          change files, never changes a repository’s setup or access, and never
-          touches the code under review. Turning autopilot back on always waits
-          for your tap.
+          change files, and never touches the code under review. Turning
+          autopilot back on, changing settings, and connecting or setting up a
+          repository from an answer always wait for your tap.
         </Text>
       </VStack>
       {ruledFixes.map((fix) => (
