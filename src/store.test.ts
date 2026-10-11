@@ -246,6 +246,7 @@ describe("demo buddy", () => {
     expect(note.proposals!.map((p) => p.action)).toEqual([
       "sync_now",
       "change_settings",
+      "set_up_repository",
     ]);
     // The demo remembers the question once, and you can forget it.
     const line = "You've tried asking me something in the demo.";
@@ -275,6 +276,15 @@ describe("demo buddy", () => {
       store.action("use_proposal", { noteId: note.id, proposalId });
     expect((await tap(1)).ok).toBe(true);
     expect(useOrbit.getState().snapshot.settings.pollSeconds).toBe(300);
+    expect((await tap(2)).ok).toBe(true);
+    const dashboard = useOrbit
+      .getState()
+      .snapshot.settings.repositories.find((r) => r.name === "acme/dashboard")!;
+    expect(dashboard).toMatchObject({
+      setupCommand: "npm ci",
+      networkAccess: true,
+      path: "~/Projects/dashboard",
+    });
     expect(last().proposals![1].done).toBe(true);
     expect(await tap(1)).toEqual({
       ok: false,

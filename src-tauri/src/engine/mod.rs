@@ -29,6 +29,7 @@ mod rounds;
 mod run;
 mod scans;
 mod settings;
+mod setup;
 mod status;
 mod worktrees;
 
@@ -76,6 +77,8 @@ mod scans_tests;
 #[cfg(test)]
 mod settings_tests;
 #[cfg(test)]
+mod setup_tests;
+#[cfg(test)]
 mod state_tests;
 #[cfg(test)]
 mod test_support;
@@ -88,8 +91,9 @@ type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// `run` (preparing and running reviews, Codex events), `events` (what a
 /// reviewer reports, in Orbit's own terms), `chat` (follow-ups),
 /// `publish` (GitHub comments), `worktrees` (cleanup), `clones` (keeping
-/// users' clones up to date), `scans` (repository security scans) and
-/// `fixes` (Bit's fixes and answers).
+/// users' clones up to date), `scans` (repository security scans),
+/// `fixes` (Bit's fixes and answers), `ask` (questions you type to Bit) and
+/// `setup` (repositories Bit sets up).
 ///
 /// # Locks
 ///
@@ -99,6 +103,7 @@ type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// | `poll_lock`    | One sync at a time; `poll` skips a round rather than wait.        |
 /// | `publish_lock` | One publication at a time.                                        |
 /// | `cleanup_lock` | One worktree removal at a time.                                   |
+/// | `cloning`      | One download of a repository for Bit at a time.                   |
 /// | `git_lock`     | Git commands against users' clones (fetch, worktree add/remove,   |
 /// |                | fast-forward).                                                    |
 /// | `rpc`          | The current Codex connection.                                     |
@@ -112,7 +117,8 @@ type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// nesting: `connect_lock` → `rpc`, `items` and `state` (one at a time;
 /// `items` via `retire_dead_connection` → `disconnected`); `poll_lock` →
 /// `state` and `synced_repos` (one at a time); `publish_lock` → `state`;
-/// `cleanup_lock` → `git_lock` → `state`; `state` → `synced_repos`
+/// `cleanup_lock` → `git_lock` → `state`; `cloning` → `state`
+/// (`set_up_repository`); `state` → `synced_repos`
 /// (`schedule`); `state` → `fixing` (`flush`); `state` → `asking`
 /// (`ask_buddy_anything`); `state` → `using` (`use_proposal`). `preparing`,
 /// `recovered_publications`, `status_sender`, `sending_statuses` and
@@ -184,6 +190,7 @@ pub struct Engine {
     /// Counts the times you forgot something from Bit's memory, so an
     /// answer to a question asked before can't bring it back.
     memory_generation: std::sync::atomic::AtomicU64,
+    cloning: Mutex<()>,
     _instance_lock: std::fs::File,
 }
 impl Engine {
@@ -322,6 +329,7 @@ impl Engine {
             asking: std::sync::Mutex::new(None),
             using: std::sync::Mutex::new(HashSet::new()),
             memory_generation: std::sync::atomic::AtomicU64::new(0),
+            cloning: Mutex::new(()),
             _instance_lock: instance_lock,
         }))
     }

@@ -812,6 +812,57 @@ describe("Bit", () => {
     expect(box.textContent).toBe("And the others?");
   });
 
+  it("shows exactly how a button would set up a repository", async () => {
+    snapshot.buddyFeed!.notes.push({
+      id: 300,
+      at: new Date().toISOString(),
+      kind: "answer",
+      prId: null,
+      reviewId: null,
+      repo: null,
+      question: "Can you set up acme/web?",
+      text: "Tap to connect it.",
+      proposals: [
+        {
+          id: 0,
+          action: "set_up_repository",
+          repo: "acme/web",
+          connect: true,
+          repository: { setupCommand: "npm ci", networkAccess: true },
+        },
+        {
+          id: 1,
+          action: "set_up_repository",
+          repo: "acme/api",
+          repository: { roundLimit: 6 },
+        },
+      ],
+    });
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Bit" }));
+    const chat = screen.getByRole("log", { name: "Bit's notes" });
+    expect(
+      within(chat).getByText(/^Orbit downloads its own copy of acme\/web/),
+    ).toBeTruthy();
+    expect(
+      within(chat).getByText("Setup command: npm ci; Network access: On"),
+    ).toBeTruthy();
+    expect(
+      within(chat).getByText("Automatic rounds per pull request: 6"),
+    ).toBeTruthy();
+    expect(invoke.mock.calls.some(([c]) => c === "use_proposal")).toBe(false);
+    await user().click(
+      within(chat).getByRole("button", { name: "Connect acme/web" }),
+    );
+    expect(invoke).toHaveBeenCalledWith("use_proposal", {
+      noteId: 300,
+      proposalId: 0,
+    });
+    expect(
+      within(chat).getByRole("button", { name: "Set up acme/api" }),
+    ).toBeTruthy();
+  });
+
   it("reaches Bit from the menu on a phone-sized screen", async () => {
     const wide = window.matchMedia;
     window.matchMedia = vi.fn((media: string) => ({

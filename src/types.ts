@@ -506,7 +506,8 @@ export type Action =
   | "review_again"
   | "publish"
   | "sync_now"
-  | "change_settings";
+  | "change_settings"
+  | "set_up_repository";
 export const actionLabels: Record<Action, string> = {
   continue_loop: "Continue loop",
   stop_loop: "Stop loop",
@@ -514,7 +515,45 @@ export const actionLabels: Record<Action, string> = {
   publish: "Publish report",
   sync_now: "Sync now",
   change_settings: "Change settings",
+  set_up_repository: "Set up repository",
 };
+/** A change to a repository's settings from one of Bit's answers. Only
+ * what is given changes. */
+export interface RepositoryPatch {
+  setupCommand?: string;
+  checkCommand?: string;
+  networkAccess?: boolean;
+  devContainer?: boolean;
+  reviewer?: Provider;
+  roundLimit?: number;
+  approvalMinutes?: number;
+  keepCloneUpdated?: boolean;
+  autopilot?: boolean;
+}
+/** A repository with a change from one of Bit's answers. */
+export function withRepositoryPatch(
+  repo: Repository,
+  patch: RepositoryPatch,
+): Repository {
+  const devContainer = repo.devContainer ?? {
+    enabled: false,
+    checkCommand: "",
+  };
+  return {
+    ...repo,
+    setupCommand: patch.setupCommand ?? repo.setupCommand,
+    networkAccess: patch.networkAccess ?? repo.networkAccess,
+    provider: patch.reviewer ?? repo.provider,
+    roundLimit: patch.roundLimit ?? repo.roundLimit,
+    approvalMinutes: patch.approvalMinutes ?? repo.approvalMinutes,
+    keepUpdated: patch.keepCloneUpdated ?? repo.keepUpdated,
+    automatic: patch.autopilot ?? repo.automatic,
+    devContainer: {
+      enabled: patch.devContainer ?? devContainer.enabled,
+      checkCommand: patch.checkCommand ?? devContainer.checkCommand,
+    },
+  };
+}
 /** A button in an answer. It runs only when you tap it, and Orbit checks
  * it again then. */
 export interface Proposal {
@@ -526,6 +565,12 @@ export interface Proposal {
   reviewId?: string | null;
   /** For Change settings, the change. */
   settings?: SettingsPatch | null;
+  /** For Set up repository, the repository, as owner/name. */
+  repo?: string | null;
+  /** For Set up repository, the change to its settings. */
+  repository?: RepositoryPatch | null;
+  /** For Set up repository, whether it connects the repository. */
+  connect?: boolean;
   /** You tapped it and it worked. */
   done?: boolean;
 }

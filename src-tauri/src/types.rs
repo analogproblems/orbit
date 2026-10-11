@@ -1058,34 +1058,57 @@ impl Settings {
             if !std::path::Path::new(&repo.path).is_absolute() {
                 return Err(format!("Use an absolute checkout path for {}.", repo.name));
             }
-            if repo.setup_command.len() > 10000 {
-                return Err("Setup command is too long.".into());
-            }
-            if repo.dev_container.check_command.len() > 10000 {
-                return Err("Check command is too long.".into());
-            }
-            if repo.provider != Provider::Codex
-                && !repo.dev_container.enabled
-                && !repo.setup_command.trim().is_empty()
-            {
-                return Err(format!(
-                    "{} reviews can't run a setup command outside a dev container. Clear the setup command for {}, run it in the repository's dev container, or review it with Codex.",
-                    repo.provider.label(),
-                    repo.name
-                ));
-            }
-            if repo.dev_container.enabled
-                && repo.setup_command.trim().is_empty()
-                && repo.dev_container.check_command.trim().is_empty()
-            {
-                return Err(format!(
-                    "Add a setup or check command for {}'s dev container, or turn it off.",
-                    repo.name
-                ));
-            }
-            if repo.approval_minutes > MAX_APPROVAL_MINUTES {
-                return Err("Approval time limits can be at most 24 hours.".into());
-            }
+            repo.check()?;
+        }
+        Ok(())
+    }
+}
+impl Repository {
+    /// A repository connected with Orbit's defaults: autopilot off, no setup
+    /// command, no network, reviewed by Codex.
+    pub fn new(name: &str, path: &str) -> Self {
+        Self {
+            name: name.into(),
+            path: path.into(),
+            automatic: false,
+            setup_command: String::new(),
+            network_access: false,
+            round_limit: default_round_limit(),
+            approval_minutes: 0,
+            keep_updated: false,
+            provider: Provider::default(),
+            dev_container: DevContainer::default(),
+        }
+    }
+    /// Checks the repository's setup, apart from its name and checkout.
+    pub fn check(&self) -> Result<(), String> {
+        if self.setup_command.len() > 10000 {
+            return Err("Setup command is too long.".into());
+        }
+        if self.dev_container.check_command.len() > 10000 {
+            return Err("Check command is too long.".into());
+        }
+        if self.provider != Provider::Codex
+            && !self.dev_container.enabled
+            && !self.setup_command.trim().is_empty()
+        {
+            return Err(format!(
+                "{} reviews can't run a setup command outside a dev container. Clear the setup command for {}, run it in the repository's dev container, or review it with Codex.",
+                self.provider.label(),
+                self.name
+            ));
+        }
+        if self.dev_container.enabled
+            && self.setup_command.trim().is_empty()
+            && self.dev_container.check_command.trim().is_empty()
+        {
+            return Err(format!(
+                "Add a setup or check command for {}'s dev container, or turn it off.",
+                self.name
+            ));
+        }
+        if self.approval_minutes > MAX_APPROVAL_MINUTES {
+            return Err("Approval time limits can be at most 24 hours.".into());
         }
         Ok(())
     }

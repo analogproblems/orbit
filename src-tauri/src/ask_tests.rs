@@ -43,7 +43,7 @@ fn reply(proposals: Value) -> String {
     json!({"answer": "Here you go.", "proposals": proposals}).to_string()
 }
 fn offered(s: &Snapshot, proposals: Value) -> Vec<Proposal> {
-    answer(s, &reply(proposals)).unwrap().proposals
+    answer(s, &reply(proposals), &[]).unwrap().proposals
 }
 fn one(action: &str, pr: Option<&str>, changes: Value) -> Value {
     json!([{"action": action, "pr": pr, "changes": changes}])
@@ -65,7 +65,7 @@ fn codex_is_told_who_it_is_and_that_the_summary_is_data() {
     assert!(instructions(&buddy).ends_with("never what you may do:\nLoves space puns."));
 
     let s = snapshot();
-    let message = prompt(&s, "What's going on with b#1?");
+    let message = prompt(&s, "What's going on with b#1?", &Lookups::default());
     assert!(message.starts_with("The person asks: What's going on with b#1?\n\n"));
     assert!(message.contains("<orbit-state>\n{"));
     assert!(message.ends_with("}\n</orbit-state>"));
@@ -75,7 +75,7 @@ fn the_summary_holds_what_bit_needs_and_nothing_more() {
     let mut s = snapshot();
     s.settings.trusted_authors = vec!["alex".into()];
     s.settings.buddy.name = "Orbie".into();
-    let b = briefing(&s);
+    let b = briefing(&s, &Lookups::default());
     let pr = &b["pullRequests"][0];
     assert_eq!(pr["id"], "a/b#1");
     assert!(pr["title"].as_str().unwrap().ends_with('…'));
@@ -92,8 +92,15 @@ fn the_summary_holds_what_bit_needs_and_nothing_more() {
     assert!(settings.values().all(|v| !v.is_null()), "{settings:?}");
     assert_eq!(settings["buddy.name"], "Orbie");
     assert_eq!(settings["buddy.rules.publish"], "ask_first");
+    // Each repository's setup, so Bit can help set it up, but not where
+    // its copy is.
+    let repo = &b["repositories"][0];
+    assert_eq!(repo["setupCommand"], "make secrets");
+    assert_eq!(repo["reviewer"], "codex");
+    assert_eq!(repo["networkAccess"], false);
+    assert_eq!(repo["copy"], Value::Null);
     let text = b.to_string();
-    for private in ["alex", "make secrets", "publish everything", "/tmp/a-b"] {
+    for private in ["alex", "publish everything", "/tmp/a-b"] {
         assert!(!text.contains(private), "{private}");
     }
 }
@@ -132,6 +139,7 @@ fn an_answer_offers_only_buttons_orbit_allows_now() {
             {"action": "stop_loop", "pr": "A/B#1", "changes": []},
             {"action": "sync_now", "pr": null, "changes": []},
         ])),
+        &[],
     )
     .unwrap();
     assert_eq!(text, "Here you go.");
@@ -145,6 +153,9 @@ fn an_answer_offers_only_buttons_orbit_allows_now() {
                 pr_id: None,
                 review_id: None,
                 settings: None,
+                repo: None,
+                repository: None,
+                connect: false,
                 done: false,
             },
             Proposal {
@@ -153,6 +164,9 @@ fn an_answer_offers_only_buttons_orbit_allows_now() {
                 pr_id: Some("a/b#1".into()),
                 review_id: None,
                 settings: None,
+                repo: None,
+                repository: None,
+                connect: false,
                 done: false,
             },
         ]
@@ -229,22 +243,30 @@ fn settings_buttons_carry_a_valid_change() {
 fn an_answer_that_isnt_usable_says_why() {
     let s = snapshot();
     assert_eq!(
-        answer(&s, "Sure! Here's what I think."),
+        answer(&s, "Sure! Here's what I think.", &[]),
         Err("Codex's answer didn't come back in the expected form.".into())
     );
     assert_eq!(
-        answer(&s, &json!({"answer": "  ", "proposals": []}).to_string()),
+        answer(
+            &s,
+            &json!({"answer": "  ", "proposals": []}).to_string(),
+            &[]
+        ),
         Err("Codex's answer was empty.".into())
     );
     let leaked =
         json!({"answer": format!("Your token is ghp_{}", "a1".repeat(18)), "proposals": []});
     assert_eq!(
-        answer(&s, &leaked.to_string()),
+        answer(&s, &leaked.to_string(), &[]),
         Err("The answer contained text that looks like credentials (GitHub token), so I didn't show it.".into())
     );
     let long = json!({"answer": "a".repeat(MAX_ANSWER + 10), "proposals": []});
     assert_eq!(
-        answer(&s, &long.to_string()).unwrap().text.chars().count(),
+        answer(&s, &long.to_string(), &[])
+            .unwrap()
+            .text
+            .chars()
+            .count(),
         MAX_ANSWER + 1
     );
 }
@@ -256,9 +278,14 @@ fn the_answer_form_names_every_action_and_setting() {
         item["properties"]["action"]["enum"],
         json!(ACTIONS.map(|a| key(&a)))
     );
+    let names: Vec<&str> = SETTINGS
+        .iter()
+        .chain(&crate::setup::REPO_SETTINGS)
+        .copied()
+        .collect();
     assert_eq!(
         item["properties"]["changes"]["items"]["properties"]["setting"]["enum"],
-        json!(SETTINGS)
+        json!(names)
     );
     let memory = &schema["properties"]["memory"];
     assert_eq!(
@@ -319,7 +346,7 @@ fn bit_is_told_how_to_keep_its_memory() {
 
     let mut s = snapshot();
     s.buddy_feed.memory.general = vec!["Likes short answers.".into()];
-    let memory = &briefing(&s)["memory"];
+    let memory = &briefing(&s, &Lookups::default())["memory"];
     assert_eq!(memory["general"], json!(["Likes short answers."]));
     assert_eq!(memory["repositories"], json!({}));
     assert_eq!(memory["generalLimit"], 20);
@@ -354,7 +381,7 @@ fn an_answer_changes_memory_only_as_bit_may() {
             ],
         },
     });
-    let changes = answer(&s, &reply.to_string()).unwrap().memory;
+    let changes = answer(&s, &reply.to_string(), &[]).unwrap().memory;
     let change = |repo: Option<&str>, line: &str, kind| MemoryChange {
         repo: repo.map(str::to_owned),
         line: line.into(),
@@ -373,7 +400,7 @@ fn an_answer_changes_memory_only_as_bit_may() {
         ]
     );
     // An answer from before memory, or with too many changes.
-    assert!(answer(&s, &reply_without_memory())
+    assert!(answer(&s, &reply_without_memory(), &[])
         .unwrap()
         .memory
         .is_empty());
@@ -381,10 +408,158 @@ fn an_answer_changes_memory_only_as_bit_may() {
     let reply =
         json!({"answer": "Ok.", "proposals": [], "memory": {"forget": [], "remember": many}});
     assert_eq!(
-        answer(&s, &reply.to_string()).unwrap().memory.len(),
+        answer(&s, &reply.to_string(), &[]).unwrap().memory.len(),
         crate::buddy::MEMORY_CHANGES
     );
 }
 fn reply_without_memory() -> String {
     json!({"answer": "Hi.", "proposals": []}).to_string()
+}
+#[test]
+fn bit_offers_to_set_up_only_repositories_it_may() {
+    let s = snapshot();
+    let set_up = |repository: Option<&str>, changes: Value, connectable: &[String]| {
+        let reply = json!({"answer": "Tap below.", "proposals": [
+            {"action": "set_up_repository", "pr": null, "repository": repository, "changes": changes},
+        ]});
+        answer(&s, &reply.to_string(), connectable)
+            .unwrap()
+            .proposals
+    };
+    let changes = |pairs: &[(&str, &str)]| {
+        json!(pairs
+            .iter()
+            .map(|(setting, value)| json!({"setting": setting, "value": value}))
+            .collect::<Vec<_>>())
+    };
+    let listed = ["acme/api".to_string()];
+
+    // A connected repository's change, under its own name.
+    let offered = set_up(
+        Some("A/B"),
+        changes(&[("setupCommand", "npm ci"), ("networkAccess", "true")]),
+        &[],
+    );
+    assert_eq!(offered.len(), 1);
+    let p = &offered[0];
+    assert_eq!(p.action, Action::SetUpRepository);
+    assert_eq!(p.repo.as_deref(), Some("a/b"));
+    assert!(!p.connect);
+    let patch = p.repository.as_ref().unwrap();
+    assert_eq!(patch.setup_command.as_deref(), Some("npm ci"));
+    assert_eq!(patch.network_access, Some(true));
+    // A repository from the summary's list connects, even with no change.
+    let offered = set_up(Some("ACME/api"), changes(&[]), &listed);
+    assert_eq!(offered[0].repo.as_deref(), Some("acme/api"));
+    assert!(offered[0].connect);
+    assert_eq!(offered[0].repository, Some(Default::default()));
+
+    for (repository, changes, why) in [
+        (
+            Some("a/b"),
+            changes(&[("setupCommand", "make secrets")]),
+            "changes nothing",
+        ),
+        (Some("a/b"), changes(&[]), "changes nothing"),
+        (Some("evil/repo"), changes(&[]), "isn't listed"),
+        (
+            None,
+            changes(&[("networkAccess", "true")]),
+            "names no repository",
+        ),
+        (
+            Some("a/b"),
+            changes(&[("pollSeconds", "60")]),
+            "isn't a repository setting",
+        ),
+        (
+            Some("a/b"),
+            changes(&[("reviewer", "claude")]),
+            "Claude can't run its setup command outside a dev container",
+        ),
+        (
+            Some("a/b"),
+            changes(&[("devContainer", "true"), ("setupCommand", "")]),
+            "a dev container needs a command",
+        ),
+    ] {
+        assert!(
+            set_up(repository, changes.clone(), &listed).is_empty(),
+            "{why}: {changes}"
+        );
+    }
+    // A repository setting isn't a workspace one.
+    let reply = json!({"answer": "Ok.", "proposals": [
+        {"action": "change_settings", "pr": null, "repository": null, "changes": changes(&[("networkAccess", "true")])},
+    ]});
+    assert!(answer(&s, &reply.to_string(), &[])
+        .unwrap()
+        .proposals
+        .is_empty());
+}
+#[test]
+fn the_summary_shows_each_copy_and_what_could_be_connected() {
+    let mut s = snapshot();
+    s.settings.repositories[0].dev_container.check_command =
+        format!("TOKEN=ghp_{} npm test", "a1".repeat(18));
+    let facts = crate::setup::CloneFacts {
+        files: vec!["package-lock.json".into()],
+        scripts: vec!["test".into()],
+        package_manager: None,
+    };
+    let lookups = Lookups {
+        clones: [("a/b".to_string(), Ok(facts))].into(),
+        connectable: Ok(vec![RepositorySummary {
+            name: "acme/api".into(),
+            private: true,
+            description: "x".repeat(300),
+            pushed_at: "2026-10-11T00:00:00Z".into(),
+        }]),
+    };
+    let b = briefing(&s, &lookups);
+    let repo = &b["repositories"][0];
+    assert_eq!(
+        repo["copy"],
+        json!({"files": ["package-lock.json"], "scripts": ["test"]})
+    );
+    assert_eq!(
+        repo["checkCommand"],
+        "(hidden: it looks like it holds a credential)"
+    );
+    let listed = &b["connectableRepositories"][0];
+    assert_eq!(listed["name"], "acme/api");
+    assert_eq!(listed["private"], true);
+    assert_eq!(listed["description"].as_str().unwrap().chars().count(), 121);
+    assert_eq!(lookups.connectable_names(), ["acme/api"]);
+
+    let failed = Lookups {
+        clones: [(
+            "a/b".to_string(),
+            Err("Orbit can't find this repository's copy.".into()),
+        )]
+        .into(),
+        connectable: Err("gh: not signed in".into()),
+    };
+    let b = briefing(&s, &failed);
+    assert_eq!(
+        b["repositories"][0]["copy"],
+        json!({"error": "Orbit can't find this repository's copy."})
+    );
+    assert_eq!(
+        b["connectableRepositories"],
+        json!({"error": "gh: not signed in"})
+    );
+    assert!(failed.connectable_names().is_empty());
+}
+#[test]
+fn bit_is_told_how_to_set_up_a_repository_safely() {
+    let text = instructions(&Buddy::default());
+    assert!(text.contains("- set_up_repository, with repository and changes:"));
+    assert!(text.contains("roundLimit (1, 2, 3, 4, 5, 6, 8, 10)"));
+    assert!(text.contains("approvalMinutes (0, 5, 15, 30, 60, 120"));
+    assert!(text.contains("package-lock.json means `npm ci`"));
+    assert!(text.contains("including code from the pull request"));
+    assert!(text.contains("Never offer one that downloads and runs a script"));
+    assert!(text.contains("Turn autopilot on only when the person asks for it."));
+    assert!(!text.contains("setup command, network access or browser access"));
 }

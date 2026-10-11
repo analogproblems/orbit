@@ -87,9 +87,11 @@ tokio::task_local! {
 }
 fn gh() -> String {
     #[cfg(test)]
-    if let Ok(path) = GH.try_with(|p| p.to_string_lossy().into_owned()) {
-        return path;
-    }
+    return GH
+        .try_with(|p| p.to_string_lossy().into_owned())
+        // A test that sets no stand-in can't reach GitHub either.
+        .unwrap_or_else(|_| "gh-is-not-available-in-tests".into());
+    #[cfg(not(test))]
     "gh".into()
 }
 pub async fn api(
@@ -222,28 +224,53 @@ fn parse_pull(v: &Value, repo: &str, login: &str) -> Result<PullRequest, String>
 pub async fn repositories() -> Result<Vec<RepositorySummary>, String> {
     let mut repos = vec![];
     for page in 1..=10 {
-        let v = api(
-            "user/repos",
-            "GET",
-            &[
-                (
-                    "affiliation",
-                    "owner,collaborator,organization_member".into(),
-                ),
-                ("sort", "pushed".into()),
-                ("per_page", "100".into()),
-                ("page", page.to_string()),
-            ],
-            None,
-        )
-        .await?;
-        let items = v.as_array().ok_or("Invalid repository list")?;
-        repos.extend(summarize_repositories(items));
-        if items.len() < 100 {
+        let (items, more) = repositories_page(page).await?;
+        repos.extend(items);
+        if !more {
             break;
         }
     }
     Ok(repos)
+}
+/// The 100 repositories the user pushed to most recently, as `repositories`
+/// lists them.
+pub async fn recent_repositories() -> Result<Vec<RepositorySummary>, String> {
+    Ok(repositories_page(1).await?.0)
+}
+/// A page of `repositories`, and whether there may be more.
+async fn repositories_page(page: u32) -> Result<(Vec<RepositorySummary>, bool), String> {
+    let v = api(
+        "user/repos",
+        "GET",
+        &[
+            (
+                "affiliation",
+                "owner,collaborator,organization_member".into(),
+            ),
+            ("sort", "pushed".into()),
+            ("per_page", "100".into()),
+            ("page", page.to_string()),
+        ],
+        None,
+    )
+    .await?;
+    let items = v.as_array().ok_or("Invalid repository list")?;
+    Ok((summarize_repositories(items), items.len() == 100))
+}
+/// Downloads `repo` into `folder`, which must not exist yet, with the
+/// GitHub CLI signed in as you.
+pub async fn clone(repo: &str, folder: &Path) -> Result<(), String> {
+    validate_repo(repo)?;
+    let args = [
+        "repo".into(),
+        "clone".into(),
+        repo.into(),
+        folder.to_string_lossy().into_owned(),
+    ];
+    // A first clone of a large repository can take many minutes.
+    run_with_timeout(&gh(), &args, None, None, Duration::from_secs(30 * 60))
+        .await
+        .map(|_| ())
 }
 /// Archived repositories are omitted because they cannot receive new pull requests.
 fn summarize_repositories(items: &[Value]) -> Vec<RepositorySummary> {

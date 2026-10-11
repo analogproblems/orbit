@@ -2,6 +2,12 @@ import { describe, it, expect } from "vitest";
 import { freshDemo } from "./demo";
 import reportLabelCases from "../test-fixtures/report-selection-labels.json";
 import findingCategories from "../test-fixtures/finding-categories.json";
+import { describeRepositoryPatch } from "./describePatch";
+import {
+  withRepositoryPatch,
+  type Repository,
+  type RepositoryPatch,
+} from "./types";
 import {
   categoryLabels,
   claimSummary,
@@ -356,5 +362,45 @@ describe("Bit's fixes", () => {
     expect(
       buddyOf(withPatch(patched, { buddy: { name: "Orbie" } })).rules.publish,
     ).toBe("do_it");
+  });
+});
+
+describe("repository changes from Bit", () => {
+  it("applies only what is given and says it in words", () => {
+    const repo: Repository = {
+      name: "acme/api",
+      path: "/work/api",
+      automatic: true,
+      setupCommand: "npm ci",
+      networkAccess: true,
+      roundLimit: 4,
+    };
+    const patch: RepositoryPatch = {
+      checkCommand: "npm test",
+      devContainer: true,
+      reviewer: "claude",
+      approvalMinutes: 0,
+    };
+    expect(withRepositoryPatch(repo, patch)).toEqual({
+      ...repo,
+      provider: "claude",
+      approvalMinutes: 0,
+      keepUpdated: undefined,
+      devContainer: { enabled: true, checkCommand: "npm test" },
+    });
+    expect(describeRepositoryPatch(patch)).toBe(
+      "Check command: npm test; Dev container: On; Reviewer: Claude; Approval time limit: Wait for me",
+    );
+    expect(
+      describeRepositoryPatch({
+        setupCommand: "",
+        approvalMinutes: 15,
+        keepCloneUpdated: false,
+        autopilot: true,
+        roundLimit: 6,
+      }),
+    ).toBe(
+      "Setup command: None; Approval time limit: Decline after 15 minutes; Keep the copy up to date: Off; Automatic reviews: On; Automatic rounds per pull request: 6",
+    );
   });
 });

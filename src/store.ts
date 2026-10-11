@@ -26,6 +26,7 @@ import {
   defaults,
   selectionError,
   withPatch,
+  withRepositoryPatch,
   providerLabels,
   providerModels,
   providerSelection,
@@ -360,7 +361,29 @@ async function demoAction(
       });
     else if (p.action === "change_settings")
       await demoAction("update_settings", { patch: p.settings });
-    else demo.lastPoll = new Date().toISOString();
+    else if (p.action === "set_up_repository") {
+      const name = p.repo ?? "";
+      const connected = demo.settings.repositories.find((r) =>
+        sameRepo(r.name, name),
+      );
+      // As Orbit does, a repository it connects gets its own copy.
+      const repo = connected ?? {
+        name,
+        path: `/Users/demo/Library/Application Support/Orbit/clones/${name}`,
+        automatic: false,
+        setupCommand: "",
+        networkAccess: false,
+        roundLimit: 4,
+        approvalMinutes: 0,
+        keepUpdated: true,
+        provider: "codex" as const,
+        devContainer: { enabled: false, checkCommand: "" },
+      };
+      await demoAction("save_repository", {
+        repository: withRepositoryPatch(repo, p.repository ?? {}),
+        original: connected?.name ?? null,
+      });
+    } else demo.lastPoll = new Date().toISOString();
     // The demo may have been replaced while the control ran.
     const done = find();
     if (done) done.done = true;
@@ -473,7 +496,11 @@ async function demoAction(
     }
     if (command === "save_repository") {
       const repo = args.repository as Repository;
-      if (!repo.path.startsWith("/"))
+      // As in Orbit, a checkout is checked only when it changes.
+      const before = next.repositories.find(
+        (r) => args.original && sameRepo(r.name, args.original as string),
+      );
+      if (before?.path !== repo.path && !repo.path.startsWith("/"))
         throw Error("Use an absolute checkout path.");
       if (
         repo.provider &&
