@@ -382,7 +382,7 @@ If Orbit closes while Bit is thinking, the question says so, and you can ask aga
 
 Bit keeps a short memory between the questions you type, in its own words: up to 20 lines in general, and up to 10 about each repository. As it answers, Bit can remember something new or forget a line that no longer holds, such as how you like answers or what a repository's reviews keep tripping on. It remembers whatever you ask it to, and forgets on request too. Each answer shows any change under it, such as "Remembered: You check in from your phone." or "Forgot (acme/api): Uses npm.". When a place is full, Bit has to forget a line before it can remember another there; if it doesn't, the answer shows "No room to remember". Bit is told never to remember passwords or tokens, and a line that looks like one isn't kept. Text other people wrote, such as pull request titles and findings, is never a reason for Bit to change its memory. Lines about a repository can only be added while it is connected. The quick-answer buttons don't change the memory.
 
-**Settings → Buddy → What Bit remembers** lists every line, in general and by repository, with how full each place is. The bin button beside a line forgets it, and **Forget everything** clears the memory after asking you. The memory is saved with Orbit's state, so it survives a restart.
+**Settings → Buddy → What Bit remembers** lists every line, in general and by repository, with how full each place is. The bin button beside a line forgets it, and **Forget everything** clears the memory after asking you. If you forget something while Bit is still answering, that answer won't change the memory, so it can't bring the line back. The memory is saved with Orbit's state, so it survives a restart.
 
 #### Bit's buttons
 

@@ -413,3 +413,90 @@ async fn bit_keeps_what_it_remembers_until_you_forget_it() {
     e.clear_memory().await.unwrap();
     assert_eq!(e.snapshot().await.buddy_feed.memory, Memory::default());
 }
+
+/// What Bit remembers, as saved in `state.json`.
+fn saved_memory(dir: &tempfile::TempDir) -> Value {
+    let saved: Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("state").join("state.json")).unwrap(),
+    )
+    .unwrap();
+    saved["buddyFeed"]["memory"].clone()
+}
+
+#[tokio::test]
+async fn an_answer_cant_bring_back_what_you_forgot_while_it_was_coming() {
+    let (dir, e, rpc) = fixture().await;
+    e.update(|s| {
+        s.buddy_feed.memory.general = vec!["Jason likes long answers.".into()];
+    })
+    .await;
+    e.ask_buddy_anything("How should you answer me?")
+        .await
+        .unwrap();
+    // You forget that line while Codex is still answering...
+    e.forget_memory(None, "Jason likes long answers.")
+        .await
+        .unwrap();
+    // ...and the answer, written with the old memory, remembers it again.
+    let reply = json!({
+        "answer": "At length.",
+        "proposals": [],
+        "memory": {"forget": [], "remember": [
+            {"repository": null, "line": "Jason likes long answers."},
+        ]},
+    });
+    codex_says(&e, &reply.to_string(), "completed").await;
+    let s = e.snapshot().await;
+    assert!(!last(&s).pending);
+    assert_eq!(last(&s).text, "At length.");
+    assert!(last(&s).memory.is_empty());
+    assert!(s.buddy_feed.memory.general.is_empty());
+    assert_eq!(saved_memory(&dir)["general"], json!([]));
+
+    // The next answer, asked after you forgot, remembers as usual.
+    rpc.request("fixture/configure", json!({})).await.unwrap();
+    e.ask_buddy_anything("Please remember I like short answers.")
+        .await
+        .unwrap();
+    let reply = json!({
+        "answer": "Got it.",
+        "proposals": [],
+        "memory": {"forget": [], "remember": [
+            {"repository": null, "line": "Jason likes short answers."},
+        ]},
+    });
+    codex_says(&e, &reply.to_string(), "completed").await;
+    let s = e.snapshot().await;
+    assert_eq!(s.buddy_feed.memory.general, ["Jason likes short answers."]);
+    assert_eq!(
+        saved_memory(&dir)["general"],
+        json!(["Jason likes short answers."])
+    );
+}
+
+#[tokio::test]
+async fn an_answer_cant_refill_a_memory_you_cleared_while_it_was_coming() {
+    let (dir, e, _rpc) = fixture().await;
+    e.update(|s| {
+        s.buddy_feed.memory.general = vec!["Jason likes long answers.".into()];
+    })
+    .await;
+    e.ask_buddy_anything("What do you know about me?")
+        .await
+        .unwrap();
+    e.clear_memory().await.unwrap();
+    let reply = json!({
+        "answer": "You like long answers.",
+        "proposals": [],
+        "memory": {"forget": [], "remember": [
+            {"repository": null, "line": "Jason likes long answers."},
+            {"repository": null, "line": "Jason asks what Bit knows."},
+        ]},
+    });
+    codex_says(&e, &reply.to_string(), "completed").await;
+    let s = e.snapshot().await;
+    assert!(!last(&s).pending);
+    assert_eq!(last(&s).text, "You like long answers.");
+    assert_eq!(s.buddy_feed.memory, Memory::default());
+    assert_eq!(saved_memory(&dir)["general"], json!([]));
+}

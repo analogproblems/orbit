@@ -28,6 +28,8 @@ pub(super) struct Asking {
     turn: Option<String>,
     /// Codex's latest message, its answer once the turn completes.
     text: String,
+    /// `Engine::memory_generation` when the question's summary was made.
+    memory_generation: u64,
 }
 
 impl Engine {
@@ -65,6 +67,7 @@ impl Engine {
                 thread: None,
                 turn: None,
                 text: String::new(),
+                memory_generation: self.memory_generation.load(Ordering::SeqCst),
             });
             self.dirty.store(true, Ordering::SeqCst);
             (note, prompt, instructions, selection)
@@ -240,7 +243,14 @@ impl Engine {
             }
         }
         self.update(|s| match reply.and_then(|reply| ask::answer(s, &reply)) {
-            Ok(a) => buddy::answered(s, note, a.text, a.proposals, a.memory),
+            Ok(a) => {
+                // Something you forgot since the question was asked stays
+                // forgotten: the answer's memory changes are dropped.
+                let fresh =
+                    asking.memory_generation == self.memory_generation.load(Ordering::SeqCst);
+                let memory = if fresh { a.memory } else { vec![] };
+                buddy::answered(s, note, a.text, a.proposals, memory)
+            }
             Err(error) => buddy::not_answered(s, note, &error),
         })
         .await;
@@ -254,10 +264,17 @@ impl Engine {
         }
     }
     /// Forgets a line of Bit's memory: one about `repo`, or a general one
-    /// when it is none.
+    /// when it is none. An answer to a question asked before can't bring it
+    /// back (`memory_generation`).
     pub async fn forget_memory(&self, repo: Option<&str>, line: &str) -> Result<(), String> {
         let mut found = false;
-        self.update(|s| found = buddy::forget(s, repo, line)).await;
+        self.update(|s| {
+            found = buddy::forget(s, repo, line);
+            if found {
+                self.memory_generation.fetch_add(1, Ordering::SeqCst);
+            }
+        })
+        .await;
         if !found {
             return Err("That line isn't there any more.".into());
         }
@@ -266,8 +283,11 @@ impl Engine {
     }
     /// Forgets everything Bit remembers.
     pub async fn clear_memory(&self) -> Result<(), String> {
-        self.update(|s| s.buddy_feed.memory = Default::default())
-            .await;
+        self.update(|s| {
+            s.buddy_feed.memory = Default::default();
+            self.memory_generation.fetch_add(1, Ordering::SeqCst);
+        })
+        .await;
         let _ = self.flush().await;
         Ok(())
     }
