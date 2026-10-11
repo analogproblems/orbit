@@ -28,7 +28,13 @@ import { demoAnswer, freshDemo } from "./demo";
 import { useOrbit } from "./store";
 import type { RemoteAccessStatus } from "./RemoteAccess";
 import { buddyOf, questionLabels, withPatch } from "./types";
-import type { Snapshot, SettingsPatch, ChangedFile, Question } from "./types";
+import type {
+  Snapshot,
+  SettingsPatch,
+  ChangedFile,
+  Question,
+  Repository,
+} from "./types";
 
 const { invoke, listeners } = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -1100,7 +1106,7 @@ describe("initial loading and repository errors", () => {
     ).toBeNull();
     expect(
       within(dialog).getByText(
-        "Claude reviews can't run a setup command. Clear it to save.",
+        "Claude reviews can only run a setup command in the dev container. Turn it on or clear the command to save.",
       ),
     ).toBeTruthy();
     await user().clear(
@@ -1129,6 +1135,87 @@ describe("initial loading and repository errors", () => {
         "Reviewed by Claude · Sandboxed worktree · No network",
       ),
     ).toBeTruthy();
+  });
+  it("runs a Claude repository's setup and checks in its dev container", async () => {
+    snapshot.settings.repositories[0].setupCommand = "npm ci";
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Repositories" }));
+    await user().click(
+      await screen.findByRole("button", { name: "Configure acme/orbit" }),
+    );
+    const dialog = screen.getByRole("dialog");
+    await chooseOption(
+      within(dialog).getByRole("combobox", { name: "Reviewer" }),
+      "Claude",
+    );
+    expect(
+      within(dialog).queryByRole("textbox", { name: /Check command/ }),
+    ).toBeNull();
+    await user().click(
+      within(dialog).getByRole("switch", {
+        name: "Run setup and checks in the dev container",
+      }),
+    );
+    // The setup command can stay, and the box gets its own network switch.
+    expect(
+      within(dialog).queryByText(/can only run a setup command/),
+    ).toBeNull();
+    const check = within(dialog).getByRole("textbox", {
+      name: /Check command/,
+    });
+    await user().clear(check);
+    await user().type(check, "npm test");
+    await user().click(
+      within(dialog).getByRole("switch", {
+        name: "Allow network access in the dev container",
+      }),
+    );
+    await user().click(
+      within(dialog).getByRole("button", { name: "Save repository" }),
+    );
+    const saved = invoke.mock.calls.find(([cmd]) => cmd === "save_repository");
+    expect((saved?.[1] as { repository: Repository }).repository).toMatchObject(
+      {
+        provider: "claude",
+        setupCommand: "npm ci",
+        networkAccess: true,
+        devContainer: { enabled: true, checkCommand: "npm test" },
+      },
+    );
+    act(() => {
+      Object.assign(
+        snapshot.settings.repositories[0],
+        (saved?.[1] as { repository: Repository }).repository,
+      );
+      emit();
+    });
+    expect(
+      await screen.findByText(
+        "Reviewed by Claude · Sandboxed worktree · Setup and checks in dev container · Container network enabled",
+      ),
+    ).toBeTruthy();
+  });
+  it("shows whether Docker and the Dev Container CLI are ready", async () => {
+    snapshot.devContainers = {
+      ready: false,
+      error: "Install Docker and start it to run checks in dev containers.",
+    };
+    snapshot.settings.repositories[0].devContainer = {
+      enabled: true,
+      checkCommand: "npm test",
+    };
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Settings" }));
+    expect(
+      await screen.findByText(
+        "Install Docker and start it to run checks in dev containers.",
+      ),
+    ).toBeTruthy();
+    expect(
+      screen
+        .getByLabelText("Dev container connection")
+        .getAttribute("data-variant"),
+    ).toBe("warning");
   });
   it("chooses Antigravity as a repository's reviewer and its model in Settings", async () => {
     await mount();

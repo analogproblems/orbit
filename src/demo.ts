@@ -544,6 +544,12 @@ export function freshDemo(): Snapshot {
         createdAt: ago(9),
       },
       {
+        id: "demo-msg-checks",
+        role: "system",
+        text: "Dev container results:\nSetup (`npm ci`): passed in 38s\nOutput (the end of it):\n  added 412 packages in 37s\nChecks (`npm test`): failed with exit code 1 after 64s\nOutput (the end of it):\n  FAIL src/settings.test.ts > keeps the saved repository\n  expected 'acme/api' to be 'acme/orbit'\n  Tests  1 failed | 174 passed (175)\n",
+        createdAt: ago(9),
+      },
+      {
         id: "demo-msg-2",
         role: "agent",
         text: "I’ll trace the configuration changes through persistence and the review queue, then check the regression coverage.",
@@ -557,6 +563,25 @@ export function freshDemo(): Snapshot {
     summary:
       "Two defects in the new repository configuration flow; the rest of the change looks sound.",
     notChecked: ["End-to-end tests (no browser in the review sandbox)"],
+    checks: {
+      image: "orbit-devcontainer:acme.orbit-3f2a91c0d4e5",
+      network: true,
+      setup: {
+        command: "npm ci",
+        exitCode: 0,
+        timedOut: false,
+        seconds: 38,
+        output: "added 412 packages in 37s",
+      },
+      check: {
+        command: "npm test",
+        exitCode: 1,
+        timedOut: false,
+        seconds: 64,
+        output:
+          "FAIL src/settings.test.ts > keeps the saved repository\nexpected 'acme/api' to be 'acme/orbit'\nTests  1 failed | 174 passed (175)",
+      },
+    },
     completed: true,
     blockingPriority: 2,
     automatic: false,
@@ -672,9 +697,10 @@ export function freshDemo(): Snapshot {
         name: `acme/${n}`,
         path: `~/Projects/${n}`,
         automatic: n === "orbit",
-        setupCommand: "",
-        networkAccess: false,
+        setupCommand: n === "api" ? "npm ci" : "",
+        networkAccess: n === "api",
         roundLimit: 4,
+        devContainer: { enabled: n === "api", checkCommand: "npm test" },
       })),
     },
     models: [
@@ -690,6 +716,10 @@ export function freshDemo(): Snapshot {
       },
     ],
     claude: { ready: true, version: "demo" },
+    devContainers: {
+      ready: true,
+      version: "Docker demo · Dev Container CLI demo",
+    },
     claudeModels: [
       ["claude-opus-5-5", "Claude Opus 5.5", true],
       ["claude-sonnet-5-5", "Claude Sonnet 5.5", false],
