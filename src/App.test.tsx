@@ -701,6 +701,100 @@ describe("Bit", () => {
     ).toHaveLength(0);
   });
 
+  it("answers a typed question and runs its buttons only when tapped", async () => {
+    invoke.mockImplementation(async (cmd, args) => {
+      const a = args as Record<string, unknown>;
+      const notes = snapshot.buddyFeed!.notes;
+      if (cmd === "ask_buddy_anything") {
+        if (a.question !== "Can you sync less often?")
+          throw Error(
+            "Bit answers typed questions with Codex, which isn't ready: Codex is disconnected.",
+          );
+        notes.push({
+          id: 200,
+          at: new Date().toISOString(),
+          kind: "answer",
+          prId: null,
+          reviewId: null,
+          repo: null,
+          question: a.question,
+          text: "",
+          pending: true,
+        });
+        emit();
+        return;
+      }
+      if (cmd === "use_proposal") {
+        if (a.proposalId === 1)
+          throw Error("This loop isn't running any more.");
+        const note = notes.find((n) => n.id === a.noteId)!;
+        note.proposals![a.proposalId as number].done = true;
+        emit();
+        return;
+      }
+      return backend(cmd, args);
+    });
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Bit" }));
+    const chat = () => screen.getByRole("log", { name: "Bit's notes" });
+    const send = () => screen.getByRole("button", { name: "Send" });
+    const box = screen.getByRole("textbox", { name: "Ask Bit anything" });
+    await user().type(box, "Can you sync less often?{Enter}");
+    expect(invoke).toHaveBeenCalledWith("ask_buddy_anything", {
+      question: "Can you sync less often?",
+    });
+    expect(within(chat()).getByText("Can you sync less often?")).toBeTruthy();
+    expect(await within(chat()).findByText("Thinking…")).toBeTruthy();
+    expect(box.textContent).toBe("");
+    // One question at a time.
+    await user().type(box, "And the others?");
+    expect(send()).toHaveProperty("disabled", true);
+
+    // The answer's buttons wait for a tap.
+    const note = snapshot.buddyFeed!.notes.find((n) => n.id === 200)!;
+    Object.assign(note, {
+      pending: false,
+      text: "Sure. Tap below to sync **every ten minutes**.",
+      proposals: [
+        { id: 0, action: "change_settings", settings: { pollSeconds: 600 } },
+        { id: 1, action: "stop_loop", prId: snapshot.prs[0].id },
+      ],
+    });
+    act(emit);
+    expect(within(chat()).queryByText("Thinking…")).toBeNull();
+    expect(within(chat()).getByText("every ten minutes").tagName).toBe(
+      "STRONG",
+    );
+    expect(within(chat()).getByText("Poll interval: 600 seconds")).toBeTruthy();
+    expect(invoke.mock.calls.some(([c]) => c === "use_proposal")).toBe(false);
+    await user().click(
+      within(chat()).getByRole("button", { name: "Change settings" }),
+    );
+    expect(invoke).toHaveBeenCalledWith("use_proposal", {
+      noteId: 200,
+      proposalId: 0,
+    });
+    await waitFor(() =>
+      expect(
+        within(chat()).getByRole("button", { name: "Change settings" }),
+      ).toHaveProperty("disabled", true),
+    );
+    expect(within(chat()).getByText("Done")).toBeTruthy();
+    // Orbit checks a button again when it's tapped.
+    const short = snapshot.prs[0].id.split("/").pop();
+    await user().click(
+      within(chat()).getByRole("button", { name: `Stop loop: ${short}` }),
+    );
+    expect(
+      await within(chat()).findByText(/This loop isn't running any more\./),
+    ).toBeTruthy();
+
+    // A question that isn't taken keeps its draft and says why.
+    await user().click(send());
+    expect(await screen.findByText(/which isn't ready/)).toBeTruthy();
+    expect(box.textContent).toBe("And the others?");
+  });
+
   it("reaches Bit from the menu on a phone-sized screen", async () => {
     const wide = window.matchMedia;
     window.matchMedia = vi.fn((media: string) => ({

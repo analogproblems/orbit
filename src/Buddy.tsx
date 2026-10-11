@@ -1,18 +1,22 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   Banner,
   Button,
   Card,
+  ChatComposer,
+  ChatComposerInput,
   ChatLayout,
   ChatMessage,
   ChatMessageBubble,
   ChatMessageList,
   ChatMessageMetadata,
+  ChatSendButton,
   ClickableCard,
   EmptyState,
   Grid,
   Heading,
   HStack,
+  Kbd,
   List,
   ListItem,
   SegmentedControl,
@@ -20,21 +24,25 @@ import {
   SelectableCard,
   Selector,
   SideNavItem,
+  Spinner,
   Switch,
   Text,
   TextArea,
   TextInput,
   Timestamp,
+  Token,
   VStack,
 } from "@astryxdesign/core";
 import { useOrbit } from "./store";
 import {
+  actionLabels,
   buddyMood,
   buddyOf,
   buddyTones,
   fixDescriptions,
   fixLabels,
   fixRuleLabels,
+  maxQuestion,
   moodReason,
   offeredFix,
   questionLabels,
@@ -45,12 +53,15 @@ import {
   type BuddyTone,
   type FixRule,
   type Mood,
+  type Proposal,
   type Question,
   type RuledFix,
   type SettingsPatch,
 } from "./types";
 import { Bit, bitColours, bitHats, moodLabels } from "./Bit";
 import { SaveFeedback } from "./SaveFeedback";
+import { SafeMarkdown } from "./SafeMarkdown";
+import { describePatch } from "./describePatch";
 import { recentTimestamp } from "./timestamps";
 
 /** The buddy as it will be once saves in progress land. */
@@ -141,6 +152,50 @@ function FixButton({ itemKey }: { itemKey: string | null | undefined }) {
   );
 }
 
+/** A button from an answer to a question you typed. It runs only when you
+ * tap it, and Orbit checks it against what's true then. */
+function ProposalButton({
+  noteId,
+  proposal,
+}: {
+  noteId: number;
+  proposal: Proposal;
+}) {
+  const { snapshot: s, action } = useOrbit();
+  const [error, setError] = useState<string | null>(null);
+  const pr = proposal.prId?.split("/").pop();
+  const label = pr
+    ? `${actionLabels[proposal.action]}: ${pr}`
+    : actionLabels[proposal.action];
+  return (
+    <VStack gap={2}>
+      <HStack gap={2} vAlign="center" wrap="wrap">
+        <Button
+          label={label}
+          size="sm"
+          isDisabled={!!proposal.done}
+          clickAction={async () => {
+            setError(null);
+            const result = await action(
+              "use_proposal",
+              { noteId, proposalId: proposal.id },
+              { quiet: true },
+            );
+            if (!result.ok) setError(result.error);
+          }}
+        />
+        {proposal.done && <Token label="Done" color="green" size="sm" />}
+      </HStack>
+      {proposal.settings && (
+        <Text type="supporting" color="secondary">
+          {describePatch(proposal.settings, s.models)}
+        </Text>
+      )}
+      {error && <Banner status="error" title={error} />}
+    </VStack>
+  );
+}
+
 /** Where a note leads: its loop, the repositories, or settings. Answers
  * lead nowhere; their lines carry their own buttons. */
 function noteLink(note: BuddyNote) {
@@ -202,7 +257,16 @@ function NoteMessage({
         }
       >
         <VStack gap={2}>
-          <Text>{note.text}</Text>
+          {note.pending ? (
+            <HStack gap={2} vAlign="center">
+              <Spinner size="sm" aria-label="Thinking…" />
+              <Text color="secondary">Thinking…</Text>
+            </HStack>
+          ) : note.kind === "answer" ? (
+            <SafeMarkdown>{note.text}</SafeMarkdown>
+          ) : (
+            <Text>{note.text}</Text>
+          )}
           {!!note.lines?.length && (
             <List hasDividers aria-label={note.text}>
               {note.lines.map((line, index) => (
@@ -214,6 +278,13 @@ function NoteMessage({
               ))}
             </List>
           )}
+          {note.proposals?.map((proposal) => (
+            <ProposalButton
+              key={proposal.id}
+              noteId={note.id}
+              proposal={proposal}
+            />
+          ))}
           <FixButton itemKey={note.key} />
         </VStack>
       </ChatMessageBubble>
@@ -241,6 +312,29 @@ export function BuddyPage({
     setAsking(question);
     await action("ask_buddy", { question });
     setAsking(null);
+  };
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [askError, setAskError] = useState<string | null>(null);
+  const inFlight = useRef(false);
+  const thinking = notes.some((n) => n.pending);
+  const tooLong = [...draft.trim()].length > maxQuestion;
+  const askAnything = async () => {
+    if (!draft.trim() || tooLong || thinking || inFlight.current) return;
+    inFlight.current = true;
+    setSending(true);
+    setAskError(null);
+    const typed = draft;
+    const result = await action(
+      "ask_buddy_anything",
+      { question: typed },
+      { quiet: true },
+    );
+    // Keep the draft when the question wasn't taken, or was edited since.
+    if (result.ok) setDraft((now) => (now === typed ? "" : now));
+    else setAskError(result.error);
+    inFlight.current = false;
+    setSending(false);
   };
   return (
     <VStack height="100%" className="buddy-page">
@@ -303,6 +397,60 @@ export function BuddyPage({
                     />
                   ))}
                 </HStack>
+                {askError && <Banner status="error" title={askError} />}
+                <ChatComposer
+                  value={draft}
+                  onChange={setDraft}
+                  onSubmit={() => void askAnything()}
+                  elevation="none"
+                  density="compact"
+                  status={
+                    tooLong
+                      ? {
+                          type: "warning",
+                          message: `Keep your question under ${maxQuestion} characters.`,
+                        }
+                      : undefined
+                  }
+                  input={
+                    <ChatComposerInput
+                      label={`Ask ${buddy.name} anything`}
+                      placeholder={
+                        thinking
+                          ? `${buddy.name} is thinking…`
+                          : `Ask ${buddy.name} anything about your reviews…`
+                      }
+                      pasteAsToken={false}
+                      hasHistory={false}
+                      maxRows={4}
+                      // Orbit clears the draft only once the question is taken.
+                      onKeyDown={(e) => {
+                        if (
+                          e.key === "Enter" &&
+                          !e.shiftKey &&
+                          !e.nativeEvent.isComposing &&
+                          e.keyCode !== 229
+                        ) {
+                          e.preventDefault();
+                          void askAnything();
+                        }
+                      }}
+                    />
+                  }
+                  sendButton={
+                    <ChatSendButton
+                      isDisabled={
+                        !draft.trim() || tooLong || thinking || sending
+                      }
+                      onSend={() => void askAnything()}
+                    />
+                  }
+                />
+                <Text type="supporting" color="secondary">
+                  {buddy.name} answers with Codex and can’t change anything
+                  until you tap a button. <Kbd keys="enter" /> to send ·{" "}
+                  <Kbd keys="shift+enter" /> for a new line
+                </Text>
               </VStack>
             }
           >
@@ -500,7 +648,7 @@ export function BuddySettings() {
           <TextArea
             label="Personality"
             isOptional
-            description={`Describe ${buddy.name} in your own words. It will shape how ${buddy.name} chats once that arrives.`}
+            description={`Describe ${buddy.name} in your own words. It shapes how ${buddy.name} answers the questions you type.`}
             rows={3}
             maxLength={4000}
             value={typedPersonality}

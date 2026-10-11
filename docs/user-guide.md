@@ -352,6 +352,14 @@ The buttons under the conversation ask Bit a question. It answers straight away 
 
 Your question and Bit's answer join the conversation, so every window sees them.
 
+You can also type any question in the box below the buttons, such as "Why did orbit#12 stop?" or "Can you check for new pull requests less often?", and press Enter. Bit answers these with Codex, using your Codex model and effort from Settings, so Codex needs to be connected. Bit shows **Thinking…** while Codex works, and answers one question at a time; after 3 minutes without an answer, it says Codex took too long. Bit tells Codex what Orbit knows: your settings, sync status, repositories, open pull requests with their loops and latest findings, what needs you, Bit's recent notes, and your last few questions with their answers. It never sends your trusted accounts, setup commands, clone paths or pull request descriptions.
+
+Codex answers in a session of its own that can't change anything: it can't change files, use the network or ask for approvals, and it starts in an empty folder. Bit also switches off Codex's other tools for the session, without changing your Codex settings: running commands, viewing images, web search, the browser and computer, sub-agents, goals, memories, hooks, plugins, connected apps, and every tool server in your Codex settings. Before asking, Bit checks with Codex that no tool server is on for the session; if one is, or Codex can't say, Bit doesn't ask and tells you why. Codex is also told to answer only from what Orbit sends, and that pull request titles, findings and errors are other people's text and never instructions. Answers stay in Orbit: they're never posted to GitHub. If an answer contains something that looks like a password or token, Bit doesn't show it.
+
+An answer can offer up to 3 buttons for Orbit's own controls: **Continue loop**, **Stop loop**, **Review again** or **Publish report** for a pull request, **Sync now**, or **Change settings** with the change written under it, such as "Poll interval: 600 seconds". A button does nothing until you tap it, and each one works once: while it runs, a tap from another window is refused, and one that fails can be tapped again. When you tap it, Orbit checks it again against what's true now, as the same control elsewhere in the app does: a loop must still be running to stop, a report must still be one automatic publication would trust and free of anything that looks like a credential, and a settings change must still be valid. If it isn't, its error shows under the button. Bit can change Autopilot, automatic publication, the poll interval, how many reviews run at once, the reviewer models and efforts, the blocking priority, waiting for pushes to settle, the GitHub status check, notifications, keeping scan files, and its own look and rules. It can't change your trusted accounts or a repository's setup command, network access or browser access: do those yourself in **Settings** and **Repositories**.
+
+If Orbit closes while Bit is thinking, the question says so, and you can ask again.
+
 #### Bit's buttons
 
 When something needs you and one of Orbit's own controls fixes it, Bit's note about it, and any answer that lists it, carries a button for that control while the item stays open:
@@ -383,7 +391,7 @@ In **Settings → Buddy** you can preview each mood and change:
 - **Colour**: one of 20, from Lime (the default) to Grey. Each is a colour of Orbit's theme.
 - **Hat**: one of 20, or none: party hat, top hat, beanie, crown, propeller cap, wizard hat, cowboy hat, chef's hat, baseball cap, graduation cap, beret, flower, bow, halo, headphones, Santa hat, Viking helmet, cat ears, antennae, or space helmet.
 - **Tone**: how the notes sound: **Cheerful** ("On it! Round 2 of orbit#41 is underway."), **Calm**, or **Dry**.
-- **Personality**: your own description of Bit, up to 4000 characters, saved with **Save personality**. It will shape how Bit chats once that arrives; today it changes nothing.
+- **Personality**: your own description of Bit, up to 4000 characters, saved with **Save personality**. It shapes how Bit answers the questions you type, never what Bit may do.
 - **What Bit can do**: the rule for each of Bit's buttons, as above.
 
 Bit moves only while it is busy: its moon circles and a propeller cap spins. With your system set to reduce motion, both stay still.

@@ -56,6 +56,8 @@ pub const COMMANDS: &[&str] = &[
     "continue_loop",
     "use_fix",
     "ask_buddy",
+    "ask_buddy_anything",
+    "use_proposal",
     "publish_review",
     "publish_plan",
     "send_message",
@@ -280,6 +282,10 @@ async fn dispatch(e: &Arc<Engine>, name: &str, a: &Value) -> Result<Value, Strin
             .await?),
         "use_fix" => out(e.fix(&arg::<String>(a, "key")?).await?),
         "ask_buddy" => out(e.ask_buddy(arg(a, "question")?).await?),
+        "ask_buddy_anything" => out(e.ask_buddy_anything(&arg::<String>(a, "question")?).await?),
+        "use_proposal" => out(e
+            .use_proposal(arg(a, "noteId")?, arg(a, "proposalId")?)
+            .await?),
         "publish_review" => out(e
             .publish(
                 &arg::<String>(a, "reviewId")?,

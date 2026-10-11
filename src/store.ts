@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import {
   demoAnswer,
   demoFixed,
+  demoTypedAnswer,
   demoWorkspace,
   freshDemo,
   demoFindings,
@@ -17,6 +18,7 @@ import {
 import { call, download, follow, lostConnection, readToken } from "./remote";
 import {
   buddyOf,
+  maxQuestion,
   questionLabels,
   type BuddyNote,
   type Question,
@@ -291,6 +293,63 @@ async function demoAction(
       question: questionLabels[question],
       ...demoAnswer(demo, question),
     });
+    commit();
+    return;
+  }
+  if (command === "ask_buddy_anything") {
+    const question = String(args.question ?? "").trim();
+    if (!question || [...question].length > maxQuestion)
+      throw Error(`Ask a question of 1 to ${maxQuestion} characters.`);
+    const buddy = buddyOf(demo.settings);
+    if (!buddy.enabled) throw Error(`Turn ${buddy.name} on in Settings first.`);
+    if (demo.buddyFeed?.notes.some((n) => n.pending))
+      throw Error(`${buddy.name} is still answering your last question.`);
+    demoNote({ kind: "answer", question, text: "", pending: true });
+    const id = demo.buddyFeed!.notes.at(-1)!.id;
+    commit();
+    timers.set(
+      `ask-${id}`,
+      setTimeout(() => {
+        timers.delete(`ask-${id}`);
+        const note = demo.buddyFeed?.notes.find(
+          (n) => n.id === id && n.pending,
+        );
+        if (!note) return;
+        Object.assign(note, {
+          ...demoTypedAnswer(),
+          pending: false,
+          at: new Date().toISOString(),
+        });
+        commit();
+      }, 1500),
+    );
+    return;
+  }
+  if (command === "use_proposal") {
+    const find = () =>
+      demo.buddyFeed?.notes
+        .find((n) => n.id === args.noteId)
+        ?.proposals?.find((p) => p.id === args.proposalId);
+    const p = find();
+    if (!p) throw Error("This button isn't there any more.");
+    if (p.done) throw Error("That's done already.");
+    if (p.action === "continue_loop")
+      await demoAction("continue_loop", { prId: p.prId, rounds: 2 });
+    else if (p.action === "stop_loop")
+      await demoAction("stop_loop", { prId: p.prId });
+    else if (p.action === "review_again")
+      await demoAction("start_review", { prId: p.prId });
+    else if (p.action === "publish")
+      await demoAction("publish_review", {
+        reviewId: p.reviewId,
+        allowSensitive: false,
+      });
+    else if (p.action === "change_settings")
+      await demoAction("update_settings", { patch: p.settings });
+    else demo.lastPoll = new Date().toISOString();
+    // The demo may have been replaced while the control ran.
+    const done = find();
+    if (done) done.done = true;
     commit();
     return;
   }
@@ -849,6 +908,11 @@ export const useOrbit = create<Store>((set, get) => ({
             r.error = "Demo was restarted.";
           }
         });
+        for (const note of demo.buddyFeed?.notes ?? []) {
+          if (!note.pending) continue;
+          note.pending = false;
+          note.text = "The demo restarted before I could answer. Ask me again?";
+        }
       } catch {
         demo = demoWorkspace();
       }

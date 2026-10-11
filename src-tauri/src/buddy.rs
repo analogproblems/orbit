@@ -329,6 +329,12 @@ pub struct Note {
     /// For an answer, a line for each thing it lists.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lines: Vec<NoteLine>,
+    /// For an answer to a question you typed, the buttons it offers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub proposals: Vec<crate::ask::Proposal>,
+    /// A question you typed that Bit is still answering.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pending: bool,
 }
 impl Note {
     fn new(kind: NoteKind, text: String) -> Self {
@@ -343,6 +349,8 @@ impl Note {
             key: None,
             question: None,
             lines: vec![],
+            proposals: vec![],
+            pending: false,
         }
     }
     /// About a Needs you item: its PR, review and repository.
@@ -616,6 +624,15 @@ mod say {
             _ => format!("I tried to {what}, but it didn't work: {error}"),
         }
     }
+    /// A question you typed that Bit couldn't answer.
+    pub fn no_answer(tone: &str, error: &str) -> String {
+        let error = error.trim();
+        match tone {
+            "calm" => format!("I couldn't answer that. {error}"),
+            "dry" => format!("No answer this time. {error}"),
+            _ => format!("Sorry, I couldn't answer that. {error} Try asking again?"),
+        }
+    }
 }
 
 /// Every note kind in a tone, for tests.
@@ -834,6 +851,69 @@ pub fn not_fixed(s: &mut Snapshot, item: &Attention, fix: Fix, error: &str) {
             ..Note::new(NoteKind::NeedsYou, text).about(item)
         }],
     );
+}
+
+/// Adds a question you typed, which Bit answers once Codex has, and
+/// returns its note's id.
+pub fn asked(s: &mut Snapshot, question: &str) -> u64 {
+    let id = s.buddy_feed.next_id;
+    append(
+        &mut s.buddy_feed,
+        vec![Note {
+            question: Some(question.into()),
+            pending: true,
+            ..Note::new(NoteKind::Answer, String::new())
+        }],
+    );
+    id
+}
+/// Fills in the answer to a question you typed.
+pub fn answered(s: &mut Snapshot, id: u64, text: String, proposals: Vec<crate::ask::Proposal>) {
+    if let Some(note) = s
+        .buddy_feed
+        .notes
+        .iter_mut()
+        .find(|n| n.id == id && n.pending)
+    {
+        note.at = now();
+        note.text = text;
+        note.proposals = proposals;
+        note.pending = false;
+    }
+}
+/// Says why Bit couldn't answer a question you typed.
+pub fn not_answered(s: &mut Snapshot, id: u64, error: &str) {
+    let text = say::no_answer(&s.settings.buddy.tone, error);
+    answered(s, id, text, vec![]);
+}
+/// A question Orbit was answering when it closed gets no answer.
+pub fn recover(feed: &mut Feed) {
+    for note in feed.notes.iter_mut().filter(|n| n.pending) {
+        note.pending = false;
+        note.text = "Orbit closed before I could answer. Ask me again?".into();
+    }
+}
+/// The button `proposal` of the answer `note`.
+pub fn proposal(s: &Snapshot, note: u64, proposal: u32) -> Option<&crate::ask::Proposal> {
+    s.buddy_feed
+        .notes
+        .iter()
+        .find(|n| n.id == note)?
+        .proposals
+        .iter()
+        .find(|p| p.id == proposal)
+}
+/// Marks a button you tapped as done.
+pub fn proposal_done(s: &mut Snapshot, note: u64, proposal: u32) {
+    if let Some(p) = s
+        .buddy_feed
+        .notes
+        .iter_mut()
+        .find(|n| n.id == note)
+        .and_then(|n| n.proposals.iter_mut().find(|p| p.id == proposal))
+    {
+        p.done = true;
+    }
 }
 
 /// A question Bit answers straight from Orbit's state.

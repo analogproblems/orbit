@@ -453,7 +453,44 @@ export interface BuddyNote {
   question?: string | null;
   /** For an answer, a line for each thing it lists. */
   lines?: BuddyNoteLine[];
+  /** For an answer to a question you typed, the buttons it offers. */
+  proposals?: Proposal[];
+  /** A question you typed that Bit is still answering. */
+  pending?: boolean;
 }
+/** What a button in a typed question's answer does: one of Orbit's own
+ * controls. */
+export type Action =
+  | "continue_loop"
+  | "stop_loop"
+  | "review_again"
+  | "publish"
+  | "sync_now"
+  | "change_settings";
+export const actionLabels: Record<Action, string> = {
+  continue_loop: "Continue loop",
+  stop_loop: "Stop loop",
+  review_again: "Review again",
+  publish: "Publish report",
+  sync_now: "Sync now",
+  change_settings: "Change settings",
+};
+/** A button in an answer. It runs only when you tap it, and Orbit checks
+ * it again then. */
+export interface Proposal {
+  /** Its place in the answer. */
+  id: number;
+  action: Action;
+  prId?: string | null;
+  /** For Publish, the report. */
+  reviewId?: string | null;
+  /** For Change settings, the change. */
+  settings?: SettingsPatch | null;
+  /** You tapped it and it worked. */
+  done?: boolean;
+}
+/** The longest question you can type to Bit. */
+export const maxQuestion = 2000;
 export interface BuddyFeed {
   /** Oldest first, at most 50. */
   notes: BuddyNote[];
