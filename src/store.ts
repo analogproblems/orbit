@@ -446,10 +446,19 @@ async function demoAction(
       if (
         repo.provider &&
         repo.provider !== "codex" &&
+        !repo.devContainer?.enabled &&
         repo.setupCommand.trim()
       )
         throw Error(
-          `${providerLabels[repo.provider]} reviews can't run a setup command. Clear the setup command for ${repo.name} or review it with Codex.`,
+          `${providerLabels[repo.provider]} reviews can't run a setup command outside a dev container. Clear the setup command for ${repo.name}, run it in the repository's dev container, or review it with Codex.`,
+        );
+      if (
+        repo.devContainer?.enabled &&
+        !repo.setupCommand.trim() &&
+        !repo.devContainer.checkCommand.trim()
+      )
+        throw Error(
+          `Add a setup or check command for ${repo.name}'s dev container, or turn it off.`,
         );
       if (args.original)
         next.repositories = next.repositories.map((r) =>

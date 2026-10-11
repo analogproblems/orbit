@@ -93,6 +93,8 @@ export interface Review {
   completed?: boolean | null;
   /** Requests Orbit declined because no one approved them in time. */
   declinedApprovals?: string[];
+  /** Setup and checks Orbit ran in the repository's dev container. */
+  checks?: ContainerChecks | null;
   /** The findings-extraction turn is running. */
   extracting?: boolean;
   /** The earlier round a re-review started from; absent for a first review. */
@@ -284,6 +286,41 @@ export interface Repository {
   keepUpdated?: boolean;
   /** Who reviews this repository's pull requests. */
   provider?: Provider;
+  /** Run the setup and check commands in the repository's dev container. */
+  devContainer?: DevContainer;
+}
+export interface DevContainer {
+  enabled: boolean;
+  /** Runs after the setup command, such as `npm test`. */
+  checkCommand: string;
+}
+/** One command run in a dev container. */
+export interface CheckStep {
+  command: string;
+  /** Null when it was stopped at its time limit. */
+  exitCode: number | null;
+  timedOut: boolean;
+  seconds: number;
+  /** The end of what it printed. */
+  output: string;
+}
+export interface ContainerChecks {
+  image: string;
+  network: boolean;
+  setup: CheckStep | null;
+  /** Null without a check command, or after a failed setup. */
+  check: CheckStep | null;
+}
+export function checkPassed(step: CheckStep) {
+  return step.exitCode === 0 && !step.timedOut;
+}
+/** How a step ended, in a few words, as the reviewer is told. */
+export function checkOutcome(step: CheckStep) {
+  if (step.timedOut) return `stopped at its time limit after ${step.seconds}s`;
+  if (step.exitCode === 0) return `passed in ${step.seconds}s`;
+  if (step.exitCode === null)
+    return `stopped by a signal after ${step.seconds}s`;
+  return `failed with exit code ${step.exitCode} after ${step.seconds}s`;
 }
 export interface CloneUpdate {
   repo: string;
@@ -748,6 +785,8 @@ export interface Snapshot {
   claudeModels?: Model[];
   /** The Antigravity CLI, as last checked. */
   antigravity?: CliStatus;
+  /** Docker and the Dev Container CLI, as last checked. */
+  devContainers?: CliStatus;
   /** The models Antigravity offered when last checked. */
   antigravityModels?: Model[];
   modelCatalogReady: boolean;
