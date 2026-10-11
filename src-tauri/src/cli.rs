@@ -25,7 +25,7 @@ const EXIT_GRACE: Duration = Duration::from_secs(10);
 const EXIT_GRACE: Duration = Duration::from_secs(1);
 
 /// How to start a CLI; tests start a fake.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Launcher {
     pub program: PathBuf,
     pub prefix: Vec<String>,
@@ -90,6 +90,9 @@ pub struct Turn {
     pub effort: String,
     pub prompt: String,
     pub schema: Option<Value>,
+    /// Orbit's dev container tool, for a review turn whose repository lets
+    /// the reviewer run commands there.
+    pub tool: Option<crate::boxtool::Server>,
 }
 
 /// What one turn's process reported, in the order it happened.

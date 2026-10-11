@@ -6,7 +6,7 @@ use super::{
     worktrees::prune_orbit_refs,
     Engine,
 };
-use crate::{devcontainer, rpc::Rpc, types::*, usage::Usage};
+use crate::{boxtool, devcontainer, rpc::Rpc, types::*, usage::Usage};
 use serde_json::{json, Value};
 use std::{
     path::Path,
@@ -161,9 +161,23 @@ impl Engine {
         self.carry_previous_round(id, &pr, &worktree).await?;
         self.live(id).await?;
         if in_container {
-            self.run_container_checks(id, &repo, &cwd, &worktree, &r.base_sha)
-                .await?;
-            self.live(id).await?;
+            // Antigravity takes no tool servers for a single run, and Orbit
+            // never changes its settings.
+            let tool = repo.dev_container.reviewer_tool && r.provider != Provider::Antigravity;
+            if repo.dev_container.reviewer_tool && !tool {
+                self.say(
+                    id,
+                    format!("{} reviews can't be given Orbit's dev container tool, so this one can't run its own commands there.", r.provider.label()),
+                )
+                .await;
+            }
+            let commands = !repo.setup_command.trim().is_empty()
+                || !repo.dev_container.check_command.trim().is_empty();
+            if tool || commands {
+                self.run_container_checks(id, &repo, &cwd, &worktree, &r.base_sha, tool)
+                    .await?;
+                self.live(id).await?;
+            }
         }
         let Some(rpc) = rpc else {
             return self.start_cli_review(id, &worktree).await;
@@ -287,8 +301,15 @@ impl Engine {
         let selection = ModelSelection::requested(r);
         selection.validate_execution(&s)?;
         self.live(id).await?;
-        // The extra tools you've added to Codex stay off for the review.
+        // The extra tools you've added to Codex stay off for the review; the
+        // dev container tool, when the repository allows it, is Orbit's own.
         let mut config = extras::off(rpc, worktree).await?;
+        let server = self.box_server(id);
+        if let (Some(server), Some(Value::Object(servers))) =
+            (&server, config.get_mut("mcp_servers"))
+        {
+            servers.insert(boxtool::SERVER.into(), server.codex());
+        }
         config.extend([
             ("review_model".into(), json!(selection.model)),
             ("model_reasoning_effort".into(), json!(selection.effort)),
@@ -317,7 +338,7 @@ impl Engine {
             .to_string();
         let confirmed = async {
             selection.verify_response(&thread)?;
-            extras::check(rpc, &thread_id, None)
+            extras::check(rpc, &thread_id, server.as_ref().map(|_| boxtool::SERVER))
                 .await
                 .map_err(|left| left.message("the review didn't start"))?;
             // Persist confirmation before asking Codex to infer anything.
@@ -346,24 +367,37 @@ impl Engine {
             return Err(error);
         }
         // A re-review carries the previous round in custom instructions, and
-        // checks run in a dev container add their results there too.
-        let instructions = match (&r.review_prompt, &r.checks) {
-            (Some(prompt), Some(checks)) => {
-                Some(format!("{prompt}\n\n{}", devcontainer::notes(checks)))
-            }
-            (Some(prompt), None) => Some(prompt.clone()),
-            (None, Some(checks)) => {
+        // checks run in a dev container add their results there too, as does
+        // the dev container tool.
+        let notes: Vec<String> = [
+            r.checks.as_ref().map(devcontainer::notes),
+            server.as_ref().map(|s| s.notes()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let instructions = match &r.review_prompt {
+            Some(prompt) => Some(
+                [prompt.clone()]
+                    .into_iter()
+                    .chain(notes)
+                    .collect::<Vec<_>>()
+                    .join("\n\n"),
+            ),
+            None if notes.is_empty() => None,
+            None => {
                 let merge_base = git(worktree, &["merge-base", &r.head_sha, &r.base_sha])
                     .await
                     .map(|m| m.trim().to_string())
                     .unwrap_or_else(|_| r.base_sha.clone());
-                Some(format!(
-                    "{}\n\n{}",
-                    rounds::base_review(&r.base_sha, &merge_base),
-                    devcontainer::notes(checks)
-                ))
+                Some(
+                    [rounds::base_review(&r.base_sha, &merge_base)]
+                        .into_iter()
+                        .chain(notes)
+                        .collect::<Vec<_>>()
+                        .join("\n\n"),
+                )
             }
-            (None, None) => None,
         };
         let target = match instructions {
             Some(instructions) => json!({"type":"custom", "instructions":instructions}),
@@ -449,6 +483,7 @@ impl Engine {
         }
         self.update(|s| s.approvals.retain(|a| a.review_id != id))
             .await;
+        self.close_box(id).await;
         self.flush().await
     }
     pub async fn decide(&self, id: Value, accept: bool) -> Result<(), String> {

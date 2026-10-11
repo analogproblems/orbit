@@ -869,6 +869,9 @@ pub struct DevContainer {
     /// Runs after the setup command, such as `npm test`. Empty runs only
     /// the setup command.
     pub check_command: String,
+    /// Keeps the container for the review and lets the reviewer run its own
+    /// commands there (see `crate::boxtool`).
+    pub reviewer_tool: bool,
 }
 pub const MAX_APPROVAL_MINUTES: u32 = 1440;
 fn default_round_limit() -> u32 {
@@ -1099,11 +1102,12 @@ impl Repository {
             ));
         }
         if self.dev_container.enabled
+            && !self.dev_container.reviewer_tool
             && self.setup_command.trim().is_empty()
             && self.dev_container.check_command.trim().is_empty()
         {
             return Err(format!(
-                "Add a setup or check command for {}'s dev container, or turn it off.",
+                "Add a setup or check command for {}'s dev container, let the reviewer run commands there, or turn it off.",
                 self.name
             ));
         }
@@ -1638,12 +1642,17 @@ pub(crate) mod tests {
             dev_container: DevContainer {
                 enabled: true,
                 check_command: String::new(),
+                reviewer_tool: false,
             },
         });
         assert!(s.validate().is_ok());
         s.repositories[0].setup_command = String::new();
         let error = s.validate().unwrap_err();
         assert!(error.contains("Add a setup or check command"), "{error}");
+        // The reviewer's own commands are reason enough for the container.
+        s.repositories[0].dev_container.reviewer_tool = true;
+        assert!(s.validate().is_ok());
+        s.repositories[0].dev_container.reviewer_tool = false;
         s.repositories[0].dev_container.check_command = "npm test".into();
         assert!(s.validate().is_ok());
         s.repositories[0].dev_container.check_command = "x".repeat(10001);

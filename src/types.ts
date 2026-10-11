@@ -293,6 +293,9 @@ export interface DevContainer {
   enabled: boolean;
   /** Runs after the setup command, such as `npm test`. */
   checkCommand: string;
+  /** Keeps the container for the review, so the reviewer can run its own
+   * commands there. */
+  reviewerTool?: boolean;
 }
 /** One command run in a dev container. */
 export interface CheckStep {
@@ -559,6 +562,7 @@ export function withRepositoryPatch(
     devContainer: {
       enabled: patch.devContainer ?? devContainer.enabled,
       checkCommand: patch.checkCommand ?? devContainer.checkCommand,
+      reviewerTool: devContainer.reviewerTool,
     },
   };
 }

@@ -128,6 +128,7 @@ impl Engine {
             effort: selection.effort.clone(),
             prompt,
             schema: None,
+            tool: self.box_server(id).filter(|_| provider == Provider::Claude),
         };
         self.run_cli_turn(id, provider, turn, move |r, session| {
             if r.status != "preparing" {
@@ -183,6 +184,7 @@ impl Engine {
             effort: selection.effort.clone(),
             prompt,
             schema: Some(findings::output_schema()),
+            tool: None,
         };
         self.run_cli_turn(id, provider, turn, move |r, _| {
             if !r.extracting || !active(&r.status) {
@@ -217,6 +219,7 @@ impl Engine {
             effort: selection.effort.clone(),
             prompt: text.into(),
             schema: None,
+            tool: None,
         };
         let selection = selection.clone();
         let message_id = message_id.to_string();

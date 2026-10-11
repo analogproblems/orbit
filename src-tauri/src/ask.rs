@@ -460,6 +460,7 @@ pub fn briefing(s: &Snapshot, lookups: &Lookups) -> Value {
             "checkCommand": shown_command(&r.dev_container.check_command),
             "networkAccess": r.network_access,
             "devContainer": r.dev_container.enabled,
+            "reviewerRunsCommandsInDevContainer": r.dev_container.enabled && r.dev_container.reviewer_tool,
             "approvalMinutes": r.approval_minutes,
             "copy": match lookups.clones.get(&r.name) {
                 Some(Ok(facts)) => json!(facts),

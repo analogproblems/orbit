@@ -1,6 +1,6 @@
 //! Checks with Codex that a thread runs without the extra tools you've
 //! added to Codex (see `crate::extras`).
-use crate::{extras, rpc::Rpc, scans};
+use crate::{boxtool, extras, rpc::Rpc, scans};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 
@@ -88,6 +88,9 @@ pub(super) async fn check(rpc: &Rpc, thread: &str, keep: Option<&str>) -> Result
         }
         on.retain(|name| name != keep);
     }
+    // Orbit's own dev container tool, which a review's thread keeps through
+    // its warm follow-ups; it fails once the review's container is gone.
+    on.retain(|name| name != boxtool::SERVER);
     if on.is_empty() {
         Ok(())
     } else {

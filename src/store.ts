@@ -524,11 +524,12 @@ async function demoAction(
         );
       if (
         repo.devContainer?.enabled &&
+        !repo.devContainer.reviewerTool &&
         !repo.setupCommand.trim() &&
         !repo.devContainer.checkCommand.trim()
       )
         throw Error(
-          `Add a setup or check command for ${repo.name}'s dev container, or turn it off.`,
+          `Add a setup or check command for ${repo.name}'s dev container, let the reviewer run commands there, or turn it off.`,
         );
       if (args.original)
         next.repositories = next.repositories.map((r) =>

@@ -416,6 +416,7 @@ pub(crate) mod tests {
             effort: "high".into(),
             prompt: "Review".into(),
             schema: resume.then(|| json!({"type": "object"})),
+            tool: None,
         }
     }
 

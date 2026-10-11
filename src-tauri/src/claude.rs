@@ -1,6 +1,7 @@
 //! Runs the `claude` CLI in print mode, one process per turn, and reads its
 //! `stream-json` output. Orbit never reads or stores Claude credentials: the
 //! CLI uses the sign-in of whoever runs Orbit.
+use crate::boxtool;
 use crate::cli::{self, Dialect, Init, Launcher, Line, Output, Started, Stderr, Turn, TurnKind};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -115,9 +116,21 @@ pub fn args(turn: &Turn) -> Vec<String> {
         }
         .into(),
     );
+    // The dev container tool runs its commands in the container, outside
+    // Claude's sandbox, which is the point of it.
+    let tool = turn.tool.as_ref().filter(|_| turn.kind == TurnKind::Review);
+    if let Some(tool) = tool {
+        args.push("--mcp-config".into());
+        args.push(tool.claude());
+        args.push("--append-system-prompt".into());
+        args.push(tool.notes());
+    }
     if turn.kind != TurnKind::Extraction {
         args.push("--allowedTools".into());
         args.extend(ALLOWED.iter().map(|s| s.to_string()));
+        if tool.is_some() {
+            args.push(boxtool::CLAUDE_TOOL.into());
+        }
         args.push("--disallowedTools".into());
         args.extend(DENIED.iter().map(|s| s.to_string()));
     }
@@ -211,7 +224,10 @@ impl Reader {
                 for block in content(message) {
                     let id = block["tool_use_id"].as_str().unwrap_or("");
                     if block["type"] == "tool_result"
-                        && self.tools.get(id).map(String::as_str) == Some("Bash")
+                        && matches!(
+                            self.tools.get(id).map(String::as_str),
+                            Some("Bash" | boxtool::CLAUDE_TOOL)
+                        )
                     {
                         out.push(Output::CommandOutput(cli::result_text(&block["content"])));
                     }
@@ -270,6 +286,9 @@ fn describe(tool: &str, input: &Value) -> Option<String> {
             .as_str()
             .map(|d| format!("start a helper: {d}")),
         "StructuredOutput" => None,
+        boxtool::CLAUDE_TOOL => input["command"]
+            .as_str()
+            .map(|c| format!("{c} (in the dev container)")),
         other => Some(other.to_string()),
     }
 }
@@ -381,6 +400,7 @@ pub(crate) mod tests {
             effort: "high".into(),
             prompt: review_command("high", "abc"),
             schema: None,
+            tool: None,
         };
         let args = args(&turn);
         let after = |flag: &str| args[args.iter().position(|a| a == flag).unwrap() + 1].clone();
@@ -412,6 +432,67 @@ pub(crate) mod tests {
         assert_eq!(after("--tools"), "");
         assert_eq!(after("--json-schema"), r#"{"type":"object"}"#);
         assert!(!args.contains(&"--allowedTools".to_string()));
+    }
+
+    #[test]
+    fn review_turns_get_the_dev_container_tool_when_the_repository_allows_it() {
+        let server = crate::boxtool::Server::new(crate::boxtool::Spec {
+            docker: Launcher::new("docker"),
+            container: "orbit-checks-r1".into(),
+            user: None,
+            folder: "/workspaces/b".into(),
+            network: false,
+        })
+        .unwrap();
+        let turn = Turn {
+            kind: TurnKind::Review,
+            cwd: "/tmp".into(),
+            session: "s".into(),
+            resume: false,
+            model: "claude-opus-5-5".into(),
+            effort: "high".into(),
+            prompt: review_command("high", "abc"),
+            schema: None,
+            tool: Some(server.clone()),
+        };
+        let args = args(&turn);
+        let after = |flag: &str| args[args.iter().position(|a| a == flag).unwrap() + 1].clone();
+        assert_eq!(after("--mcp-config"), server.claude());
+        assert_eq!(after("--append-system-prompt"), server.notes());
+        // Only Orbit's servers, and its tool runs without asking.
+        assert!(args.contains(&"--strict-mcp-config".to_string()));
+        let allowed = args.iter().position(|a| a == "--allowedTools").unwrap();
+        let denied = args.iter().position(|a| a == "--disallowedTools").unwrap();
+        assert!(args[allowed..denied].contains(&boxtool::CLAUDE_TOOL.to_string()));
+        // Later turns don't use it.
+        for kind in [TurnKind::Extraction, TurnKind::FollowUp] {
+            let later = super::args(&Turn {
+                kind,
+                resume: true,
+                ..turn.clone()
+            });
+            assert!(!later.contains(&"--mcp-config".to_string()));
+            assert!(!later.contains(&boxtool::CLAUDE_TOOL.to_string()));
+        }
+        // Its calls show in the chat like commands.
+        let mut reader = Reader::default();
+        let lines = reader.read(&json!({"type": "assistant", "parent_tool_use_id": null, "message": {"id": "m", "content": [
+            {"type": "tool_use", "id": "t1", "name": boxtool::CLAUDE_TOOL, "input": {"command": "npm test"}}
+        ]}}));
+        assert_eq!(
+            lines,
+            [Line::Output(Output::CommandStarted {
+                tool: boxtool::CLAUDE_TOOL.into(),
+                command: "npm test (in the dev container)".into()
+            })]
+        );
+        let lines = reader.read(&json!({"type": "user", "parent_tool_use_id": null, "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "text", "text": "passed in 3s"}]}
+        ]}}));
+        assert_eq!(
+            lines,
+            [Line::Output(Output::CommandOutput("passed in 3s".into()))]
+        );
     }
 
     #[test]

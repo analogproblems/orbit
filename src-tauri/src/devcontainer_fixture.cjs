@@ -3,8 +3,9 @@
 // run in it with the host's shell. Usage: node devcontainer_fixture.cjs
 // <state folder> <docker|devcontainer> <arguments...>. Each call is logged
 // as a JSON line in <state>/log. Files in the state folder change behaviour:
-// `no-daemon` fails `docker version`, `build-fails` fails builds, and
-// `slow-start` makes a container appear a second after `docker run`.
+// `no-daemon` fails `docker version`, `build-fails` fails builds,
+// `slow-start` makes a container appear a second after `docker run`, and
+// `stop-fails` fails stopping a command that ran out of time.
 // Like Docker's daemon, a started container and the commands run in it keep
 // going when this script is stopped; `docker rm` stops them.
 const fs = require("node:fs");
@@ -29,6 +30,19 @@ const fail = (message, code = 1) => {
   process.exit(code);
 };
 const after = (list, flag) => list[list.indexOf(flag) + 1];
+// Stops the commands run in a container, and what they started.
+const stopAll = (name) => {
+  const pids = path.join(containers, name, "pids");
+  if (!fs.existsSync(pids)) return;
+  for (const pid of fs.readFileSync(pids, "utf8").split("\n")) {
+    try {
+      if (pid) process.kill(-Number(pid), "SIGKILL");
+    } catch {
+      // It finished already.
+    }
+  }
+  fs.writeFileSync(pids, "");
+};
 
 if (tool === "devcontainer") {
   if (args[0] === "--version") {
@@ -119,8 +133,19 @@ switch (command) {
       fs.rmSync(inside(name, argv[argv.length - 1]), { force: true });
     } else if (program === "chown") {
       // Nothing to change in a folder.
+    } else if (program === "/bin/sh" && argv[1].startsWith("kill -KILL -1")) {
+      // Kills everything started in the container, never on this computer;
+      // `stop-fails` plays a container with no room for another process.
+      if (has("stop-fails"))
+        fail(
+          "OCI runtime exec failed: unable to start container process: resource temporarily unavailable",
+          126,
+        );
+      stopAll(name);
+      console.log("stopped");
     } else if (program === "/bin/sh") {
-      // In its own process group, which `docker rm` stops.
+      // In its own process group, which `docker rm` and `kill -KILL -1`
+      // stop.
       const child = spawn(argv[1], {
         cwd: inside(name, workdir),
         shell: true,
@@ -136,16 +161,7 @@ switch (command) {
   }
   case "rm": {
     const container = path.join(containers, rest[rest.length - 1]);
-    const pids = path.join(container, "pids");
-    if (fs.existsSync(pids)) {
-      for (const pid of fs.readFileSync(pids, "utf8").split("\n")) {
-        try {
-          if (pid) process.kill(-Number(pid), "SIGKILL");
-        } catch {
-          // It finished already.
-        }
-      }
-    }
+    stopAll(rest[rest.length - 1]);
     if (!fs.existsSync(container)) fail(`No such container: ${rest.at(-1)}`);
     fs.rmSync(container, { recursive: true, force: true });
     break;
