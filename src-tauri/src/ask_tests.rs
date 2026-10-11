@@ -274,3 +274,28 @@ fn the_app_offers_the_same_actions() {
         serde_json::from_str(include_str!("../../test-fixtures/buddy-options.json")).unwrap();
     assert_eq!(fixture["actions"], json!(ACTIONS.map(|a| key(&a))));
 }
+#[test]
+fn bits_thread_turns_off_every_tool_server_and_feature() {
+    let config = thread_config(
+        "low",
+        &json!({"mcp_servers": {"notes": {"command": "x"}, "mail": {"url": "https://example.com"}}}),
+    );
+    assert_eq!(
+        config["mcp_servers"],
+        json!({"notes": {"enabled": false}, "mail": {"enabled": false}})
+    );
+    assert_eq!(config["model_reasoning_effort"], "low");
+    assert_eq!(config["web_search"], "disabled");
+    assert_eq!(
+        config["features"].as_object().unwrap().len(),
+        FEATURES_OFF.len()
+    );
+    assert_eq!(thread_config("low", &json!({}))["mcp_servers"], json!({}));
+    // Any server not switched off for the thread counts as on.
+    let page = json!({"data": [
+        {"name": "notes", "runtimeStatus": "disabled"},
+        {"name": "mail", "runtimeStatus": "starting"},
+        {"name": "apps", "runtimeStatus": null},
+    ]});
+    assert_eq!(servers_on(&page), ["mail", "apps"]);
+}

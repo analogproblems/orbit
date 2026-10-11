@@ -50,8 +50,19 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
           config: {
             model: options.effectiveModel ?? null,
             model_reasoning_effort: options.effectiveEffort ?? null,
+            ...(options.mcpServers && { mcp_servers: options.mcpServers }),
           },
         });
+      case "mcpServerStatus/list":
+        // A thread's tool servers, one page per call; the last one repeats.
+        return send(
+          m.id,
+          (Array.isArray(options.mcpStatus)
+            ? options.mcpStatus.length > 1
+              ? options.mcpStatus.shift()
+              : options.mcpStatus[0]
+            : options.mcpStatus) ?? { data: [], nextCursor: null },
+        );
       case "thread/unsubscribe":
         subscribed = !!options.otherSubscriber;
         return send(m.id, { status: "unsubscribed" });

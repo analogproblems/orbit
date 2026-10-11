@@ -7,6 +7,25 @@ use crate::{buddy::Buddy, types::*};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+/// Codex's features that give a thread tools beyond its answer: commands,
+/// images, the browser, the computer, sub-agents, goals, memories, hooks,
+/// plugins and connected apps. Bit's thread runs with all of them off.
+pub const FEATURES_OFF: [&str; 13] = [
+    "shell_tool",
+    "unified_exec",
+    "view_image",
+    "image_generation",
+    "browser_use",
+    "computer_use",
+    "multi_agent",
+    "goals",
+    "memories",
+    "hooks",
+    "tool_suggest",
+    "plugins",
+    "apps",
+];
+
 /// The longest question, in characters.
 pub const MAX_QUESTION: usize = 2000;
 /// The longest answer kept, in characters.
@@ -131,6 +150,40 @@ Use pull request ids from the summary. Leave pr null and changes empty when an a
         ));
     }
     text
+}
+
+/// The settings Bit's thread starts with, on top of your Codex settings,
+/// which stay as they are: the effort, no web search, the features in
+/// `FEATURES_OFF` off, and each tool server your Codex settings name
+/// (`codex_config`, as Codex reads them) switched off for this thread.
+pub fn thread_config(effort: &str, codex_config: &Value) -> Value {
+    let servers: Map<String, Value> = codex_config["mcp_servers"]
+        .as_object()
+        .into_iter()
+        .flat_map(|servers| servers.keys())
+        .map(|name| (name.clone(), json!({"enabled": false})))
+        .collect();
+    let features: Map<String, Value> = FEATURES_OFF
+        .iter()
+        .map(|f| (f.to_string(), json!(false)))
+        .collect();
+    json!({
+        "model_reasoning_effort": effort,
+        "web_search": "disabled",
+        "mcp_servers": servers,
+        "features": features,
+    })
+}
+/// The tool servers in a page of a thread's server list that aren't
+/// switched off for it, from plugins and apps as well as your settings.
+pub fn servers_on(page: &Value) -> Vec<String> {
+    page["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|server| server["runtimeStatus"] != "disabled")
+        .map(|server| server["name"].as_str().unwrap_or("unnamed").to_string())
+        .collect()
 }
 
 /// The message for one question: the question, then the summary.

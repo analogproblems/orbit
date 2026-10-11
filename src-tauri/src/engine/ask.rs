@@ -1,6 +1,6 @@
 //! Questions you type to Bit, answered by Codex in a thread of their own:
-//! read-only, in an empty folder, with no network and no approvals. The
-//! answer's buttons run only when you tap them.
+//! read-only, in an empty folder, with no network, no approvals and none of
+//! Codex's other tools. The answer's buttons run only when you tap them.
 use super::{publish::By, Engine};
 use crate::{
     ask::{self, Action},
@@ -82,8 +82,10 @@ impl Engine {
         Ok(())
     }
     /// Starts Codex on the question, in a new thread that can't change
-    /// anything: read-only, in an empty folder of Orbit's, with no network
-    /// and no approvals.
+    /// anything: read-only, in an empty folder of Orbit's, with no network,
+    /// no approvals, and none of Codex's other tools. Codex's tool servers
+    /// stay off for the thread; if Codex reports one on, or can't say, the
+    /// question isn't asked.
     async fn start_answer(
         &self,
         note: u64,
@@ -94,6 +96,10 @@ impl Engine {
         let rpc = self.client().await?;
         let folder = self.root.join("bit");
         std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+        let codex_config = rpc
+            .request("config/read", json!({"cwd": folder}))
+            .await
+            .map_err(|e| format!("Codex couldn't read its settings: {e}"))?;
         let thread = rpc
             .request(
                 "thread/start",
@@ -102,7 +108,7 @@ impl Engine {
                     "approvalPolicy": "never",
                     "sandbox": "read-only",
                     "model": selection.model,
-                    "config": {"model_reasoning_effort": selection.effort},
+                    "config": ask::thread_config(&selection.effort, &codex_config["config"]),
                     "developerInstructions": instructions,
                 }),
             )
@@ -111,7 +117,11 @@ impl Engine {
             .as_str()
             .ok_or("Codex didn't start a thread.")?
             .to_string();
-        let claimed = selection.verify_response(&thread).and_then(|()| {
+        let claimed = match selection.verify_response(&thread) {
+            Ok(()) => self.tools_off(&rpc, &thread_id).await,
+            Err(error) => Err(error),
+        }
+        .and_then(|()| {
             self.asking_mut(note, |a| a.thread = Some(thread_id.clone()))
                 .ok_or_else(|| "The question was dropped.".to_string())
         });
@@ -136,6 +146,45 @@ impl Engine {
         let turn_id = turn["turn"]["id"].as_str().map(str::to_owned);
         self.asking_mut(note, |a| a.turn = turn_id);
         Ok(())
+    }
+    /// Checks with Codex that no tool server is on for `thread`.
+    async fn tools_off(&self, rpc: &crate::rpc::Rpc, thread: &str) -> Result<(), String> {
+        let unsure = |e: String| {
+            format!(
+                "I couldn't check that Codex's other tools are off: {}",
+                sentence(&e)
+            )
+        };
+        let mut on = vec![];
+        let mut cursor = Value::Null;
+        for _ in 0..20 {
+            let page = rpc
+                .request(
+                    "mcpServerStatus/list",
+                    json!({"threadId": thread, "detail": "toolsAndAuthOnly", "cursor": cursor}),
+                )
+                .await
+                .map_err(unsure)?;
+            if !page["data"].is_array() {
+                return Err(unsure("Codex didn't list them.".into()));
+            }
+            on.extend(ask::servers_on(&page));
+            cursor = page["nextCursor"].clone();
+            if cursor.is_null() {
+                break;
+            }
+        }
+        if !cursor.is_null() {
+            return Err(unsure("Codex listed too many.".into()));
+        }
+        if on.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "Codex kept these tools on for my question, so I didn't ask it: {}.",
+                on.join(", ")
+            ))
+        }
     }
     /// Changes the question being answered, if it is still `note`.
     fn asking_mut(&self, note: u64, f: impl FnOnce(&mut Asking)) -> Option<()> {
@@ -173,15 +222,7 @@ impl Engine {
                     Some("completed") => Ok(text),
                     Some("interrupted") => Err("Codex stopped before it finished.".into()),
                     _ => Err(match p["turn"]["error"]["message"].as_str() {
-                        Some(message) => {
-                            let message = message.trim();
-                            let end = if message.ends_with(['.', '!', '?']) {
-                                ""
-                            } else {
-                                "."
-                            };
-                            format!("Codex said: {message}{end}")
-                        }
+                        Some(message) => format!("Codex said: {}", sentence(message)),
                         None => "Codex couldn't finish.".into(),
                     }),
                 };
@@ -235,16 +276,24 @@ impl Engine {
         }
     }
     /// Uses a button from an answer, after checking it against Orbit's
-    /// state now, as the same control elsewhere in the app does.
+    /// state now, as the same control elsewhere in the app does. A button
+    /// is claimed before it runs, so a tap from another window while it
+    /// runs is refused; it counts as done only once it worked, and one
+    /// that failed can be tapped again.
     pub async fn use_proposal(self: &Arc<Self>, note: u64, proposal: u32) -> Result<(), String> {
-        let p = {
+        let (p, _claim) = {
             let s = self.state.lock().await;
-            buddy::proposal(&s, note, proposal).cloned()
-        }
-        .ok_or("This button isn't there any more.")?;
-        if p.done {
-            return Err("That's done already.".into());
-        }
+            let p = buddy::proposal(&s, note, proposal)
+                .cloned()
+                .ok_or("This button isn't there any more.")?;
+            if p.done {
+                return Err("That's done already.".into());
+            }
+            if !self.using.lock().unwrap().insert((note, proposal)) {
+                return Err("That's already running.".into());
+            }
+            (p, Using(self, (note, proposal)))
+        };
         let pr = || {
             p.pr_id
                 .as_deref()
@@ -286,9 +335,33 @@ impl Engine {
                 self.update_settings(patch).await.map(|_| ())
             }
         }?;
+        // Done before the claim ends, so no tap gets in between.
         self.update(|s| buddy::proposal_done(s, note, proposal))
             .await;
         let _ = self.flush().await;
         Ok(())
+    }
+}
+
+/// Text from elsewhere as a sentence, ending in a full stop if it has no
+/// ending of its own.
+fn sentence(text: &str) -> String {
+    let text = text.trim();
+    if text.ends_with(['.', '!', '?']) {
+        text.into()
+    } else {
+        format!("{text}.")
+    }
+}
+
+/// A button being used. Dropping it ends the claim, however its use ended.
+struct Using<'a>(&'a Engine, (u64, u32));
+impl Drop for Using<'_> {
+    fn drop(&mut self) {
+        self.0
+            .using
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.1);
     }
 }
