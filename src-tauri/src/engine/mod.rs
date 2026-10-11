@@ -13,6 +13,7 @@ use tokio::sync::Mutex;
 
 mod ask;
 mod chat;
+mod checks;
 mod claims;
 mod cli_review;
 mod clones;
@@ -42,6 +43,8 @@ mod antigravity_tests;
 mod ask_tests;
 #[cfg(test)]
 mod chat_tests;
+#[cfg(test)]
+mod checks_tests;
 #[cfg(test)]
 mod claims_tests;
 #[cfg(test)]
@@ -164,6 +167,11 @@ pub struct Engine {
     /// How Antigravity is started and where its settings are; tests use a
     /// fake.
     antigravity: std::sync::Mutex<crate::antigravity::Setup>,
+    /// How Docker and the Dev Container CLI are started; tests use fakes.
+    dev_tools: std::sync::Mutex<crate::devcontainer::Tools>,
+    /// One dev container image is built at a time, so two reviews of a
+    /// repository don't build the same image.
+    building: Mutex<()>,
     /// Each review's running Claude or Antigravity turn, so Stop can end it.
     cli_turns: std::sync::Mutex<HashMap<String, Arc<crate::cli::Running>>>,
     /// Items that just opened whose fix Bit does on its own; the next tick
@@ -276,6 +284,7 @@ impl Engine {
         state.claude = CliStatus::default();
         state.claude_models = crate::claude::catalog();
         state.antigravity = CliStatus::default();
+        state.dev_containers = CliStatus::default();
         Ok(Arc::new(Self {
             state: Mutex::new(state),
             rpc: Mutex::new(None),
@@ -303,6 +312,8 @@ impl Engine {
             usage_account: std::sync::Mutex::new(None),
             claude_launcher: std::sync::Mutex::new(crate::claude::launcher()),
             antigravity: std::sync::Mutex::new(crate::antigravity::Setup::default()),
+            dev_tools: std::sync::Mutex::new(Default::default()),
+            building: Mutex::new(()),
             cli_turns: std::sync::Mutex::new(HashMap::new()),
             fixing: std::sync::Mutex::new(vec![]),
             asking: std::sync::Mutex::new(None),
@@ -426,6 +437,7 @@ impl Engine {
         let e = self.clone();
         tokio::spawn(async move {
             e.check_reviewers().await;
+            e.remove_leftover_containers().await;
         });
         let e = self.clone();
         tokio::spawn(async move {

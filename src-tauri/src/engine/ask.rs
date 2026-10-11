@@ -161,6 +161,7 @@ impl Engine {
                     "Codex kept these tools on for my question, so I didn't ask it: {}.",
                     names.join(", ")
                 ),
+                left @ extras::Left::Missing(_) => left.message("I didn't ask it"),
             })
     }
     /// Changes the question being answered, if it is still `note`.

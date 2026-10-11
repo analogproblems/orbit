@@ -87,6 +87,7 @@ async fn fixture() -> (tempfile::TempDir, Arc<Engine>, Arc<Rpc>) {
             approval_minutes: 0,
             keep_updated: false,
             provider: Default::default(),
+            dev_container: Default::default(),
         });
     })
     .await;
@@ -371,6 +372,33 @@ async fn a_scan_does_not_start_while_another_extra_is_on() {
     assert!(methods.contains(&json!("thread/archive")));
     assert!(!methods.contains(&json!("turn/start")));
     assert_eq!(e.snapshot().await.scans[0].status, "preparing");
+
+    // Nor with Codex Security itself off or missing.
+    for security in [
+        json!([{"name": "codex-security", "runtimeStatus": "disabled"}]),
+        json!([]),
+    ] {
+        let mut options = extras();
+        options["mcpStatus"] = json!({"data": security, "nextCursor": null});
+        configure(&rpc, options).await;
+        let error = e
+            .start_scan_thread(
+                "scan-1",
+                &worktree,
+                "codex-security:security-scan",
+                "/p/SKILL.md",
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            "Codex didn't keep codex-security on, so the scan didn't start."
+        );
+        assert!(!requests(&rpc)
+            .await
+            .iter()
+            .any(|r| r["method"] == "turn/start"));
+    }
 }
 
 #[tokio::test]

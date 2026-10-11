@@ -150,6 +150,7 @@ async fn queued_selection_is_immutable_and_confirmation_is_durable_before_review
             approval_minutes: 0,
             keep_updated: false,
             provider: Default::default(),
+            dev_container: Default::default(),
         });
     })
     .await;
@@ -562,6 +563,7 @@ async fn rejected_settings_and_queue_writes_do_not_activate_unsaved_selections_o
             approval_minutes: 0,
             keep_updated: false,
             provider: Default::default(),
+            dev_container: Default::default(),
         });
     })
     .await;
@@ -1104,6 +1106,49 @@ async fn first_reviews_target_the_base_and_re_reviews_carry_custom_instructions(
     }
 }
 #[tokio::test]
+async fn dev_container_results_go_into_custom_instructions() {
+    let checks = ContainerChecks {
+        image: "orbit-devcontainer:a.b-abc".into(),
+        network: false,
+        setup: None,
+        check: Some(CheckStep {
+            command: "npm test".into(),
+            exit_code: Some(1),
+            timed_out: false,
+            seconds: 3,
+            output: "1 failed".into(),
+        }),
+    };
+    for prompt in [None, Some("Review against base with the previous round.")] {
+        let (d, e, rpc, id) = fixture().await;
+        e.update(|s| {
+            s.reviews[0].review_prompt = prompt.map(str::to_owned);
+            s.reviews[0].checks = Some(checks.clone());
+        })
+        .await;
+        e.start_review_inference(&id, &rpc, d.path(), false)
+            .await
+            .unwrap();
+        let calls = requests(&rpc).await;
+        let target = &calls[1]["params"]["target"];
+        assert_eq!(target["type"], "custom");
+        let instructions = target["instructions"].as_str().unwrap();
+        let base = e.snapshot().await.reviews[0].base_sha.clone();
+        let start = match prompt {
+            // A first review asks for the base-branch review it would get.
+            None => format!("Review the code changes against the base branch '{base}'."),
+            Some(p) => p.to_string(),
+        };
+        assert!(instructions.starts_with(&start), "{instructions}");
+        assert!(
+            instructions.contains("Checks (`npm test`): failed with exit code 1"),
+            "{instructions}"
+        );
+        assert!(instructions.contains("<orbit-checks-"), "{instructions}");
+        rpc.shutdown().await;
+    }
+}
+#[tokio::test]
 async fn reads_the_usage_meter_and_hides_it_without_usage_windows() {
     let (_d, e, rpc, _) = fixture().await;
     let window = json!({"usedPercent":42,"windowDurationMins":10080,"resetsAt":1_800_000_000});
@@ -1356,4 +1401,59 @@ async fn nothing_runs_while_codex_keeps_an_extra_on_or_cannot_say() {
         );
         rpc.shutdown().await;
     }
+}
+#[tokio::test]
+async fn the_check_reads_every_page_and_fails_closed() {
+    let page = |data: Value, next: Value| json!({"data": data, "nextCursor": next});
+    for (status, why) in [
+        // A server on a later page counts.
+        (
+            json!([
+                page(json!([{"name": "notes", "runtimeStatus": "disabled"}]), json!("2")),
+                page(json!([{"name": "figma", "runtimeStatus": "starting"}]), Value::Null),
+            ]),
+            "Codex kept these extra tools on, so the review didn't start: figma.",
+        ),
+        (
+            page(json!("nope"), Value::Null),
+            "Orbit couldn't check that Codex's extra tools are off, so the review didn't start: Codex didn't list them.",
+        ),
+        (
+            page(json!([]), json!("more")),
+            "Orbit couldn't check that Codex's extra tools are off, so the review didn't start: Codex listed too many.",
+        ),
+    ] {
+        let (d, e, rpc, id) = fixture().await;
+        configure(&rpc, json!({"mcpStatus": status})).await;
+        let error = e
+            .start_review_inference(&id, &rpc, d.path(), false)
+            .await
+            .unwrap_err();
+        assert_eq!(error, why);
+        assert_no_inference(&requests(&rpc).await);
+        rpc.shutdown().await;
+    }
+    // Every page is read before the review starts.
+    let (d, e, rpc, id) = fixture().await;
+    let off = |name: &str| json!([{"name": name, "runtimeStatus": "disabled"}]);
+    configure(
+        &rpc,
+        json!({"mcpStatus": [
+            page(off("notes"), json!("2")),
+            page(off("figma"), Value::Null),
+        ]}),
+    )
+    .await;
+    e.start_review_inference(&id, &rpc, d.path(), false)
+        .await
+        .unwrap();
+    let calls = every_request(&rpc).await;
+    let listed: Vec<&Value> = calls
+        .iter()
+        .filter(|r| r["method"] == "mcpServerStatus/list")
+        .collect();
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed[1]["params"]["cursor"], "2");
+    assert_eq!(calls.last().unwrap()["method"], "review/start");
+    rpc.shutdown().await;
 }

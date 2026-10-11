@@ -11,7 +11,7 @@ use super::{
 use crate::{
     antigravity, claude,
     cli::{Init, Output, Running, Started, Turn, TurnKind},
-    review_instructions,
+    devcontainer, review_instructions,
     types::*,
 };
 use serde_json::json;
@@ -45,12 +45,17 @@ const PRIOR_PROMPT: &str = "\n\nThis pull request was reviewed before. \
     and list each in priorFindings with its ID, its status and a one-sentence note. \
     Do not report an earlier finding again as a new finding.\n\n";
 
+const CHECKS_PROMPT: &str = "\n\nThe repository's checks also ran after your review. \
+    Before answering, read their results below. When a failure comes from this change and your review didn't report it, \
+    add it to findings, reading files and the diff as needed but changing nothing.\n\n";
+
 impl Engine {
     /// Checks the CLI reviewers, which are optional; their status shows in
     /// Settings either way.
     pub async fn check_reviewers(&self) {
         let _ = self.check_claude().await;
         let _ = self.check_antigravity().await;
+        let _ = self.check_dev_containers().await;
     }
     /// Checks the Claude CLI is installed and signed in, and records whether
     /// Claude reviews can start.
@@ -101,7 +106,14 @@ impl Engine {
         let selection = ModelSelection::requested(r);
         selection.validate_for(provider, &s)?;
         let (session, prompt) = match provider {
-            Provider::Antigravity => (String::new(), change_prompt(worktree, &r.base_sha).await?),
+            Provider::Antigravity => {
+                let mut prompt = change_prompt(worktree, &r.base_sha).await?;
+                if let Some(checks) = &r.checks {
+                    prompt.push_str("\n\n");
+                    prompt.push_str(&devcontainer::notes(checks));
+                }
+                (String::new(), prompt)
+            }
             _ => (
                 uuid::Uuid::new_v4().to_string(),
                 claude::review_command(&selection.effort, &r.base_sha),
@@ -145,12 +157,22 @@ impl Engine {
             provider.label()
         ))?;
         let worktree = r.worktree.clone().ok_or("The review has no worktree.")?;
-        let (kind, prompt) = match &r.review_prompt {
-            Some(notes) => (
-                TurnKind::ExtractionWithTools,
-                format!("{}{PRIOR_PROMPT}{notes}", extraction_prompt()),
-            ),
-            None => (TurnKind::Extraction, extraction_prompt()),
+        let mut prompt = extraction_prompt();
+        if let Some(notes) = &r.review_prompt {
+            prompt.push_str(PRIOR_PROMPT);
+            prompt.push_str(notes);
+        }
+        // Antigravity had the checks' results with the change; Claude's
+        // `/code-review` turn didn't, so it weighs them now.
+        let checks = r.checks.as_ref().filter(|_| provider == Provider::Claude);
+        if let Some(checks) = checks {
+            prompt.push_str(CHECKS_PROMPT);
+            prompt.push_str(&devcontainer::notes(checks));
+        }
+        let kind = if r.review_prompt.is_some() || checks.is_some() {
+            TurnKind::ExtractionWithTools
+        } else {
+            TurnKind::Extraction
         };
         let turn = Turn {
             kind,

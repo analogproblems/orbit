@@ -10,6 +10,8 @@ pub(super) enum Left {
     Unsure(String),
     /// These tool servers are on.
     On(Vec<String>),
+    /// The tool server to keep isn't on.
+    Missing(String),
 }
 impl Left {
     /// What went wrong, for work that `stopped`, such as "the review didn't
@@ -24,6 +26,7 @@ impl Left {
                 "Codex kept these extra tools on, so {stopped}: {}.",
                 names.join(", ")
             ),
+            Left::Missing(name) => format!("Codex didn't keep {name} on, so {stopped}."),
         }
     }
 }
@@ -70,15 +73,21 @@ pub(super) async fn off_but_scans(
     ))
 }
 
-/// Checks with Codex that every tool server is off for `thread`, but `keep`.
+/// Checks with Codex that every tool server is off for `thread`, but `keep`,
+/// which must be on.
 pub(super) async fn check(rpc: &Rpc, thread: &str, keep: Option<&str>) -> Result<(), Left> {
-    let on: Vec<String> = list_servers(rpc, Some(thread))
+    let mut on: Vec<String> = list_servers(rpc, Some(thread))
         .await
         .map_err(Left::Unsure)?
         .iter()
         .flat_map(extras::servers_on)
-        .filter(|name| Some(name.as_str()) != keep)
         .collect();
+    if let Some(keep) = keep {
+        if !on.iter().any(|name| name == keep) {
+            return Err(Left::Missing(keep.into()));
+        }
+        on.retain(|name| name != keep);
+    }
     if on.is_empty() {
         Ok(())
     } else {

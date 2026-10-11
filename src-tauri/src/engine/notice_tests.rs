@@ -33,6 +33,7 @@ fn repository(approval_minutes: u32) -> Repository {
         approval_minutes,
         keep_updated: false,
         provider: Default::default(),
+        dev_container: Default::default(),
     }
 }
 fn run(automatic: bool, status: &str) -> Review {

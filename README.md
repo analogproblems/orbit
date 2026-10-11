@@ -11,6 +11,7 @@ Built with Tauri 2, Rust, React 19, TypeScript, Zustand, and the Astryx design s
 - Optional: [Claude Code](https://code.claude.com/docs) (`claude`), signed in, to review a repository with Claude instead of Codex.
 - Optional: the [Antigravity CLI](https://antigravity.google/docs/cli/install/) (`agy`), signed in, to review a repository with Antigravity.
 - The [Tauri native prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS.
+- Optional: [Docker](https://docs.docker.com/get-started/get-docker/), running, and the [Dev Container CLI](https://github.com/devcontainers/cli) (`npm install -g @devcontainers/cli`), to run a repository's setup and checks in its dev container.
 
 Orbit runs `gh`, `git`, `codex`, `claude`, and `agy` from your `PATH` and uses their own sign-ins. It never asks for or stores your tokens.
 
@@ -56,6 +57,7 @@ The [user guide](docs/user-guide.md#the-review-loop) has the full rules.
 - **Claude reviews run an allow list.** A repository reviewed by Claude runs `claude` with your own sign-in, its settings and plugins switched off, its sandbox required (on Linux, install `bubblewrap` and `socat`), and only file reading, search and a short list of Git and text commands allowed. Anything else is declined on its own and noted in the report; Claude reviews have no network access and can't run a setup command. As with Codex, the sandbox is not a full read boundary, and a Git diff driver configured in your clone can still run inside it and write to the worktree.
 - **Antigravity reviews stay in Antigravity's sandbox.** A repository reviewed by Antigravity runs `agy` with your own sign-in and `--sandbox`, never skipping its permission checks. Orbit works out the change itself (with Git's diff drivers off) and gives it to Antigravity, so it needs no commands; anything that needs approval is declined. Orbit reads Antigravity's settings but never changes them, and won't start a review if they allow commands outside the sandbox, the network, MCP tools, files outside the worktree, or working without asking. Antigravity reads the repository's own `AGENTS.md` and `.agents/` rules, which the pull request controls. Antigravity reviews have no network access and can't run a setup command. This was built from Antigravity's documentation and hasn't yet been run against the real CLI.
 - **Setup commands run pull request code**, such as install scripts. Prefer options like `--ignore-scripts`. With network access on, both setup and the agent can reach the network.
+- **Dev containers keep pull request code in a box.** A repository can run its setup and a check command, such as `npm test`, in its dev container instead. Orbit builds the box from the base branch's `.devcontainer/` (never the pull request's), copies the pull request in, and runs them there with no folders from your computer, no sign-ins and no network unless you allow it. The reviewer gets the results and still works in its own sandbox on your computer.
 - **Credential scan.** A report that looks like it contains a credential, such as a token or private key, is never published automatically, and publishing it yourself needs an extra confirmation. The scan is best effort and misses secrets without a recognizable format.
 - **Approvals.** Commands and file changes that need more access wait for you to approve or deny them; unknown requests are never granted automatically. A per-repository time limit can decline them on automatic reviews.
 - **Opt-in automation.** Autopilot and automatic publication start off, and a review you start yourself is never published automatically.
@@ -72,6 +74,10 @@ npm run diagnose   # Read-only GitHub/Codex connection check; no inference or co
 npm run tauri -- build --no-bundle  # Native executable (src-tauri/target/release/orbit on Linux)
 ```
 
+### Dev container
+
+[`.devcontainer/`](.devcontainer/devcontainer.json) describes a box with everything `npm run check` needs: Node 22, stable Rust with rustfmt and Clippy, the Linux libraries Tauri needs, Git and `gh`. Open the folder in VS Code and choose **Reopen in Container**, start a GitHub Codespace, or run `devcontainer up --workspace-folder .` with the [Dev Container CLI](https://github.com/devcontainers/cli). `npm ci` runs when the container is created. The box has no display, so use `npm run check` and the browser demo (`npm run dev`, port 1420 is forwarded) there, and `npm run desktop` on your own machine.
+
 UI code follows [`AGENTS.md`](AGENTS.md): Astryx components and tokens only. Run `npx astryx component <Name>` before using a component.
 
 ## Architecture
@@ -85,6 +91,7 @@ UI code follows [`AGENTS.md`](AGENTS.md): Astryx components and tokens only. Run
 | Queue, worktrees, orchestration, persistence            | `src-tauri/src/engine/` (one file per area; see `engine/mod.rs`)                                                                                |
 | Review loop state, verdicts, and attention items        | `src-tauri/src/review_loop.rs`, `src-tauri/src/attention.rs`                                                                                    |
 | GitHub discovery, PR details, files, comments           | `src-tauri/src/github.rs`                                                                                                                       |
+| Setup and checks in dev containers                      | `src-tauri/src/devcontainer.rs`, `src-tauri/src/engine/checks.rs`                                                                               |
 | Codex process and bidirectional RPC                     | `src-tauri/src/rpc.rs`                                                                                                                          |
 | Storage inspection, ownership checks, report generation | `src-tauri/src/storage.rs`                                                                                                                      |
 | Storage and report actions                              | `src/Storage.tsx`, `src/ReviewActions.tsx`                                                                                                      |

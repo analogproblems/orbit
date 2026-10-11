@@ -4,6 +4,7 @@ pub mod attention;
 pub mod buddy;
 pub mod claude;
 pub mod cli;
+pub mod devcontainer;
 pub mod engine;
 pub mod extras;
 pub mod github;
