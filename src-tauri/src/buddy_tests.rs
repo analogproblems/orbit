@@ -710,3 +710,23 @@ fn every_tone_answers_every_question_its_own_way() {
         );
     }
 }
+#[test]
+fn a_question_orbit_closed_on_says_so() {
+    let (mut s, _) = snapshot();
+    let id = asked(&mut s, "Anything new?");
+    assert!(s.buddy_feed.notes[0].pending);
+    recover(&mut s.buddy_feed);
+    let text = "Orbit closed before I could answer. Ask me again?";
+    assert!(!s.buddy_feed.notes[0].pending);
+    assert_eq!(s.buddy_feed.notes[0].text, text);
+    // An answer that arrives late doesn't replace it.
+    answered(&mut s, id, "Late.".into(), vec![]);
+    assert_eq!(s.buddy_feed.notes[0].text, text);
+    // Each tone says it couldn't answer in its own way.
+    let said: std::collections::HashSet<String> = TONES
+        .iter()
+        .map(|tone| say::no_answer(tone, "Codex disconnected."))
+        .collect();
+    assert_eq!(said.len(), TONES.len());
+    assert!(said.iter().all(|t| t.contains("Codex disconnected.")));
+}

@@ -5,6 +5,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import options from "../test-fixtures/buddy-options.json";
 import { Bit, bitColours, bitHats, moodLabels } from "./Bit";
 import {
+  actionLabels,
   buddyTones,
   defaultBuddy,
   fixLabels,
@@ -29,6 +30,7 @@ describe("Bit", () => {
     expect(Object.keys(fixRuleLabels)).toEqual(options.rules);
     expect(Object.keys(fixLabels)).toEqual(options.fixes);
     expect(Object.keys(questionLabels)).toEqual(options.questions);
+    expect(Object.keys(actionLabels)).toEqual(options.actions);
     // Every fix but a settings change has a rule, which starts on Ask first,
     // under the same names the engine saves and accepts.
     expect(Object.keys(defaultBuddy.rules)).toEqual(

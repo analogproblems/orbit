@@ -1,4 +1,5 @@
 pub mod antigravity;
+pub mod ask;
 pub mod attention;
 pub mod buddy;
 pub mod claude;
@@ -174,6 +175,21 @@ mod desktop {
         question: buddy::Question,
     ) -> Result<(), String> {
         engine.ask_buddy(question).await
+    }
+    #[tauri::command]
+    async fn ask_buddy_anything(
+        engine: State<'_, AppState>,
+        question: String,
+    ) -> Result<(), String> {
+        engine.ask_buddy_anything(&question).await
+    }
+    #[tauri::command]
+    async fn use_proposal(
+        engine: State<'_, AppState>,
+        note_id: u64,
+        proposal_id: u32,
+    ) -> Result<(), String> {
+        engine.use_proposal(note_id, proposal_id).await
     }
     #[tauri::command]
     async fn cancel_review(engine: State<'_, AppState>, review_id: String) -> Result<(), String> {
@@ -377,6 +393,8 @@ mod desktop {
                 continue_loop,
                 use_fix,
                 ask_buddy,
+                ask_buddy_anything,
+                use_proposal,
                 publish_review,
                 publish_plan,
                 send_message,

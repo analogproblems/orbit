@@ -11,6 +11,7 @@ use std::{
 };
 use tokio::sync::Mutex;
 
+mod ask;
 mod chat;
 mod claims;
 mod cli_review;
@@ -36,6 +37,8 @@ const USAGE_REFRESH: Duration = Duration::from_secs(5 * 60);
 
 #[cfg(test)]
 mod antigravity_tests;
+#[cfg(test)]
+mod ask_tests;
 #[cfg(test)]
 mod chat_tests;
 #[cfg(test)]
@@ -106,7 +109,8 @@ type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// `items` via `retire_dead_connection` → `disconnected`); `poll_lock` →
 /// `state` and `synced_repos` (one at a time); `publish_lock` → `state`;
 /// `cleanup_lock` → `git_lock` → `state`; `state` → `synced_repos`
-/// (`schedule`); `state` → `fixing` (`flush`). `preparing`,
+/// (`schedule`); `state` → `fixing` (`flush`); `state` → `asking`
+/// (`ask_buddy_anything`). `preparing`,
 /// `recovered_publications`, `status_sender`, `sending_statuses` and
 /// `stopping_scans` (`std` mutexes, like `preparing` and `fixing`) are
 /// otherwise only taken on their own.
@@ -164,6 +168,8 @@ pub struct Engine {
     /// Items that just opened whose fix Bit does on its own; the next tick
     /// does them.
     fixing: std::sync::Mutex<Vec<(Attention, crate::buddy::Fix)>>,
+    /// The question you typed that Codex is answering for Bit.
+    asking: std::sync::Mutex<Option<ask::Asking>>,
     _instance_lock: std::fs::File,
 }
 impl Engine {
@@ -204,6 +210,7 @@ impl Engine {
         }
         state.settings.repositories = repositories;
         state.settings.buddy.normalize();
+        crate::buddy::recover(&mut state.buddy_feed);
         for p in state.prs.iter_mut().chain(state.history_prs.iter_mut()) {
             p.id = p.id.to_ascii_lowercase();
         }
@@ -295,6 +302,7 @@ impl Engine {
             antigravity: std::sync::Mutex::new(crate::antigravity::Setup::default()),
             cli_turns: std::sync::Mutex::new(HashMap::new()),
             fixing: std::sync::Mutex::new(vec![]),
+            asking: std::sync::Mutex::new(None),
             _instance_lock: instance_lock,
         }))
     }

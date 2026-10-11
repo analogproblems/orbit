@@ -48,15 +48,18 @@ fn latest_automatic<'a>(s: &'a Snapshot, pr: &PullRequest) -> Option<&'a Review>
         .filter(|r| r.pr_id == pr.id && r.automatic && !r.superseded)
         .max_by(|a, b| a.created_at.cmp(&b.created_at))
 }
-/// Publish, for a report automatic publication wouldn't hold: current, free
-/// of credentials, and from a PR whose source Orbit trusts.
-fn publish_fix(s: &Snapshot, pr: &PullRequest, r: &Review) -> Option<Fix> {
-    (r.status == "ready"
+/// Whether Bit may publish a report: one automatic publication wouldn't
+/// hold, so current, free of credentials, and from a PR whose source Orbit
+/// trusts.
+pub fn may_publish(s: &Snapshot, pr: &PullRequest, r: &Review) -> bool {
+    r.status == "ready"
         && r.before_follow_up.is_none()
         && publishable(r, pr)
         && r.sensitive.is_empty()
-        && trusted_source(pr, &s.settings.trusted_authors))
-    .then_some(Fix::Publish)
+        && trusted_source(pr, &s.settings.trusted_authors)
+}
+fn publish_fix(s: &Snapshot, pr: &PullRequest, r: &Review) -> Option<Fix> {
+    may_publish(s, pr, r).then_some(Fix::Publish)
 }
 /// Why the PR's latest automatic run needs the developer, if it does.
 fn run_item(s: &Snapshot, pr: &PullRequest) -> Option<Attention> {

@@ -59,5 +59,13 @@
     "review_again": "ask_first",
     "publish": "ask_first",
     "sync_now": "ask_first"
-  }
+  },
+  "actions": [
+    "continue_loop",
+    "stop_loop",
+    "review_again",
+    "publish",
+    "sync_now",
+    "change_settings"
+  ]
 }

@@ -223,6 +223,53 @@ describe("demo buddy", () => {
       error: "Error: This doesn't need you any more.",
     });
   });
+  it("answers a typed question after thinking, and taps its buttons once", async () => {
+    const store = useOrbit.getState();
+    const last = () => useOrbit.getState().snapshot.buddyFeed!.notes.at(-1)!;
+    const ask = (question: string) =>
+      store.action("ask_buddy_anything", { question });
+    expect((await ask("  ")).ok).toBe(false);
+    expect((await ask(" How's it going? ")).ok).toBe(true);
+    expect(last()).toMatchObject({
+      kind: "answer",
+      question: "How's it going?",
+      pending: true,
+    });
+    expect(await ask("And now?")).toEqual({
+      ok: false,
+      error: "Error: Bit is still answering your last question.",
+    });
+    await vi.advanceTimersByTimeAsync(1500);
+    const note = last();
+    expect(note.pending).toBe(false);
+    expect(note.text).toMatch(/^This is the demo/);
+    expect(note.proposals!.map((p) => p.action)).toEqual([
+      "sync_now",
+      "change_settings",
+    ]);
+    const tap = (proposalId: number) =>
+      store.action("use_proposal", { noteId: note.id, proposalId });
+    expect((await tap(1)).ok).toBe(true);
+    expect(useOrbit.getState().snapshot.settings.pollSeconds).toBe(300);
+    expect(last().proposals![1].done).toBe(true);
+    expect(await tap(1)).toEqual({
+      ok: false,
+      error: "Error: That's done already.",
+    });
+    expect(await tap(7)).toEqual({
+      ok: false,
+      error: "Error: This button isn't there any more.",
+    });
+  });
+
+  it("says a question the demo restarted on wasn't answered", async () => {
+    await useOrbit.getState().action("ask_buddy_anything", { question: "Hi?" });
+    await useOrbit.getState().init();
+    expect(useOrbit.getState().snapshot.buddyFeed!.notes.at(-1)).toMatchObject({
+      pending: false,
+      text: "The demo restarted before I could answer. Ask me again?",
+    });
+  });
 });
 
 describe("save feedback", () => {

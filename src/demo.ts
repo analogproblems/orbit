@@ -892,3 +892,14 @@ export function demoAnswer(
     lines,
   };
 }
+/** Bit's answer to a typed question in the demo, which has no Codex to
+ * think with. Its buttons show how answers offer Orbit's controls. */
+export function demoTypedAnswer(): Pick<BuddyNote, "text" | "proposals"> {
+  return {
+    text: "This is the demo, so I can't think about your question for real. In Orbit, Codex answers here using what Orbit knows, and I can offer buttons for Orbit's own controls. They only run when you tap them, like these:",
+    proposals: [
+      { id: 0, action: "sync_now" },
+      { id: 1, action: "change_settings", settings: { pollSeconds: 300 } },
+    ],
+  };
+}
