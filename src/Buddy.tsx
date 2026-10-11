@@ -13,6 +13,7 @@ import {
   ChatMessageMetadata,
   ChatSendButton,
   ClickableCard,
+  Code,
   EmptyState,
   Grid,
   Heading,
@@ -49,6 +50,7 @@ import {
   memoryChangeText,
   memoryLimits,
   moodReason,
+  needsSetup,
   offeredFix,
   questionLabels,
   withPatch,
@@ -157,8 +159,37 @@ function FixButton({ itemKey }: { itemKey: string | null | undefined }) {
   );
 }
 
-/** A button from an answer to a question you typed. It runs only when you
- * tap it, and Orbit checks it against what's true then. */
+/** What a button from one of Bit's answers says it does. */
+function proposalLabel(p: Proposal) {
+  const pr = p.prId?.split("/").pop();
+  const only = (patch: object | null | undefined, key: string) =>
+    !!patch && Object.keys(patch).length === 1 && key in patch;
+  if (p.action === "set_up_repository") {
+    if (p.connect) return `Connect ${p.repo}`;
+    if (only(p.repository, "autopilot") && p.repository?.autopilot)
+      return `Review ${p.repo} automatically`;
+    return `Set up ${p.repo}`;
+  }
+  if (only(p.settings, "automatic") && p.settings?.automatic)
+    return "Turn on autopilot";
+  return pr ? `${actionLabels[p.action]}: ${pr}` : actionLabels[p.action];
+}
+
+/** A line of Bit's, with any `command` in it shown as code. */
+function LineText({ text }: { text: string }) {
+  const parts = text.split("`");
+  if (parts.length % 2 === 0) return <Text>{text}</Text>;
+  return (
+    <Text>
+      {parts.map((part, index) =>
+        index % 2 ? <Code key={index}>{part}</Code> : part,
+      )}
+    </Text>
+  );
+}
+
+/** A button from one of Bit's answers. It runs only when you tap it, and
+ * Orbit checks it against what's true then. */
 function ProposalButton({
   noteId,
   proposal,
@@ -168,13 +199,7 @@ function ProposalButton({
 }) {
   const { snapshot: s, action } = useOrbit();
   const [error, setError] = useState<string | null>(null);
-  const pr = proposal.prId?.split("/").pop();
-  const label =
-    proposal.action === "set_up_repository"
-      ? `${proposal.connect ? "Connect" : "Set up"} ${proposal.repo}`
-      : pr
-        ? `${actionLabels[proposal.action]}: ${pr}`
-        : actionLabels[proposal.action];
+  const label = proposalLabel(proposal);
   const repoChange =
     proposal.repository && describeRepositoryPatch(proposal.repository);
   return (
@@ -294,7 +319,7 @@ function NoteMessage({
               {note.lines.map((line, index) => (
                 <ListItem
                   key={index}
-                  label={<Text>{line.text}</Text>}
+                  label={<LineText text={line.text} />}
                   description={<FixButton itemKey={line.key} />}
                 />
               ))}
@@ -335,6 +360,7 @@ export function BuddyPage({
   const mood = buddyMood(s);
   const notes = s.buddyFeed?.notes ?? [];
   const [asking, setAsking] = useState<Question | null>(null);
+  const setupNeeded = needsSetup(s);
   const ask = async (question: Question) => {
     setAsking(question);
     await action("ask_buddy", { question });
@@ -417,7 +443,11 @@ export function BuddyPage({
                       key={question}
                       label={questionLabels[question]}
                       size="sm"
-                      variant="secondary"
+                      variant={
+                        question === "setup" && setupNeeded
+                          ? "primary"
+                          : "secondary"
+                      }
                       isLoading={asking === question}
                       isDisabled={!!asking && asking !== question}
                       onClick={() => void ask(question)}

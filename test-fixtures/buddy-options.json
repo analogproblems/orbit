@@ -51,9 +51,10 @@
     "review_again",
     "publish",
     "sync_now",
-    "turn_on_autopilot"
+    "turn_on_autopilot",
+    "check_connections"
   ],
-  "questions": ["needs_you", "running", "loops", "repositories"],
+  "questions": ["needs_you", "running", "loops", "repositories", "setup"],
   "defaultRules": {
     "continue_loop": "ask_first",
     "review_again": "ask_first",
@@ -67,7 +68,8 @@
     "publish",
     "sync_now",
     "change_settings",
-    "set_up_repository"
+    "set_up_repository",
+    "check_connections"
   ],
   "memoryLimits": {
     "general": 20,

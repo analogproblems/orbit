@@ -169,6 +169,35 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
             )
         });
     }
+    // GitHub is the sync items' to report.
+    for c in crate::guide::connections(s) {
+        let (Some(error), false) = (&c.error, c.ready || c.needed_by.is_empty()) else {
+            continue;
+        };
+        if c.key == "github" {
+            continue;
+        }
+        let what = if c.key == "dev-containers" {
+            "can't run setup and checks in a dev container"
+        } else {
+            "can't be reviewed"
+        };
+        out.push(Attention {
+            fix: Some(Fix::CheckConnections),
+            ..item(
+                format!("connection:{}", c.key),
+                AttentionKind::Disconnected,
+                None,
+                None,
+                format!(
+                    "{} isn't connected, so {} {what}: {}",
+                    c.name,
+                    crate::guide::some_repositories(&c.needed_by),
+                    error.trim()
+                ),
+            )
+        });
+    }
     for a in &s.approvals {
         let pr_id = s
             .reviews
@@ -239,6 +268,7 @@ pub fn notice(s: &Snapshot, a: Attention) -> Notice {
         AttentionKind::Loop => "A review loop needs you",
         AttentionKind::AutopilotPaused => "Autopilot was turned off",
         AttentionKind::SyncFailing => "Orbit can't sync",
+        AttentionKind::Disconnected => "A connection needs you",
     };
     let pr = s.prs.iter().find(|p| Some(&p.id) == a.pr_id.as_ref());
     let body = match pr {

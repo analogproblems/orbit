@@ -335,14 +335,15 @@ If Orbit closes or Codex disconnects during a scan, the scan is marked **Interru
 
 ### What needs you
 
-When something can only move forward with you, the sidebar shows **Needs you** with a count, and the **Review loops** page lists each item at the top with its reason and one main action: **Approve or deny** for an approval, **Publish** for a held report or one waiting for you, **Continue loop** when the round limit is reached, **Open repositories** or **Open settings** for sync and save problems, and **Open chat** otherwise. Selecting the item itself opens where it is resolved: the review's chat, the PR, **Repositories**, or **Settings**. An approval item opens that exact request. An item appears when:
+When something can only move forward with you, the sidebar shows **Needs you** with a count, and the **Review loops** page lists each item at the top with its reason and one main action: **Approve or deny** for an approval, **Publish** for a held report or one waiting for you, **Continue loop** when the round limit is reached, **Check again** for a connection, **Open repositories** or **Open settings** for sync and save problems, and **Open chat** otherwise. Selecting the item itself opens where it is resolved: the review's chat, the PR, **Repositories**, or **Settings**. An approval item opens that exact request. An item appears when:
 
 - a review is waiting for your approval;
 - an automatic report was held instead of published, with the reason;
 - an automatic review failed, or was interrupted by a restart;
 - the loop needs you for another reason from the list above;
 - Autopilot was turned off because Orbit could not save its state (turn Autopilot back on once saving works);
-- a repository has failed to sync 3 times in a row, or Orbit could not sync with GitHub at all 3 times in a row (for example, when the GitHub sign-in expired).
+- a repository has failed to sync 3 times in a row, or Orbit could not sync with GitHub at all 3 times in a row (for example, when the GitHub sign-in expired);
+- Codex, Claude, Antigravity, or Docker and the Dev Container CLI isn't connected while a connected repository uses it, for example after its sign-in expired. Sign in again, then tap **Check again**.
 
 An item disappears once it is resolved. A stopped loop lists only its approvals, since you have already taken it over.
 
@@ -355,7 +356,8 @@ Bit is Orbit's buddy: a small planet with a face, at the bottom of the sidebar. 
 - a round starts, and when it finishes, with how many blocking findings it found, or that it failed or had no findings list;
 - a loop comes out clean, with its blocking findings round by round, such as `4 → 1 → 0`;
 - a loop is stopped or continued;
-- something new needs you, with the same reason as the **Needs you** list.
+- something new needs you, with the same reason as the **Needs you** list;
+- a repository gets connected, from **Repositories** or one of Bit's buttons, with what it still needs and a button for each (see [Help me set up](#ask-bit)).
 
 **Open loop** under a note opens that pull request's loop; **Open repositories** opens Repositories for a repository's sync problem, and **Open settings** opens Settings for anything else. Bit keeps its last 50 notes, answers included, and they survive a restart. When Orbit starts for the first time with Bit, it looks at the loops already running and starts noting from there, rather than retelling their history.
 
@@ -367,6 +369,16 @@ The buttons under the conversation ask Bit a question. It answers straight away 
 - **What's running?** lists reviews, syncs and security scans in progress.
 - **How are my loops?** lists each open loop with its round and state.
 - **How are my repositories?** lists each repository with its open pull requests, whether Autopilot reviews it, and any failed syncs.
+- **Help me set up** walks you through getting reviews going, with a button for each step. It stands out until GitHub and Codex are connected and you have a repository.
+
+**Help me set up** first says whether GitHub and Codex are connected, and Claude, Antigravity, or Docker and the Dev Container CLI while a repository uses them, with how to connect each one that isn't and a **Check again** button for once you have. With no repository connected yet, it asks GitHub for your most recently pushed repositories and offers **Connect** for up to 3 of them. Then, for each repository:
+
+- **Setup command**: if it has none, Bit looks for a lock file at the top of its copy and offers the command that installs from it, with network access on, since installing downloads packages: `npm ci --ignore-scripts` for `package-lock.json` or `npm-shrinkwrap.json`, `pnpm install --frozen-lockfile --ignore-scripts` for `pnpm-lock.yaml`, `yarn install --frozen-lockfile` for `yarn.lock`, `bun install --frozen-lockfile` for `bun.lock` or `bun.lockb`, `cargo fetch` for `Cargo.lock`, `uv sync --frozen` for `uv.lock`, `poetry install` for `poetry.lock`, `pip install -r requirements.txt` for `requirements.txt`, `go mod download` for `go.mod`, and `bundle install` for `Gemfile.lock`, checked in that order. Claude and Antigravity reviews run a setup command only in a dev container, so Bit offers none for them otherwise. A setup command you already have is kept.
+- **Automatic reviews**: if they're off, **Review owner/name automatically** turns them on.
+
+Last, if Autopilot is off for all of Orbit, **Turn on autopilot** turns it on. Each button lists its change and waits for your tap, as other answers' buttons do. Bit works all of this out from Orbit's state and the files in each copy, without any AI, and the answer starts with how many things are left. When everything is done, Bit says you're all set.
+
+When a repository gets connected, Bit follows up on its own with the same steps for just that repository.
 
 Your question and Bit's answer join the conversation, so every window sees them.
 
@@ -379,9 +391,9 @@ An answer can offer up to 3 buttons for Orbit's own controls: **Continue loop**,
 An answer can also offer to set up a repository:
 
 - **Connect owner/name** connects one of your repositories that the answer's summary listed. Orbit downloads its own copy into its data folder, in `clones/<owner>/<name>`, with the GitHub CLI signed in as you, unless that copy is already there. A download that's cut short is thrown away the next time you tap, never connected. It connects it with automatic reviews off, no setup command, no network, Codex as the reviewer and the copy kept up to date, plus any change the button lists. Its pull requests show up on the next sync, which Orbit starts straight away. A large repository can take a while to download.
-- **Set up owner/name** changes a connected repository's settings: the setup command, the check command, network access, the dev container, the reviewer, the automatic rounds, the approval time limit, keeping the copy up to date, and automatic reviews. If you disconnect the repository before tapping it, the button won't connect it again; ask Bit again for a Connect button.
+- **Set up owner/name**, or **Review owner/name automatically** when that's the only change, changes a connected repository's settings: the setup command, the check command, network access, the dev container, the reviewer, the automatic rounds, the approval time limit, keeping the copy up to date, and automatic reviews. If you disconnect the repository before tapping it, the button won't connect it again; ask Bit again for a Connect button.
 
-The button lists every change, with commands exactly as they'd be saved, such as "Setup command: npm ci; Network access: On". Bit only offers one-line commands of up to 500 characters, without anything that looks like a password or token, and never one that fetches from elsewhere with `curl` or `wget`, pipes into a shell, uses `sudo`, `ssh`, `scp` or `nc`, pushes with Git, or hides what it runs with `base64` or `eval`, and only round limits and approval time limits that **Repositories** offers. When you tap it, Orbit checks the change again as **Repositories** would: for example, Claude and Antigravity can't run a setup command outside a dev container. Bit is told to base a setup command on the repository's lock files, to turn network access on only when installing needs it and say what that means, and to turn automatic reviews on only when you ask.
+The button lists every change, with commands exactly as they'd be saved, such as "Setup command: npm ci; Network access: On". Bit only offers one-line commands of up to 500 characters, without anything that looks like a password or token, and never one that fetches from elsewhere with `curl` or `wget`, pipes into a shell, uses `sudo`, `ssh`, `scp` or `nc`, pushes with Git, or hides what it runs with `base64` or `eval`, and only round limits and approval time limits that **Repositories** offers. When you tap it, Orbit checks the change again as **Repositories** would: for example, Claude and Antigravity can't run a setup command outside a dev container. Bit is told to use the setup command Orbit suggests from the repository's first lock file, as **Help me set up** does, to turn network access on only when installing needs it and say what that means, and to turn automatic reviews on only when you ask, or ask for a repository to be reviewed automatically.
 
 If Orbit closes while Bit is thinking, the question says so, and you can ask again.
 
@@ -402,16 +414,17 @@ When something needs you and one of Orbit's own controls fixes it, Bit's note ab
 | **Publish report**         | A report is waiting for you to publish it, or its publication was held. Never for a report the credential check flagged, or one from a pull request automatic publication wouldn't trust: read those first. Bit checks this again with GitHub just before publishing. |
 | **Sync now**               | Syncing with GitHub, or a repository, failed 3 times in a row.                                                                                                                                                                                                        |
 | **Turn autopilot back on** | A failed save turned Autopilot off.                                                                                                                                                                                                                                   |
+| **Check again**            | Codex, Claude, Antigravity, or Docker and the Dev Container CLI isn't connected while a repository uses it. Checks every connection again, like **Settings → Reconnect**, and the item closes once that one is connected.                                             |
 
 These buttons never answer a reviewer's request to run a command or change files, never change a repository's setup, and never touch the code under review. When a button's action fails, its error shows under the button.
 
-In **Settings → Buddy → What Bit can do**, each button except **Turn autopilot back on** has a rule. Every rule starts on **Ask first**:
+In **Settings → Buddy → What Bit can do**, each button except **Turn autopilot back on** and **Check again** has a rule. Every rule starts on **Ask first**:
 
 - **Do it**: when the item first opens, Bit uses the control itself instead of a desktop notification. It notes that it's on it, then that it's done. Right before acting, Bit checks again that the item still needs you, that Bit is still on and that the rule is still **Do it**. Before publishing, it also checks with GitHub that the pull request still comes from a source automatic publication would trust. If the item has closed in the meantime, Bit lets it go. If the fix doesn't work, or isn't Bit's to do any more, Bit says why, offers the button, and the item is notified as usual. Bit does it once per item, not again after a restart.
 - **Ask first**: Bit offers the button and waits for your tap.
 - **Leave it to me**: Bit offers no button. The item still appears in **Needs you** with its usual action.
 
-Turning Autopilot back on changes settings, so it always waits for your tap. With Bit turned off, Bit does nothing on its own.
+Turning Autopilot back on changes settings, and checking connections needs you to sign in first, so both always wait for your tap. With Bit turned off, Bit does nothing on its own.
 
 Bit's face shows its mood: **worried** while anything needs you, **busy** while a review runs, **sleepy** when Autopilot is off or there are no pull requests, and **happy** otherwise.
 

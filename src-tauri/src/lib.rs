@@ -8,6 +8,7 @@ pub mod devcontainer;
 pub mod engine;
 pub mod extras;
 pub mod github;
+pub mod guide;
 pub mod models;
 pub mod remote;
 pub mod review_instructions;

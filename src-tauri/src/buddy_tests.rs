@@ -534,6 +534,7 @@ fn the_app_offers_the_same_choices() {
         Question::Running,
         Question::Loops,
         Question::Repositories,
+        Question::Setup,
     ];
     let asked = questions.map(|q| serde_json::to_value(q).unwrap());
     assert_eq!(list("questions"), names(asked.to_vec()));
@@ -551,7 +552,9 @@ fn rules_use_the_names_the_app_sends() {
         serde_json::from_str(include_str!("../../test-fixtures/buddy-options.json")).unwrap();
     let defaults = &fixture["defaultRules"];
     assert_eq!(serde_json::to_value(Rules::default()).unwrap(), *defaults);
-    let ruled = FIXES.into_iter().filter(|&f| f != Fix::TurnOnAutopilot);
+    let ruled = FIXES
+        .into_iter()
+        .filter(|&f| !matches!(f, Fix::TurnOnAutopilot | Fix::CheckConnections));
     for fix in ruled {
         let name = serde_json::to_value(fix).unwrap();
         let name = name.as_str().unwrap();
@@ -571,7 +574,7 @@ fn ask_and_read(
     s: &mut Snapshot,
     question: Question,
 ) -> (String, Vec<String>, Vec<Option<String>>) {
-    ask(s, question);
+    ask(s, question, &crate::ask::Lookups::default());
     let note = s.buddy_feed.notes.last().unwrap();
     assert_eq!(note.kind, NoteKind::Answer);
     assert_eq!(note.question.as_deref(), Some(question.text()));

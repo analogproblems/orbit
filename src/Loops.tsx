@@ -91,6 +91,11 @@ export function mainAction(
     return { label: "Open repositories", onClick: go.onRepositories };
   if (a.kind === "sync_failing" || a.kind === "autopilot_paused")
     return { label: "Open settings", onClick: go.onSettings };
+  if (a.kind === "disconnected")
+    return {
+      label: "Check again",
+      onClick: () => run("use_fix", { key: a.key }),
+    };
   if (
     r &&
     publishable &&

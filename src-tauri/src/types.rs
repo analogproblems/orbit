@@ -1318,6 +1318,9 @@ pub enum AttentionKind {
     Loop,
     AutopilotPaused,
     SyncFailing,
+    /// A reviewer, or dev containers, that a repository needs isn't
+    /// connected.
+    Disconnected,
 }
 /// Something only the developer can resolve.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

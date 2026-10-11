@@ -61,6 +61,34 @@ pub const TELLTALE_FILES: [&str; 30] = [
 ];
 /// Scripts the summary names from a copy's `package.json`.
 const MAX_SCRIPTS: usize = 20;
+/// The setup command Orbit suggests for a copy, by the first lock file it
+/// has. Each installs exactly what the lock file lists and needs network
+/// access while it runs; the JavaScript ones that can skip install scripts,
+/// which run code from the pull request, do.
+pub const SETUP_COMMANDS: [(&str, &str); 12] = [
+    ("package-lock.json", "npm ci --ignore-scripts"),
+    ("npm-shrinkwrap.json", "npm ci --ignore-scripts"),
+    (
+        "pnpm-lock.yaml",
+        "pnpm install --frozen-lockfile --ignore-scripts",
+    ),
+    ("yarn.lock", "yarn install --frozen-lockfile"),
+    ("bun.lock", "bun install --frozen-lockfile"),
+    ("bun.lockb", "bun install --frozen-lockfile"),
+    ("Cargo.lock", "cargo fetch"),
+    ("uv.lock", "uv sync --frozen"),
+    ("poetry.lock", "poetry install"),
+    ("requirements.txt", "pip install -r requirements.txt"),
+    ("go.mod", "go mod download"),
+    ("Gemfile.lock", "bundle install"),
+];
+/// The setup command Orbit suggests for a copy with these telltale files,
+/// and the file it goes by.
+pub fn suggest(files: &[String]) -> Option<(&'static str, &'static str)> {
+    SETUP_COMMANDS
+        .into_iter()
+        .find(|(file, _)| files.iter().any(|f| f == file))
+}
 
 /// A change to a repository's settings from an answer. Only what is given
 /// changes.
@@ -197,6 +225,9 @@ pub struct CloneFacts {
     pub scripts: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub package_manager: Option<String>,
+    /// The setup command Orbit suggests, as `suggest` gives it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggested_setup: Option<String>,
 }
 /// Reads a copy's telltale files. Names from `package.json` are kept only
 /// when short and made of plain characters, since anyone who can push to
@@ -242,6 +273,7 @@ pub fn clone_facts(path: &Path) -> Result<CloneFacts, String> {
         .filter(plain)
         .map(str::to_owned);
     Ok(CloneFacts {
+        suggested_setup: suggest(&files).map(|(_, command)| command.to_string()),
         files,
         scripts,
         package_manager,

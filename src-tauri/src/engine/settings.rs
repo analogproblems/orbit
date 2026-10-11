@@ -96,6 +96,7 @@ impl Engine {
         }
         let mut s = self.state.lock().await;
         let mut settings = s.settings.clone();
+        let added = original.is_none().then(|| repository.clone());
         if let Some(name) = original {
             let old = settings
                 .repositories
@@ -107,7 +108,13 @@ impl Engine {
             settings.repositories.push(repository);
         }
         self.commit_settings(&mut s, settings)?;
-        Ok(s.settings.clone())
+        let saved = s.settings.clone();
+        drop(s);
+        // Bit offers what a new repository still needs.
+        if let Some(r) = added {
+            self.note_connected(&r.name, &r.path).await;
+        }
+        Ok(saved)
     }
     pub async fn set_repository_automatic(
         &self,

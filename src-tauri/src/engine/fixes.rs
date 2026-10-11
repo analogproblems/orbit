@@ -41,10 +41,20 @@ impl Engine {
         Ok(())
     }
     /// Answers a quick question in Bit's feed, after any notes still to be
-    /// written.
+    /// written. Help me set up first looks at each repository's copy, and
+    /// at your GitHub repositories while none is connected.
     pub async fn ask_buddy(&self, question: Question) -> Result<(), String> {
         let _ = self.flush().await;
-        self.update(|s| crate::buddy::ask(s, question)).await;
+        let lookups = match question {
+            Question::Setup => {
+                let connected = self.state.lock().await.settings.repositories.clone();
+                let list = connected.is_empty();
+                self.look_up(connected, list).await
+            }
+            _ => Default::default(),
+        };
+        self.update(|s| crate::buddy::ask(s, question, &lookups))
+            .await;
         let _ = self.flush().await;
         Ok(())
     }
@@ -150,6 +160,18 @@ impl Engine {
                 })
                 .await
                 .map(|_| ()),
+            // Done once the item closes, whatever else is still off.
+            Fix::CheckConnections => {
+                let _ = self.check_connections().await;
+                let s = self.state.lock().await;
+                match crate::attention::items(&s)
+                    .into_iter()
+                    .find(|a| a.key == item.key)
+                {
+                    Some(open) => Err(open.reason),
+                    None => Ok(()),
+                }
+            }
         }
     }
 }
