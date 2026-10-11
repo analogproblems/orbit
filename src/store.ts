@@ -284,6 +284,9 @@ function demoNote(note: Partial<BuddyNote> & Pick<BuddyNote, "kind" | "text">) {
   });
   feed.notes = feed.notes.slice(-50);
 }
+/** Where the demo pretends Orbit keeps its own copy of `name`. */
+const demoCopy = (name: string) =>
+  `/Users/demo/Library/Application Support/Orbit/clones/${name}`;
 async function demoAction(
   command: string,
   args: Record<string, unknown>,
@@ -369,7 +372,7 @@ async function demoAction(
       // As Orbit does, a repository it connects gets its own copy.
       const repo = connected ?? {
         name,
-        path: `/Users/demo/Library/Application Support/Orbit/clones/${name}`,
+        path: demoCopy(name),
         automatic: false,
         setupCommand: "",
         networkAccess: false,
@@ -495,7 +498,15 @@ async function demoAction(
       }
     }
     if (command === "save_repository") {
-      const repo = args.repository as Repository;
+      const repo = { ...(args.repository as Repository) };
+      // As in Orbit, a new repository without a folder gets Orbit's own
+      // copy, kept up to date.
+      if (!args.original && !repo.path.trim()) {
+        if (next.repositories.some((r) => sameRepo(r.name, repo.name)))
+          throw Error("Each repository can only be configured once.");
+        repo.path = demoCopy(repo.name);
+        repo.keepUpdated = true;
+      }
       // As in Orbit, a checkout is checked only when it changes.
       const before = next.repositories.find(
         (r) => args.original && sameRepo(r.name, args.original as string),

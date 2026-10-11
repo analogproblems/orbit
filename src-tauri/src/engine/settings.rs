@@ -1,6 +1,10 @@
-use super::Engine;
+use super::{setup::carry_on, Engine};
 use crate::{github, types::*};
-use std::{path::Path, sync::atomic::Ordering, time::Duration};
+use std::{
+    path::Path,
+    sync::{atomic::Ordering, Arc},
+    time::Duration,
+};
 
 impl Engine {
     pub(super) fn commit_settings(
@@ -70,13 +74,45 @@ impl Engine {
         self.commit_settings(&mut s, settings)?;
         Ok(s.settings.clone())
     }
+    /// Connects a repository, or saves a connected one's settings. A new
+    /// repository without a folder gets Orbit's own copy, downloaded into
+    /// its data folder and kept up to date. The whole save carries on even
+    /// if the window or browser that asked goes away, so a long download
+    /// still ends connected.
     pub async fn save_repository(
+        self: &Arc<Self>,
+        repository: Repository,
+        original: Option<String>,
+    ) -> Result<Settings, String> {
+        let e = self.clone();
+        carry_on(async move { e.save_repository_now(repository, original).await }).await
+    }
+    async fn save_repository_now(
         &self,
         mut repository: Repository,
         original: Option<String>,
     ) -> Result<Settings, String> {
         repository.name = repository.name.trim().into();
         repository.path = repository.path.trim().into();
+        // Held until the copy is connected, as for Bit's Connect button.
+        let mut _cloning = None;
+        if original.is_none() && repository.path.is_empty() {
+            _cloning = Some(self.cloning.lock().await);
+            let connected = self
+                .state
+                .lock()
+                .await
+                .settings
+                .repositories
+                .iter()
+                .any(|r| same_repo(&r.name, &repository.name));
+            if connected {
+                return Err("Each repository can only be configured once.".into());
+            }
+            let folder = self.own_copy(&repository.name).await?;
+            repository.path = folder.to_string_lossy().into();
+            repository.keep_updated = true;
+        }
         let validate = {
             let s = self.state.lock().await;
             original

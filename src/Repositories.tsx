@@ -44,6 +44,7 @@ import {
 } from "lucide-react";
 import { desktop, useOrbit } from "./store";
 import {
+  buddyOf,
   cliStatus,
   providerLabels,
   sameRepo,
@@ -254,7 +255,14 @@ function environment(repo: Repository) {
         : "Host tools + isolated worktree"
   } · ${repo.networkAccess ? "Sandbox network enabled" : "Sandbox network disabled"}`;
 }
-export function Repositories({ onScans }: { onScans?: () => void } = {}) {
+export function Repositories({
+  onScans,
+  onSetUp,
+}: {
+  onScans?: () => void;
+  /** Opens Bit's setup help, while Bit is on. */
+  onSetUp?: () => void;
+} = {}) {
   const formId = useId();
   const [scanning, setScanning] = useState<string | null>(null);
   const { snapshot: s, action, mutate, saves } = useOrbit();
@@ -279,7 +287,7 @@ export function Repositories({ onScans }: { onScans?: () => void } = {}) {
   const save = async (e: FormEvent) => {
     e.preventDefault();
     if (!editing || busy) return;
-    if (!editing.path.trim()) {
+    if (original && !editing.path.trim()) {
       setRepoError("Enter a local checkout path.");
       return;
     }
@@ -303,6 +311,8 @@ export function Repositories({ onScans }: { onScans?: () => void } = {}) {
   const close = (open: boolean) => {
     if (!open && !busy) setEditing(null);
   };
+  // A new repository without a folder gets Orbit's own copy.
+  const ownCopy = !!editing && !original && !editing.path.trim();
   return (
     <VStack gap={6} padding={6} maxWidth={960} className="content-page">
       <HStack gap={4} hAlign="between" vAlign="start" wrap="wrap">
@@ -382,11 +392,20 @@ export function Repositories({ onScans }: { onScans?: () => void } = {}) {
           description="Give your reviews a place to run."
           icon={<FolderGit2 />}
           actions={
-            <Button
-              label="Connect a repository"
-              icon={<Plus />}
-              onClick={add}
-            />
+            <>
+              {onSetUp && (
+                <Button
+                  label={`Set up with ${buddyOf(s.settings).name}`}
+                  variant="primary"
+                  onClick={onSetUp}
+                />
+              )}
+              <Button
+                label="Connect a repository"
+                icon={<Plus />}
+                onClick={add}
+              />
+            </>
           }
         />
       )}
@@ -437,9 +456,17 @@ export function Repositories({ onScans }: { onScans?: () => void } = {}) {
                       <TextInput
                         label="Local checkout path"
                         width="100%"
-                        isRequired
-                        placeholder="/Users/you/Projects/repository"
-                        description="Use an absolute path to an existing clone whose origin is this repository. It does not need to be up to date: reviews fetch the commits they need."
+                        isRequired={!!original}
+                        placeholder={
+                          original
+                            ? "/Users/you/Projects/repository"
+                            : "Leave empty and Orbit downloads its own copy"
+                        }
+                        description={
+                          original
+                            ? "Use an absolute path to an existing clone whose origin is this repository. It does not need to be up to date: reviews fetch the commits they need."
+                            : "Use an absolute path to an existing clone whose origin is this repository; it does not need to be up to date, since reviews fetch the commits they need. Or leave it empty: Orbit downloads its own copy into its data folder with the GitHub CLI and keeps it up to date."
+                        }
                         value={editing.path}
                         isDisabled={busy}
                         onChange={(path) => setEditing({ ...editing, path })}
@@ -466,8 +493,8 @@ export function Repositories({ onScans }: { onScans?: () => void } = {}) {
                     </HStack>
                     <Switch
                       label="Keep this clone up to date"
-                      value={editing.keepUpdated ?? false}
-                      isDisabled={busy}
+                      value={ownCopy || (editing.keepUpdated ?? false)}
+                      isDisabled={busy || ownCopy}
                       onChange={(keepUpdated) =>
                         setEditing({ ...editing, keepUpdated })
                       }
@@ -667,7 +694,7 @@ export function Repositories({ onScans }: { onScans?: () => void } = {}) {
                     />
                   )}
                   <Button
-                    label="Save repository"
+                    label={ownCopy ? "Download and connect" : "Save repository"}
                     variant="primary"
                     isLoading={busy}
                     isDisabled={busy || !editing.name}

@@ -26,6 +26,7 @@ import {
 import { Inbox as InboxIcon, Plus, RefreshCw, Search } from "lucide-react";
 import { useOrbit } from "./store";
 import {
+  buddyOf,
   latestReview,
   loopState,
   reviewDisplayStatus,
@@ -46,6 +47,7 @@ export function Inbox({
   searchRef,
   onChoose,
   onRepositories,
+  onSetUp,
 }: {
   selected?: string;
   search: string;
@@ -57,6 +59,8 @@ export function Inbox({
   searchRef: RefObject<HTMLInputElement | null>;
   onChoose: (p: PullRequest) => void;
   onRepositories: () => void;
+  /** Opens Bit's setup help, while Bit is on. */
+  onSetUp?: () => void;
 }) {
   const { snapshot: s, action } = useOrbit();
   const visible = s.prs.filter(
@@ -201,11 +205,20 @@ export function Inbox({
               }
               actions={
                 !s.settings.repositories.length && !search ? (
-                  <Button
-                    label="Connect a repository"
-                    icon={<Plus />}
-                    onClick={onRepositories}
-                  />
+                  <>
+                    {onSetUp && (
+                      <Button
+                        label={`Set up with ${buddyOf(s.settings).name}`}
+                        variant="primary"
+                        onClick={onSetUp}
+                      />
+                    )}
+                    <Button
+                      label="Connect a repository"
+                      icon={<Plus />}
+                      onClick={onRepositories}
+                    />
+                  </>
                 ) : undefined
               }
             />
