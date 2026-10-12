@@ -245,11 +245,78 @@ fn flags_a_merge_with_an_open_finding_and_a_merge_with_no_review() {
     assert_eq!(flag.attention, Glance::Act);
     assert_eq!(
         flag.text,
-        "Merged while F1 (Token logged on failure) had no ruling."
+        "Merged while F1 (Token logged on failure) was still open."
     );
 
     let h = derive(&merged_pr(vec![]));
     assert_eq!(h.flags[0].kind, FlagKind::NoReviewBeforeMerge);
+    assert_eq!(h.metrics.merged_by_loop, Some(false));
+}
+
+const RAISED: &str = "## Milo PR review\n\n**CHANGES REQUESTED**\n\n- Full head: `aaaaaaa`\n\n**F1 · P1 · Token logged on failure**\n\nThe token reaches the log.";
+const CLEARED: &str =
+    "## Milo PR review\n\n**CLEAR TO MERGE**\n\n- Full head: `bbbbbbb`\n\n- **F1 fixed:** redacted.";
+
+#[test]
+fn a_fix_after_the_merge_still_counts_as_open_at_the_merge() {
+    // Raised at 10:00, merged at 12:00, ruled fixed at 13:00.
+    let h = derive(&merged_pr(vec![
+        comment(10, "2026-10-11T10:00:00Z", RAISED),
+        comment(20, "2026-10-11T13:00:00Z", CLEARED),
+    ]));
+    let t = by_short_id(&h, "F1");
+    assert_eq!(t.final_status, FinalStatus::Fixed);
+    assert_eq!(t.status_at_merge, Some(FinalStatus::Open));
+    assert!(t.open_at_merge);
+    assert_eq!(h.metrics.open_at_merge, 1);
+    assert_eq!(h.metrics.merged_by_loop, Some(false));
+    let kinds: Vec<FlagKind> = h.flags.iter().map(|f| f.kind).collect();
+    assert_eq!(kinds, [FlagKind::MergedWithOpenFindings]);
+
+    // A clean round after the merge that doesn't mention it doesn't
+    // clear it at the merge either.
+    let clean = "## Milo PR review\n\n**CLEAR TO MERGE**\n\n- Full head: `bbbbbbb`";
+    let h = derive(&merged_pr(vec![
+        comment(10, "2026-10-11T10:00:00Z", RAISED),
+        comment(20, "2026-10-11T13:00:00Z", clean),
+    ]));
+    let t = by_short_id(&h, "F1");
+    assert_eq!(t.final_status, FinalStatus::Fixed);
+    assert_eq!(t.status_at_merge, Some(FinalStatus::Open));
+    assert!(t.open_at_merge);
+}
+
+#[test]
+fn a_finding_raised_after_the_merge_was_not_open_at_it() {
+    let clean = "## Milo PR review\n\n**CLEAR TO MERGE**\n\n- Full head: `aaaaaaa`";
+    let raised = RAISED.replace("aaaaaaa", "bbbbbbb");
+    let h = derive(&merged_pr(vec![
+        comment(10, "2026-10-11T11:30:00Z", clean),
+        comment(20, "2026-10-11T13:00:00Z", &raised),
+    ]));
+    let t = by_short_id(&h, "F1");
+    assert_eq!(t.final_status, FinalStatus::Open);
+    assert_eq!(t.status_at_merge, None);
+    assert!(!t.open_at_merge);
+    assert_eq!(h.metrics.open_at_merge, 0);
+    assert_eq!(
+        h.metrics.merged_by_loop,
+        Some(true),
+        "the last round before the merge was clean"
+    );
+    assert!(h.flags.is_empty(), "{:?}", h.flags);
+}
+
+#[test]
+fn a_first_review_after_the_merge_is_flagged() {
+    let h = derive(&merged_pr(vec![comment(
+        10,
+        "2026-10-11T13:00:00Z",
+        CLEARED,
+    )]));
+    assert_eq!(h.rounds.len(), 1);
+    let kinds: Vec<FlagKind> = h.flags.iter().map(|f| f.kind).collect();
+    assert_eq!(kinds, [FlagKind::NoReviewBeforeMerge]);
     assert_eq!(h.metrics.merged_by_loop, Some(false));
 }
 

@@ -354,6 +354,9 @@ pub struct Trajectory {
     pub final_status: FinalStatus,
     /// Minutes from the finding to the builder's "fixed" reply.
     pub minutes_to_claim: Option<i64>,
+    /// Where it stood when the pull request merged, from the rounds up to
+    /// then. None when it didn't merge or the finding came after.
+    pub status_at_merge: Option<FinalStatus>,
     /// Merged while it was open, still open or disputed.
     pub open_at_merge: bool,
 }

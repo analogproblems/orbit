@@ -386,26 +386,17 @@ fn trajectories(rounds: &[Round], claims: &[Claim], merged_at: Option<&str>) -> 
                     claim = Some(c);
                 }
             }
-            let mut final_status = rulings
-                .last()
-                .map_or(FinalStatus::Open, |r| r.status.into());
-            if matches!(final_status, FinalStatus::Open | FinalStatus::StillOpen) {
-                // A later clean round that doesn't mention it means the
-                // reviewer stopped raising it.
-                let last_ruling = rulings.last().map(|r| r.at.clone());
-                if let Some(clean) = rounds.iter().find(|r| {
-                    r.created_at > *opened_at
-                        && r.verdict == RoundVerdict::Clean
-                        && last_ruling.as_ref().is_none_or(|at| r.created_at > *at)
-                }) {
-                    rulings.push(Ruling {
-                        round: clean.round.unwrap_or(0),
-                        at: clean.created_at.clone(),
-                        status: PriorStatus::Fixed,
-                        note: Some("Clean verdict with no further mention (inferred).".into()),
-                    });
-                    final_status = FinalStatus::Fixed;
-                }
+            let (final_status, cleared) = standing(&rulings, rounds, opened_at, None);
+            let status_at_merge = merged_at
+                .filter(|m| opened_at.as_str() <= *m)
+                .map(|m| standing(&rulings, rounds, opened_at, Some(m)).0);
+            if let Some(clean) = cleared {
+                rulings.push(Ruling {
+                    round: clean.round.unwrap_or(0),
+                    at: clean.created_at.clone(),
+                    status: PriorStatus::Fixed,
+                    note: Some("Clean verdict with no further mention (inferred).".into()),
+                });
             }
             out.push(Trajectory {
                 finding_id: f.id.clone(),
@@ -421,16 +412,47 @@ fn trajectories(rounds: &[Round], claims: &[Claim], merged_at: Option<&str>) -> 
                     .and_then(|c| minutes_between(opened_at, &c.created_at)),
                 claim: claim.cloned(),
                 rulings,
-                open_at_merge: merged_at.is_some()
-                    && matches!(
-                        final_status,
-                        FinalStatus::Open | FinalStatus::StillOpen | FinalStatus::DeclinedDisputed
-                    ),
                 final_status,
+                open_at_merge: matches!(
+                    status_at_merge,
+                    Some(
+                        FinalStatus::Open | FinalStatus::StillOpen | FinalStatus::DeclinedDisputed
+                    )
+                ),
+                status_at_merge,
             });
         }
     }
     out
+}
+
+/// Where a finding stood by `until` (after every round when None): its last
+/// ruling, or fixed when a later clean round stopped raising it, with that
+/// round.
+fn standing<'a>(
+    rulings: &[Ruling],
+    rounds: &'a [Round],
+    opened_at: &str,
+    until: Option<&str>,
+) -> (FinalStatus, Option<&'a Round>) {
+    let by = |at: &str| until.is_none_or(|u| at <= u);
+    let last = rulings.iter().rfind(|r| by(&r.at));
+    let status = last.map_or(FinalStatus::Open, |r| r.status.into());
+    if !matches!(status, FinalStatus::Open | FinalStatus::StillOpen) {
+        return (status, None);
+    }
+    // A later clean round that doesn't mention it means the reviewer
+    // stopped raising it.
+    let clean = rounds.iter().find(|r| {
+        r.created_at.as_str() > opened_at
+            && by(&r.created_at)
+            && r.verdict == RoundVerdict::Clean
+            && last.is_none_or(|l| r.created_at > l.at)
+    });
+    match clean {
+        Some(round) => (FinalStatus::Fixed, Some(round)),
+        None => (status, None),
+    }
 }
 
 fn metrics(pr: &PrInfo, rounds: &[Round], trajectories: &[Trajectory]) -> Metrics {
@@ -438,7 +460,11 @@ fn metrics(pr: &PrInfo, rounds: &[Round], trajectories: &[Trajectory]) -> Metric
     let first_clean = rounds.iter().find(|r| r.verdict == RoundVerdict::Clean);
     let last = rounds.last();
     let merged_by_loop = merged_at.map(|merged| {
-        last.is_some_and(|last| {
+        let last_before = rounds
+            .iter()
+            .rev()
+            .find(|r| r.created_at.as_str() <= merged);
+        last_before.is_some_and(|last| {
             last.verdict == RoundVerdict::Clean
                 && minutes_between(&last.created_at, merged)
                     .is_some_and(|gap| (0..=MERGE_WINDOW_MINUTES).contains(&gap))
@@ -477,15 +503,18 @@ fn metrics(pr: &PrInfo, rounds: &[Round], trajectories: &[Trajectory]) -> Metric
 
 fn flags(pr: &PrInfo, rounds: &[Round], trajectories: &[Trajectory]) -> Vec<Flag> {
     let merged = pr.merged;
+    let merged_at = pr.merged_at.as_deref().filter(|_| merged);
     let url = Some(pr.url.clone()).filter(|u| !u.is_empty());
     let mut out = vec![];
     for t in trajectories {
         let label = t.short_id.as_deref().unwrap_or(&t.title);
-        if t.open_at_merge && t.final_status != FinalStatus::DeclinedDisputed {
+        // A decline still disputed at the merge has its own flag while the
+        // dispute stands.
+        if t.open_at_merge && t.status_at_merge != Some(FinalStatus::DeclinedDisputed) {
             out.push(Flag {
                 kind: FlagKind::MergedWithOpenFindings,
                 attention: Glance::Act,
-                text: format!("Merged while {label} ({}) had no ruling.", t.title),
+                text: format!("Merged while {label} ({}) was still open.", t.title),
                 finding_id: Some(t.finding_id.clone()),
                 round: Some(t.opened_round),
                 url: url.clone(),
@@ -524,11 +553,14 @@ fn flags(pr: &PrInfo, rounds: &[Round], trajectories: &[Trajectory]) -> Vec<Flag
             });
         }
     }
-    if merged && rounds.is_empty() {
+    let reviewed_by_merge = rounds
+        .iter()
+        .any(|r| merged_at.is_none_or(|m| r.created_at.as_str() <= m));
+    if merged && !reviewed_by_merge {
         out.push(Flag {
             kind: FlagKind::NoReviewBeforeMerge,
             attention: Glance::Look,
-            text: "Merged without any reviewer round Orbit can see.".into(),
+            text: "Merged before any reviewer round Orbit can see.".into(),
             finding_id: None,
             round: None,
             url: url.clone(),

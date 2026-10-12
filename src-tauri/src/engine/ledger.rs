@@ -65,9 +65,9 @@ impl Engine {
         // A folder that can't be removed now is tried again next time.
         let _ = blocking(move || store::prune(&root, &connected)).await;
         for repo in &repos {
-            let result = self.refresh_repo(repo).await;
+            let mut changed = false;
+            let result = self.refresh_repo(repo, &mut changed).await;
             self.update(|s| {
-                let changed = result.as_ref().is_ok_and(|changed| *changed);
                 let at = result.is_ok().then(now);
                 let error = result.err();
                 match s.ledger.repos.iter_mut().find(|l| same_repo(&l.repo, repo)) {
@@ -97,9 +97,10 @@ impl Engine {
         })
         .await;
     }
-    /// Reads one repository's pull requests that need it. Returns whether
-    /// any stored history changed.
-    async fn refresh_repo(&self, repo: &str) -> Result<bool, String> {
+    /// Reads one repository's pull requests that need it, stopping at the
+    /// first that fails. Sets `changed` when any stored history changed,
+    /// even if a later pull request then fails.
+    async fn refresh_repo(&self, repo: &str, changed: &mut bool) -> Result<(), String> {
         let listed = crate::github::recent_pulls(repo).await?;
         let listed: Vec<(u64, Value)> = listed
             .into_iter()
@@ -127,7 +128,6 @@ impl Engine {
             .map(|((number, _), previous)| (number, previous))
             .collect();
         let total = due.len() as u32;
-        let mut changed = false;
         for (done, (number, previous)) in due.into_iter().enumerate() {
             self.update_live(|s| {
                 s.ledger.progress = Some(LedgerProgress {
@@ -159,9 +159,9 @@ impl Engine {
             }
             let root = self.root.clone();
             blocking(move || store::save(&root, &next)).await?;
-            changed = true;
+            *changed = true;
         }
-        Ok(changed)
+        Ok(())
     }
     /// Every connected repository's stored pull requests, pieced together,
     /// most recently updated first.

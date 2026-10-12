@@ -454,19 +454,29 @@ async fn a_pull_request_that_fails_to_read_is_read_again_next_time() {
     answer(
         d.path(),
         "repos/a/b/pulls",
-        json!([{"number": 1, "state": "closed", "updated_at": "2026-10-11T11:00:00Z"}]),
+        json!([
+            {"number": 2, "state": "closed", "updated_at": "2026-10-11T12:00:00Z"},
+            {"number": 1, "state": "closed", "updated_at": "2026-10-11T11:00:00Z"}
+        ]),
     );
+    serve_pr(d.path(), 2, "closed", "2026-10-11T12:00:00Z", json!([]));
     serve_pr(d.path(), 1, "closed", "2026-10-11T11:00:00Z", json!([]));
     std::fs::remove_file(d.path().join("repos_a_b_pulls_1_commits.json")).unwrap();
     refresh(&e, &gh).await;
+    // #2 was saved before #1 failed, so the history still changed.
     let s = e.snapshot().await;
     assert!(s.ledger.repos[0].error.is_some());
-    assert_eq!(s.ledger.version, 0);
+    assert_eq!(s.ledger.version, 1);
+    let numbers =
+        |d: crate::ledger::Decisions| -> Vec<u64> { d.prs.iter().map(|h| h.number).collect() };
+    assert_eq!(numbers(e.decisions().await.unwrap()), [2]);
     answer(d.path(), "repos/a/b/pulls/1/commits", json!([]));
     refresh(&e, &gh).await;
     let s = e.snapshot().await;
     assert_eq!(s.ledger.repos[0].error, None);
-    assert_eq!(s.ledger.version, 1);
+    assert_eq!(s.ledger.version, 2);
+    assert_eq!(calls(d.path(), "repos/a/b/pulls/2/reviews"), 1);
+    assert_eq!(numbers(e.decisions().await.unwrap()), [2, 1]);
     let stored: StoredPr =
         serde_json::from_slice(&std::fs::read(d.path().join("state/ledger/a/b/1.json")).unwrap())
             .unwrap();
