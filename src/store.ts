@@ -18,6 +18,7 @@ import {
 import { call, download, follow, lostConnection, readToken } from "./remote";
 import {
   buddyOf,
+  defaultWriteUps,
   maxQuestion,
   memoryLimits,
   questionLabels,
@@ -468,8 +469,9 @@ async function demoAction(
     ].includes(command)
   ) {
     const next = structuredClone(demo.settings);
-    // Demos saved before Bit have no buddy settings yet.
+    // Demos saved before Bit or write-ups have no settings for them yet.
     next.buddy = buddyOf(next);
+    next.writeUps ??= { ...defaultWriteUps };
     if (command === "update_settings") {
       const patch = args.patch as SettingsPatch;
       if (

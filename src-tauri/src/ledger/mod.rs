@@ -19,10 +19,13 @@ mod orbit;
 mod replies;
 mod roles;
 mod store;
+pub mod writeup;
 
 pub use assemble::derive;
 pub use narrative::parse as parse_narrative;
-pub use store::{from_github, load, load_repo, prune, save, stored_path, REVISIONS};
+pub use store::{
+    from_github, load, load_repo, load_writeups, prune, save, save_writeup, stored_path, REVISIONS,
+};
 
 #[cfg(test)]
 mod assemble_tests;
@@ -36,6 +39,8 @@ mod orbit_tests;
 mod replies_tests;
 #[cfg(test)]
 mod store_tests;
+#[cfg(test)]
+mod writeup_tests;
 
 /// The version of the stored form; a file of another version is read again
 /// from GitHub.
@@ -393,7 +398,7 @@ pub enum FlagKind {
     ReviewerCouldNotCheck,
     LikelyNotVerified,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Glance {
     /// Someone should decide something.
@@ -464,6 +469,8 @@ pub struct History {
     pub trajectories: Vec<Trajectory>,
     pub metrics: Metrics,
     pub flags: Vec<Flag>,
+    /// What the writer made of it, when write-ups are on and it has run.
+    pub writeup: Option<writeup::WriteUp>,
     /// The conversation and commits, for the write-up; not sent to the app.
     #[serde(skip)]
     pub comments: Vec<CommentRef>,

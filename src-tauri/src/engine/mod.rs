@@ -33,6 +33,7 @@ mod settings;
 mod setup;
 mod status;
 mod worktrees;
+mod writeup;
 
 pub use settings::validate_checkout;
 
@@ -87,6 +88,8 @@ mod state_tests;
 mod test_support;
 #[cfg(test)]
 mod worktrees_tests;
+#[cfg(test)]
+mod writeup_tests;
 
 type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// Orbit's review engine. Its methods are split by area: `connection` (Codex),
@@ -96,8 +99,9 @@ type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// `publish` (GitHub comments), `worktrees` (cleanup), `clones` (keeping
 /// users' clones up to date), `scans` (repository security scans),
 /// `fixes` (Bit's fixes and answers), `ask` (questions you type to Bit),
-/// `setup` (repositories Bit sets up) and `ledger` (each repository's
-/// pull-request history, for the Decisions page).
+/// `setup` (repositories Bit sets up), `ledger` (each repository's
+/// pull-request history, for the Decisions page) and `writeup` (its
+/// plain-language write-ups).
 ///
 /// # Locks
 ///
@@ -154,6 +158,13 @@ pub struct Engine {
     /// The pull-request history is being read; another read skips rather
     /// than waits.
     refreshing_ledger: AtomicBool,
+    /// Write-ups are being made; another run skips rather than waits.
+    writing_up: AtomicBool,
+    /// The Codex thread writing a pull request up.
+    writing_thread: std::sync::Mutex<Option<writeup::Writing>>,
+    /// Write-ups that failed, by repository and pull request: what they
+    /// were made from and how many times.
+    write_failed: std::sync::Mutex<HashMap<(String, u64), (String, u32)>>,
     /// Repositories whose open PRs synced in the latest poll; autopilot only acts on these.
     synced_repos: Mutex<HashSet<String>>,
     /// Running preparations, so Stop can end a long fetch or checkout immediately.
@@ -307,6 +318,7 @@ impl Engine {
         state.dev_containers = CliStatus::default();
         state.ledger.refreshing = false;
         state.ledger.progress = None;
+        state.ledger.writing = None;
         Ok(Arc::new(Self {
             state: Mutex::new(state),
             rpc: Mutex::new(None),
@@ -324,6 +336,9 @@ impl Engine {
             stopping: AtomicBool::new(false),
             updating_clones: AtomicBool::new(false),
             refreshing_ledger: AtomicBool::new(false),
+            writing_up: AtomicBool::new(false),
+            writing_thread: std::sync::Mutex::new(None),
+            write_failed: std::sync::Mutex::new(HashMap::new()),
             synced_repos: Mutex::new(HashSet::new()),
             preparing: std::sync::Mutex::new(HashMap::new()),
             cleanup_lock: Mutex::new(()),
@@ -485,20 +500,30 @@ impl Engine {
             let mut last_poll = std::time::Instant::now();
             let mut last_usage = std::time::Instant::now();
             let mut last_ledger: Option<std::time::Instant> = None;
+            let mut write_ups = WriteUps::default();
             while !e.stopping.load(Ordering::SeqCst) {
                 tick.tick().await;
                 if e.flush().await.is_err() {
                     continue;
                 }
-                let (poll_seconds, codex_ready, cli_ready, unread) = {
+                let (poll_seconds, codex_ready, cli_ready, unread, now_write_ups) = {
                     let s = e.state.lock().await;
                     (
                         s.settings.poll_seconds,
                         s.codex_ready,
                         s.claude.ready || s.antigravity.ready,
                         ledger::unread(&s),
+                        s.settings.write_ups,
                     )
                 };
+                // Write-ups start once turned on or given another writer, and
+                // otherwise follow each read of the history.
+                if now_write_ups != write_ups {
+                    write_ups = now_write_ups;
+                    if write_ups.enabled {
+                        e.write_up_soon();
+                    }
+                }
                 // The history is read on its own schedule, and as soon as a
                 // repository is connected.
                 if (unread || last_ledger.is_none_or(|t| t.elapsed() >= ledger::REFRESH))

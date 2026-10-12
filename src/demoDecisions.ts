@@ -1,6 +1,9 @@
 // The browser demo's Decisions page: a few pull requests in the demo's
-// repositories, pieced together as the engine would from GitHub.
+// repositories, pieced together as the engine would from GitHub, and
+// written up as a writer might.
 import type {
+  Decision,
+  DecisionKind,
   Decisions,
   EarlierFinding,
   Flag,
@@ -12,6 +15,7 @@ import type {
   RoundVerdict,
   Ruling,
   Trajectory,
+  WriteUp,
 } from "./decisions";
 import type { Category, PriorStatus } from "./types";
 
@@ -574,6 +578,182 @@ export function demoDecisions(): Decisions {
       ],
     ),
   );
+  for (const pr of prs) pr.writeup = demoWriteUp(pr);
   prs.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   return { prs, problems: [] };
+}
+
+/** What a writer might make of three of the merged pull requests. */
+function demoWriteUp(pr: History): WriteUp | null {
+  const reply = (n: number) =>
+    pr.claims.find((c) => c.numbers.includes(n))?.url ?? pr.url;
+  const decision = (
+    kind: DecisionKind,
+    statement: string,
+    more: Partial<Decision> = {},
+  ): Decision => ({
+    kind,
+    statement,
+    madeBy: "builder",
+    area: "Settings",
+    url: pr.url,
+    ...more,
+  });
+  const writeup = (
+    summary: string,
+    decisions: Decision[],
+    findingNotes: WriteUp["findingNotes"] = [],
+  ): WriteUp => ({
+    repo: pr.repo,
+    number: pr.number,
+    writer: "Codex",
+    model: "Codex · demo",
+    writtenAt: pr.mergedAt ?? pr.updatedAt,
+    summary,
+    areas: [...new Set(decisions.map((d) => d.area))],
+    decisions,
+    findingNotes,
+  });
+  const finding = (shortId: string) =>
+    pr.trajectories.find((t) => t.shortId === shortId)!.findingId;
+  switch (`${pr.repo}#${pr.number}`) {
+    case "acme/orbit#142":
+      return writeup(
+        "Saving your default settings no longer wipes the model and setup command you chose for each repository. The reviewer caught that the first fix only kept the model, and it took a third round to keep both.",
+        [
+          decision(
+            "intent",
+            "Saving defaults should change only the defaults, never a repository's own choices.",
+            {
+              quote:
+                "Saving defaults keeps every repository's overrides; only the defaults change.",
+            },
+          ),
+          decision(
+            "rule",
+            "A repository's own settings always win over the defaults, including for repositories added later.",
+            {
+              quote:
+                "Overrides win over defaults everywhere, including for repositories added later.",
+              madeBy: "both",
+            },
+          ),
+          decision(
+            "challenge",
+            "The first fix still lost each repository's setup command when you saved defaults.",
+            {
+              madeBy: "reviewer",
+              quote:
+                "Only the model is kept; the setup command is still dropped.",
+              url: pr.rounds[1]?.url ?? pr.url,
+            },
+          ),
+          decision(
+            "pushback",
+            "No separate test was added for a repository without its own settings; the reviewer accepted that an existing test covers it.",
+            { url: reply(2), madeBy: "both" },
+          ),
+          decision(
+            "verification",
+            "The tests were run, and saving defaults was tried by hand with two repositories.",
+            {
+              quote:
+                "`npm test`, and saving defaults by hand with two repositories.",
+            },
+          ),
+        ],
+        [
+          {
+            findingId: finding("F1"),
+            plain:
+              "Saving your defaults would have silently undone every repository's own settings.",
+          },
+          {
+            findingId: finding("F2"),
+            plain:
+              "A repository with no settings of its own wasn't tested on its own.",
+          },
+        ],
+      );
+    case "acme/api#318":
+      return writeup(
+        "Webhooks are now signed with a secret that changes every night, and receivers accept yesterday's for a day. The reviewer and the builder still disagree about what happens to the old secret if the nightly job is switched off.",
+        [
+          decision(
+            "intent",
+            "Webhooks should be signed with a secret that changes regularly.",
+            { area: "Webhooks" },
+          ),
+          decision(
+            "rule",
+            "Receivers accept the previous secret for one day after it changes.",
+            {
+              area: "Webhooks",
+              quote: "receivers accept the previous one for a day",
+            },
+          ),
+          decision(
+            "rule",
+            "A webhook's signature is checked in a way that doesn't reveal how much of it matched.",
+            { area: "Webhooks", madeBy: "both", url: reply(1) },
+          ),
+          decision(
+            "pushback",
+            "The builder relies on the nightly job to retire the old secret; the reviewer says nothing retires it if that job is off.",
+            {
+              area: "Webhooks",
+              madeBy: "both",
+              url: reply(2),
+              quote:
+                "the nightly rotation job expires the old secret after a day",
+              attention: "act",
+              attentionReason:
+                "Decide whether an old secret may stay valid when the nightly job is off.",
+            },
+          ),
+          decision(
+            "verification",
+            "The webhook tests that need a live endpoint weren't run.",
+            {
+              area: "Webhooks",
+              madeBy: "reviewer",
+              attention: "look",
+              attentionReason: "Nobody checked a real delivery.",
+            },
+          ),
+        ],
+        [
+          {
+            findingId: finding("F1"),
+            plain:
+              "Someone could have guessed a valid signature a little at a time.",
+          },
+          {
+            findingId: finding("F2"),
+            plain:
+              "An old secret could keep working forever if the nightly job stopped.",
+          },
+        ],
+      );
+    case "acme/dashboard#77":
+      return writeup(
+        "The builds table now shows how long each branch's latest build took. The reviewer found nothing to fix.",
+        [
+          decision("intent", "Show how long each branch's latest build took.", {
+            area: "Builds Table",
+          }),
+          decision(
+            "tradeoff",
+            "The time is worked out from each build's start and end rather than stored, so older builds show it too.",
+            {
+              area: "Builds Table",
+              attention: "look",
+              attentionReason: "A build still running has no end yet.",
+            },
+          ),
+        ],
+      );
+    default:
+      return null;
+  }
 }

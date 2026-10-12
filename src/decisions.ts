@@ -1,6 +1,7 @@
 // What the engine pieces together about each pull request for the Decisions
 // page (`get_decisions`; see src-tauri/src/ledger), and the summaries the
-// page shows. No model is involved: it is all read from GitHub.
+// page shows. It is all read from GitHub, apart from the optional write-ups,
+// which a writer makes from it.
 import type { Category, PriorStatus } from "./types";
 
 export type RoundVerdict = "clean" | "changes_requested" | "unknown";
@@ -180,6 +181,50 @@ export interface History {
   trajectories: Trajectory[];
   metrics: Metrics;
   flags: Flag[];
+  /** Present once write-ups are on and this one has been written up. */
+  writeup?: WriteUp | null;
+}
+export type DecisionKind =
+  | "intent"
+  | "rule"
+  | "tradeoff"
+  | "interpretation"
+  | "boundary"
+  | "challenge"
+  | "pushback"
+  | "verification";
+/** One decision a write-up records. */
+export interface Decision {
+  kind: DecisionKind;
+  statement: string;
+  detail?: string | null;
+  madeBy: "builder" | "reviewer" | "both" | "human";
+  /** The part of the app it is about. */
+  area: string;
+  /** A short excerpt Orbit found in the pull request. */
+  quote?: string | null;
+  /** Where to read it: the comment the quote is from, else the pull
+   * request. */
+  url: string;
+  /** None when nobody needs to look. */
+  attention?: "act" | "look" | null;
+  attentionReason?: string | null;
+  /** An earlier rule this one changes, in the writer's words. */
+  supersedes?: string | null;
+}
+/** What Codex or Claude made of a merged or closed pull request. */
+export interface WriteUp {
+  repo: string;
+  number: number;
+  writer: string;
+  model: string;
+  writtenAt: string;
+  /** What changed for the user, then how the review went. */
+  summary: string;
+  areas: string[];
+  decisions: Decision[];
+  /** Each finding in plain words, by finding. */
+  findingNotes: { findingId: string; plain: string }[];
 }
 export interface Decisions {
   prs: History[];
@@ -225,6 +270,35 @@ export const flagLabels: Record<FlagKind, string> = {
   likely_not_verified: "Not verified",
 };
 
+/** The order a write-up's decisions are shown in, and what each kind is
+ * called. */
+export const decisionKinds: DecisionKind[] = [
+  "intent",
+  "rule",
+  "tradeoff",
+  "interpretation",
+  "boundary",
+  "challenge",
+  "pushback",
+  "verification",
+];
+export const decisionKindLabels: Record<DecisionKind, string> = {
+  intent: "What it set out to do",
+  rule: "Rules it set",
+  tradeoff: "Trade-offs",
+  interpretation: "How a request was read",
+  boundary: "What was left out",
+  challenge: "What the reviewer challenged",
+  pushback: "Pushback",
+  verification: "What was checked",
+};
+export const madeByLabels: Record<Decision["madeBy"], string> = {
+  builder: "The builder",
+  reviewer: "The reviewer",
+  both: "Builder and reviewer",
+  human: "A person",
+};
+
 /** Open, Merged, Closed or Draft. */
 export function stateLabel(h: History) {
   if (h.merged) return "Merged";
@@ -256,17 +330,143 @@ export function gist(h: History) {
   return first.length > 240 ? `${first.slice(0, 239).trimEnd()}…` : first;
 }
 
-export interface FlagRow {
+/** Something worth a person's glance: a flag from the reviews, or a
+ * decision the pull request's write-up marked. */
+export interface WorthRow {
   pr: History;
-  flag: Flag;
+  key: string;
+  attention: "act" | "look";
+  label: string;
+  text: string;
+  /** Why a person should look, from the write-up. */
+  reason: string | null;
+  fromWriteUp: boolean;
 }
-/** Every flag worth a look, those that need a decision first, newest pull
- * request first within each. */
-export function worthALook(prs: History[]): FlagRow[] {
-  const rows = prs.flatMap((pr) => pr.flags.map((flag) => ({ pr, flag })));
-  const rank = (r: FlagRow) => (r.flag.attention === "act" ? 0 : 1);
+/** Every flag and marked decision, those that need a decision first, newest
+ * pull request first within each. With an area, only its decisions. */
+export function worthALook(prs: History[], area = "all"): WorthRow[] {
+  const rows = prs.flatMap((pr): WorthRow[] => [
+    ...pr.flags.map((flag, i) => ({
+      pr,
+      key: `${historyKey(pr)}-${flag.kind}-${flag.findingId ?? i}`,
+      attention: flag.attention,
+      label: flagLabels[flag.kind],
+      text: flag.text,
+      reason: null,
+      fromWriteUp: false,
+    })),
+    ...(pr.writeup?.decisions ?? []).flatMap((d, i) =>
+      d.attention && (area === "all" || sameArea(d.area, area))
+        ? [
+            {
+              pr,
+              key: `${historyKey(pr)}-writeup-${i}`,
+              attention: d.attention,
+              label: decisionKindLabels[d.kind],
+              text: d.statement,
+              reason: d.attentionReason ?? null,
+              fromWriteUp: true,
+            },
+          ]
+        : [],
+    ),
+  ]);
+  const rank = (r: WorthRow) => (r.attention === "act" ? 0 : 1);
   return rows.sort(
     (a, b) => rank(a) - rank(b) || b.pr.updatedAt.localeCompare(a.pr.updatedAt),
+  );
+}
+
+/** Areas are the same whatever their case. */
+export const sameArea = (a: string, b: string) =>
+  a.trim().toLowerCase() === b.trim().toLowerCase();
+/** The pull requests whose write-up has a decision about an area. */
+export function inArea(prs: History[], area: string) {
+  return prs.filter((pr) =>
+    pr.writeup?.decisions.some((d) => sameArea(d.area, area)),
+  );
+}
+/** When a pull request's decisions took effect. */
+const decidedAt = (pr: History) => pr.mergedAt ?? pr.updatedAt;
+
+export interface RuleRow {
+  pr: History;
+  rule: Decision;
+}
+export interface RulebookArea {
+  area: string;
+  rules: RuleRow[];
+}
+/** Every rule the write-ups found in merged pull requests, by area, the
+ * area with most rules first and the oldest rule first within each. A pull
+ * request closed without merging, or reopened, only proposed its rules, so
+ * they stay in its chapter. With an area, only its rules. */
+export function rulebook(prs: History[], area = "all"): RulebookArea[] {
+  const groups = new Map<string, RulebookArea>();
+  for (const pr of prs.filter((pr) => pr.merged))
+    for (const rule of pr.writeup?.decisions ?? []) {
+      if (rule.kind !== "rule") continue;
+      if (area !== "all" && !sameArea(rule.area, area)) continue;
+      const key = rule.area.trim().toLowerCase();
+      const group = groups.get(key) ?? { area: rule.area, rules: [] };
+      groups.set(key, group);
+      group.rules.push({ pr, rule });
+    }
+  const out = [...groups.values()];
+  for (const g of out)
+    g.rules.sort((a, b) => decidedAt(a.pr).localeCompare(decidedAt(b.pr)));
+  return out.sort(
+    (a, b) => b.rules.length - a.rules.length || a.area.localeCompare(b.area),
+  );
+}
+
+export interface AreaRow {
+  name: string;
+  repos: string[];
+  prs: number;
+  decisions: number;
+  rules: number;
+  challenges: number;
+  pushbacks: number;
+  /** Decisions marked for a person's glance. */
+  attention: number;
+  lastAt: string;
+}
+/** Each area the write-ups name, with what was decided there, the most
+ * decided first. */
+export function areas(prs: History[]): AreaRow[] {
+  const rows = new Map<string, AreaRow>();
+  const seen = new Set<string>();
+  for (const pr of prs)
+    for (const d of pr.writeup?.decisions ?? []) {
+      const key = d.area.trim().toLowerCase();
+      const row = rows.get(key) ?? {
+        name: d.area,
+        repos: [],
+        prs: 0,
+        decisions: 0,
+        rules: 0,
+        challenges: 0,
+        pushbacks: 0,
+        attention: 0,
+        lastAt: "",
+      };
+      rows.set(key, row);
+      if (!seen.has(`${key}\n${historyKey(pr)}`)) {
+        seen.add(`${key}\n${historyKey(pr)}`);
+        row.prs++;
+        if (!row.repos.includes(pr.repo)) row.repos.push(pr.repo);
+      }
+      row.decisions++;
+      // Only a merged pull request's rules count as gained.
+      if (d.kind === "rule" && pr.merged) row.rules++;
+      if (d.kind === "challenge") row.challenges++;
+      if (d.kind === "pushback") row.pushbacks++;
+      if (d.attention) row.attention++;
+      if (decidedAt(pr) > row.lastAt) row.lastAt = decidedAt(pr);
+    }
+  return [...rows.values()].sort(
+    (a, b) => b.decisions - a.decisions || a.name.localeCompare(b.name),
   );
 }
 
@@ -377,8 +577,8 @@ export function health(prs: History[]): Health {
   };
 }
 
-/** Pull requests matching a search across their title, number, repository
- * and description. */
+/** Pull requests matching a search across their title, number, repository,
+ * description, finding titles and write-up. */
 export function searchHistories(prs: History[], search: string) {
   const words = search.toLowerCase().split(/\s+/).filter(Boolean);
   if (!words.length) return prs;
@@ -392,6 +592,8 @@ export function searchHistories(prs: History[], search: string) {
       h.narrative.after ?? "",
       h.narrative.lead ?? "",
       ...h.trajectories.map((t) => t.title),
+      h.writeup?.summary ?? "",
+      ...(h.writeup?.decisions ?? []).map((d) => d.statement),
     ]
       .join(" ")
       .toLowerCase();

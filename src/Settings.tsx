@@ -21,9 +21,12 @@ import { Code2, Container, GitBranch, RefreshCw } from "lucide-react";
 import { useOrbit, live } from "./store";
 import {
   defaultEffort,
+  defaultWriteUps,
   withPatch,
   workspaceSelectionUnavailable,
+  writerLabels,
   type SettingsPatch,
+  type Writer,
 } from "./types";
 import { SaveFeedback } from "./SaveFeedback";
 import { Storage } from "./Storage";
@@ -61,6 +64,7 @@ export function SettingsPage() {
       setNewLogin("");
   };
   const model = s.models.find((m) => m.model === draft.model);
+  const writeUps = draft.writeUps ?? defaultWriteUps;
   const pending = (key: string) => saves[key]?.state === "saving";
   return (
     <VStack gap={6} padding={6} maxWidth={760} className="content-page">
@@ -469,6 +473,43 @@ export function SettingsPage() {
               <SaveFeedback saveKey="pollSeconds" />
             </VStack>
           </FormLayout>
+        </VStack>
+      </Card>
+      <Card>
+        <VStack gap={6}>
+          <Heading level={3}>Decisions</Heading>
+          <VStack gap={2}>
+            <Switch
+              label="Write up each pull request in plain words"
+              labelPosition="start"
+              labelSpacing="spread"
+              width="100%"
+              value={writeUps.enabled}
+              isDisabled={pending("writeUps")}
+              onChange={(enabled) =>
+                void updateSettings({ writeUps: { ...writeUps, enabled } })
+              }
+              description="Once a pull request is merged or closed, the writer sums up for the Decisions page what it decided: the rules it set, trade-offs, what the reviewer challenged, what was pushed back on and what was checked, each with a quote and a link. One at a time in the background, with no tools, and again only when the pull request changes. Each one uses the writer, so it is off until you turn it on; Codex write-ups wait while its usage is over 90%."
+            />
+          </VStack>
+          <VStack gap={2}>
+            <Selector
+              label="Writer"
+              value={writeUps.writer}
+              isDisabled={pending("writeUps")}
+              onChange={(writer) =>
+                void updateSettings({
+                  writeUps: { ...writeUps, writer: writer as Writer },
+                })
+              }
+              options={(["codex", "claude"] as const).map((w) => ({
+                value: w,
+                label: writerLabels[w],
+              }))}
+              description="Uses the model and effort you chose for that reviewer above."
+            />
+            <SaveFeedback saveKey="writeUps" />
+          </VStack>
         </VStack>
       </Card>
       <ReplySkill />

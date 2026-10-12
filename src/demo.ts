@@ -700,6 +700,7 @@ export function freshDemo(): Snapshot {
       ...defaults,
       model: "demo-review-model",
       effort: "medium",
+      writeUps: { enabled: true, writer: "codex" },
       repositories: ["orbit", "api", "dashboard"].map((n) => ({
         name: `acme/${n}`,
         path: `~/Projects/${n}`,

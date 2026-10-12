@@ -1,6 +1,6 @@
 // A fake `claude` for tests. Usage: node claude_fixture.cjs <mode>[@log] <claude args...>
 // Modes: ok, signed-out, wrong-model, crash, slow, denied, schema-fail, incomplete,
-// no-sandbox.
+// no-sandbox. A write-up (--no-session-persistence) answers with <log>.answer.
 const fs = require("node:fs");
 const [modeArg, ...args] = process.argv.slice(2);
 const [mode, log] = modeArg.split("@");
@@ -84,6 +84,21 @@ const result = (extra) =>
         : [],
     ...extra,
   });
+if (args.includes("--no-session-persistence")) {
+  // A write-up: the pull request arrives on standard input, and the answer
+  // is the one the test left beside the log, if any.
+  let input = "";
+  process.stdin.on("data", (d) => (input += d));
+  process.stdin.on("end", () => {
+    if (log) fs.writeFileSync(`${log}.stdin`, input);
+    const answer =
+      log && fs.existsSync(`${log}.answer`)
+        ? JSON.parse(fs.readFileSync(`${log}.answer`, "utf8"))
+        : { summary: "A change.", decisions: [], findingNotes: [] };
+    result({ result: JSON.stringify(answer), structured_output: answer });
+  });
+  return;
+}
 if (prompt.startsWith("/code-review")) {
   const parent = "forked-command-code-review";
   send({

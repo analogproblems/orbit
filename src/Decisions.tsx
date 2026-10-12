@@ -42,6 +42,9 @@ import { categoryLabels, priorStatusLabels, sameRepo } from "./types";
 import { priorityColors } from "./Findings";
 import { SafeMarkdown } from "./SafeMarkdown";
 import {
+  areas,
+  decisionKindLabels,
+  decisionKinds,
   duration,
   finalStatusColors,
   finalStatusLabels,
@@ -50,7 +53,11 @@ import {
   gist,
   health,
   historyKey,
+  inArea,
+  madeByLabels,
   pushback,
+  rulebook,
+  sameArea,
   searchHistories,
   shortRef,
   stateColor,
@@ -58,16 +65,26 @@ import {
   verdictColors,
   verdictLabels,
   worthALook,
+  type AreaRow,
   type Decisions,
   type FinalStatus,
-  type FlagRow,
   type History,
   type LedgerClaim,
   type LedgerRound,
+  type RulebookArea,
   type Trajectory,
+  type WorthRow,
+  type WriteUp,
 } from "./decisions";
 
-type View = "story" | "pushback" | "health";
+type View = "story" | "rulebook" | "pushback" | "health" | "areas";
+const views: [View, string][] = [
+  ["story", "Story"],
+  ["rulebook", "Rulebook"],
+  ["pushback", "Pushback"],
+  ["health", "Review health"],
+  ["areas", "Areas"],
+];
 const PAGE = 50;
 const FLAGS = 5;
 
@@ -136,6 +153,7 @@ function ReadStatus() {
   const repos = useOrbit((state) => state.snapshot.settings.repositories);
   if (!live) return null;
   const progress = ledger?.progress;
+  const writing = ledger?.writing;
   const failed = (ledger?.repos ?? []).filter(
     (r) => r.error && repos.some((c) => sameRepo(c.name, r.repo)),
   );
@@ -161,6 +179,22 @@ function ReadStatus() {
           <Timestamp value={last} format="relative_short" />
         </HStack>
       ) : null}
+      {writing && (
+        <HStack gap={2} vAlign="center">
+          <Spinner size="sm" label="Writing up" />
+          <Text type="supporting" aria-live="polite">
+            {`Writing up ${writing.repo.split("/")[1] ?? writing.repo}#${writing.number} in plain words · ${writing.done + 1} of ${writing.total}`}
+          </Text>
+        </HStack>
+      )}
+      {ledger?.writeError && (
+        <Banner
+          status="warning"
+          title="Write-ups"
+          description={ledger.writeError}
+          collapsible={false}
+        />
+      )}
       {failed.map((r) => (
         <Banner
           key={r.repo}
@@ -174,12 +208,13 @@ function ReadStatus() {
   );
 }
 
-/** Flags across every pull request, those that need a decision first. */
+/** Flags and marked decisions across every pull request, those that need a
+ * decision first. */
 function WorthALook({
   rows,
   onOpen,
 }: {
-  rows: FlagRow[];
+  rows: WorthRow[];
   onOpen: (pr: History) => void;
 }) {
   const [all, setAll] = useState(false);
@@ -189,18 +224,21 @@ function WorthALook({
       {rows.length === 0 && (
         <Text color="secondary">Nothing needs a second look.</Text>
       )}
-      {shown.map(({ pr, flag }, i) => (
+      {shown.map((row) => (
         <ListItem
-          key={`${historyKey(pr)}-${flag.kind}-${flag.findingId ?? i}`}
-          label={flagLabels[flag.kind]}
-          startContent={<FlagDot attention={flag.attention} />}
+          key={row.key}
+          label={row.label}
+          startContent={<FlagDot attention={row.attention} />}
           description={
             <VStack gap={1}>
-              <Text>{flag.text}</Text>
-              <Text type="supporting">{`${shortRef(pr)} · ${pr.title}`}</Text>
+              <Text>{row.text}</Text>
+              {row.reason && <Text color="secondary">{row.reason}</Text>}
+              <Text type="supporting">
+                {`${row.fromWriteUp ? "From the write-up · " : ""}${shortRef(row.pr)} · ${row.pr.title}`}
+              </Text>
             </VStack>
           }
-          onClick={() => onOpen(pr)}
+          onClick={() => onOpen(row.pr)}
         />
       ))}
       {rows.length > FLAGS && (
@@ -286,6 +324,125 @@ function Story({
           </StackItem>
         </HStack>
       )}
+    </VStack>
+  );
+}
+
+/** Where rules and areas come from when there are none. */
+function NoWriteUps({
+  what,
+  from = "merged and closed pull requests are",
+}: {
+  what: string;
+  /** What has to be written up for them to appear. */
+  from?: string;
+}) {
+  const on = useOrbit(
+    (state) => state.snapshot.settings.writeUps?.enabled ?? false,
+  );
+  return (
+    <Text color="secondary">
+      {on
+        ? `${what} appear as ${from} written up.`
+        : `${what} come from write-ups. Turn them on in Settings to have each merged or closed pull request summed up in plain words.`}
+    </Text>
+  );
+}
+
+/** Every rule the write-ups found, by the part of the app it governs. */
+function Rulebook({
+  groups,
+  onOpen,
+}: {
+  groups: RulebookArea[];
+  onOpen: (pr: History) => void;
+}) {
+  if (!groups.length)
+    return <NoWriteUps what="Rules" from="merged pull requests are" />;
+  return (
+    <VStack gap={4}>
+      <Text color="secondary">
+        What the app now commits to: each standing rule a merged pull request
+        set, grouped by the part of the app it governs, oldest first. Rules in a
+        pull request closed without merging stay in its chapter.
+      </Text>
+      {groups.map((g) => (
+        <List
+          key={g.area}
+          hasDividers
+          header={
+            <HStack gap={2} vAlign="center">
+              <Text weight="medium">{g.area}</Text>
+              <Text type="supporting">{plural(g.rules.length, "rule")}</Text>
+            </HStack>
+          }
+        >
+          {g.rules.map(({ pr, rule }, i) => (
+            <ListItem
+              key={`${historyKey(pr)}-${i}`}
+              label={<Text>{rule.statement}</Text>}
+              description={
+                <VStack gap={1}>
+                  {rule.detail && <Text color="secondary">{rule.detail}</Text>}
+                  {rule.supersedes && (
+                    <Text color="secondary">{`Changes an earlier rule: ${rule.supersedes}`}</Text>
+                  )}
+                  <Text type="supporting">{`${shortRef(pr)} · ${pr.title}`}</Text>
+                </VStack>
+              }
+              onClick={() => onOpen(pr)}
+            />
+          ))}
+        </List>
+      ))}
+    </VStack>
+  );
+}
+
+/** Each part of the app the write-ups name, with what was decided there. */
+function Areas({
+  rows,
+  manyRepos,
+  onPick,
+}: {
+  rows: AreaRow[];
+  manyRepos: boolean;
+  onPick: (area: string) => void;
+}) {
+  if (!rows.length) return <NoWriteUps what="Areas" />;
+  return (
+    <VStack gap={3}>
+      <Text color="secondary">
+        Where the work went: each part of the app the write-ups name, with the
+        rules it gained and the problems the reviewer found there. Select one to
+        see only its pull requests.
+      </Text>
+      <List hasDividers aria-label="Areas">
+        {rows.map((a) => (
+          <ListItem
+            key={a.name}
+            label={a.name}
+            description={
+              <VStack gap={1}>
+                <Text type="supporting">
+                  {[
+                    plural(a.prs, "pull request"),
+                    plural(a.rules, "rule"),
+                    plural(a.challenges, "challenge"),
+                    plural(a.pushbacks, "pushback"),
+                    ...(a.attention ? [`${a.attention} worth a look`] : []),
+                  ].join(" · ")}
+                </Text>
+                {manyRepos && (
+                  <Text type="supporting">{a.repos.join(", ")}</Text>
+                )}
+              </VStack>
+            }
+            endContent={<Timestamp value={a.lastAt} format="relative_short" />}
+            onClick={() => onPick(a.name)}
+          />
+        ))}
+      </List>
     </VStack>
   );
 }
@@ -459,7 +616,7 @@ function ReviewHealth({ prs }: { prs: History[] }) {
           detail={`${h.disputed} still disputed`}
         />
         <Tile
-          label="Merged with a finding open"
+          label="Findings open at merge"
           value={String(h.openAtMerge)}
           detail={h.openAtMerge ? "see Worth a look" : "none"}
         />
@@ -570,8 +727,72 @@ function RoundItem({ round }: { round: LedgerRound }) {
 }
 
 /** One pull request's whole story. */
+/** A merged or closed pull request as the writer summed it up, decisions
+ * grouped by kind, each linking to where it was said. */
+function InPlainWords({ w }: { w: WriteUp }) {
+  const groups = decisionKinds
+    .map((kind) => [kind, w.decisions.filter((d) => d.kind === kind)] as const)
+    .filter(([, ds]) => ds.length > 0);
+  return (
+    <VStack gap={3}>
+      <Heading level={3}>In plain words</Heading>
+      <Text>{w.summary}</Text>
+      {groups.map(([kind, ds]) => (
+        <List
+          key={kind}
+          hasDividers
+          header={<Text weight="medium">{decisionKindLabels[kind]}</Text>}
+        >
+          {ds.map((d, i) => (
+            <ListItem
+              key={`${kind}-${i}`}
+              label={<Text>{d.statement}</Text>}
+              startContent={
+                d.attention ? <FlagDot attention={d.attention} /> : undefined
+              }
+              endContent={<ArrowUpRight size={16} aria-hidden />}
+              onClick={() => openLink(d.url)}
+              description={
+                <VStack gap={1}>
+                  {d.detail && <Text>{d.detail}</Text>}
+                  {d.quote && <Text color="secondary">{`“${d.quote}”`}</Text>}
+                  {d.attention && d.attentionReason && (
+                    <Text>{d.attentionReason}</Text>
+                  )}
+                  {d.supersedes && (
+                    <Text color="secondary">{`Changes an earlier rule: ${d.supersedes}`}</Text>
+                  )}
+                  <HStack gap={1} wrap="wrap">
+                    <Token label={d.area} size="sm" />
+                    <Token label={madeByLabels[d.madeBy]} size="sm" />
+                  </HStack>
+                </VStack>
+              }
+            />
+          ))}
+        </List>
+      ))}
+      <HStack gap={1} vAlign="center" wrap="wrap">
+        <Text type="supporting" color="secondary">
+          {`Written by ${w.writer} (${w.model})`}
+        </Text>
+        <Timestamp value={w.writtenAt} format="relative_short" />
+        <Text type="supporting" color="secondary">
+          · Quotes are checked against the pull request; the rest is the
+          writer’s reading of it.
+        </Text>
+      </HStack>
+    </VStack>
+  );
+}
+
 function Chapter({ pr, onBack }: { pr: History; onBack: () => void }) {
   const n = pr.narrative;
+  const writeUpsOn = useOrbit(
+    (state) => state.snapshot.settings.writeUps?.enabled ?? false,
+  );
+  const plain = (t: Trajectory) =>
+    pr.writeup?.findingNotes.find((f) => f.findingId === t.findingId)?.plain;
   const sections: [string, string | null | undefined][] = [
     ["Before", n.before],
     ["After", n.after],
@@ -587,6 +808,7 @@ function Chapter({ pr, onBack }: { pr: History; onBack: () => void }) {
       renderCell: ({ t }) => (
         <VStack gap={0}>
           <Text>{t.shortId ? `${t.shortId} · ${t.title}` : t.title}</Text>
+          {plain(t) && <Text color="secondary">{plain(t)}</Text>}
           {t.category && (
             <Text type="supporting">{categoryLabels[t.category]}</Text>
           )}
@@ -666,6 +888,17 @@ function Chapter({ pr, onBack }: { pr: History; onBack: () => void }) {
           </StackItem>
         </HStack>
       </VStack>
+      {pr.writeup ? (
+        <InPlainWords w={pr.writeup} />
+      ) : (
+        !writeUpsOn &&
+        pr.state !== "open" && (
+          <Text type="supporting" color="secondary">
+            Turn on write-ups in Settings to have each merged or closed pull
+            request summed up in plain words.
+          </Text>
+        )
+      )}
       <VStack gap={3}>
         <Heading level={3}>What changed</Heading>
         {told.length ? (
@@ -763,6 +996,7 @@ export function DecisionsPage() {
   const [view, setView] = useState<View>("story");
   const [selected, setSelected] = useState<string | null>(null);
   const [repo, setRepo] = useState("all");
+  const [area, setArea] = useState("all");
   const [search, setSearch] = useState("");
   useEffect(() => {
     let current = true;
@@ -781,7 +1015,15 @@ export function DecisionsPage() {
   }, [action, version, reposKey]);
   const all = data?.prs ?? [];
   const inRepo = all.filter((h) => repo === "all" || sameRepo(h.repo, repo));
-  const prs = searchHistories(inRepo, search);
+  const areaRows = areas(inRepo);
+  // An area that isn't in this repository shows everything.
+  const activeArea = areaRows.some((a) => sameArea(a.name, area))
+    ? area
+    : "all";
+  const prs = searchHistories(
+    activeArea === "all" ? inRepo : inArea(inRepo, activeArea),
+    search,
+  );
   const chosen = all.find((h) => historyKey(h) === selected);
   if (chosen)
     return (
@@ -810,8 +1052,9 @@ export function DecisionsPage() {
         <Text color="secondary">
           The story of each pull request in your connected repositories: what it
           set out to do, what each review round found, what was fixed or pushed
-          back on, and what is worth a second look. Orbit reads it from GitHub;
-          no model is involved.
+          back on, and what is worth a second look. Orbit reads it from GitHub,
+          and with write-ups on, a writer sums up each merged or closed one in
+          plain words.
         </Text>
         <ReadStatus />
         {error && (
@@ -862,8 +1105,27 @@ export function DecisionsPage() {
                   .map((r) => ({ value: r, label: r })),
               ]}
             />
+            {areaRows.length > 0 && (
+              <Selector
+                label="Area"
+                isLabelHidden
+                size="sm"
+                value={
+                  areaRows.find((a) => sameArea(a.name, activeArea))?.name ??
+                  "all"
+                }
+                onChange={setArea}
+                options={[
+                  { value: "all", label: "All areas" },
+                  ...areaRows
+                    .map((a) => a.name)
+                    .sort()
+                    .map((a) => ({ value: a, label: a })),
+                ]}
+              />
+            )}
           </HStack>
-          <WorthALook rows={worthALook(prs)} onOpen={open} />
+          <WorthALook rows={worthALook(prs, activeArea)} onOpen={open} />
           <VStack gap={4}>
             <TabList
               role="tablist"
@@ -872,24 +1134,15 @@ export function DecisionsPage() {
               onChange={(v) => setView(v as View)}
               hasDivider
             >
-              <Tab
-                id="decisions-tab-story"
-                value="story"
-                label="Story"
-                panelId="decisions-panel"
-              />
-              <Tab
-                id="decisions-tab-pushback"
-                value="pushback"
-                label="Pushback"
-                panelId="decisions-panel"
-              />
-              <Tab
-                id="decisions-tab-health"
-                value="health"
-                label="Review health"
-                panelId="decisions-panel"
-              />
+              {views.map(([value, label]) => (
+                <Tab
+                  key={value}
+                  id={`decisions-tab-${value}`}
+                  value={value}
+                  label={label}
+                  panelId="decisions-panel"
+                />
+              ))}
             </TabList>
             <VStack
               gap={4}
@@ -899,10 +1152,23 @@ export function DecisionsPage() {
             >
               {view === "story" ? (
                 <Story prs={prs} onOpen={open} />
+              ) : view === "rulebook" ? (
+                <Rulebook groups={rulebook(prs, activeArea)} onOpen={open} />
               ) : view === "pushback" ? (
                 <Pushback prs={prs} onOpen={open} />
-              ) : (
+              ) : view === "health" ? (
                 <ReviewHealth prs={prs} />
+              ) : (
+                <Areas
+                  rows={areas(prs).filter(
+                    (a) => activeArea === "all" || sameArea(a.name, activeArea),
+                  )}
+                  manyRepos={new Set(inRepo.map((h) => h.repo)).size > 1}
+                  onPick={(name) => {
+                    setArea(name);
+                    setView("story");
+                  }}
+                />
               )}
             </VStack>
           </VStack>
