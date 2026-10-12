@@ -907,6 +907,18 @@ export interface Snapshot {
   buddyFeed?: BuddyFeed;
   /** How Bit feels. Derived by the engine for display. */
   mood?: Mood | null;
+  /** Reading each repository's pull-request history for the Decisions page. */
+  ledger?: LedgerStatus;
+}
+/** How reading the pull-request history is going. */
+export interface LedgerStatus {
+  refreshing: boolean;
+  /** The repository being read, while a read runs. */
+  progress?: { repo: string; done: number; total: number } | null;
+  /** Each connected repository's latest read. */
+  repos: { repo: string; refreshedAt?: string | null; error?: string | null }[];
+  /** Goes up whenever stored history changes. */
+  version: number;
 }
 /** How far a security scan has come, as the Codex Security plugin reports it. */
 export interface ScanProgress {

@@ -309,6 +309,86 @@ pub async fn files(repo: &str, number: u64) -> Result<Value, String> {
     }
     Ok(json!(files))
 }
+/// A repository's 100 most recently updated pull requests in any state,
+/// newest first.
+pub async fn recent_pulls(repo: &str) -> Result<Vec<Value>, String> {
+    validate_repo(repo)?;
+    let v = api(
+        &format!("repos/{repo}/pulls"),
+        "GET",
+        &[
+            ("state", "all".into()),
+            ("sort", "updated".into()),
+            ("direction", "desc".into()),
+            ("per_page", "100".into()),
+            ("page", "1".into()),
+        ],
+        None,
+    )
+    .await?;
+    v.as_array()
+        .cloned()
+        .ok_or("Invalid pull request list".into())
+}
+/// Every item of a list GitHub pages, up to 1,000.
+async fn every_page(endpoint: &str) -> Result<Vec<Value>, String> {
+    let mut all = vec![];
+    for page in 1..=10 {
+        let v = api(
+            endpoint,
+            "GET",
+            &[("per_page", "100".into()), ("page", page.to_string())],
+            None,
+        )
+        .await?;
+        let items = v.as_array().ok_or("Invalid list")?;
+        all.extend(items.iter().cloned());
+        if items.len() < 100 {
+            break;
+        }
+    }
+    Ok(all)
+}
+/// Everything Orbit keeps of a pull request's history, as GitHub returns it.
+pub struct PullHistory {
+    pub pr: Value,
+    pub issue_comments: Vec<Value>,
+    pub reviews: Vec<Value>,
+    pub review_comments: Vec<Value>,
+    pub commits: Vec<Value>,
+    pub files: Vec<Value>,
+}
+/// A pull request in any state with its conversation, reviews, comments on
+/// changed lines, commits and changed files.
+pub async fn pull_history(repo: &str, number: u64) -> Result<PullHistory, String> {
+    validate_repo(repo)?;
+    let pull = format!("repos/{repo}/pulls/{number}");
+    let (comments, reviews, line_comments, commits) = (
+        format!("repos/{repo}/issues/{number}/comments"),
+        format!("{pull}/reviews"),
+        format!("{pull}/comments"),
+        format!("{pull}/commits"),
+    );
+    let (pr, issue_comments, reviews, review_comments, commits, files) = tokio::try_join!(
+        api(&pull, "GET", &[], None),
+        every_page(&comments),
+        every_page(&reviews),
+        every_page(&line_comments),
+        every_page(&commits),
+        files(repo, number),
+    )?;
+    if pr["number"].as_u64() != Some(number) {
+        return Err("GitHub returned a different pull request.".into());
+    }
+    Ok(PullHistory {
+        pr,
+        issue_comments,
+        reviews,
+        review_comments,
+        commits,
+        files: files.as_array().cloned().unwrap_or_default(),
+    })
+}
 /// The PR's conversation comments updated at or after `since`, oldest first,
 /// up to 1,000.
 pub async fn comments(pr: &PullRequest, since: &str) -> Result<Vec<Value>, String> {

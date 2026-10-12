@@ -1,0 +1,196 @@
+{
+  "pr": {
+    "number": 21,
+    "title": "Show Orbit's verdict on GitHub as a commit status and a comment marker",
+    "html_url": "https://github.com/analogproblems/orbit/pull/21",
+    "state": "closed",
+    "merged": true,
+    "merged_at": "2026-09-26T21:59:53Z",
+    "draft": false,
+    "body": "Closes #11 (second of two PRs; #20 covered the verdict, loop states, round limit and new-commit handling).\n\nBefore: Orbit's verdict and loop state were only visible inside Orbit. An author agent or someone on the PR page couldn't tell whether the latest round was clean.\n\nAfter: while automatic publication is on, each PR's latest automatic round sets the **orbit/review** commit status on its reviewed commit:\n- `pending` while the round is in progress;\n- `success` when clean;\n- `failure` when changes are requested;\n- `error` when the loop needs you.\n\nThe description is short, e.g. \"Round 2 · 1 blocking finding\". Published comments also carry a hidden line such as `<!-- orbit-verdict: changes_requested round=2 blocking=1 -->`. A new **GitHub status check** setting (on by default) turns the statuses off.\n\n## How\n\n- `review_loop::wanted_commit_checks` works out at most one wanted status per commit:\n  - for each PR's current head, from its latest round's loop state (`wanted_status`);\n  - for any check Orbit left `pending` that no current round owns (stopped, replaced, or finished just before a push), a final status from the newest automatic run on that commit (`closing_status`).\n- `round_number` numbers automatic rounds for the comment marker.\n- `engine/status.rs`: `sync_commit_statuses` runs on every tick (`Engine::tick`), including while Codex is disconnected. It sends a status only when it differs from the one recorded for that commit in `Snapshot.commit_checks`, one request per `repo@sha` at a time, and recomputes after each, so the newest round wins. If GitHub refuses a status, the refusal is recorded and shown in the PR detail's loop panel. It isn't retried until the wanted status changes, and reviews are unaffected.\n- `github::set_status` posts to `repos/{repo}/statuses/{sha}` with context `orbit/review`. The verdict marker goes on the line after the existing `orbit-review` marker.\n- The status sender can be replaced in tests, and its test default never calls GitHub.\n\n## Decisions\n\n- Statuses need both **GitHub status check** and **Automatic publication** on. I read \"on by default whenever automatic publication is on\" as: nothing is sent to GitHub while you are still reviewing reports by hand. Checks Orbit already opened are still closed after you turn it off.\n- A stopped loop keeps the round's verdict (success or failure) rather than showing an error.\n- Orbit never configures branch protection (out of scope, as the issue says).\n\n## Checks\n\n`npm run check` passes locally (70 frontend tests, 154 Rust tests, clippy, desktop compile). There are new tests for:\n- each status state;\n- the settings gates;\n- round numbering;\n- the 140-character limit;\n- closing stale pending checks;\n- sending each status once;\n- refusals;\n- the comment marker.\n\nThere are also regression tests for the three review findings: a slow stale write, a Codex disconnect, and a round finishing before a push.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01HT4ZBRiiEExMpt6AXL7zpy",
+    "created_at": "2026-09-26T19:16:54Z",
+    "updated_at": "2026-09-26T21:59:54Z",
+    "closed_at": "2026-09-26T21:59:54Z",
+    "additions": 926,
+    "deletions": 14,
+    "changed_files": 14,
+    "user": {
+      "login": "jasondwhyte"
+    },
+    "merged_by": {
+      "login": "jasondwhyte"
+    },
+    "head": {
+      "ref": "claude/project-thread-h9sg3q",
+      "sha": "acf81ae0f21dd00d62c6e63acf86aec3f45f07ad"
+    },
+    "base": {
+      "ref": "master",
+      "sha": "cd67f52dc731b1ec70d358dfb4b7f1046449f3cc"
+    }
+  },
+  "issueComments": [
+    {
+      "id": 5849147780,
+      "body": "Reviewed `4957dc1b2369e6a39f22d49729dae46ebee10f42`. I found three correctness issues to address before merging:\n\n1. **[P2] Serialize status writes by repository and commit, and let the newest round win.** [`src-tauri/src/engine/status.rs:56–73`](https://github.com/analogproblems/orbit/blob/4957dc1b2369e6a39f22d49729dae46ebee10f42/src-tauri/src/engine/status.rs#L56-L73)\n   The in-flight guard and sent-status cache are keyed by review ID, but all rounds on the same SHA write the same `orbit/review` context. Stop a queued round after its pending status is sent, then continue the loop on the unchanged head while the old round's closing request is delayed. A newer round can publish success before the old request finally publishes `error / Review stopped`. Subsequent ticks do not repair the remote status because the newer round already has success cached. A base-only change can also produce multiple rounds sharing a head SHA. I reproduced the stale error overwriting success with the injectable sender, including a subsequent sync that left the error in place. Coordinate writes and the effective sent-status cache at `(repo, SHA, context)` scope, with obsolete rounds unable to overwrite the current round.\n\n2. **[P2] Run GitHub status synchronization even when Codex is disconnected.** [`src-tauri/src/engine/queue.rs:136–138`](https://github.com/analogproblems/orbit/blob/4957dc1b2369e6a39f22d49729dae46ebee10f42/src-tauri/src/engine/queue.rs#L136-L138)\n   This is the only production call to `sync_commit_statuses`, and `Engine::launch` calls `schedule` only when `codex_ready` is true. On a Codex disconnection, `disconnected()` sets that flag false and marks active reviews failed. Consequently, a previously published pending check never receives its failure/error status until the user reconnects Codex, even though GitHub remains available. The same gate prevents publishing recovered failures if Codex cannot reconnect after an app restart. Move status synchronization into the scheduler tick outside the Codex-readiness gate. I verified that the disconnect path produces a failed review whose wanted status is error while disabling that gate.\n\n3. **[P2] Close pending checks when a finished round becomes outdated between ticks.** [`src-tauri/src/review_loop.rs:254–257`](https://github.com/analogproblems/orbit/blob/4957dc1b2369e6a39f22d49729dae46ebee10f42/src-tauri/src/review_loop.rs#L254-L257)\n   If a round has sent pending, then finishes and a poll observes a new head before the next status sync, `wanted_status` drops the old round. `supersede_outdated_runs` only marks active reviews, so the now-ready/posted round is not superseded; `closing_status` therefore also ignores it. Its old SHA remains pending forever. This also happens when an in-flight pending request completes after the round finishes and the head changes. I reproduced the finished-round/new-head ordering and verified that no terminal status was sent. Ensure every successfully opened pending check reaches a terminal status even when its round finishes before the head-change handler runs.\n\nValidation: all **150 existing Rust tests**, **70 frontend tests**, and the **TypeScript/Vite production build** passed. Two additional local regression tests failed with the stale-overwrite and stranded-pending behaviors above; the disconnect path was checked separately. These checks used a fake status sender and made no commit-status writes to GitHub. I did not run the full desktop/clippy check.\n",
+      "html_url": "https://github.com/analogproblems/orbit/pull/21#issuecomment-5849147780",
+      "created_at": "2026-09-26T19:23:21Z",
+      "updated_at": "2026-09-26T19:23:21Z",
+      "user": {
+        "login": "jasondwhyte"
+      }
+    },
+    {
+      "id": 5849187686,
+      "body": "All three findings are fixed in 1e8b66f.\n\n1. **Per-commit writes, newest round wins.** Sent statuses now live in `Snapshot.commit_checks`, keyed by PR and SHA (`Review.commit_status` is gone). `review_loop::wanted_commit_checks` produces at most one wanted status per commit, taken from the newest round. The engine allows one request per `repo@sha` at a time and recomputes after each one, so a delayed close of a stopped round is followed by the newer round's status rather than left on top. Test: `a_slow_status_for_a_stopped_round_cannot_overwrite_a_newer_one` holds the close request while a newer round finishes clean, and checks that the order is pending, error, success and that `success` is what's recorded.\n2. **Runs without Codex.** `sync_commit_statuses` moved out of `schedule()` into a new `Engine::tick(codex_ready)`. The launch loop calls it every 200 ms, and it always syncs statuses whether or not Codex is ready. Test: `statuses_update_while_codex_is_disconnected`.\n3. **Every opened pending check reaches a final status.** Any recorded `pending` check (one GitHub accepted) that no current round owns is closed from the newest automatic run on that commit:\n   - a finished round closes with its verdict;\n   - a failed round closes with an error;\n   - a stopped round closes as \"Review stopped\";\n   - a replaced round closes as \"Replaced by newer commits\".\n\n   This happens even if statuses were turned off in the meantime. Tests: `a_round_that_finishes_before_a_push_still_closes_its_check` (the finished-round/new-head ordering), plus the unit tests `pending_checks_without_a_round_to_finish_them_are_closed` and `the_newest_round_on_a_commit_decides_its_status`.\n\nStored checks are pruned to open ones and current heads after each send. `npm run check` passes: 154 Rust tests, 70 frontend tests, clippy and the desktop compile. All tests use the injectable sender; nothing writes to GitHub.\n\n---\n_Generated by [Claude Code](https://claude.ai/code)_",
+      "html_url": "https://github.com/analogproblems/orbit/pull/21#issuecomment-5849187686",
+      "created_at": "2026-09-26T19:28:21Z",
+      "updated_at": "2026-09-26T19:28:21Z",
+      "user": {
+        "login": "jasondwhyte"
+      }
+    },
+    {
+      "id": 5849388232,
+      "body": "Re-reviewed `1e8b66fa696ca36415e605e65c6ed11eb116ca37`, including the changes since my previous review. The three original reproductions are addressed: requests from successive rounds of one PR are serialized, status sync runs without Codex, and a round finishing just before a push now closes its pending check. There are two remaining P2 issues, both reproduced with additional local regression tests:\n\n1. **[P2] Preserve the last accepted pending status when a later request fails.** [`src-tauri/src/engine/status.rs:58–67`](https://github.com/analogproblems/orbit/blob/1e8b66fa696ca36415e605e65c6ed11eb116ca37/src-tauri/src/engine/status.rs#L58-L67)\n\n   Every response replaces the commit's record, including errors, so a refused update erases the fact that GitHub still has an accepted pending check. Reproduction: GitHub accepts `pending`; an approval makes the wanted status `error`, but that request fails; GitHub recovers and a push supersedes the review. `wanted_status` no longer owns the old head, and `wanted_commit_checks` ignores its saved record because it now contains the failed `error` attempt instead of an accepted `pending`. No `Replaced by newer commits` status is sent, and the remote check stays pending indefinitely. This is a different wanted status from the refused approval update, so closing it would respect the stated retry policy. Track the last accepted remote state separately from the last attempted status/error, and retain cleanup responsibility until a terminal status is accepted.\n\n2. **[P2] Use the repository/SHA identity throughout reconciliation, including across PRs.** [`src-tauri/src/review_loop.rs:330–348`](https://github.com/analogproblems/orbit/blob/1e8b66fa696ca36415e605e65c6ed11eb116ca37/src-tauri/src/review_loop.rs#L330-L348), [`src-tauri/src/engine/status.rs:39–43`](https://github.com/analogproblems/orbit/blob/1e8b66fa696ca36415e605e65c6ed11eb116ca37/src-tauri/src/engine/status.rs#L39-L43)\n\n   The in-flight guard now uses `repo@sha`, but desired-status deduplication and the saved-status cache still use `(pr_id, sha)`. Two PRs from the same source commit to different base branches share GitHub's single `orbit/review` status. I reproduced this sequence: PR A sends pending and its round is cancelled; a newer round for PR B on the same SHA finishes clean; one sync sends B's success, then the next sync sends A's closing error. Later ticks leave the error in place because B's separate cache still says success. Reconcile one effective status per repository/SHA/context, including ownership of pending-check cleanup, so an obsolete PR's cleanup cannot overwrite the current result.\n\nValidation: **154 existing Rust tests and 70 frontend tests passed**, including the new tests for the previous findings. The production build, ESLint, Prettier, Rust formatting, and Clippy with `--no-default-features --all-targets -D warnings` passed. The two additional regression tests failed with the behaviors above; they used a fake status sender and made no GitHub status writes. Desktop compilation was not rerun. **Not clear to merge yet.**\n",
+      "html_url": "https://github.com/analogproblems/orbit/pull/21#issuecomment-5849388232",
+      "created_at": "2026-09-26T19:56:22Z",
+      "updated_at": "2026-09-26T19:56:22Z",
+      "user": {
+        "login": "jasondwhyte"
+      }
+    },
+    {
+      "id": 5849413988,
+      "body": "Both findings are fixed in 0ab9947.\n\n1. **Accepted and refused are tracked separately.** Each `CommitCheck` record now holds:\n   - `accepted`: the last status GitHub took, which is what it shows;\n   - `refused`: the last status it rejected, with the error.\n\n   A failed request only sets `refused` and leaves `accepted` alone. A wanted status is skipped when it matches either field, so the retry policy still holds. Pending-check cleanup is driven by `accepted.state == \"pending\"`, so it stays in charge until a final status is accepted. Test: `a_refused_update_still_lets_a_pending_check_close` follows your sequence (pending accepted, approval error refused, recovery, then a push supersedes the round) and ends with `error / Replaced by newer commits` on the old SHA.\n2. **One status per repository and commit, across PRs.** The cache, the de-duplication, the in-flight guard and the cleanup now all use repo plus SHA (`review_loop::same_commit`). `wanted_commit_checks` returns one `WantedStatus` per commit. When several PRs have the same head, the newest latest round among them wins. `closing_status` looks at the newest automatic run on that commit in any PR, so a stopped round in an older PR can't close over a newer PR's result. Test: `a_commit_shared_by_two_prs_shows_the_newest_round` covers your sequence and the case where PR B later moves on.\n\n`npm run check` passes: 156 Rust tests, 70 frontend tests, clippy and the desktop compile. Everything uses the fake sender.\n\n---\n_Generated by [Claude Code](https://claude.ai/code)_",
+      "html_url": "https://github.com/analogproblems/orbit/pull/21#issuecomment-5849413988",
+      "created_at": "2026-09-26T20:00:09Z",
+      "updated_at": "2026-09-26T20:00:09Z",
+      "user": {
+        "login": "jasondwhyte"
+      }
+    },
+    {
+      "id": 5849688646,
+      "body": "Re-reviewed `0ab9947baeaab0605f3ed336ca3f6513c997efaf`. Both findings from my previous comment are fixed: I reran my independent reproductions for preserving accepted pending checks and for two PRs sharing a commit, and both now pass. The earlier fixes remain covered by passing tests.\n\nOne remaining finding:\n\n**[P2] Expire a cached refusal when the wanted status changes, even if no write is needed.** [`src-tauri/src/review_loop.rs:280–286`](https://github.com/analogproblems/orbit/blob/0ab9947baeaab0605f3ed336ca3f6513c997efaf/src-tauri/src/review_loop.rs#L280-L286), [`src-tauri/src/engine/status.rs:35–44`](https://github.com/analogproblems/orbit/blob/0ab9947baeaab0605f3ed336ca3f6513c997efaf/src-tauri/src/engine/status.rs#L35-L44)\n\n`settled_by` suppresses a wanted status if it matches either `accepted` or `refused`, but `refused` is cleared only after a successful request. This misses a state transition back to an already-accepted value. Reproduction:\n\n1. GitHub accepts `pending / Round 1 · reviewing`.\n2. An approval makes the wanted status `error / Round 1 · needs you: an approval is pending`; that request fails temporarily.\n3. GitHub recovers and the user resolves the approval. The wanted status returns to pending, so synchronization skips the write because pending already matches `accepted`. The obsolete refusal remains cached.\n4. A later command in the same round requests another approval. Its error status matches the stale `refused` value, so no new request is made. GitHub continues to show pending while the review needs a person.\n\nThis violates the stated “not retried until the wanted status changes” policy: the wanted status changed twice, but the old refusal still suppresses the new transition. Record desired-status transitions or invalidate the refusal when the desired value changes, including transitions satisfied by the accepted state, while preserving the accepted remote status for cleanup.\n\nA new local regression test reproduced this: the sender saw only `[pending, error]`, with the error refused, instead of a fresh error request after the second approval. The two previous independent regression tests passed.\n\nValidation on the unmodified PR: **156 Rust tests, 70 frontend tests, production build, ESLint, Prettier, Rust formatting, and Clippy with `--no-default-features --all-targets -D warnings` all passed**. Desktop compilation was not rerun. Regression tests used a fake sender; no GitHub commit statuses were changed. **Not clear to merge yet.**\n",
+      "html_url": "https://github.com/analogproblems/orbit/pull/21#issuecomment-5849688646",
+      "created_at": "2026-09-26T20:38:26Z",
+      "updated_at": "2026-09-26T20:38:26Z",
+      "user": {
+        "login": "jasondwhyte"
+      }
+    },
+    {
+      "id": 5849709935,
+      "body": "Fixed in acf81ae.\n\nEach sync now clears a cached `refused` for a commit as soon as the wanted status for that commit differs from it. That applies even when nothing needs sending because GitHub already shows the new wanted status. `accepted` is untouched, so pending-check cleanup still works as before. The refusal still suppresses retries while the same status stays wanted (`WantedStatus::refused_by` / `settled_by`).\n\nTest: `a_refusal_is_forgotten_once_the_wanted_status_moves_on` follows your sequence: pending accepted, approval error refused, recovery, approval answered, second approval. It checks that the sender sees `[pending, error, error]` and that `error` ends up accepted. I confirmed it fails with the clearing step removed.\n\n`npm run check` passes: 157 Rust tests, 70 frontend tests, clippy and the desktop compile.\n\n---\n_Generated by [Claude Code](https://claude.ai/code)_",
+      "html_url": "https://github.com/analogproblems/orbit/pull/21#issuecomment-5849709935",
+      "created_at": "2026-09-26T20:41:32Z",
+      "updated_at": "2026-09-26T20:41:32Z",
+      "user": {
+        "login": "jasondwhyte"
+      }
+    },
+    {
+      "id": 5850203873,
+      "body": "Re-reviewed `acf81ae0f21dd00d62c6e63acf86aec3f45f07ad`. **Clear to merge from my review. No remaining actionable findings.**\n\nThe latest change fixes the final finding: a cached refusal is invalidated when the wanted status changes, including a transition to an already-accepted value, while preserving the accepted status for pending-check cleanup. I reran my independent regression for resolving an approval and encountering another approval after GitHub recovers; it now passes. My two independent regressions for accepted-pending preservation and PRs sharing a commit also pass. All findings from my earlier comments are resolved.\n\nValidation: **157 existing Rust tests, 70 frontend tests, and all 3 independent regression tests passed**. The TypeScript/Vite production build, ESLint, Prettier, Rust formatting, and Clippy with `--no-default-features --all-targets -D warnings` passed. Desktop compilation was not rerun, and status behavior was tested with a fake sender rather than live GitHub writes.\n",
+      "html_url": "https://github.com/analogproblems/orbit/pull/21#issuecomment-5850203873",
+      "created_at": "2026-09-26T21:51:45Z",
+      "updated_at": "2026-09-26T21:51:45Z",
+      "user": {
+        "login": "jasondwhyte"
+      }
+    }
+  ],
+  "reviews": [],
+  "reviewComments": [],
+  "commits": [
+    {
+      "sha": "0ab9947baeaab0605f3ed336ca3f6513c997efaf",
+      "html_url": "https://github.com/analogproblems/orbit/commit/0ab9947baeaab0605f3ed336ca3f6513c997efaf",
+      "commit": {
+        "message": "Keep accepted and refused commit statuses apart, per repository commit\n\nGitHub keeps one orbit/review status per commit, so what Orbit knows is\nnow one record per repository and commit, whichever PR set it: the last\nstatus GitHub accepted and, separately, the last one it refused. A\nrefused update no longer hides a pending check GitHub still shows, so it\nis still closed later. When several PRs share a commit, the newest round\namong them decides its status, and a pending check is closed from the\nnewest run on that commit in any PR.\n\nCo-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01HT4ZBRiiEExMpt6AXL7zpy",
+        "author": {
+          "name": "Claude",
+          "date": "2026-09-26T19:59:59Z"
+        }
+      }
+    },
+    {
+      "sha": "1e8b66fa696ca36415e605e65c6ed11eb116ca37",
+      "html_url": "https://github.com/analogproblems/orbit/commit/1e8b66fa696ca36415e605e65c6ed11eb116ca37",
+      "commit": {
+        "message": "Track commit statuses per commit and keep them updating offline\n\nEvery round on a commit shares its one orbit/review status, so what was\nsent is now tracked per commit, one request per commit at a time, and\nthe wanted status is recomputed after each. A slow request for a stopped\nround can no longer overwrite a newer round's status. Statuses sync on\nevery tick, not only while Codex is connected, so a disconnect still\ncloses the checks it failed. A pending check with no round left to finish\nit (stopped, replaced, or finished just before a push) is closed with the\nround's verdict or the reason.\n\nCo-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01HT4ZBRiiEExMpt6AXL7zpy",
+        "author": {
+          "name": "Claude",
+          "date": "2026-09-26T19:28:09Z"
+        }
+      }
+    },
+    {
+      "sha": "4957dc1b2369e6a39f22d49729dae46ebee10f42",
+      "html_url": "https://github.com/analogproblems/orbit/commit/4957dc1b2369e6a39f22d49729dae46ebee10f42",
+      "commit": {
+        "message": "Show Orbit's verdict on GitHub as a commit status and a comment marker\n\nEach PR's latest automatic round sets the orbit/review commit status on\nits commit (pending, success, failure, or error when the loop needs a\nperson), sent only when it changes. A refused status is recorded on the\nround and shown in the PR detail without affecting the review. Checks left\npending by stopped or replaced rounds are closed. Published comments carry\na hidden `<!-- orbit-verdict: ... -->` line. A new GitHub status check\nsetting, on by default, applies while automatic publication is on.\n\nCloses #11.\n\nCo-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01HT4ZBRiiEExMpt6AXL7zpy",
+        "author": {
+          "name": "Claude",
+          "date": "2026-09-26T19:16:38Z"
+        }
+      }
+    },
+    {
+      "sha": "acf81ae0f21dd00d62c6e63acf86aec3f45f07ad",
+      "html_url": "https://github.com/analogproblems/orbit/commit/acf81ae0f21dd00d62c6e63acf86aec3f45f07ad",
+      "commit": {
+        "message": "Forget a refused commit status once the wanted status moves on\n\nA refusal only held until a later request succeeded, so a wanted status\nthat returned to what GitHub already showed left the old refusal cached,\nand a later return to the refused status was never sent. The refusal is\nnow cleared as soon as a different status is wanted, whether or not that\nstatus needs a request.\n\nCo-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01HT4ZBRiiEExMpt6AXL7zpy",
+        "author": {
+          "name": "Claude",
+          "date": "2026-09-26T20:41:23Z"
+        }
+      }
+    }
+  ],
+  "files": [
+    {
+      "filename": "docs/user-guide.md"
+    },
+    {
+      "filename": "src-tauri/src/engine/mod.rs"
+    },
+    {
+      "filename": "src-tauri/src/engine/publish.rs"
+    },
+    {
+      "filename": "src-tauri/src/engine/queue_tests.rs"
+    },
+    {
+      "filename": "src-tauri/src/engine/status.rs"
+    },
+    {
+      "filename": "src-tauri/src/github.rs"
+    },
+    {
+      "filename": "src-tauri/src/review_loop.rs"
+    },
+    {
+      "filename": "src-tauri/src/review_loop_tests.rs"
+    },
+    {
+      "filename": "src-tauri/src/types.rs"
+    },
+    {
+      "filename": "src/Loop.test.tsx"
+    },
+    {
+      "filename": "src/Loop.tsx"
+    },
+    {
+      "filename": "src/SaveFeedback.tsx"
+    },
+    {
+      "filename": "src/Settings.tsx"
+    },
+    {
+      "filename": "src/types.ts"
+    }
+  ]
+}

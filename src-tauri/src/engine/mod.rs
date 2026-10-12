@@ -14,7 +14,7 @@ use tokio::sync::Mutex;
 mod ask;
 mod chat;
 mod checks;
-mod claims;
+pub(crate) mod claims;
 mod cli_review;
 mod clones;
 mod connection;
@@ -23,6 +23,7 @@ mod extras;
 mod findings;
 mod fixes;
 mod inline;
+mod ledger;
 mod publish;
 mod queue;
 mod rounds;
@@ -61,6 +62,8 @@ mod fixes_tests;
 #[cfg(test)]
 mod inline_tests;
 #[cfg(test)]
+mod ledger_tests;
+#[cfg(test)]
 mod model_tests;
 #[cfg(test)]
 mod notice_tests;
@@ -92,8 +95,9 @@ type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// reviewer reports, in Orbit's own terms), `chat` (follow-ups),
 /// `publish` (GitHub comments), `worktrees` (cleanup), `clones` (keeping
 /// users' clones up to date), `scans` (repository security scans),
-/// `fixes` (Bit's fixes and answers), `ask` (questions you type to Bit) and
-/// `setup` (repositories Bit sets up).
+/// `fixes` (Bit's fixes and answers), `ask` (questions you type to Bit),
+/// `setup` (repositories Bit sets up) and `ledger` (each repository's
+/// pull-request history, for the Decisions page).
 ///
 /// # Locks
 ///
@@ -147,6 +151,9 @@ pub struct Engine {
     stopping: AtomicBool,
     /// An `update_clones` pass is running; another one skips rather than waits.
     updating_clones: AtomicBool,
+    /// The pull-request history is being read; another read skips rather
+    /// than waits.
+    refreshing_ledger: AtomicBool,
     /// Repositories whose open PRs synced in the latest poll; autopilot only acts on these.
     synced_repos: Mutex<HashSet<String>>,
     /// Running preparations, so Stop can end a long fetch or checkout immediately.
@@ -298,6 +305,8 @@ impl Engine {
         state.claude_models = crate::claude::catalog();
         state.antigravity = CliStatus::default();
         state.dev_containers = CliStatus::default();
+        state.ledger.refreshing = false;
+        state.ledger.progress = None;
         Ok(Arc::new(Self {
             state: Mutex::new(state),
             rpc: Mutex::new(None),
@@ -314,6 +323,7 @@ impl Engine {
             changed: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
             updating_clones: AtomicBool::new(false),
+            refreshing_ledger: AtomicBool::new(false),
             synced_repos: Mutex::new(HashSet::new()),
             preparing: std::sync::Mutex::new(HashMap::new()),
             cleanup_lock: Mutex::new(()),
@@ -474,19 +484,28 @@ impl Engine {
             let mut tick = tokio::time::interval(Duration::from_millis(200));
             let mut last_poll = std::time::Instant::now();
             let mut last_usage = std::time::Instant::now();
+            let mut last_ledger: Option<std::time::Instant> = None;
             while !e.stopping.load(Ordering::SeqCst) {
                 tick.tick().await;
                 if e.flush().await.is_err() {
                     continue;
                 }
-                let (poll_seconds, codex_ready, cli_ready) = {
+                let (poll_seconds, codex_ready, cli_ready, unread) = {
                     let s = e.state.lock().await;
                     (
                         s.settings.poll_seconds,
                         s.codex_ready,
                         s.claude.ready || s.antigravity.ready,
+                        ledger::unread(&s),
                     )
                 };
+                // The history is read on its own schedule, and as soon as a
+                // repository is connected.
+                if (unread || last_ledger.is_none_or(|t| t.elapsed() >= ledger::REFRESH))
+                    && e.refresh_ledger_soon()
+                {
+                    last_ledger = Some(std::time::Instant::now());
+                }
                 if last_poll.elapsed().as_secs() >= poll_seconds {
                     last_poll = std::time::Instant::now();
                     let p = e.clone();
