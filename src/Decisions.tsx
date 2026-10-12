@@ -42,6 +42,7 @@ import { categoryLabels, priorStatusLabels, sameRepo } from "./types";
 import { priorityColors } from "./Findings";
 import { SafeMarkdown } from "./SafeMarkdown";
 import {
+  areas,
   decisionKindLabels,
   decisionKinds,
   duration,
@@ -52,8 +53,11 @@ import {
   gist,
   health,
   historyKey,
+  inArea,
   madeByLabels,
   pushback,
+  rulebook,
+  sameArea,
   searchHistories,
   shortRef,
   stateColor,
@@ -61,17 +65,26 @@ import {
   verdictColors,
   verdictLabels,
   worthALook,
+  type AreaRow,
   type Decisions,
   type FinalStatus,
-  type FlagRow,
   type History,
   type LedgerClaim,
   type LedgerRound,
+  type RulebookArea,
   type Trajectory,
+  type WorthRow,
   type WriteUp,
 } from "./decisions";
 
-type View = "story" | "pushback" | "health";
+type View = "story" | "rulebook" | "pushback" | "health" | "areas";
+const views: [View, string][] = [
+  ["story", "Story"],
+  ["rulebook", "Rulebook"],
+  ["pushback", "Pushback"],
+  ["health", "Review health"],
+  ["areas", "Areas"],
+];
 const PAGE = 50;
 const FLAGS = 5;
 
@@ -195,12 +208,13 @@ function ReadStatus() {
   );
 }
 
-/** Flags across every pull request, those that need a decision first. */
+/** Flags and marked decisions across every pull request, those that need a
+ * decision first. */
 function WorthALook({
   rows,
   onOpen,
 }: {
-  rows: FlagRow[];
+  rows: WorthRow[];
   onOpen: (pr: History) => void;
 }) {
   const [all, setAll] = useState(false);
@@ -210,18 +224,21 @@ function WorthALook({
       {rows.length === 0 && (
         <Text color="secondary">Nothing needs a second look.</Text>
       )}
-      {shown.map(({ pr, flag }, i) => (
+      {shown.map((row) => (
         <ListItem
-          key={`${historyKey(pr)}-${flag.kind}-${flag.findingId ?? i}`}
-          label={flagLabels[flag.kind]}
-          startContent={<FlagDot attention={flag.attention} />}
+          key={row.key}
+          label={row.label}
+          startContent={<FlagDot attention={row.attention} />}
           description={
             <VStack gap={1}>
-              <Text>{flag.text}</Text>
-              <Text type="supporting">{`${shortRef(pr)} · ${pr.title}`}</Text>
+              <Text>{row.text}</Text>
+              {row.reason && <Text color="secondary">{row.reason}</Text>}
+              <Text type="supporting">
+                {`${row.fromWriteUp ? "From the write-up · " : ""}${shortRef(row.pr)} · ${row.pr.title}`}
+              </Text>
             </VStack>
           }
-          onClick={() => onOpen(pr)}
+          onClick={() => onOpen(row.pr)}
         />
       ))}
       {rows.length > FLAGS && (
@@ -307,6 +324,117 @@ function Story({
           </StackItem>
         </HStack>
       )}
+    </VStack>
+  );
+}
+
+/** Where rules and areas come from when there are none. */
+function NoWriteUps({ what }: { what: string }) {
+  const on = useOrbit(
+    (state) => state.snapshot.settings.writeUps?.enabled ?? false,
+  );
+  return (
+    <Text color="secondary">
+      {on
+        ? `${what} appear as merged and closed pull requests are written up.`
+        : `${what} come from write-ups. Turn them on in Settings to have each merged or closed pull request summed up in plain words.`}
+    </Text>
+  );
+}
+
+/** Every rule the write-ups found, by the part of the app it governs. */
+function Rulebook({
+  groups,
+  onOpen,
+}: {
+  groups: RulebookArea[];
+  onOpen: (pr: History) => void;
+}) {
+  if (!groups.length) return <NoWriteUps what="Rules" />;
+  return (
+    <VStack gap={4}>
+      <Text color="secondary">
+        What the app now commits to: each standing rule the builder set or the
+        reviewer asked for, grouped by the part of the app it governs, oldest
+        first.
+      </Text>
+      {groups.map((g) => (
+        <List
+          key={g.area}
+          hasDividers
+          header={
+            <HStack gap={2} vAlign="center">
+              <Text weight="medium">{g.area}</Text>
+              <Text type="supporting">{plural(g.rules.length, "rule")}</Text>
+            </HStack>
+          }
+        >
+          {g.rules.map(({ pr, rule }, i) => (
+            <ListItem
+              key={`${historyKey(pr)}-${i}`}
+              label={<Text>{rule.statement}</Text>}
+              description={
+                <VStack gap={1}>
+                  {rule.detail && <Text color="secondary">{rule.detail}</Text>}
+                  {rule.supersedes && (
+                    <Text color="secondary">{`Changes an earlier rule: ${rule.supersedes}`}</Text>
+                  )}
+                  <Text type="supporting">{`${shortRef(pr)} · ${pr.title}`}</Text>
+                </VStack>
+              }
+              onClick={() => onOpen(pr)}
+            />
+          ))}
+        </List>
+      ))}
+    </VStack>
+  );
+}
+
+/** Each part of the app the write-ups name, with what was decided there. */
+function Areas({
+  rows,
+  manyRepos,
+  onPick,
+}: {
+  rows: AreaRow[];
+  manyRepos: boolean;
+  onPick: (area: string) => void;
+}) {
+  if (!rows.length) return <NoWriteUps what="Areas" />;
+  return (
+    <VStack gap={3}>
+      <Text color="secondary">
+        Where the work went: each part of the app the write-ups name, with the
+        rules it gained and the problems the reviewer found there. Select one to
+        see only its pull requests.
+      </Text>
+      <List hasDividers aria-label="Areas">
+        {rows.map((a) => (
+          <ListItem
+            key={a.name}
+            label={a.name}
+            description={
+              <VStack gap={1}>
+                <Text type="supporting">
+                  {[
+                    plural(a.prs, "pull request"),
+                    plural(a.rules, "rule"),
+                    plural(a.challenges, "challenge"),
+                    plural(a.pushbacks, "pushback"),
+                    ...(a.attention ? [`${a.attention} worth a look`] : []),
+                  ].join(" · ")}
+                </Text>
+                {manyRepos && (
+                  <Text type="supporting">{a.repos.join(", ")}</Text>
+                )}
+              </VStack>
+            }
+            endContent={<Timestamp value={a.lastAt} format="relative_short" />}
+            onClick={() => onPick(a.name)}
+          />
+        ))}
+      </List>
     </VStack>
   );
 }
@@ -860,6 +988,7 @@ export function DecisionsPage() {
   const [view, setView] = useState<View>("story");
   const [selected, setSelected] = useState<string | null>(null);
   const [repo, setRepo] = useState("all");
+  const [area, setArea] = useState("all");
   const [search, setSearch] = useState("");
   useEffect(() => {
     let current = true;
@@ -878,7 +1007,15 @@ export function DecisionsPage() {
   }, [action, version, reposKey]);
   const all = data?.prs ?? [];
   const inRepo = all.filter((h) => repo === "all" || sameRepo(h.repo, repo));
-  const prs = searchHistories(inRepo, search);
+  const areaRows = areas(inRepo);
+  // An area that isn't in this repository shows everything.
+  const activeArea = areaRows.some((a) => sameArea(a.name, area))
+    ? area
+    : "all";
+  const prs = searchHistories(
+    activeArea === "all" ? inRepo : inArea(inRepo, activeArea),
+    search,
+  );
   const chosen = all.find((h) => historyKey(h) === selected);
   if (chosen)
     return (
@@ -907,8 +1044,9 @@ export function DecisionsPage() {
         <Text color="secondary">
           The story of each pull request in your connected repositories: what it
           set out to do, what each review round found, what was fixed or pushed
-          back on, and what is worth a second look. Orbit reads it from GitHub;
-          no model is involved.
+          back on, and what is worth a second look. Orbit reads it from GitHub,
+          and with write-ups on, a writer sums up each merged or closed one in
+          plain words.
         </Text>
         <ReadStatus />
         {error && (
@@ -959,8 +1097,27 @@ export function DecisionsPage() {
                   .map((r) => ({ value: r, label: r })),
               ]}
             />
+            {areaRows.length > 0 && (
+              <Selector
+                label="Area"
+                isLabelHidden
+                size="sm"
+                value={
+                  areaRows.find((a) => sameArea(a.name, activeArea))?.name ??
+                  "all"
+                }
+                onChange={setArea}
+                options={[
+                  { value: "all", label: "All areas" },
+                  ...areaRows
+                    .map((a) => a.name)
+                    .sort()
+                    .map((a) => ({ value: a, label: a })),
+                ]}
+              />
+            )}
           </HStack>
-          <WorthALook rows={worthALook(prs)} onOpen={open} />
+          <WorthALook rows={worthALook(prs, activeArea)} onOpen={open} />
           <VStack gap={4}>
             <TabList
               role="tablist"
@@ -969,24 +1126,15 @@ export function DecisionsPage() {
               onChange={(v) => setView(v as View)}
               hasDivider
             >
-              <Tab
-                id="decisions-tab-story"
-                value="story"
-                label="Story"
-                panelId="decisions-panel"
-              />
-              <Tab
-                id="decisions-tab-pushback"
-                value="pushback"
-                label="Pushback"
-                panelId="decisions-panel"
-              />
-              <Tab
-                id="decisions-tab-health"
-                value="health"
-                label="Review health"
-                panelId="decisions-panel"
-              />
+              {views.map(([value, label]) => (
+                <Tab
+                  key={value}
+                  id={`decisions-tab-${value}`}
+                  value={value}
+                  label={label}
+                  panelId="decisions-panel"
+                />
+              ))}
             </TabList>
             <VStack
               gap={4}
@@ -996,10 +1144,23 @@ export function DecisionsPage() {
             >
               {view === "story" ? (
                 <Story prs={prs} onOpen={open} />
+              ) : view === "rulebook" ? (
+                <Rulebook groups={rulebook(prs, activeArea)} onOpen={open} />
               ) : view === "pushback" ? (
                 <Pushback prs={prs} onOpen={open} />
-              ) : (
+              ) : view === "health" ? (
                 <ReviewHealth prs={prs} />
+              ) : (
+                <Areas
+                  rows={areas(prs).filter(
+                    (a) => activeArea === "all" || sameArea(a.name, activeArea),
+                  )}
+                  manyRepos={new Set(inRepo.map((h) => h.repo)).size > 1}
+                  onPick={(name) => {
+                    setArea(name);
+                    setView("story");
+                  }}
+                />
               )}
             </VStack>
           </VStack>

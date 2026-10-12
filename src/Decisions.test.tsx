@@ -12,9 +12,12 @@ import {
 import { DecisionsPage, roundStrip } from "./Decisions";
 import { demoDecisions } from "./demoDecisions";
 import {
+  areas,
   gist,
   health,
+  inArea,
   pushback,
+  rulebook,
   searchHistories,
   worthALook,
   type Decisions,
@@ -42,15 +45,68 @@ const byNumber = (n: number) =>
   demoDecisions().prs.find((p) => p.number === n)!;
 
 describe("decisions summaries", () => {
-  it("puts flags that need a decision first", () => {
-    const rows = worthALook(demoDecisions().prs);
-    expect(rows.map((r) => r.flag.attention)).toEqual([
-      "act",
-      "act",
-      "look",
-      "look",
+  it("puts flags and marked decisions that need a decision first", () => {
+    const prs = demoDecisions().prs;
+    const rows = worthALook(prs);
+    expect(
+      rows.map((r) => [r.attention, r.pr.number, r.fromWriteUp, r.label]),
+    ).toEqual([
+      ["act", 318, false, "Disputed decline"],
+      ["act", 318, true, "Pushback"],
+      ["act", 139, false, "Merged with a finding open"],
+      ["look", 77, true, "Trade-offs"],
+      ["look", 318, false, "Not checked"],
+      ["look", 318, true, "What was checked"],
+      ["look", 75, false, "Merged before a review"],
     ]);
-    expect(rows[0].pr.number).toBe(318);
+    expect(rows[1].reason).toBe(
+      "Decide whether an old secret may stay valid when the nightly job is off.",
+    );
+    // In one area, its pull requests' flags and its own decisions.
+    expect(
+      worthALook(inArea(prs, "builds table"), "Builds Table").map((r) => [
+        r.pr.number,
+        r.fromWriteUp,
+      ]),
+    ).toEqual([[77, true]]);
+  });
+
+  it("gathers the rules by area and counts what each area gained", () => {
+    const prs = demoDecisions().prs;
+    expect(
+      rulebook(prs).map((g) => [g.area, g.rules.map((r) => r.rule.statement)]),
+    ).toEqual([
+      [
+        "Webhooks",
+        [
+          "Receivers accept the previous secret for one day after it changes.",
+          "A webhook's signature is checked in a way that doesn't reveal how much of it matched.",
+        ],
+      ],
+      [
+        "Settings",
+        [
+          "A repository's own settings always win over the defaults, including for repositories added later.",
+        ],
+      ],
+    ]);
+    expect(rulebook(prs, "settings").map((g) => g.area)).toEqual(["Settings"]);
+    expect(
+      areas(prs).map((a) => [
+        a.name,
+        a.prs,
+        a.decisions,
+        a.rules,
+        a.challenges,
+        a.pushbacks,
+        a.attention,
+      ]),
+    ).toEqual([
+      ["Settings", 1, 5, 1, 1, 1, 0],
+      ["Webhooks", 1, 5, 2, 0, 1, 2],
+      ["Builds Table", 1, 2, 0, 0, 0, 1],
+    ]);
+    expect(areas(prs)[1].repos).toEqual(["acme/api"]);
   });
 
   it("lists each declined finding with the reviewer's answer", () => {
@@ -100,6 +156,10 @@ describe("decisions summaries", () => {
       searchHistories(prs, "retry loop gives").map((p) => p.number),
     ).toEqual([139]);
     expect(searchHistories(prs, "  ")).toHaveLength(prs.length);
+    // And what the write-up says.
+    expect(searchHistories(prs, "regularly").map((p) => p.number)).toEqual([
+      318,
+    ]);
   });
 });
 
@@ -182,6 +242,67 @@ describe("decisions page", () => {
     expect(await screen.findByText("Clean on the first round")).toBeTruthy();
     expect(screen.getByText("Rounds per pull request")).toBeTruthy();
     expect(screen.getAllByRole("table")).toHaveLength(2);
+    restore();
+  });
+
+  it("shows the rulebook, and an area's pull requests from the areas", async () => {
+    const { restore } = answering(demoDecisions());
+    render(<DecisionsPage />);
+    await screen.findByText("Show build times per branch");
+    fireEvent.click(screen.getByRole("tab", { name: "Rulebook" }));
+    const rule = await screen.findByText(
+      "Receivers accept the previous secret for one day after it changes.",
+    );
+    expect(rule.closest("li")?.textContent).toContain(
+      "api#318 · Sign webhook payloads with a rotating secret",
+    );
+    expect(screen.getByText("2 rules")).toBeTruthy();
+    fireEvent.click(screen.getByRole("tab", { name: "Areas" }));
+    const webhooks = await screen.findByRole("button", { name: /^Webhooks/ });
+    expect(webhooks.closest("li")?.textContent).toContain(
+      "1 pull request · 2 rules · 0 challenges · 1 pushback · 2 worth a look",
+    );
+    fireEvent.click(webhooks);
+    expect(
+      await screen.findByRole("tab", { name: "Story", selected: true }),
+    ).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.queryByText("Show build times per branch")).toBeNull(),
+    );
+    expect(
+      screen.getByRole("combobox", { name: "Area" }).textContent,
+    ).toContain("Webhooks");
+    expect(
+      screen.getAllByText("Sign webhook payloads with a rotating secret")
+        .length,
+    ).toBeGreaterThan(0);
+    restore();
+  });
+
+  it("says where rules come from before anything is written up", async () => {
+    const plain = demoDecisions();
+    for (const pr of plain.prs) pr.writeup = null;
+    const { restore } = answering(plain);
+    const settings = useOrbit.getState().snapshot.settings;
+    useOrbit.setState((state) => ({
+      snapshot: {
+        ...state.snapshot,
+        settings: {
+          ...state.snapshot.settings,
+          writeUps: { enabled: false, writer: "codex" },
+        },
+      },
+    }));
+    render(<DecisionsPage />);
+    await screen.findByText("Show build times per branch");
+    expect(screen.queryByRole("combobox", { name: "Area" })).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "Rulebook" }));
+    expect(
+      await screen.findByText(/^Rules come from write-ups. Turn them on/),
+    ).toBeTruthy();
+    useOrbit.setState((state) => ({
+      snapshot: { ...state.snapshot, settings },
+    }));
     restore();
   });
 
