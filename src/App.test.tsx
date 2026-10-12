@@ -439,6 +439,41 @@ describe("PR review regressions", () => {
       expect(screen.getByRole("list", { name: "Needs you" })).toBeTruthy();
     }
   });
+  it("opens Decisions from the sidebar, shows the read and reads again", async () => {
+    const { demoDecisions } = await import("./demoDecisions");
+    const decisions = demoDecisions();
+    snapshot.ledger = {
+      refreshing: true,
+      progress: { repo: "acme/api", done: 3, total: 12 },
+      repos: [
+        { repo: "acme/orbit", refreshedAt: new Date().toISOString() },
+        { repo: "acme/api", error: "HTTP 403: rate limit exceeded." },
+      ],
+      version: 1,
+    };
+    invoke.mockImplementation(async (command: string, args) =>
+      command === "get_decisions" ? decisions : backend(command, args),
+    );
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Decisions" }));
+    expect(await screen.findByText("Show build times per branch")).toBeTruthy();
+    expect(
+      screen.getByText("Reading acme/api from GitHub · 3 of 12"),
+    ).toBeTruthy();
+    expect(screen.getByText("Couldn't read acme/api")).toBeTruthy();
+    snapshot.ledger = { ...snapshot.ledger, refreshing: false, progress: null };
+    emit();
+    await user().click(
+      await screen.findByRole("button", { name: "Read again" }),
+    );
+    expect(invoke).toHaveBeenCalledWith("refresh_decisions", {});
+    const reads = () =>
+      invoke.mock.calls.filter(([c]) => c === "get_decisions").length;
+    const before = reads();
+    snapshot.ledger = { ...snapshot.ledger, version: 2 };
+    emit();
+    await waitFor(() => expect(reads()).toBe(before + 1));
+  });
   it("opens on all pull requests in manual mode", async () => {
     await mount();
     expect(
