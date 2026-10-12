@@ -508,19 +508,28 @@ fn flags(pr: &PrInfo, rounds: &[Round], trajectories: &[Trajectory]) -> Vec<Flag
     let mut out = vec![];
     for t in trajectories {
         let label = t.short_id.as_deref().unwrap_or(&t.title);
-        // A decline still disputed at the merge has its own flag while the
-        // dispute stands.
-        if t.open_at_merge && t.status_at_merge != Some(FinalStatus::DeclinedDisputed) {
+        let disputed_at_merge = t.status_at_merge == Some(FinalStatus::DeclinedDisputed);
+        let disputed_now = t.final_status == FinalStatus::DeclinedDisputed;
+        // A decline disputed at the merge and still disputed has its own
+        // flag below; once the dispute is settled, this one keeps the merge.
+        if t.open_at_merge && !(disputed_at_merge && disputed_now) {
             out.push(Flag {
                 kind: FlagKind::MergedWithOpenFindings,
                 attention: Glance::Act,
-                text: format!("Merged while {label} ({}) was still open.", t.title),
+                text: if disputed_at_merge {
+                    format!(
+                        "Merged while the reviewer disputed the decline of {label} ({}).",
+                        t.title
+                    )
+                } else {
+                    format!("Merged while {label} ({}) was still open.", t.title)
+                },
                 finding_id: Some(t.finding_id.clone()),
                 round: Some(t.opened_round),
                 url: url.clone(),
             });
         }
-        if t.final_status == FinalStatus::DeclinedDisputed {
+        if disputed_now {
             out.push(Flag {
                 kind: FlagKind::DisputedDecline,
                 attention: Glance::Act,

@@ -287,6 +287,47 @@ fn a_fix_after_the_merge_still_counts_as_open_at_the_merge() {
 }
 
 #[test]
+fn a_dispute_settled_after_the_merge_keeps_the_merge_warning() {
+    // Raised at 10:00, its decline disputed at 11:00, merged at 12:00.
+    let disputed = "## Milo PR review\n\n**CHANGES REQUESTED**\n\n- Full head: `bbbbbbb`\n\n- **F1 declined, disputed:** the token still reaches the log.";
+    let flags = |later: Option<&str>| {
+        let mut comments = vec![
+            comment(10, "2026-10-11T10:00:00Z", RAISED),
+            comment(20, "2026-10-11T11:00:00Z", disputed),
+        ];
+        if let Some(body) = later {
+            comments.push(comment(30, "2026-10-11T13:00:00Z", body));
+        }
+        let h = derive(&merged_pr(comments));
+        let t = by_short_id(&h, "F1");
+        assert_eq!(t.status_at_merge, Some(FinalStatus::DeclinedDisputed));
+        assert!(t.open_at_merge);
+        assert_eq!(h.metrics.open_at_merge, 1);
+        h.flags
+            .iter()
+            .map(|f| (f.kind, f.text.clone()))
+            .collect::<Vec<_>>()
+    };
+    // Still disputed: the dispute's own flag says it.
+    assert_eq!(
+        flags(None),
+        [(
+            FlagKind::DisputedDecline,
+            "The builder declined F1 (Token logged on failure) and the reviewer still thinks it is a real problem.".into()
+        )]
+    );
+    // Fixed or accepted after the merge: the merge still went in with it
+    // disputed, and nothing says the dispute goes on.
+    let merged_disputed = [(
+        FlagKind::MergedWithOpenFindings,
+        "Merged while the reviewer disputed the decline of F1 (Token logged on failure).".into(),
+    )];
+    assert_eq!(flags(Some(CLEARED)), merged_disputed);
+    let accepted = "## Milo PR review\n\n**CLEAR TO MERGE**\n\n- Full head: `ccccccc`\n\n- **F1 declined, accepted:** the log is local only.";
+    assert_eq!(flags(Some(accepted)), merged_disputed);
+}
+
+#[test]
 fn a_finding_raised_after_the_merge_was_not_open_at_it() {
     let clean = "## Milo PR review\n\n**CLEAR TO MERGE**\n\n- Full head: `aaaaaaa`";
     let raised = RAISED.replace("aaaaaaa", "bbbbbbb");
