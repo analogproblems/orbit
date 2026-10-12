@@ -38,7 +38,8 @@ use tokio::{net::TcpListener, sync::watch};
 /// Commands a browser can run, named as the desktop app names them.
 /// `open_github` is left out: the server never starts programs on the host for
 /// a remote caller, so the browser opens GitHub links itself. `export_report`
-/// returns the report's file name and text for the browser to download.
+/// and `export_decisions` return the file's name and text for the browser to
+/// download.
 pub const COMMANDS: &[&str] = &[
     "get_snapshot",
     "update_settings",
@@ -51,6 +52,7 @@ pub const COMMANDS: &[&str] = &[
     "poll_now",
     "get_decisions",
     "refresh_decisions",
+    "export_decisions",
     "connect_services",
     "start_review",
     "cancel_review",
@@ -277,6 +279,10 @@ async fn dispatch(e: &Arc<Engine>, name: &str, a: &Value) -> Result<Value, Strin
         "refresh_decisions" => {
             e.refresh_ledger_soon();
             out(())
+        }
+        "export_decisions" => {
+            let (file_name, text) = e.export_decisions(arg(a, "repo")?).await?;
+            Ok(json!({ "fileName": file_name, "text": text }))
         }
         "connect_services" => {
             e.check_reviewers().await;

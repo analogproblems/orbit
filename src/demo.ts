@@ -660,6 +660,15 @@ export function freshDemo(): Snapshot {
           text: `${label(prs[4])} is clean after 3 rounds! 🎉 4 → 1 → 0`,
         },
         {
+          id: 5,
+          at: ago(25),
+          kind: "decide",
+          prId: "acme/api#318",
+          reviewId: null,
+          repo: "acme/api",
+          text: "Something to decide on api#318: The builder relies on the nightly job to retire the old secret; the reviewer says nothing retires it if that job is off. Decide whether an old secret may stay valid when the nightly job is off.",
+        },
+        {
           id: 2,
           at: ago(20),
           kind: "round_finished",

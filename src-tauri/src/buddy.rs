@@ -322,6 +322,9 @@ pub enum NoteKind {
     Answer,
     /// A repository was connected, with its next steps.
     Connected,
+    /// A pull request's story has something for you to decide, from the
+    /// Decisions page.
+    Decide,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -417,7 +420,19 @@ pub struct Feed {
     pub seeded: bool,
     pub next_id: u64,
     pub memory: Memory,
+    /// What needs a decision that Bit has already seen, by `ToDecide::key`,
+    /// with when Bit last saw it in the history (to the day). A key stays
+    /// while it is still there, so it is never noted twice, and is
+    /// forgotten `FORGET_DECISION_DAYS` after it is gone or as soon as its
+    /// repository is disconnected.
+    pub decisions_seen: BTreeMap<String, String>,
+    /// When Bit began watching each connected repository's decisions, by
+    /// lowercased name. What needs a decision in a pull request last
+    /// updated before then gets no note, so Bit doesn't retell history.
+    pub decisions_since: BTreeMap<String, String>,
 }
+/// How long Bit remembers a thing to decide after it has left the history.
+pub const FORGET_DECISION_DAYS: i64 = 30;
 
 /// What Bit remembers between questions, in its own words: lines about you
 /// and Orbit in general, and lines about each repository. Bit adds and
@@ -782,6 +797,14 @@ mod say {
         }
     }
     /// A question you typed that Bit couldn't answer.
+    pub fn decide(tone: &str, pr: &str, text: &str) -> String {
+        let text = text.trim();
+        match tone {
+            "calm" => format!("{pr} has something to decide. {text}"),
+            "dry" => format!("{pr}: {text} Your call."),
+            _ => format!("Something to decide on {pr}: {text}"),
+        }
+    }
     pub fn no_answer(tone: &str, error: &str) -> String {
         let error = error.trim();
         match tone {
@@ -958,6 +981,127 @@ fn append(feed: &mut Feed, notes: Vec<Note>) {
     }
     let excess = feed.notes.len().saturating_sub(MAX_NOTES);
     feed.notes.drain(..excess);
+}
+
+/// Something in a pull request's story that needs a decision: a flag that
+/// asks for one, or a decision its write-up marks so.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ToDecide {
+    /// Stable while the thing stays the same.
+    pub key: String,
+    pub repo: String,
+    pub number: u64,
+    /// When the pull request last changed.
+    pub at: String,
+    pub text: String,
+}
+/// What needs a decision in the Decisions page's pull requests.
+pub fn to_decide(prs: &[crate::ledger::History]) -> Vec<ToDecide> {
+    use crate::ledger::Glance;
+    use sha2::{Digest, Sha256};
+    let mut out = vec![];
+    for h in prs {
+        let item = |what: String, text: String| ToDecide {
+            key: format!("{}#{}:{what}", h.repo.to_ascii_lowercase(), h.number),
+            repo: h.repo.clone(),
+            number: h.number,
+            at: h.updated_at.clone(),
+            text,
+        };
+        for f in h.flags.iter().filter(|f| f.attention == Glance::Act) {
+            let kind = serde_json::to_value(f.kind).unwrap_or_default();
+            let what = format!(
+                "{}:{}",
+                kind.as_str().unwrap_or_default(),
+                f.finding_id.as_deref().unwrap_or_default()
+            );
+            out.push(item(what, f.text.clone()));
+        }
+        for d in h.writeup.iter().flat_map(|w| &w.decisions) {
+            if d.attention != Some(Glance::Act) {
+                continue;
+            }
+            let digest = format!(
+                "{:x}",
+                Sha256::digest(d.statement.trim().to_lowercase().as_bytes())
+            );
+            let what = format!("writeup:{}", &digest[..12]);
+            let text = match d.attention_reason.as_deref() {
+                Some(why) => format!("{} {}", d.statement.trim(), why.trim()),
+                None => d.statement.trim().to_string(),
+            };
+            out.push(item(what, text));
+        }
+    }
+    out
+}
+/// Writes a note for each thing to decide Bit hasn't seen, in a pull
+/// request that changed since Bit began watching its repository. A
+/// repository Bit sees for the first time is only recorded. With the buddy
+/// off, things are still recorded but nothing is written. Returns whether
+/// the feed changed.
+pub fn observe_decisions(s: &mut Snapshot, items: &[ToDecide]) -> bool {
+    let tone = s.settings.buddy.tone.clone();
+    let enabled = s.settings.buddy.enabled;
+    let connected: Vec<String> = s
+        .settings
+        .repositories
+        .iter()
+        .map(|r| r.name.to_ascii_lowercase())
+        .collect();
+    let feed = &mut s.buddy_feed;
+    let mut changed = false;
+    let before = feed.decisions_since.len();
+    feed.decisions_since
+        .retain(|repo, _| connected.contains(repo));
+    changed |= feed.decisions_since.len() != before;
+    let at = now();
+    for repo in &connected {
+        if !feed.decisions_since.contains_key(repo) {
+            feed.decisions_since.insert(repo.clone(), at.clone());
+            changed = true;
+        }
+    }
+    let ago = |days: i64| {
+        (chrono::Utc::now() - chrono::Duration::days(days))
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    };
+    // Last seen is kept to the day, so an unchanged history isn't saved
+    // again on every read.
+    let yesterday = ago(1);
+    let mut written = vec![];
+    for item in items {
+        if let Some(seen) = feed.decisions_seen.get_mut(&item.key) {
+            if *seen < yesterday {
+                *seen = at.clone();
+                changed = true;
+            }
+            continue;
+        }
+        feed.decisions_seen.insert(item.key.clone(), at.clone());
+        changed = true;
+        let since = feed.decisions_since.get(&item.repo.to_ascii_lowercase());
+        if enabled && since.is_some_and(|since| item.at.as_str() > since.as_str()) {
+            let name = item.repo.rsplit('/').next().unwrap_or(&item.repo);
+            let pr = format!("{name}#{}", item.number);
+            written.push(Note {
+                pr_id: Some(pr_id(&item.repo, item.number)),
+                repo: Some(item.repo.clone()),
+                ..Note::new(NoteKind::Decide, say::decide(&tone, &pr, &item.text))
+            });
+        }
+    }
+    // Forget what left the history long ago, and every key of a repository
+    // no longer connected (its keys start `owner/name#`).
+    let forget = ago(FORGET_DECISION_DAYS);
+    let before = feed.decisions_seen.len();
+    feed.decisions_seen.retain(|key, seen| {
+        let repo = key.split('#').next().unwrap_or_default();
+        *seen >= forget && connected.iter().any(|c| c == repo)
+    });
+    changed |= feed.decisions_seen.len() != before;
+    append(feed, written);
+    changed
 }
 
 /// The fix Bit does on its own for an item that just opened: one whose rule

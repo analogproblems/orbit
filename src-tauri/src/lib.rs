@@ -158,6 +158,37 @@ mod desktop {
         engine.refresh_ledger_soon();
         Ok(())
     }
+    /// Saves the Decisions page as Markdown where you choose, as
+    /// `export_report` does.
+    #[tauri::command]
+    async fn export_decisions(
+        app: tauri::AppHandle,
+        engine: State<'_, AppState>,
+        repo: Option<String>,
+    ) -> Result<Option<String>, String> {
+        let (name, text) = engine.export_decisions(repo).await?;
+        // As with reports, Rust owns the dialog and the content.
+        tauri::async_runtime::spawn_blocking(move || {
+            let path = storage::select_report_path(name.into(), |suggested| {
+                let mut dialog = app
+                    .dialog()
+                    .file()
+                    .set_title("Save decisions (.md)")
+                    .set_file_name(suggested.file_name().unwrap_or_default().to_string_lossy())
+                    .add_filter("Markdown", &["md"]);
+                if let Some(parent) = suggested.parent().filter(|p| !p.as_os_str().is_empty()) {
+                    dialog = dialog.set_directory(parent);
+                }
+                dialog
+                    .blocking_save_file()
+                    .map(|p| p.into_path().map_err(|e| e.to_string()))
+                    .transpose()
+            })?;
+            storage::write_report(path.as_deref(), &text)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
     #[tauri::command]
     async fn connect_services(engine: State<'_, AppState>) -> Result<(), String> {
         engine.check_reviewers().await;
@@ -415,6 +446,7 @@ mod desktop {
                 poll_now,
                 get_decisions,
                 refresh_decisions,
+                export_decisions,
                 connect_services,
                 start_review,
                 cancel_review,

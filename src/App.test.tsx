@@ -764,6 +764,29 @@ describe("Bit", () => {
     expect(await screen.findByRole("list", { name: "Rounds" })).toBeTruthy();
   });
 
+  it("opens what a note says to decide, and the sidebar goes back to every pull request", async () => {
+    const { demoDecisions } = await import("./demoDecisions");
+    const decisions = demoDecisions();
+    invoke.mockImplementation(async (command: string, args) =>
+      command === "get_decisions" ? decisions : backend(command, args),
+    );
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Bit" }));
+    const chat = screen.getByRole("log", { name: "Bit's notes" });
+    expect(chat.textContent).toContain("Something to decide on api#318");
+    await user().click(
+      within(chat).getByRole("button", { name: "Open decisions" }),
+    );
+    expect(
+      await screen.findByRole("heading", {
+        level: 2,
+        name: "Sign webhook payloads with a rotating secret",
+      }),
+    ).toBeTruthy();
+    await user().click(screen.getByRole("button", { name: "Decisions" }));
+    expect(await screen.findByText("Show build times per branch")).toBeTruthy();
+  });
+
   it("points a new workspace to Bit's setup help", async () => {
     const answer = async (cmd: string, args?: Record<string, unknown>) => {
       if (cmd !== "ask_buddy") return backend(cmd, args);
