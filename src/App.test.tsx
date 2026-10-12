@@ -284,6 +284,27 @@ describe("PR review regressions", () => {
     });
   });
 
+  it("turns write-ups on and picks Claude to write them", async () => {
+    snapshot.settings.writeUps = { enabled: false, writer: "codex" };
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Settings" }));
+    await user().click(
+      await screen.findByRole("switch", {
+        name: /Write up each pull request in plain words/,
+      }),
+    );
+    expect(invoke).toHaveBeenCalledWith("update_settings", {
+      patch: { writeUps: { enabled: true, writer: "codex" } },
+    });
+    await chooseOption(
+      await screen.findByRole("combobox", { name: "Writer" }),
+      "Claude",
+    );
+    expect(invoke).toHaveBeenCalledWith("update_settings", {
+      patch: { writeUps: { enabled: true, writer: "claude" } },
+    });
+  });
+
   it("turns on browser access and shows the Tailscale link", async () => {
     const shows = (text: string) =>
       waitFor(() => expect(document.body.textContent).toContain(text));
@@ -461,8 +482,20 @@ describe("PR review regressions", () => {
       screen.getByText("Reading acme/api from GitHub · 3 of 12"),
     ).toBeTruthy();
     expect(screen.getByText("Couldn't read acme/api")).toBeTruthy();
-    snapshot.ledger = { ...snapshot.ledger, refreshing: false, progress: null };
+    snapshot.ledger = {
+      ...snapshot.ledger,
+      refreshing: false,
+      progress: null,
+      writing: { repo: "acme/orbit", number: 142, done: 1, total: 4 },
+      writeError: "Write-ups are waiting for Codex to connect.",
+    };
     emit();
+    expect(
+      await screen.findByText("Writing up orbit#142 in plain words · 2 of 4"),
+    ).toBeTruthy();
+    expect(
+      screen.getByText("Write-ups are waiting for Codex to connect."),
+    ).toBeTruthy();
     await user().click(
       await screen.findByRole("button", { name: "Read again" }),
     );

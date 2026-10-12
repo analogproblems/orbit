@@ -365,7 +365,22 @@ export interface Settings {
   keepScanArtifacts?: boolean;
   /** Bit, Orbit's buddy. Older saved state has none. */
   buddy?: Buddy;
+  /** Plain-language write-ups on the Decisions page. Older saved state has
+   * none. */
+  writeUps?: WriteUps;
 }
+export type Writer = "codex" | "claude";
+export const writerLabels: Record<Writer, string> = {
+  codex: "Codex",
+  claude: "Claude",
+};
+/** Who writes up each merged or closed pull request in plain words, one at
+ * a time in the background. Off until turned on. */
+export interface WriteUps {
+  enabled: boolean;
+  writer: Writer;
+}
+export const defaultWriteUps: WriteUps = { enabled: false, writer: "codex" };
 export type Mood = "happy" | "busy" | "worried" | "sleepy";
 export type BuddyHat =
   | "none"
@@ -910,15 +925,26 @@ export interface Snapshot {
   /** Reading each repository's pull-request history for the Decisions page. */
   ledger?: LedgerStatus;
 }
-/** How reading the pull-request history is going. */
+export interface LedgerProgress {
+  repo: string;
+  /** The pull request being written up. */
+  number?: number | null;
+  done: number;
+  total: number;
+}
+/** How reading the pull-request history, and writing it up, is going. */
 export interface LedgerStatus {
   refreshing: boolean;
   /** The repository being read, while a read runs. */
-  progress?: { repo: string; done: number; total: number } | null;
+  progress?: LedgerProgress | null;
   /** Each connected repository's latest read. */
   repos: { repo: string; refreshedAt?: string | null; error?: string | null }[];
-  /** Goes up whenever stored history changes. */
+  /** Goes up whenever stored history or a write-up changes. */
   version: number;
+  /** The pull request being written up, while write-ups run. */
+  writing?: LedgerProgress | null;
+  /** Why write-ups stopped or are waiting. */
+  writeError?: string | null;
 }
 /** How far a security scan has come, as the Codex Security plugin reports it. */
 export interface ScanProgress {
@@ -1053,6 +1079,7 @@ export const defaults: Settings = {
   notify: true,
   keepScanArtifacts: false,
   buddy: defaultBuddy,
+  writeUps: defaultWriteUps,
 };
 export function latestReview(reviews: Review[], prId: string) {
   return reviews

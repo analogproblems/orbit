@@ -42,6 +42,8 @@ import { categoryLabels, priorStatusLabels, sameRepo } from "./types";
 import { priorityColors } from "./Findings";
 import { SafeMarkdown } from "./SafeMarkdown";
 import {
+  decisionKindLabels,
+  decisionKinds,
   duration,
   finalStatusColors,
   finalStatusLabels,
@@ -50,6 +52,7 @@ import {
   gist,
   health,
   historyKey,
+  madeByLabels,
   pushback,
   searchHistories,
   shortRef,
@@ -65,6 +68,7 @@ import {
   type LedgerClaim,
   type LedgerRound,
   type Trajectory,
+  type WriteUp,
 } from "./decisions";
 
 type View = "story" | "pushback" | "health";
@@ -136,6 +140,7 @@ function ReadStatus() {
   const repos = useOrbit((state) => state.snapshot.settings.repositories);
   if (!live) return null;
   const progress = ledger?.progress;
+  const writing = ledger?.writing;
   const failed = (ledger?.repos ?? []).filter(
     (r) => r.error && repos.some((c) => sameRepo(c.name, r.repo)),
   );
@@ -161,6 +166,22 @@ function ReadStatus() {
           <Timestamp value={last} format="relative_short" />
         </HStack>
       ) : null}
+      {writing && (
+        <HStack gap={2} vAlign="center">
+          <Spinner size="sm" label="Writing up" />
+          <Text type="supporting" aria-live="polite">
+            {`Writing up ${writing.repo.split("/")[1] ?? writing.repo}#${writing.number} in plain words · ${writing.done + 1} of ${writing.total}`}
+          </Text>
+        </HStack>
+      )}
+      {ledger?.writeError && (
+        <Banner
+          status="warning"
+          title="Write-ups"
+          description={ledger.writeError}
+          collapsible={false}
+        />
+      )}
       {failed.map((r) => (
         <Banner
           key={r.repo}
@@ -570,8 +591,72 @@ function RoundItem({ round }: { round: LedgerRound }) {
 }
 
 /** One pull request's whole story. */
+/** A merged or closed pull request as the writer summed it up, decisions
+ * grouped by kind, each linking to where it was said. */
+function InPlainWords({ w }: { w: WriteUp }) {
+  const groups = decisionKinds
+    .map((kind) => [kind, w.decisions.filter((d) => d.kind === kind)] as const)
+    .filter(([, ds]) => ds.length > 0);
+  return (
+    <VStack gap={3}>
+      <Heading level={3}>In plain words</Heading>
+      <Text>{w.summary}</Text>
+      {groups.map(([kind, ds]) => (
+        <List
+          key={kind}
+          hasDividers
+          header={<Text weight="medium">{decisionKindLabels[kind]}</Text>}
+        >
+          {ds.map((d, i) => (
+            <ListItem
+              key={`${kind}-${i}`}
+              label={<Text>{d.statement}</Text>}
+              startContent={
+                d.attention ? <FlagDot attention={d.attention} /> : undefined
+              }
+              endContent={<ArrowUpRight size={16} aria-hidden />}
+              onClick={() => openLink(d.url)}
+              description={
+                <VStack gap={1}>
+                  {d.detail && <Text>{d.detail}</Text>}
+                  {d.quote && <Text color="secondary">{`“${d.quote}”`}</Text>}
+                  {d.attention && d.attentionReason && (
+                    <Text>{d.attentionReason}</Text>
+                  )}
+                  {d.supersedes && (
+                    <Text color="secondary">{`Changes an earlier rule: ${d.supersedes}`}</Text>
+                  )}
+                  <HStack gap={1} wrap="wrap">
+                    <Token label={d.area} size="sm" />
+                    <Token label={madeByLabels[d.madeBy]} size="sm" />
+                  </HStack>
+                </VStack>
+              }
+            />
+          ))}
+        </List>
+      ))}
+      <HStack gap={1} vAlign="center" wrap="wrap">
+        <Text type="supporting" color="secondary">
+          {`Written by ${w.writer} (${w.model})`}
+        </Text>
+        <Timestamp value={w.writtenAt} format="relative_short" />
+        <Text type="supporting" color="secondary">
+          · Quotes are checked against the pull request; the rest is the
+          writer’s reading of it.
+        </Text>
+      </HStack>
+    </VStack>
+  );
+}
+
 function Chapter({ pr, onBack }: { pr: History; onBack: () => void }) {
   const n = pr.narrative;
+  const writeUpsOn = useOrbit(
+    (state) => state.snapshot.settings.writeUps?.enabled ?? false,
+  );
+  const plain = (t: Trajectory) =>
+    pr.writeup?.findingNotes.find((f) => f.findingId === t.findingId)?.plain;
   const sections: [string, string | null | undefined][] = [
     ["Before", n.before],
     ["After", n.after],
@@ -587,6 +672,7 @@ function Chapter({ pr, onBack }: { pr: History; onBack: () => void }) {
       renderCell: ({ t }) => (
         <VStack gap={0}>
           <Text>{t.shortId ? `${t.shortId} · ${t.title}` : t.title}</Text>
+          {plain(t) && <Text color="secondary">{plain(t)}</Text>}
           {t.category && (
             <Text type="supporting">{categoryLabels[t.category]}</Text>
           )}
@@ -666,6 +752,17 @@ function Chapter({ pr, onBack }: { pr: History; onBack: () => void }) {
           </StackItem>
         </HStack>
       </VStack>
+      {pr.writeup ? (
+        <InPlainWords w={pr.writeup} />
+      ) : (
+        !writeUpsOn &&
+        pr.state !== "open" && (
+          <Text type="supporting" color="secondary">
+            Turn on write-ups in Settings to have each merged or closed pull
+            request summed up in plain words.
+          </Text>
+        )
+      )}
       <VStack gap={3}>
         <Heading level={3}>What changed</Heading>
         {told.length ? (

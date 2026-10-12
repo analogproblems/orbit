@@ -8,6 +8,8 @@ import {
   type RepositoryPatch,
   type RuledFix,
   type SettingsPatch,
+  type WriteUps,
+  writerLabels,
 } from "./types";
 
 const labels: Record<keyof SettingsPatch, string> = {
@@ -28,6 +30,7 @@ const labels: Record<keyof SettingsPatch, string> = {
   notify: "Notifications",
   keepScanArtifacts: "Keep scan working files",
   buddy: "Buddy",
+  writeUps: "Write-ups",
 };
 const buddyLabels: Record<keyof Buddy, string> = {
   enabled: "Show your buddy",
@@ -55,6 +58,9 @@ function buddyEntries(
   );
 }
 
+const writeUpsLabel = (w: WriteUps) =>
+  w.enabled ? `On, by ${writerLabels[w.writer]}` : "Off";
+
 /** A settings change in words, such as "Poll interval: 600 seconds". */
 export function describePatch(patch: SettingsPatch, models: Model[]): string {
   return Object.entries(patch)
@@ -81,9 +87,11 @@ export function describePatch(patch: SettingsPatch, models: Model[]): string {
                   ? value === 0
                     ? "P0 only"
                     : `P0 to P${value}`
-                  : Array.isArray(value)
-                    ? value.join(", ") || "None"
-                    : value;
+                  : key === "writeUps"
+                    ? writeUpsLabel(value as WriteUps)
+                    : Array.isArray(value)
+                      ? value.join(", ") || "None"
+                      : value;
       return `${label}: ${display}`;
     })
     .join("; ");

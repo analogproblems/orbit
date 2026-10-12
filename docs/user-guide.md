@@ -329,18 +329,26 @@ A security scan's findings stay **Open**: no later round decides about them, so 
 
 ### Decisions
 
-**Decisions**, below **Findings** in the sidebar, tells the story of each pull request in your connected repositories: what it set out to do, what each review round found, what the builder fixed or pushed back on, and what is worth a second look. It covers open, merged and closed pull requests, including ones Orbit never reviewed, and reads Orbit's own published reviews, reviews from a Codex Dot such as Milo, and the builder's `Fixed F2 in abc1234` / `Declined F2: reason` replies. No model is involved: it is all read from GitHub.
+**Decisions**, below **Findings** in the sidebar, tells the story of each pull request in your connected repositories: what it set out to do, what each review round found, what the builder fixed or pushed back on, and what is worth a second look. It covers open, merged and closed pull requests, including ones Orbit never reviewed, and reads Orbit's own published reviews, reviews from a Codex Dot such as Milo, and the builder's `Fixed F2 in abc1234` / `Declined F2: reason` replies. All of that is read from GitHub without a model; only the write-ups below use one, and only once you turn them on.
 
 Orbit reads each connected repository's 100 most recently updated pull requests in the background: when it starts, every five minutes, and as soon as you connect a repository. It keeps them in a `ledger` folder in its app-data folder, separate from its saved state, and removes a repository's history when you disconnect it. **Read again** starts a read now. While a read runs, the page says which repository it is reading; a repository GitHub refused shows why, keeps what Orbit already had, and is tried again on the next read.
 
 From top to bottom:
 
 - **Worth a look**: things someone should decide about first (a pull request merged while a finding was still open, or a finding the builder declined that the reviewer still disputes), then things good to know (a finding that stayed open across rounds, a merge before any review, something the reviewer couldn't check, a blocking finding the reviewer marked as likely but not verified).
-- **Story**: each pull request, newest first, with its state, what it set out to do, how many rounds and findings it had, and its blocking findings round by round, such as "2 → 1 → 0". Select one to read its whole chapter: the description's Before, After, How and Decisions, its review rounds with what each said about earlier findings, every finding with where it ended up and what the builder said, and the checks the builder ran. **Open on GitHub** opens the pull request, and selecting a round opens its review.
+- **Story**: each pull request, newest first, with its state, what it set out to do, how many rounds and findings it had, and its blocking findings round by round, such as "2 → 1 → 0". Select one to read its whole chapter: its write-up in plain words when it has one, the description's Before, After, How and Decisions, its review rounds with what each said about earlier findings, every finding with where it ended up and what the builder said, and the checks the builder ran. **Open on GitHub** opens the pull request, and selecting a round opens its review.
 - **Pushback**: every finding the builder declined, with the builder's reason and the reviewer's answer: accepted, disputed, or not ruled on yet.
 - **Review health**: how many pull requests were reviewed, average rounds, how many were clean on the first round, how many findings were fixed or declined, how many merged with a finding open, and the middle time from opening to a clean round. Two charts show rounds per pull request and findings by priority, each with its numbers in a table underneath.
 
 Search matches titles, numbers, descriptions and finding titles, and the repository filter narrows every part of the page.
+
+#### In plain words
+
+With **Settings → Decisions → Write up each pull request in plain words** on, Orbit has a writer read each merged or closed pull request and sum it up for its chapter. **Writer** picks Codex or Claude, with the model and effort you chose for that reviewer. A chapter's **In plain words** has a short summary, then the decisions grouped by kind: what it set out to do, rules it set, trade-offs, how a request was read, what was left out, what the reviewer challenged, pushback, and what was checked. Each decision says which part of the app it is about and who made it, and a dot with a reason marks one worth a person's glance: red when it needs a decision, grey when it is good to know. Selecting a decision opens where it was said on GitHub. Each finding in the chapter's findings table gets a line in plain words too.
+
+The writer gets the pull request's text only, with no tools, and works on one pull request at a time in the background, newest first, after each read. A quote is shown only when Orbit finds it in the pull request, so the quotes are real; everything else is the writer's reading. A pull request is written up again only when what the writer reads of it changes, such as a new comment; changing the writer or model doesn't redo the ones already written. Write-ups are kept beside the history in the `ledger` folder.
+
+Write-ups use the writer's allowance, so they are off until you turn them on. Codex write-ups wait while Codex isn't connected or its usage is over 90%, so reviews keep what's left, and Claude write-ups wait while Claude isn't connected; the page says why. A pull request the writer fails on twice is set aside until it changes or Orbit starts again, and the page shows the last error.
 
 ### Security scans
 
@@ -491,6 +499,8 @@ By default an approval waits for you however long it takes. For a repository, yo
 | GitHub status check                    | On                                 | On/off; applies while automatic publication is on.                                                                |
 | Keep security scan working files       | Off                                | On/off; when off, a scan's `artifacts/` folder is deleted once its findings are imported.                         |
 | Allow access from a browser            | Off                                | On/off and a port from 1024 to 65535; changed from the desktop app only.                                          |
+| Write up each pull request             | Off                                | On/off; writes up merged and closed pull requests for the Decisions page.                                         |
+| Write-up writer                        | Codex                              | Codex or Claude, with the model and effort chosen for that reviewer.                                              |
 | Buddy: show                            | On                                 | On/off; off hides Bit and stops new notes.                                                                        |
 | Buddy: name                            | Bit                                | 1–24 characters, without line breaks or tabs.                                                                     |
 | Buddy: colour                          | Lime                               | 20 theme colours.                                                                                                 |

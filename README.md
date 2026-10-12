@@ -91,7 +91,7 @@ UI code follows [`AGENTS.md`](AGENTS.md): Astryx components and tokens only. Run
 | Queue, worktrees, orchestration, persistence            | `src-tauri/src/engine/` (one file per area; see `engine/mod.rs`)                                                                                |
 | Review loop state, verdicts, and attention items        | `src-tauri/src/review_loop.rs`, `src-tauri/src/attention.rs`                                                                                    |
 | GitHub discovery, PR details, files, comments           | `src-tauri/src/github.rs`                                                                                                                       |
-| Pull-request history and the Decisions page             | `src-tauri/src/ledger/` (reading), `src-tauri/src/engine/ledger.rs` (background refresh), `src/Decisions.tsx`, `src/decisions.ts`               |
+| Pull-request history and the Decisions page             | `src-tauri/src/ledger/` (reading), `src-tauri/src/engine/ledger.rs`, `engine/writeup.rs` (background), `src/Decisions.tsx`, `src/decisions.ts`  |
 | Setup and checks in dev containers                      | `src-tauri/src/devcontainer.rs`, `src-tauri/src/engine/checks.rs`                                                                               |
 | Codex process and bidirectional RPC                     | `src-tauri/src/rpc.rs`                                                                                                                          |
 | Storage inspection, ownership checks, report generation | `src-tauri/src/storage.rs`                                                                                                                      |

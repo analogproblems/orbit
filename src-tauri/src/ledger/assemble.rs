@@ -42,6 +42,7 @@ pub fn derive(stored: &StoredPr) -> History {
         trajectories,
         metrics,
         flags,
+        writeup: None,
         comments,
         commits: stored.commits.clone(),
         files: stored.files.clone(),

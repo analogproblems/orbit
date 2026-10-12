@@ -911,6 +911,33 @@ pub struct Settings {
     pub keep_scan_artifacts: bool,
     /// Bit, Orbit's buddy.
     pub buddy: crate::buddy::Buddy,
+    /// Plain-language write-ups of each pull request on the Decisions page.
+    pub write_ups: WriteUps,
+}
+/// Who writes up each pull request's decisions for the Decisions page.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Writer {
+    #[default]
+    Codex,
+    Claude,
+}
+impl Writer {
+    pub fn label(self) -> &'static str {
+        match self {
+            Writer::Codex => "Codex",
+            Writer::Claude => "Claude",
+        }
+    }
+}
+/// Plain-language write-ups of each pull request's decisions, made one at a
+/// time in the background with the writer's model and effort from
+/// Settings. Off until you turn them on, as each one uses the writer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WriteUps {
+    pub enabled: bool,
+    pub writer: Writer,
 }
 /// Only supplied fields change. Repository mutations have separate commands.
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -933,6 +960,7 @@ pub struct SettingsPatch {
     pub notify: Option<bool>,
     pub keep_scan_artifacts: Option<bool>,
     pub buddy: Option<crate::buddy::BuddyPatch>,
+    pub write_ups: Option<WriteUps>,
 }
 impl SettingsPatch {
     pub fn apply(self, settings: &mut Settings) {
@@ -987,6 +1015,9 @@ impl SettingsPatch {
         if let Some(v) = self.buddy {
             v.apply(&mut settings.buddy);
         }
+        if let Some(v) = self.write_ups {
+            settings.write_ups = v;
+        }
     }
 }
 impl Default for Settings {
@@ -1010,6 +1041,7 @@ impl Default for Settings {
             notify: true,
             keep_scan_artifacts: false,
             buddy: crate::buddy::Buddy::default(),
+            write_ups: WriteUps::default(),
         }
     }
 }
@@ -1240,15 +1272,22 @@ pub struct LedgerStatus {
     pub progress: Option<LedgerProgress>,
     /// Each connected repository's latest read.
     pub repos: Vec<LedgerRepo>,
-    /// Goes up whenever stored history changes, so the page knows to load it
-    /// again.
+    /// Goes up whenever stored history or a write-up changes, so the page
+    /// knows to load it again.
     pub version: u64,
+    /// The pull request being written up and how many are left, while
+    /// write-ups run.
+    pub writing: Option<LedgerProgress>,
+    /// Why write-ups stopped or are waiting, when they did.
+    pub write_error: Option<String>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct LedgerProgress {
     pub repo: String,
-    /// Pull requests read so far in this repository, and how many need it.
+    /// The pull request being written up.
+    pub number: Option<u64>,
+    /// Pull requests read or written up so far, and how many need it.
     pub done: u32,
     pub total: u32,
 }

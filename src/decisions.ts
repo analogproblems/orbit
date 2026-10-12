@@ -180,6 +180,50 @@ export interface History {
   trajectories: Trajectory[];
   metrics: Metrics;
   flags: Flag[];
+  /** Present once write-ups are on and this one has been written up. */
+  writeup?: WriteUp | null;
+}
+export type DecisionKind =
+  | "intent"
+  | "rule"
+  | "tradeoff"
+  | "interpretation"
+  | "boundary"
+  | "challenge"
+  | "pushback"
+  | "verification";
+/** One decision a write-up records. */
+export interface Decision {
+  kind: DecisionKind;
+  statement: string;
+  detail?: string | null;
+  madeBy: "builder" | "reviewer" | "both" | "human";
+  /** The part of the app it is about. */
+  area: string;
+  /** A short excerpt Orbit found in the pull request. */
+  quote?: string | null;
+  /** Where to read it: the comment the quote is from, else the pull
+   * request. */
+  url: string;
+  /** None when nobody needs to look. */
+  attention?: "act" | "look" | null;
+  attentionReason?: string | null;
+  /** An earlier rule this one changes, in the writer's words. */
+  supersedes?: string | null;
+}
+/** What Codex or Claude made of a merged or closed pull request. */
+export interface WriteUp {
+  repo: string;
+  number: number;
+  writer: string;
+  model: string;
+  writtenAt: string;
+  /** What changed for the user, then how the review went. */
+  summary: string;
+  areas: string[];
+  decisions: Decision[];
+  /** Each finding in plain words, by finding. */
+  findingNotes: { findingId: string; plain: string }[];
 }
 export interface Decisions {
   prs: History[];
@@ -223,6 +267,35 @@ export const flagLabels: Record<FlagKind, string> = {
   no_review_before_merge: "Merged before a review",
   reviewer_could_not_check: "Not checked",
   likely_not_verified: "Not verified",
+};
+
+/** The order a write-up's decisions are shown in, and what each kind is
+ * called. */
+export const decisionKinds: DecisionKind[] = [
+  "intent",
+  "rule",
+  "tradeoff",
+  "interpretation",
+  "boundary",
+  "challenge",
+  "pushback",
+  "verification",
+];
+export const decisionKindLabels: Record<DecisionKind, string> = {
+  intent: "What it set out to do",
+  rule: "Rules it set",
+  tradeoff: "Trade-offs",
+  interpretation: "How a request was read",
+  boundary: "What was left out",
+  challenge: "What the reviewer challenged",
+  pushback: "Pushback",
+  verification: "What was checked",
+};
+export const madeByLabels: Record<Decision["madeBy"], string> = {
+  builder: "The builder",
+  reviewer: "The reviewer",
+  both: "Builder and reviewer",
+  human: "A person",
 };
 
 /** Open, Merged, Closed or Draft. */

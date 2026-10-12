@@ -141,6 +141,48 @@ pub fn args(turn: &Turn) -> Vec<String> {
     args
 }
 
+/// The arguments of a write-up for the Decisions page: one answer to
+/// `schema` about the pull request on standard input. It has no tools at
+/// all and loads no settings, so nothing runs and no sandbox is needed, and
+/// the conversation isn't saved.
+pub fn write_up_args(model: &str, effort: &str, schema: &Value, instructions: &str) -> Vec<String> {
+    [
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--model",
+        model,
+        "--effort",
+        effort,
+        "--permission-mode",
+        "dontAsk",
+        "--setting-sources",
+        "",
+        "--strict-mcp-config",
+        "--tools",
+        "",
+        "--no-session-persistence",
+        "--json-schema",
+        &schema.to_string(),
+        "--append-system-prompt",
+        instructions,
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
+}
+
+/// Starts a write-up, writing `input` to Claude's standard input.
+pub fn start_write_up(
+    launcher: &Launcher,
+    args: Vec<String>,
+    cwd: &std::path::Path,
+    input: String,
+) -> Result<Started, String> {
+    cli::spawn(launcher, args, cwd, Some(input), Reader::default(), MISSING)
+}
+
 /// Starts a Claude turn; see `cli::spawn`.
 pub fn start(launcher: &Launcher, turn: &Turn) -> Result<Started, String> {
     cli::spawn(

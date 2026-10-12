@@ -16,15 +16,15 @@ pub(super) fn unread(s: &Snapshot) -> bool {
         .any(|r| !s.ledger.repos.iter().any(|l| same_repo(&l.repo, &r.name)))
 }
 
-/// Marks the read as finished however it ends.
-struct Reading<'a>(&'a AtomicBool);
+/// Marks the work as finished however it ends.
+pub(super) struct Reading<'a>(pub(super) &'a AtomicBool);
 impl Drop for Reading<'_> {
     fn drop(&mut self) {
         self.0.store(false, Ordering::SeqCst);
     }
 }
 
-async fn blocking<T: Send + 'static>(
+pub(super) async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
     tokio::task::spawn_blocking(f)
@@ -43,6 +43,7 @@ impl Engine {
         tokio::spawn(async move {
             let _reading = Reading(&e.refreshing_ledger);
             e.refresh_ledger().await;
+            e.write_up_soon();
         });
         true
     }
@@ -132,6 +133,7 @@ impl Engine {
             self.update_live(|s| {
                 s.ledger.progress = Some(LedgerProgress {
                     repo: repo.into(),
+                    number: None,
                     done: done as u32,
                     total,
                 })
@@ -180,7 +182,13 @@ impl Engine {
             for repo in &repos {
                 match store::load_repo(&root, repo) {
                     Ok((stored, problems)) => {
-                        out.prs.extend(stored.iter().map(store::derive));
+                        // A write-up shows until a newer one replaces it.
+                        let mut writeups = store::load_writeups(&root, repo).unwrap_or_default();
+                        out.prs.extend(stored.iter().map(|s| {
+                            let mut h = store::derive(s);
+                            h.writeup = writeups.remove(&h.number);
+                            h
+                        }));
                         out.problems.extend(problems);
                     }
                     Err(e) => out.problems.push(format!("{repo}: {e}")),

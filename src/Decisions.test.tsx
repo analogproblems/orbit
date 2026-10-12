@@ -131,6 +131,43 @@ describe("decisions page", () => {
     restore();
   });
 
+  it("shows a chapter's write-up, its findings in plain words and where each was said", async () => {
+    const { restore } = answering(demoDecisions());
+    render(<DecisionsPage />);
+    fireEvent.click(
+      await screen.findByText("Sign webhook payloads with a rotating secret"),
+    );
+    expect(await screen.findByText("In plain words")).toBeTruthy();
+    expect(
+      screen.getByText(
+        /^Webhooks are now signed with a secret that changes every night/,
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText("Rules it set")).toBeTruthy();
+    const pushback = screen.getByRole("button", {
+      name: /The builder relies on the nightly job/,
+    });
+    expect(pushback.closest("li")?.textContent).toContain(
+      "Decide whether an old secret may stay valid when the nightly job is off.",
+    );
+    const findings = screen.getByRole("table");
+    expect(
+      within(findings).getByText(
+        "An old secret could keep working forever if the nightly job stopped.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText("Written by Codex (Codex · demo)")).toBeTruthy();
+    const opened = vi.spyOn(window, "open").mockReturnValue(null);
+    fireEvent.click(pushback);
+    expect(opened).toHaveBeenCalledWith(
+      "https://github.com/acme/api/pull/318#issuecomment-2002",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    opened.mockRestore();
+    restore();
+  });
+
   it("switches to pushback and review health", async () => {
     const { restore } = answering(demoDecisions());
     render(<DecisionsPage />);

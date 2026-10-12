@@ -2,11 +2,16 @@
 //! pull request under `ledger/<owner>/<name>/` in Orbit's data folder.
 use super::*;
 use crate::types::validate_repo;
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 /// How many earlier texts of an edited comment are kept.
 pub const REVISIONS: usize = 10;
 const DIR: &str = "ledger";
+/// Each repository's write-ups, beside its pull requests.
+const WRITEUPS: &str = "writeups";
 
 /// The stored form of a pull request from GitHub's answers: the pull
 /// request, its conversation comments, reviews, comments on changed lines,
@@ -159,6 +164,37 @@ pub fn save(root: &Path, stored: &StoredPr) -> Result<(), String> {
     let temp = dir.join(format!("{}.json.tmp", stored.pr.number));
     std::fs::write(&temp, data).map_err(|e| e.to_string())?;
     std::fs::rename(&temp, &path).map_err(|e| e.to_string())
+}
+/// Saves a pull request's write-up, replacing the file in one step.
+pub fn save_writeup(root: &Path, w: &writeup::WriteUp) -> Result<(), String> {
+    let dir = repo_dir(root, &w.repo)?.join(WRITEUPS);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let data = serde_json::to_vec(w).map_err(|e| e.to_string())?;
+    let temp = dir.join(format!("{}.json.tmp", w.number));
+    std::fs::write(&temp, data).map_err(|e| e.to_string())?;
+    std::fs::rename(&temp, dir.join(format!("{}.json", w.number))).map_err(|e| e.to_string())
+}
+/// A repository's write-ups in the current form, by pull request. One
+/// that can't be read, or is of another form, is made again.
+pub fn load_writeups(root: &Path, repo: &str) -> Result<HashMap<u64, writeup::WriteUp>, String> {
+    let dir = repo_dir(root, repo)?.join(WRITEUPS);
+    let mut out = HashMap::new();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Ok(out);
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let read = std::fs::read(&path)
+            .ok()
+            .and_then(|data| serde_json::from_slice::<writeup::WriteUp>(&data).ok());
+        if let Some(w) = read.filter(|w| w.version == writeup::WRITEUP_VERSION && w.number > 0) {
+            out.insert(w.number, w);
+        }
+    }
+    Ok(out)
 }
 /// A stored pull request in the current stored form, or None when there is
 /// none or it can't be read, so it is fetched again.

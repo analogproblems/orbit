@@ -590,6 +590,9 @@ impl Engine {
         // A scan's or Bit's requests are declined below, like any a review
         // does not own.
         if event.get("id").is_none() {
+            if self.write_up_event(thread, method, p) {
+                return;
+            }
             if self.answering(thread) {
                 self.answer_event(method, p).await;
                 return;
