@@ -608,7 +608,7 @@ function ReviewHealth({ prs }: { prs: History[] }) {
           detail={`${h.disputed} still disputed`}
         />
         <Tile
-          label="Merged with a finding open"
+          label="Findings open at merge"
           value={String(h.openAtMerge)}
           detail={h.openAtMerge ? "see Worth a look" : "none"}
         />

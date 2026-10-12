@@ -9,6 +9,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { DecisionsPage, roundStrip } from "./Decisions";
 import { demoDecisions } from "./demoDecisions";
 import {
@@ -317,6 +318,30 @@ describe("decisions page", () => {
       expect(screen.queryByText("Show build times per branch")).toBeNull(),
     );
     expect(screen.getByText("Paginate the audit log")).toBeTruthy();
+    restore();
+  });
+
+  it("narrows by repository, then offers only that repository's areas", async () => {
+    const { restore } = answering(demoDecisions());
+    const user = userEvent.setup();
+    render(<DecisionsPage />);
+    await screen.findByText("Show build times per branch");
+    await user.click(screen.getByRole("combobox", { name: "Repository" }));
+    await user.click(await screen.findByRole("option", { name: "acme/api" }));
+    await waitFor(() =>
+      expect(screen.queryByText("Show build times per branch")).toBeNull(),
+    );
+    expect(screen.getByText("Paginate the audit log")).toBeTruthy();
+    await user.click(screen.getByRole("combobox", { name: "Area" }));
+    expect(screen.queryByRole("option", { name: "Builds Table" })).toBeNull();
+    await user.click(await screen.findByRole("option", { name: "Webhooks" }));
+    await waitFor(() =>
+      expect(screen.queryByText("Paginate the audit log")).toBeNull(),
+    );
+    expect(
+      screen.getAllByText("Sign webhook payloads with a rotating secret")
+        .length,
+    ).toBeGreaterThan(0);
     restore();
   });
 
