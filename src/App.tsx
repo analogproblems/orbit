@@ -38,6 +38,7 @@ import {
   GitPullRequest,
   Inbox as InboxIcon,
   Repeat,
+  Scale,
   Send,
   Settings2,
   ShieldCheck,
@@ -72,6 +73,9 @@ const FindingsPage = lazy(() =>
   import("./FindingsPage").then((m) => ({ default: m.FindingsPage })),
 );
 const Loops = lazy(() => import("./Loops").then((m) => ({ default: m.Loops })));
+const DecisionsPage = lazy(() =>
+  import("./Decisions").then((m) => ({ default: m.DecisionsPage })),
+);
 const ScansPage = lazy(() =>
   import("./Scans").then((m) => ({ default: m.ScansPage })),
 );
@@ -87,6 +91,7 @@ type Page =
   | "live"
   | "loops"
   | "findings"
+  | "decisions"
   | "scans"
   | "repositories"
   | "settings"
@@ -273,6 +278,7 @@ export default function App() {
     live: "Live",
     loops: "Review loops",
     findings: "Findings",
+    decisions: "Decisions",
     scans: "Security scans",
     repositories: "Repositories",
     settings: "Settings",
@@ -446,6 +452,12 @@ export default function App() {
                   setFinding(null);
                   setPage("findings");
                 }}
+              />
+              <SideNavItem
+                label="Decisions"
+                icon={<Scale />}
+                isSelected={page === "decisions"}
+                onClick={() => setPage("decisions")}
               />
               <SideNavItem
                 label="Security scans"
@@ -638,6 +650,8 @@ export default function App() {
                       onSelect={setFinding}
                       onChoose={choose}
                     />
+                  ) : page === "decisions" ? (
+                    <DecisionsPage />
                   ) : page === "scans" ? (
                     <ScansPage
                       onFindings={() => {

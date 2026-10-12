@@ -327,6 +327,21 @@ Select a loop to see its rounds in order. Each round shows the commits it covere
 
 A security scan's findings stay **Open**: no later round decides about them, so delete an old scan to drop its findings. Search matches every part of a finding, its short ID, all its files, and the PR. Filters narrow by repository, severity, kind, status, source (reviews or scans), and whether the PR is still in the inbox, and the table at the top counts the matching findings by severity and status. Select a finding to read every part of it, whether it blocks, its places, whether the reviewer verified it, its confidence, and its history round by round with each round's note. Findings saved before this form show what they had. Buttons open the review's chat, the lines on GitHub at the reviewed commit, the PR, and the published comment. Status comes from the review loop only; you can't set it by hand. Runs replaced by a newer commit while queued or running, and unstructured runs, aren’t listed. Asking a follow-up question in a review’s chat keeps its findings. The same status now shows in each review's findings table.
 
+### Decisions
+
+**Decisions**, below **Findings** in the sidebar, tells the story of each pull request in your connected repositories: what it set out to do, what each review round found, what the builder fixed or pushed back on, and what is worth a second look. It covers open, merged and closed pull requests, including ones Orbit never reviewed, and reads Orbit's own published reviews, reviews from a Codex Dot such as Milo, and the builder's `Fixed F2 in abc1234` / `Declined F2: reason` replies. No model is involved: it is all read from GitHub.
+
+Orbit reads each connected repository's 100 most recently updated pull requests in the background: when it starts, every five minutes, and as soon as you connect a repository. It keeps them in a `ledger` folder in its app-data folder, separate from its saved state, and removes a repository's history when you disconnect it. **Read again** starts a read now. While a read runs, the page says which repository it is reading; a repository GitHub refused shows why, keeps what Orbit already had, and is tried again on the next read.
+
+From top to bottom:
+
+- **Worth a look**: things someone should decide about first (a pull request merged while a finding was still open, or a finding the builder declined that the reviewer still disputes), then things good to know (a finding that stayed open across rounds, a merge before any review, something the reviewer couldn't check, a blocking finding the reviewer marked as likely but not verified).
+- **Story**: each pull request, newest first, with its state, what it set out to do, how many rounds and findings it had, and its blocking findings round by round, such as "2 → 1 → 0". Select one to read its whole chapter: the description's Before, After, How and Decisions, its review rounds with what each said about earlier findings, every finding with where it ended up and what the builder said, and the checks the builder ran. **Open on GitHub** opens the pull request, and selecting a round opens its review.
+- **Pushback**: every finding the builder declined, with the builder's reason and the reviewer's answer: accepted, disputed, or not ruled on yet.
+- **Review health**: how many pull requests were reviewed, average rounds, how many were clean on the first round, how many findings were fixed or declined, how many merged with a finding open, and the middle time from opening to a clean round. Two charts show rounds per pull request and findings by priority, each with its numbers in a table underneath.
+
+Search matches titles, numbers, descriptions and finding titles, and the repository filter narrows every part of the page.
+
 ### Security scans
 
 **Security scans**, below **Findings** in the sidebar, runs a whole-repository security scan with OpenAI's **Codex Security** plugin, the same local scan the Codex desktop app runs. Start one with **Run security scan** on that page, or with the shield button next to a repository on **Repositories**, then choose:

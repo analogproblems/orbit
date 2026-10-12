@@ -23,7 +23,7 @@ import {
   type TableColumn,
 } from "@astryxdesign/core/Table";
 import { ArrowLeft, ArrowUpRight, Bug, FileText, Search } from "lucide-react";
-import { desktop, useOrbit } from "./store";
+import { openLink, useOrbit } from "./store";
 import {
   categoryLabels,
   findingLocation,
@@ -109,11 +109,6 @@ export function filterFindings(rows: FindingRow[], f: FindingFilters) {
       .toLowerCase();
     return words.every((w) => text.includes(w));
   });
-}
-
-function openLink(url: string) {
-  if (desktop) void useOrbit.getState().action("open_github", { url });
-  else window.open(url, "_blank", "noopener,noreferrer");
 }
 
 function SeverityToken({ priority }: { priority: number }) {

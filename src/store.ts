@@ -62,6 +62,12 @@ const remoteToken = desktop ? null : readToken();
 export const remote = remoteToken !== null;
 /** Connected to a real workspace, rather than the browser demo. */
 export const live = desktop || remote;
+/** Opens a GitHub link: with the system browser from the desktop window, in a
+ * new tab in a browser. */
+export function openLink(url: string) {
+  if (desktop) void useOrbit.getState().action("open_github", { url });
+  else window.open(url, "_blank", "noopener,noreferrer");
+}
 const empty: Snapshot = {
   prs: [],
   reviews: [],
@@ -627,6 +633,10 @@ async function demoAction(
     commit();
     return;
   }
+  if (command === "get_decisions")
+    return (await import("./demoDecisions")).demoDecisions();
+  // The demo's history is made up; there is nothing to read again.
+  if (command === "refresh_decisions") return;
   if (command === "get_storage_usage") {
     const worktrees = demo.reviews
       .filter((r) => r.worktree)
