@@ -27,7 +27,7 @@ static ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)f(\d+)").unwrap()
 /// One claim a line of a comment makes: the short ID numbers it names (none
 /// means the finding whose thread it is in), its kind, commit and reason.
 #[derive(Debug, PartialEq)]
-pub(super) struct Line {
+pub(crate) struct Line {
     pub numbers: Vec<u32>,
     pub kind: ClaimKind,
     pub commit: Option<String>,
@@ -36,7 +36,7 @@ pub(super) struct Line {
 
 /// Reads each line of a comment. Bold, code marks and list or quote markers
 /// around a claim are ignored.
-pub(super) fn lines(body: &str) -> Vec<Line> {
+pub(crate) fn lines(body: &str) -> Vec<Line> {
     body.lines()
         .filter_map(|line| {
             let line: String = line.chars().filter(|c| !matches!(c, '*' | '`')).collect();

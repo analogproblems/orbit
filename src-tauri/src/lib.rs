@@ -10,6 +10,7 @@ pub mod engine;
 pub mod extras;
 pub mod github;
 pub mod guide;
+pub mod ledger;
 pub mod models;
 pub mod remote;
 pub mod review_instructions;
@@ -146,6 +147,15 @@ mod desktop {
     async fn poll_now(engine: State<'_, AppState>) -> Result<(), String> {
         engine.poll().await?;
         engine.update_clones_soon();
+        Ok(())
+    }
+    #[tauri::command]
+    async fn get_decisions(engine: State<'_, AppState>) -> Result<ledger::Decisions, String> {
+        engine.decisions().await
+    }
+    #[tauri::command]
+    async fn refresh_decisions(engine: State<'_, AppState>) -> Result<(), String> {
+        engine.refresh_ledger_soon();
         Ok(())
     }
     #[tauri::command]
@@ -403,6 +413,8 @@ mod desktop {
                 export_report,
                 choose_checkout,
                 poll_now,
+                get_decisions,
+                refresh_decisions,
                 connect_services,
                 start_review,
                 cancel_review,

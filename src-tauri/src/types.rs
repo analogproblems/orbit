@@ -1226,6 +1226,40 @@ pub struct Snapshot {
     /// How Bit feels. Derived like `loop_states`.
     #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub mood: Option<crate::buddy::Mood>,
+    /// Reading each repository's pull-request history for the Decisions
+    /// page.
+    pub ledger: LedgerStatus,
+}
+/// How reading the pull-request history is going.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LedgerStatus {
+    /// A read is running.
+    pub refreshing: bool,
+    /// The pull request being read and how many are left, while a read runs.
+    pub progress: Option<LedgerProgress>,
+    /// Each connected repository's latest read.
+    pub repos: Vec<LedgerRepo>,
+    /// Goes up whenever stored history changes, so the page knows to load it
+    /// again.
+    pub version: u64,
+}
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LedgerProgress {
+    pub repo: String,
+    /// Pull requests read so far in this repository, and how many need it.
+    pub done: u32,
+    pub total: u32,
+}
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LedgerRepo {
+    pub repo: String,
+    /// When it was last read in full.
+    pub refreshed_at: Option<String>,
+    /// Why the latest read stopped, when it did.
+    pub error: Option<String>,
 }
 /// How far a security scan has come, as the Codex Security plugin reports it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

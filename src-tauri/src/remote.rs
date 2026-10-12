@@ -49,6 +49,8 @@ pub const COMMANDS: &[&str] = &[
     "remove_worktrees",
     "export_report",
     "poll_now",
+    "get_decisions",
+    "refresh_decisions",
     "connect_services",
     "start_review",
     "cancel_review",
@@ -269,6 +271,11 @@ async fn dispatch(e: &Arc<Engine>, name: &str, a: &Value) -> Result<Value, Strin
         "poll_now" => {
             e.poll().await?;
             e.update_clones_soon();
+            out(())
+        }
+        "get_decisions" => out(e.decisions().await?),
+        "refresh_decisions" => {
+            e.refresh_ledger_soon();
             out(())
         }
         "connect_services" => {

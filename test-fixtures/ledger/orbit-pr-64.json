@@ -1,0 +1,228 @@
+{
+  "pr": {
+    "number": 64,
+    "title": "Ask Bit: quick answers, fix buttons and rules (#63, part 1)",
+    "html_url": "https://github.com/analogproblems/orbit/pull/64",
+    "state": "closed",
+    "merged": true,
+    "merged_at": "2026-10-11T00:14:57Z",
+    "draft": false,
+    "body": "<!-- claude-projects-attribution: {\"github_login\":\"jasondwhyte\"} -->\n_Requested by **Jason** · [project thread](https://claude.ai/code/project/chan_01YGtEMFvZnSp5cxW5MGErkd?thread=cmsg_01YGtEMFvZnSp5cxW5MGErkd4yrx42V2CNrsAy6nSKB54b)_\n\nPart of #63 (stage 1: the conversation, quick answers, buttons and rules; no AI).\n\nBefore: Bit's page was a list of notes. To fix something that needed you, you went to Review loops, Repositories or Settings and used the control there. Bit couldn't answer questions. On a phone-sized screen the sidebar was hidden with nothing in its place, so only the inbox was reachable.\n\nAfter: Bit's page is one conversation that the desktop window and every browser share. Four buttons ask Bit **What needs me?**, **What's running?**, **How are my loops?** and **How are my repositories?**, and it answers straight away from Orbit's own state.\n\nWhen one of Orbit's own controls fixes something that needs you, Bit's note about it (and any answer that lists it) carries that control as a button: **Continue loop**, **Review again**, **Publish report**, **Sync now** or **Turn autopilot back on**.\n\nIn **Settings → Buddy → What Bit can do**, each fix has a rule:\n- **Do it**: Bit does it when the item opens, says so, and skips the desktop notification.\n- **Ask first**: the default. Bit offers a button.\n- **Leave it to me**: Bit offers no button.\n\nOn a phone-sized screen, a menu button opens the sidebar, so every page (Bit included) is reachable.\n\nBit only uses Orbit's own controls. It never answers a reviewer's request to run a command or change files, never changes a repository's setup or access, and never touches reviewed code. **Publish report** is never offered for a report the credential check flagged, or for one from a pull request automatic publication wouldn't trust, and Bit checks trust again against GitHub's latest copy of the pull request just before publishing. Turning autopilot back on changes settings, so it always waits for a tap.\n\nBefore doing a fix on its own, Bit checks again that the item still needs you, Bit is still on and the rule is still Do it. If any of that has changed, it hands the item back to you or, if the item has closed, lets it go. A Do it fix that fails is tried once, then handed back.\n\n## How\n\n- `attention::items` gives each item the `Fix` that resolves it, or none (approvals, disputed findings, a loop that isn't converging). Publish is offered only for a current, ready report with no credential flags from a trusted source.\n- `attention::announce` judges a report being published as still ready, as it does for a follow-up, so a failed publication doesn't make its item new again.\n- `buddy.rs`:\n  - `Rules` on `Buddy`: `do_it` / `ask_first` / `leave_it`, default `ask_first`. Keyed by the fix's own name on the wire, validated and normalized like the other buddy settings, and patchable one rule at a time.\n  - Notes gain `key` (the Needs you item, so the app can offer its fix while it's open). Answers carry `question` and `lines`.\n  - New note kinds `fixing`, `fixed` and `answer`, with lines in each tone.\n  - `buddy::ask` writes quick answers from the snapshot.\n- `Engine::flush`: an item that just opened whose rule is Do it (while Bit is on) gets a \"Fixing\" note instead of a Needs you note, skips the notification and joins `Engine::fixing`.\n- The next tick's `do_fixes` runs a `do_fix` task for each queued fix, only while `still_mine` holds: the same open item and fix, with Bit on and the rule still Do it.\n  - It is checked under the same lock as the change (`continue_loop_if`, `enqueue_if`), after the sync lock for Sync now, and before every write for publication.\n  - If a fix fails, or stops being Bit's while its item is open, Bit hands it back: a Needs you note with the button, plus the notification. If the item closed, the fix is dropped.\n  - Sync now counts only once the item has closed.\n- `publish::By::{You, Autopilot, Bit}`: Bit's publications apply automatic publication's trust and credential holds to the fresh PR before every write, independent of the publication switch.\n- New commands `use_fix {key}` and `ask_buddy {question}`, in Tauri and the browser allowlist. `use_fix` looks the item up again by key and uses the control as the app's own button does.\n- App:\n  - Bit's page uses Astryx chat components: notes as Bit's messages, your questions as yours, and answers as lists with buttons.\n  - Notes link to **Open loop**, **Open repositories** or **Open settings**.\n  - The rules are Selectors in Bit's settings.\n  - `AppShell` shows its mobile menu below the md breakpoint.\n  - The browser demo answers questions and runs fixes too.\n- Docs: user guide (Ask Bit, Bit's buttons and rules, phone menu), README and architecture.\n\n## Tests\n\n- Rust:\n  - `attention_tests`: the fix for each item kind.\n  - `buddy_tests`: validating, patching and normalizing rules, and rule names shared with the app through a fixture. Fixing vs Needs you notes, a settings change never done on its own, and every quick answer in every tone.\n  - Engine tests (`fixes_tests`):\n    - Do it runs once and replaces the notification. Ask first and Leave it don't.\n    - A failed fix needs you and is notified. A button runs its item's fix.\n    - Turning autopilot back on, and answers in the feed.\n    - Queued fixes are dropped or handed back after Stop loop, a rule change or Bit being turned off.\n    - No second review is started.\n    - A queued Sync now makes no GitHub requests after its rule changes while it waits.\n    - A failed Do it publish is tried once across later looks.\n    - Bit's publication posts nothing once the fresh PR is untrusted, trust is revoked mid-publication, or the rule changes while it waits. It does publish with auto-post off while trusted.\n- App: the conversation and its links, asking a question, fix buttons and Leave it to me, rules in Settings, reaching Bit from the phone menu, demo answers and fixes, and shared option lists and default rules.\n- `cargo test` (343), `cargo clippy -D warnings`, `cargo fmt --check`, `tsc`, `eslint`, `prettier --check`, `vitest` (172) and `vite build` all pass. Checked in the demo at desktop and phone widths.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nhttps://claude.ai/code/session_01EDJU2uY2NCz6Ch7CDHNcNA",
+    "created_at": "2026-10-10T23:43:36Z",
+    "updated_at": "2026-10-11T00:14:57Z",
+    "closed_at": "2026-10-11T00:14:57Z",
+    "additions": 2790,
+    "deletions": 221,
+    "changed_files": 28,
+    "user": {
+      "login": "jasondwhyte"
+    },
+    "merged_by": {
+      "login": "jasondwhyte"
+    },
+    "head": {
+      "ref": "claude/project-thread-yxzx1y",
+      "sha": "3e0a5fa3c207a70b931b7243b1faed2b58b672c9"
+    },
+    "base": {
+      "ref": "master",
+      "sha": "6a8e0c9b60eac7b33d5fa59f30067df8642a691f"
+    }
+  },
+  "issueComments": [
+    {
+      "id": 6103458549,
+      "body": "## Milo PR review\n\n**CHANGES REQUESTED**\n\nRepository: `analogproblems/orbit`, PR #64\nHead: `9aaf81e6cedbff5f316b088377e02af8d82aab57`\nBase: `6a8e0c9b60eac7b33d5fa59f30067df8642a691f`\nConfiguration: `self-review-v1`\nMode: cumulative static review, observed GitHub checks, isolated JUPITER head-only JavaScript tests.\n\n### Findings requiring changes\n\n1. **F1 · P2 — Match the rule keys across the Rust/TypeScript boundary.** `src-tauri/src/buddy.rs:93–98,139–145` uses camelCase for both `Rules` and `RulesPatch`, but `src/types.ts` and `BuddyRules` use `continue_loop`, `review_again`, and `sync_now` as object keys. Selecting any of those rules sends that snake_case key directly through `update_settings`; `deny_unknown_fields` rejects it because Rust expects `continueLoop`, `reviewAgain`, or `syncNow`. Likewise, saved engine values arrive under camelCase keys while `buddyOf` fills the snake_case keys with Ask first. Only Publish happens to agree. Align the wire names in both directions and add a shared serialization/patch test for all four rules; the current Publish-only settings tests miss this.\n\n2. **F2 · P1 — Revalidate queued fixes before performing their side effects.** `src-tauri/src/engine/fixes.rs:35–40` drains captured items and calls `run_fix` without checking whether the item is still open or Bit/the rule still permits it. After a Do it item is queued by `flush`, turning Bit off or changing Publish to Ask first does not cancel its queued publication, including one waiting behind another publication's lock. Similarly, queueing Continue loop and then pressing Stop loop before it runs lets `continue_loop` set `stopped = false`, undoing the explicit stop. Resolve the current item and authorization at execution, and recheck after waits immediately before mutation/publication; discard stale work. Add gated tests for queued-fix → disable/rule revocation/Stop loop → execution, asserting no side effect.\n\n3. **F3 · P1 — Preserve the live trust check for Bit's publications.** `src-tauri/src/engine/fixes.rs:74–79` sends every Publish fix through `publish(id, false, false)`. The offer checks the cached PR's trust, but `publish.rs::final_checks` applies `automatic_hold` to the freshly fetched PR only when `automatic` is true. Therefore Bit can publish without a manual tap after a formerly trusted author loses membership/collaborator status, or trust is revoked while the fix waits, provided head/base stay unchanged. The fresh fetch does not enforce the promised trusted-source restriction on this path. Add a publication origin/guard for Bit that rechecks current trust against the fresh PR before every write, while allowing its explicit Publish rule to operate independently of the ordinary auto-post switch. Test cached-trusted/fresh-untrusted and trust revocation with no GitHub write.\n\nThese are static findings; no Rust reproduction was executed. No separate suggestions.\n\n### Scope and verification\nAll 25 changed files and complete patches reviewed, including attention derivation, durable feed/queue handling, rules and wire types, desktop/remote commands, UI/save feedback, demo behavior and added tests. Relevant scheduler, stop/continue, settings, publication and trust context and repository AGENTS.md were read.\n\nFresh checks on October 10, 2026 at 23:47 UTC show open/non-draft, unchanged pins and mergeable/clean. **CI is absent:** zero check runs, zero commit statuses and no PR-triggered workflow runs. The empty combined-status response's default pending label is not a running check. Branch metadata reports unprotected with no required-status contexts; rulesets are empty, while the branch-rules endpoint is unsupported. These observations are not proof of every applicable merge requirement.\n\n### Executed tests and limits\nJUPITER: **171 tests passed across 20 files; none failed or skipped.** Exact detached head above; base recorded as metadata, no synthetic merge.\nPreparation, dependency download, offline test and bounded cleanup exited 0. Test/download OOM=false, timeout=false; 1800-second stage limits. Node24 image:\n`sha256:64af3819f9275802414d7cdc38c27e9d82bd564dec4d4da87d008255d36c63b4`.\n\n```bash\nROOT=/home/jdub/Documents/Codex/2026-10-04/task/jupiter-tests\nRUN=$ROOT/runs/orbit/9aaf81e6cedb-605f23af\nIMAGE=sha256:64af3819f9275802414d7cdc38c27e9d82bd564dec4d4da87d008255d36c63b4\npython \"$ROOT/prepare.py\" orbit 9aaf81e6cedbff5f316b088377e02af8d82aab57 --ref refs/pull/64/head --base 6a8e0c9b60eac7b33d5fa59f30067df8642a691f\npython \"$ROOT/isolated.py\" \"$RUN\" npm-download --image \"$IMAGE\" --purpose download --network bridge 'npm ci --ignore-scripts --no-audit --no-fund'\npython \"$ROOT/isolated.py\" \"$RUN\" npm-test --image \"$IMAGE\" 'npm test -- --maxWorkers=2'\npython \"$ROOT/cleanup.py\" \"$RUN\" --discard-runtime\n```\n\nFresh private bare repository/detached worktree from the confirmed remote. Both containers verified UID1000, all capability sets zero, no-new-privileges, read-only root, 2 CPUs/4 GiB/512 PIDs, no published ports, host credentials, SSH agent or Docker socket. Only task-owned paths writable, Git metadata read-only and host results inaccessible. Dependency download alone used networking with lifecycle scripts disabled; tests used network none with no external routes. Trusted Git `--no-ext-diff --no-textconv` checks were clean before/after each stage. No source checkout changes. Services not applicable; run-scoped runtime cleanup completed, records/artifacts retained.\n\nRust/native/browser/build and other unconfigured tiers were **not run**. Passing JavaScript tests with mocked/demo data do not verify Rust wire contracts or engine concurrency.\nEvidence: `$RUN/revision.json`, `$RUN/results/prepare.log`, `$RUN/results/npm-{download,test}.{log,isolation.json,docker-observed.json,result.json}`, `$RUN/results/cleanup.json`, and `$RUN/artifacts/`.\n\nClaude Code: consume this review only if the full current PR head SHA still equals `9aaf81e6cedbff5f316b088377e02af8d82aab57`; otherwise it is stale. Honor current CI, branch protections and required human reviews. No verdict authorizes Milo to merge.\n\n<!-- milo-pr-review:repo=analogproblems/orbit;pr=64;head=9aaf81e6cedbff5f316b088377e02af8d82aab57;base=6a8e0c9b60eac7b33d5fa59f30067df8642a691f;config=self-review-v1 -->",
+      "html_url": "https://github.com/analogproblems/orbit/pull/64#issuecomment-6103458549",
+      "created_at": "2026-10-10T23:48:07Z",
+      "updated_at": "2026-10-10T23:48:07Z",
+      "user": {
+        "login": "jasondwhyte"
+      }
+    },
+    {
+      "id": 6103502207,
+      "body": "## Milo PR review\n\n**CHANGES REQUESTED**\n\nRepository: `analogproblems/orbit`, PR #64\nHead: `02a4b69af6875ae99ee400b6fa00a19042bd0792`\nBase: `6a8e0c9b60eac7b33d5fa59f30067df8642a691f`\nConfiguration: `self-review-v1`\nMode: cumulative static review, observed GitHub checks, isolated JUPITER head-only JavaScript tests.\n\n### Revision verification\nCompared with the [previous review](https://github.com/analogproblems/orbit/pull/64#issuecomment-6103458549), this revision changes the mobile navigation setting, its UI test and documentation only. The other 23 changed files have identical blobs. F1, F2 and F3 remain open; none of their affected code changed. No additional actionable finding in the mobile-navigation revision.\n\n### Findings requiring changes\n\n1. **F1 · P2 — Match the rule keys across the Rust/TypeScript boundary.** `src-tauri/src/buddy.rs:93–98,139–145` uses camelCase for both `Rules` and `RulesPatch`, but `src/types.ts` and `BuddyRules` use `continue_loop`, `review_again`, and `sync_now` as object keys. Selecting any of those rules sends that snake_case key directly through `update_settings`; `deny_unknown_fields` rejects it because Rust expects `continueLoop`, `reviewAgain`, or `syncNow`. Likewise, saved engine values arrive under camelCase keys while `buddyOf` fills the snake_case keys with Ask first. Only Publish happens to agree. Align the wire names in both directions and add a shared serialization/patch test for all four rules; the current Publish-only settings tests miss this.\n\n2. **F2 · P1 — Revalidate queued fixes before performing their side effects.** `src-tauri/src/engine/fixes.rs:35–40` drains captured items and calls `run_fix` without checking whether the item is still open or Bit/the rule still permits it. After a Do it item is queued by `flush`, turning Bit off or changing Publish to Ask first does not cancel its queued publication, including one waiting behind another publication's lock. Similarly, queueing Continue loop and then pressing Stop loop before it runs lets `continue_loop` set `stopped = false`, undoing the explicit stop. Resolve the current item and authorization at execution, and recheck after waits immediately before mutation/publication; discard stale work. Add gated tests for queued-fix → disable/rule revocation/Stop loop → execution, asserting no side effect.\n\n3. **F3 · P1 — Preserve the live trust check for Bit's publications.** `src-tauri/src/engine/fixes.rs:74–79` sends every Publish fix through `publish(id, false, false)`. The offer checks the cached PR's trust, but `publish.rs::final_checks` applies `automatic_hold` to the freshly fetched PR only when `automatic` is true. Therefore Bit can publish without a manual tap after a formerly trusted author loses membership/collaborator status, or trust is revoked while the fix waits, provided head/base stay unchanged. The fresh fetch does not enforce the promised trusted-source restriction on this path. Add a publication origin/guard for Bit that rechecks current trust against the fresh PR before every write, while allowing its explicit Publish rule to operate independently of the ordinary auto-post switch. Test cached-trusted/fresh-untrusted and trust revocation with no GitHub write.\n\nThese are static findings; no Rust reproduction was executed. No separate suggestions.\n\n### Scope and verification\nAll 26 changed files and complete patches reviewed, including attention derivation, durable feed/queue handling, rules and wire types, desktop/remote commands, UI/save feedback, demo behavior and added tests. Relevant scheduler, stop/continue, settings, publication and trust context and repository AGENTS.md were read.\n\nFresh checks on October 10, 2026 at 23:53 UTC show open/non-draft, unchanged pins and mergeable/clean. **CI is absent:** zero check runs, zero commit statuses and no PR-triggered workflow runs. The empty combined-status response's default pending label is not a running check. Branch metadata reports unprotected with no required-status contexts; rulesets are empty, while the branch-rules endpoint is unsupported. These observations are not proof of every applicable merge requirement.\n\n### Executed tests and limits\nJUPITER: **172 tests passed across 20 files; none failed or skipped.** Exact detached head above; base recorded as metadata, no synthetic merge.\nPreparation, dependency download, offline test and bounded cleanup exited 0. Test/download OOM=false, timeout=false; 1800-second stage limits. Node24 image:\n`sha256:64af3819f9275802414d7cdc38c27e9d82bd564dec4d4da87d008255d36c63b4`.\n\n```bash\nROOT=/home/jdub/Documents/Codex/2026-10-04/task/jupiter-tests\nRUN=$ROOT/runs/orbit/02a4b69af687-089eb107\nIMAGE=sha256:64af3819f9275802414d7cdc38c27e9d82bd564dec4d4da87d008255d36c63b4\npython \"$ROOT/prepare.py\" orbit 02a4b69af6875ae99ee400b6fa00a19042bd0792 --ref refs/pull/64/head --base 6a8e0c9b60eac7b33d5fa59f30067df8642a691f\npython \"$ROOT/isolated.py\" \"$RUN\" npm-download --image \"$IMAGE\" --purpose download --network bridge 'npm ci --ignore-scripts --no-audit --no-fund'\npython \"$ROOT/isolated.py\" \"$RUN\" npm-test --image \"$IMAGE\" 'npm test -- --maxWorkers=2'\npython \"$ROOT/cleanup.py\" \"$RUN\"\n```\n\nFresh private bare repository/detached worktree from the confirmed remote. Both containers verified UID1000, all capability sets zero, no-new-privileges, read-only root, 2 CPUs/4 GiB/512 PIDs, no published ports, host credentials, SSH agent or Docker socket. Only task-owned paths writable, Git metadata read-only and host results inaccessible. Dependency download alone used networking with lifecycle scripts disabled; tests used network none with no external routes. Trusted Git `--no-ext-diff --no-textconv` checks were clean before/after each stage. No source checkout changes. Services not applicable; run-scoped runtime cleanup completed, records/artifacts retained.\n\nRust/native/browser/build and other unconfigured tiers were **not run**. Passing JavaScript tests with mocked/demo data do not verify Rust wire contracts or engine concurrency.\nEvidence: `$RUN/revision.json`, `$RUN/results/prepare.log`, `$RUN/results/npm-{download,test}.{log,isolation.json,docker-observed.json,result.json}`, `$RUN/results/cleanup.json`, and `$RUN/artifacts/`.\n\nClaude Code: consume this review only if the full current PR head SHA still equals `02a4b69af6875ae99ee400b6fa00a19042bd0792`; otherwise it is stale. Honor current CI, branch protections and required human reviews. No verdict authorizes Milo to merge.\n\n<!-- milo-pr-review:repo=analogproblems/orbit;pr=64;head=02a4b69af6875ae99ee400b6fa00a19042bd0792;base=6a8e0c9b60eac7b33d5fa59f30067df8642a691f;config=self-review-v1 -->",
+      "html_url": "https://github.com/analogproblems/orbit/pull/64#issuecomment-6103502207",
+      "created_at": "2026-10-10T23:54:18Z",
+      "updated_at": "2026-10-10T23:54:18Z",
+      "user": {
+        "login": "jasondwhyte"
+      }
+    },
+    {
+      "id": 6103543235,
+      "body": "Addressed Milo's review of `9aaf81e` in `3a235dc` (the commit in between, `02a4b69`, only adds the phone menu: `mobileNav` in `App.tsx`, one test, one user guide line).\n\n**F1 (P2), fixed.** `Rules` and `RulesPatch` now use the fix's own snake_case names (`continue_loop`, `review_again`, `publish`, `sync_now`) on the wire, both ways. `test-fixtures/buddy-options.json` gains `defaultRules`. `rules_use_the_names_the_app_sends` (Rust) checks that the default rules serialize to it, and that a one-rule patch for each of the four fixes applies, saves and loads. `Bit.test.tsx` checks that `defaultBuddy.rules` equals it.\n\n**F2 (P1), fixed.** A fix Bit does on its own only runs while `still_mine` holds: the item is still open about the same report with the same fix, Bit is on, and the rule is still Do it.\n- It is checked when the task starts, then again under the same state lock as the change (`continue_loop_if`, `enqueue_if`).\n- For publication it is checked again before every write, after the lock and diff waits (with the claimed report judged as it was before the claim).\n- If the fix stops being Bit's while its item is still open, Bit hands it back: a Needs you note with the button, plus the notification that was skipped. If the item closed meanwhile, the fix is dropped silently.\n\nTests in `fixes_tests.rs`:\n- Stop loop before the fix runs: the loop stays stopped, with no note or notification.\n- Rule changed to Ask first: not continued, and handed back and notified.\n- Bit turned off: not continued, and notified.\n- A queued Review again after you started a review: no second review.\n- Publication with the rule changed, Bit turned off, the author leaving the org, or their trusted-account entry removed while the diff fetch is paused: no POST.\n- Publication with the rule changed while waiting behind `publish_lock`: no POST.\n\n**F3 (P1), fixed.** Publishing now takes an origin, `publish::By::{You, Autopilot, Bit}`. Bit's publications (button and Do it) apply automatic publication's trust and credential holds to the freshly fetched PR in `final_checks` before every write, independent of the auto-post switch. The existing `publish(id, automatic, allow_sensitive)` callers are unchanged. Tests:\n- Cached as a member's PR but fresh as `CONTRIBUTOR`: neither the button nor Do it posts.\n- Trust revoked mid-publication: no POST.\n- Still trusted, with auto-post off: Do it publishes once.\n\nChecks: `cargo test` (341), `cargo clippy --all-targets -D warnings`, `cargo fmt`, `tsc`, `eslint`, `prettier --check`, `vitest` (172), and `vite build` all pass. Docs (user guide and architecture) describe the recheck and the hand-back.\n\n---\n_Generated by [Claude Code](https://claude.ai/code)_",
+      "html_url": "https://github.com/analogproblems/orbit/pull/64#issuecomment-6103543235",
+      "created_at": "2026-10-11T00:00:13Z",
+      "updated_at": "2026-10-11T00:00:13Z",
+      "user": {
+        "login": "jasondwhyte"
+      }
+    },
+    {
+      "id": 6103573019,
+      "body": "## Milo PR review\n\n**CHANGES REQUESTED**\n\nRepository: `analogproblems/orbit`, PR #64\nHead: `3a235dc4daed734739278871faf97783c87d5d41`\nBase: `6a8e0c9b60eac7b33d5fa59f30067df8642a691f`\nConfiguration: `self-review-v1`\nMode: cumulative static review, current-head GitHub checks and isolated JUPITER head-only JavaScript tests.\n\n### Earlier findings\n- **F1 fixed:** rules now use snake_case in both Rust wire types; the shared default-rules fixture and per-rule Rust patch/save/load test cover all four keys.\n- **F2 partially fixed:** Continue loop and Review again now check under their mutation lock; publication checks again after the publication lock/diff waits. The remaining Sync now path is described below.\n- **F3 fixed:** `By::Bit` applies trust and credential restrictions to the fresh PR before publication, including the fallback write. The regression tests cover both button/automatic publication and changed trust. These Rust tests were inspected, not executed by this review.\n\n### Findings requiring changes\n1. **F2 remaining · P2 — Recheck the automatic sync after acquiring its lock.** `src-tauri/src/engine/fixes.rs:125–128` calls `sync_now()` without passing the `still` guard. `queue.rs:19–21` may wait behind a long existing poll, then unconditionally starts a new poll. If Bit is disabled or Sync now is changed from Do it to Ask first during that wait, the queued automatic fix still makes the extra GitHub requests and can schedule `update_clones_soon()`. Pass a guard into the sync path and evaluate it after acquiring `poll_lock`, before starting the new operation; also avoid scheduling follow-on clone work after revocation. Add a test that holds the poll lock, starts the fix, revokes the rule, releases the lock and asserts no new sync/clone work.\n\n2. **F4 · P2 — Keep a failed publication from reopening its own automatic fix.** `src-tauri/src/engine/mod.rs:328–342` uses the newly announced attention keys to queue Do it work. A Publish fix sets its report to `publishing`; the pre-POST `flush` in `publish.rs` then removes its `held:<review-id>` attention key from `announced`, since `attention::items` only includes the held report while it is ready. If GitHub rejects/times out the POST, the report returns to ready with an error. On the next flush, the same held item is treated as new and another automatic Publish fix is queued. A persistent publication failure therefore produces repeated automatic retries/notifications instead of the documented one attempt followed by handing it back. Preserve the item's announcement/attempt identity through transient publishing (as follow-up states are already preserved), or explicitly track the attempted fix. Test a failed POST followed by multiple flush/tick cycles and assert only one automatic attempt until a genuine new item or manual retry.\n\nF4 was identified during cumulative review of the failure path; it was not covered in the earlier comments. No separate suggestions. Both remaining findings are static, with no Rust reproduction executed.\n\n### Scope and verification\nAll 28 cumulative changed files and complete patches reviewed; this revision changes 11 files while the other 17 retain the previously reviewed blobs. Reviewed the new guards, publication-origin refactor, queue locking, failure/notification handling and added tests against the unchanged attention/announcement lifecycle. Repository guidance and impacted UI/context remain applicable. The author's claimed cargo/clippy/build checks are not treated as observed or executed evidence.\n\nFresh reads on October 11, 2026 at 00:03 UTC show open/non-draft, unchanged SHAs and mergeable=true. **CI is absent:** zero current-head checks/statuses, not a verified CI pass. Previously inspected branch metadata reports unprotected with no required-status contexts and empty rulesets; full branch-rules querying is unsupported.\n\n### Executed tests and limits\nExact-head JUPITER run: **172 JavaScript tests passed across 20 files; no failures or skips.** Prepare, dependency download, offline test and cleanup exited 0; both container stages OOM=false/timeout=false, 1800-second limits. Head-only, no synthetic merge. Rust/native/browser/build and other unconfigured tiers were **not run**; JavaScript tests do not validate the engine's concurrency or publication paths.\n\n```bash\nROOT=/home/jdub/Documents/Codex/2026-10-04/task/jupiter-tests\nRUN=$ROOT/runs/orbit/3a235dc4daed-90895d13\nIMAGE=sha256:64af3819f9275802414d7cdc38c27e9d82bd564dec4d4da87d008255d36c63b4\npython \"$ROOT/prepare.py\" orbit 3a235dc4daed734739278871faf97783c87d5d41 --ref refs/pull/64/head --base 6a8e0c9b60eac7b33d5fa59f30067df8642a691f\npython \"$ROOT/isolated.py\" \"$RUN\" npm-download --image \"$IMAGE\" --purpose download --network bridge 'npm ci --ignore-scripts --no-audit --no-fund'\npython \"$ROOT/isolated.py\" \"$RUN\" npm-test --image \"$IMAGE\" 'npm test -- --maxWorkers=2'\npython \"$ROOT/cleanup.py\" \"$RUN\" --discard-runtime\n```\n\nFresh private bare repository/detached worktree from confirmed remote. Both stages verified UID1000, zero capabilities, no-new-privileges, read-only root, 2 CPUs/4 GiB/512 PIDs, no published ports, host credentials, SSH agent or Docker socket. Only run-owned paths writable; Git metadata read-only, host results inaccessible. Download-only networking with lifecycle scripts disabled; tests used network none with no external routes. Trusted Git `--no-ext-diff --no-textconv` checks passed before/after both stages. No source checkout modifications. No services started. Run-scoped cleanup removed disposable runtime and retained records/artifacts.\nEvidence: `$RUN/revision.json`; `$RUN/results/prepare.log`, dependency/test logs, isolation/Docker/result JSON and cleanup.json; `$RUN/artifacts/` retained for container reports.\n\nClaude Code: consume this review only if the full current PR head SHA still equals `3a235dc4daed734739278871faf97783c87d5d41`; otherwise it is stale. Honor current CI, branch protections and required human reviews. No verdict authorizes Milo to merge.\n\n<!-- milo-pr-review:repo=analogproblems/orbit;pr=64;head=3a235dc4daed734739278871faf97783c87d5d41;base=6a8e0c9b60eac7b33d5fa59f30067df8642a691f;config=self-review-v1 -->",
+      "html_url": "https://github.com/analogproblems/orbit/pull/64#issuecomment-6103573019",
+      "created_at": "2026-10-11T00:04:11Z",
+      "updated_at": "2026-10-11T00:04:11Z",
+      "user": {
+        "login": "jasondwhyte"
+      }
+    },
+    {
+      "id": 6103616416,
+      "body": "Addressed Milo's review of `3a235dc` in `3e0a5fa`.\n\n**F2 remaining (P2), fixed.** For Sync now, `run_fix` now does three things in order:\n1. Takes `poll_lock`, so it waits for a sync already running.\n2. Runs the `still` guard on the current state.\n3. Only then calls `poll_holding` (now `pub(super)`).\n\nIf the guard fails, it returns before any GitHub request or `update_clones_soon()`. `sync_now`, added earlier in this PR, is removed because the fix does it inline. Test: `a_queued_sync_checks_again_once_the_running_sync_ends` holds `poll_lock`, starts the fix, revokes the rule and releases the lock. It then asserts the rule error, that the fake `gh` log was never written, that `polling` is still false and that `poll_failures` hasn't changed.\n\n**F4 (P2), fixed.** `attention::announce` now judges against `settled(s)`, which was `after_follow_ups`. It treats a report in `publishing` as `ready`, as it already did for a follow-up's saved outcome. The held or waiting item stays in `announced` through the pre-POST flush. A failed POST leaves it open but not new, so Bit's Do it is attempted once and then handed back (Needs you note and one notification). A success closes it.\n\nThis also applies to manual and autopilot publication: a failed manual publish no longer re-notifies an item that was already announced, and the item's reason updates in place. `do_fixes` now spawns a new `do_fix(item, fix)` per item, so the test can run it inside the fake `gh` scope.\n\nTest: `a_failed_publication_is_tried_once_then_handed_back`, with the fake `gh` failing every review POST with a 502:\n- One queued fix, no notification at first.\n- One POST, then three more `flush` cycles with nothing re-queued.\n- One \"A report was held back\" notification, and a Needs you note with the item's key.\n\nI checked that this test fails with the `publishing` mapping disabled (the fix is re-queued on the next flush).\n\nChecks: `cargo test` (343), `cargo clippy --all-targets -D warnings`, `cargo fmt`, `tsc`, `eslint`, `prettier --check`, `vitest` (172), and `vite build` all pass.\n\n---\n_Generated by [Claude Code](https://claude.ai/code)_",
+      "html_url": "https://github.com/analogproblems/orbit/pull/64#issuecomment-6103616416",
+      "created_at": "2026-10-11T00:09:56Z",
+      "updated_at": "2026-10-11T00:09:56Z",
+      "user": {
+        "login": "jasondwhyte"
+      }
+    },
+    {
+      "id": 6103652075,
+      "body": "## Milo PR review\n\n**CLEAR TO MERGE — code review passed for the commit below; normal CI and branch-protection requirements still apply.**\n\nRepository: `analogproblems/orbit`, PR #64\nHead: `3e0a5fa3c207a70b931b7243b1faed2b58b672c9`\nBase: `6a8e0c9b60eac7b33d5fa59f30067df8642a691f`\nConfiguration: `self-review-v1`\nMode: cumulative static review, observed GitHub checks and isolated JUPITER head-only JavaScript tests.\n\n### Findings and earlier fixes\nNo remaining actionable findings or separate suggestions.\n\n- **F1 fixed:** shared snake_case rule names and all-four-rule serialization/patch coverage remain intact.\n- **F2 fixed:** queued automatic operations revalidate their item and rule at their execution boundary. Sync now now acquires `poll_lock`, checks the current state, then calls `poll_holding`; revocation while waiting returns before GitHub requests or follow-on clone work. The added lock-held/revocation regression test covers this sequence.\n- **F3 fixed:** Bit publication retains fresh-PR trust and credential checks before writes, including the fallback write, independently of ordinary auto-post settings.\n- **F4 fixed:** `attention::settled` preserves the held report's announcement identity through transient publishing. A failed POST leaves the existing item open without re-queuing its automatic fix. The new fake-502 test exercises one attempt followed by three flush cycles, one notification and a Needs you note.\n\nRust regression tests and failure/concurrency paths were inspected statically, not executed by this review.\n\n### Scope and observed checks\nReviewed all 28 cumulative changed files and complete patches, relevant source/tests/guidance and discussions. This revision changes six files; the other 22 retain their previously reviewed blobs. Rechecked the sync lock boundary, publication/announcement lifecycle, extracted `do_fix` path and new regression fixtures.\n\nOn October 11, 2026 at 00:13 UTC, GitHub reports open/non-draft, unchanged full SHAs, mergeable=true and clean. **CI is absent:** zero current-head check runs and zero commit statuses; this is not a verified CI pass. The empty combined-status response's default pending value has no pending check/run behind it. Previously inspected branch metadata reports unprotected with no required-status contexts and empty rulesets; full branch-rules querying is unsupported. Author-reported cargo/clippy/fmt/typecheck/lint/build results were not independently verified.\n\n### Executed tests and limits\nExact-head JUPITER run: **172 JavaScript tests passed across 20 files**, no failures or reported skips (21.38 seconds). Prepare, dependency download, offline tests and bounded cleanup exited 0. Both container stages: OOM=false, timeout=false, 1800-second limit. Head-only, no synthetic merge. Rust/native/browser/build and other tiers were **not run**. The JavaScript suite does not establish runtime coverage of Rust concurrency/publication behavior or full feature coverage.\n\n```bash\nROOT=/home/jdub/Documents/Codex/2026-10-04/task/jupiter-tests\nRUN=$ROOT/runs/orbit/3e0a5fa3c207-3efeafb8\nIMAGE=sha256:64af3819f9275802414d7cdc38c27e9d82bd564dec4d4da87d008255d36c63b4\npython \"$ROOT/prepare.py\" orbit 3e0a5fa3c207a70b931b7243b1faed2b58b672c9 --ref refs/pull/64/head --base 6a8e0c9b60eac7b33d5fa59f30067df8642a691f\npython \"$ROOT/isolated.py\" \"$RUN\" npm-download --image \"$IMAGE\" --purpose download --network bridge 'npm ci --ignore-scripts --no-audit --no-fund'\npython \"$ROOT/isolated.py\" \"$RUN\" npm-test --image \"$IMAGE\" 'npm test -- --maxWorkers=2'\npython \"$ROOT/cleanup.py\" \"$RUN\"\n```\n\nFresh private bare repository/detached worktree from the confirmed source remote; launcher files and fetched guidance read first. Both stages verified the immutable image above, UID1000, all five capability sets zero, no-new-privileges, read-only root, 2 CPUs/4 GiB/512 PIDs, no published ports, host credentials, SSH agent or Docker socket. Only run-owned host paths writable; Git metadata read-only and host results inaccessible. Dependencies used download-only networking with lifecycle scripts disabled; tests used network none, no IPv4 routes or non-loopback IPv6 routes. Trusted Git `--no-ext-diff --no-textconv` tracked-file checks passed before/after both stages. No source checkout changes or services started. Stage containers removed; run-scoped cleanup retained runtime, records and artifacts.\n\nEvidence: `$RUN/revision.json`; `$RUN/results/npm-test.log`, `npm-test.result.json`, `npm-test.docker-observed.json`, `cleanup.json`, preparation/download logs and isolation records. `TASK_ARTIFACTS_DIR=$RUN/artifacts`; no container-produced report files.\n\nClaude Code: consume this review only if the full current PR head SHA still equals `3e0a5fa3c207a70b931b7243b1faed2b58b672c9`; otherwise it is stale. Honor current CI, branch protections and required human reviews. No verdict authorizes Milo to merge.\n\n<!-- milo-pr-review:repo=analogproblems/orbit;pr=64;head=3e0a5fa3c207a70b931b7243b1faed2b58b672c9;base=6a8e0c9b60eac7b33d5fa59f30067df8642a691f;config=self-review-v1 -->",
+      "html_url": "https://github.com/analogproblems/orbit/pull/64#issuecomment-6103652075",
+      "created_at": "2026-10-11T00:14:41Z",
+      "updated_at": "2026-10-11T00:14:41Z",
+      "user": {
+        "login": "jasondwhyte"
+      }
+    }
+  ],
+  "reviews": [],
+  "reviewComments": [],
+  "commits": [
+    {
+      "sha": "02a4b69af6875ae99ee400b6fa00a19042bd0792",
+      "html_url": "https://github.com/analogproblems/orbit/commit/02a4b69af6875ae99ee400b6fa00a19042bd0792",
+      "commit": {
+        "message": "Show a menu on phone-sized screens so Bit is reachable\n\nOn narrow screens the sidebar was hidden with nothing in its place, so a\nphone over Tailscale could not reach Bit or any page other than the\ninbox. The app shell's own mobile drawer now takes over below the md\nbreakpoint.\n\nCo-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01EDJU2uY2NCz6Ch7CDHNcNA",
+        "author": {
+          "name": "Claude",
+          "date": "2026-10-10T23:50:01Z"
+        }
+      }
+    },
+    {
+      "sha": "3a235dc4daed734739278871faf97783c87d5d41",
+      "html_url": "https://github.com/analogproblems/orbit/commit/3a235dc4daed734739278871faf97783c87d5d41",
+      "commit": {
+        "message": "Recheck Bit's fixes before acting, and trust on the fresh PR\n\n- Rule names: Bit's rules are keyed by the fix's own name\n  (continue_loop, review_again, sync_now) on the wire, as the app sends\n  and reads them; camelCase keys were rejected or ignored. A shared\n  fixture holds the default rules for both sides.\n- A fix Bit does on its own runs only while it is still Bit's: the item\n  is open about the same report with the same fix, Bit is on and the\n  rule is still Do it. Continue loop and Review again check under the\n  same lock as the change; publication checks before every write. A\n  fix that stops being Bit's while its item is open is handed back with\n  its button and a notification; one whose item closed is dropped.\n- Bit publishes as its own origin: the trust and credential holds of\n  automatic publication apply to the fresh PR before every write, for\n  buttons and Do it alike, independent of the publication switch.\n\nCo-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01EDJU2uY2NCz6Ch7CDHNcNA",
+        "author": {
+          "name": "Claude",
+          "date": "2026-10-10T23:59:59Z"
+        }
+      }
+    },
+    {
+      "sha": "3e0a5fa3c207a70b931b7243b1faed2b58b672c9",
+      "html_url": "https://github.com/analogproblems/orbit/commit/3e0a5fa3c207a70b931b7243b1faed2b58b672c9",
+      "commit": {
+        "message": "Recheck Sync now after waiting, and try a failed Do it publish once\n\n- Sync now, done on Bit's own, waits for a sync already running, then\n  checks again that it is still Bit's before starting its own; on a\n  revoked rule it starts no sync and schedules no clone updates.\n  `sync_now` is folded into the fix as the lock, the check and\n  `poll_holding`.\n- `attention::announce` judges a report being published as still\n  ready, as it already does for a follow-up. A publication that fails\n  no longer makes its held or waiting item new again, so a Do it\n  publish is tried once and then handed back, instead of being queued\n  again on every look.\n\nCo-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01EDJU2uY2NCz6Ch7CDHNcNA",
+        "author": {
+          "name": "Claude",
+          "date": "2026-10-11T00:09:45Z"
+        }
+      }
+    },
+    {
+      "sha": "9aaf81e6cedbff5f316b088377e02af8d82aab57",
+      "html_url": "https://github.com/analogproblems/orbit/commit/9aaf81e6cedbff5f316b088377e02af8d82aab57",
+      "commit": {
+        "message": "Ask Bit: quick answers, fix buttons and rules (#63, part 1)\n\nBit's page becomes one conversation that every window shares. Four quick\nquestions (what needs me, what's running, loops, repositories) are answered\nby the engine from Orbit's own state, with no AI. Each Needs you item names\nthe Orbit control that fixes it (continue loop, review again, publish, sync\nnow, turn autopilot back on); Bit offers it as a button on its note and in\nanswers. Per-fix rules in Settings let Bit do a fix on its own, ask first,\nor leave it to you. Publishing is never offered for a credential-flagged\nreport or an untrusted source, approvals never get a button, and changing\nsettings always waits for a tap.\n\nCo-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01EDJU2uY2NCz6Ch7CDHNcNA",
+        "author": {
+          "name": "Claude",
+          "date": "2026-10-10T23:43:14Z"
+        }
+      }
+    }
+  ],
+  "files": [
+    {
+      "filename": "README.md"
+    },
+    {
+      "filename": "docs/architecture.md"
+    },
+    {
+      "filename": "docs/user-guide.md"
+    },
+    {
+      "filename": "src-tauri/src/attention.rs"
+    },
+    {
+      "filename": "src-tauri/src/attention_tests.rs"
+    },
+    {
+      "filename": "src-tauri/src/buddy.rs"
+    },
+    {
+      "filename": "src-tauri/src/buddy_tests.rs"
+    },
+    {
+      "filename": "src-tauri/src/engine/fixes.rs"
+    },
+    {
+      "filename": "src-tauri/src/engine/fixes_tests.rs"
+    },
+    {
+      "filename": "src-tauri/src/engine/mod.rs"
+    },
+    {
+      "filename": "src-tauri/src/engine/publish.rs"
+    },
+    {
+      "filename": "src-tauri/src/engine/publish_tests.rs"
+    },
+    {
+      "filename": "src-tauri/src/engine/queue.rs"
+    },
+    {
+      "filename": "src-tauri/src/lib.rs"
+    },
+    {
+      "filename": "src-tauri/src/remote.rs"
+    },
+    {
+      "filename": "src-tauri/src/types.rs"
+    },
+    {
+      "filename": "src/App.test.tsx"
+    },
+    {
+      "filename": "src/App.tsx"
+    },
+    {
+      "filename": "src/Bit.test.tsx"
+    },
+    {
+      "filename": "src/Buddy.tsx"
+    },
+    {
+      "filename": "src/SaveFeedback.tsx"
+    },
+    {
+      "filename": "src/demo.ts"
+    },
+    {
+      "filename": "src/store.test.ts"
+    },
+    {
+      "filename": "src/store.ts"
+    },
+    {
+      "filename": "src/styles.css"
+    },
+    {
+      "filename": "src/types.test.ts"
+    },
+    {
+      "filename": "src/types.ts"
+    },
+    {
+      "filename": "test-fixtures/buddy-options.json"
+    }
+  ]
+}
