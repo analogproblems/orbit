@@ -815,3 +815,124 @@ fn state_saved_before_memory_loads_with_none() {
     let saved = serde_json::to_value(Feed::default()).unwrap();
     assert_eq!(saved["memory"], json!({"general": [], "repositories": {}}));
 }
+
+fn story(number: u64, updated_at: &str) -> crate::ledger::History {
+    use crate::ledger::{
+        writeup::{Decision, DecisionKind, MadeBy, WriteUp},
+        Flag, FlagKind, Glance, History,
+    };
+    let decision = |statement: &str, attention| Decision {
+        kind: DecisionKind::Pushback,
+        statement: statement.into(),
+        detail: None,
+        made_by: MadeBy::Both,
+        area: "Webhooks".into(),
+        quote: None,
+        url: String::new(),
+        attention,
+        attention_reason: Some("Decide whether that is right.".into()),
+        supersedes: None,
+    };
+    History {
+        repo: "A/b".into(),
+        number,
+        updated_at: updated_at.into(),
+        flags: vec![
+            Flag {
+                kind: FlagKind::MergedWithOpenFindings,
+                attention: Glance::Act,
+                text: "Merged while F1 (Token logged) was still open.".into(),
+                finding_id: Some("f1".into()),
+                round: None,
+                url: None,
+            },
+            Flag {
+                kind: FlagKind::NoReviewBeforeMerge,
+                attention: Glance::Look,
+                text: "Merged before any reviewer round Orbit can see.".into(),
+                finding_id: None,
+                round: None,
+                url: None,
+            },
+        ],
+        writeup: Some(WriteUp {
+            version: 1,
+            repo: "A/b".into(),
+            number,
+            input_hash: String::new(),
+            writer: "Codex".into(),
+            model: "m".into(),
+            written_at: String::new(),
+            summary: String::new(),
+            areas: vec![],
+            decisions: vec![
+                decision(
+                    "The old secret stays valid if the job is off.",
+                    Some(Glance::Act),
+                ),
+                decision("Only good to know.", Some(Glance::Look)),
+            ],
+            finding_notes: vec![],
+        }),
+        ..Default::default()
+    }
+}
+fn decide_notes(s: &Snapshot) -> Vec<(Option<String>, String)> {
+    s.buddy_feed
+        .notes
+        .iter()
+        .filter(|n| n.kind == NoteKind::Decide)
+        .map(|n| (n.pr_id.clone(), n.text.clone()))
+        .collect()
+}
+
+#[test]
+fn bit_notes_each_new_thing_to_decide_once_but_not_history() {
+    let (mut s, _) = snapshot();
+    let old = story(1, "2020-01-01T00:00:00Z");
+    // The first look only records what is already there.
+    assert!(observe_decisions(
+        &mut s,
+        &to_decide(std::slice::from_ref(&old))
+    ));
+    assert!(decide_notes(&s).is_empty());
+    assert_eq!(s.buddy_feed.to_decide.len(), 2);
+    assert!(s.buddy_feed.decisions_since.contains_key("a/b"));
+    assert!(!observe_decisions(
+        &mut s,
+        &to_decide(std::slice::from_ref(&old))
+    ));
+
+    // A pull request that changed since gets one note for each thing to
+    // decide, and only once.
+    let new = story(2, "2999-01-01T00:00:00Z");
+    let items = to_decide(&[new.clone(), old.clone()]);
+    assert!(observe_decisions(&mut s, &items));
+    assert_eq!(
+        decide_notes(&s),
+        [
+            (
+                Some("a/b#2".into()),
+                "Something to decide on b#2: Merged while F1 (Token logged) was still open.".into()
+            ),
+            (
+                Some("a/b#2".into()),
+                "Something to decide on b#2: The old secret stays valid if the job is off. Decide whether that is right.".into()
+            ),
+        ]
+    );
+    assert!(!observe_decisions(&mut s, &items));
+    assert_eq!(decide_notes(&s).len(), 2);
+
+    // A disconnected repository is forgotten; with Bit off, nothing is
+    // written.
+    s.settings.repositories.clear();
+    assert!(observe_decisions(&mut s, &[]));
+    assert!(s.buddy_feed.decisions_since.is_empty());
+    let (mut quiet, _) = snapshot();
+    quiet.settings.buddy.enabled = false;
+    observe_decisions(&mut quiet, &[]);
+    observe_decisions(&mut quiet, &to_decide(&[new]));
+    assert!(decide_notes(&quiet).is_empty());
+    assert_eq!(quiet.buddy_feed.to_decide.len(), 2);
+}

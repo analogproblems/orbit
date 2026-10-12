@@ -3,7 +3,7 @@
 //! Decisions page. See `crate::ledger` for how it is read and pieced
 //! together. Only GitHub is read; no reviewer runs.
 use super::*;
-use crate::ledger::{self as store, Decisions, StoredPr};
+use crate::ledger::{self as store, export, Decisions, StoredPr};
 
 /// How often the history is read again.
 pub(super) const REFRESH: Duration = Duration::from_secs(5 * 60);
@@ -43,6 +43,7 @@ impl Engine {
         tokio::spawn(async move {
             let _reading = Reading(&e.refreshing_ledger);
             e.refresh_ledger().await;
+            e.note_decisions().await;
             e.write_up_soon();
         });
         true
@@ -203,5 +204,35 @@ impl Engine {
             Ok(out)
         })
         .await
+    }
+    /// Has Bit note what newly needs a decision in the stored history.
+    pub(super) async fn note_decisions(&self) {
+        let Ok(d) = self.decisions().await else {
+            return;
+        };
+        let items = crate::buddy::to_decide(&d.prs);
+        let mut s = self.state.lock().await;
+        if crate::buddy::observe_decisions(&mut s, &items) {
+            self.dirty.store(true, Ordering::SeqCst);
+        }
+    }
+    /// The Decisions page as a Markdown file: its name and text. With a
+    /// repository, only its pull requests.
+    pub async fn export_decisions(&self, repo: Option<String>) -> Result<(String, String), String> {
+        let mut d = self.decisions().await?;
+        let repo = repo.filter(|r| r != "all");
+        if let Some(r) = &repo {
+            d.prs.retain(|h| same_repo(&h.repo, r));
+        }
+        if d.prs.is_empty() {
+            return Err("There are no pull requests to export yet.".into());
+        }
+        // The repository as GitHub spells it.
+        let repo = repo.map(|_| d.prs[0].repo.clone());
+        let at = now();
+        Ok((
+            export::file_name(repo.as_deref(), &at[..10.min(at.len())]),
+            export::markdown(&d.prs, repo.as_deref(), &at),
+        ))
     }
 }

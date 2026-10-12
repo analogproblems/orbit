@@ -11,7 +11,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { DecisionsPage, roundStrip } from "./Decisions";
-import { demoDecisions } from "./demoDecisions";
+import { demoDecisions, demoExport } from "./demoDecisions";
 import {
   areas,
   gist,
@@ -44,6 +44,21 @@ function answering(decisions: Decisions | Error) {
 }
 const byNumber = (n: number) =>
   demoDecisions().prs.find((p) => p.number === n)!;
+
+describe("the demo's export", () => {
+  it("names its repository and keeps to it", () => {
+    const one = demoExport("ACME/API");
+    expect(one.fileName).toMatch(
+      /^orbit-decisions-ACME-API-\d{4}-\d{2}-\d{2}\.md$/,
+    );
+    expect(one.text).toContain("# Decisions: ACME/API");
+    expect(one.text).toContain("Sign webhook payloads with a rotating secret");
+    expect(one.text).not.toContain("Show build times per branch");
+    const all = demoExport(null);
+    expect(all.fileName).toMatch(/^orbit-decisions-all-/);
+    expect(all.text).toContain("Show build times per branch");
+  });
+});
 
 describe("decisions summaries", () => {
   it("puts flags and marked decisions that need a decision first", () => {
@@ -354,6 +369,71 @@ describe("decisions page", () => {
         .length,
     ).toBeGreaterThan(0);
     restore();
+  });
+
+  it("opens the chapter the app chooses, in any case, and hands back going back", async () => {
+    const { restore } = answering(demoDecisions());
+    const onSelect = vi.fn();
+    render(<DecisionsPage selected="ACME/API#318" onSelect={onSelect} />);
+    expect(await screen.findByText("In plain words")).toBeTruthy();
+    expect(
+      screen.getByRole("heading", {
+        name: "Sign webhook payloads with a rotating secret",
+      }),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "All pull requests" }));
+    expect(onSelect).toHaveBeenCalledWith(null);
+    restore();
+  });
+
+  it("exports the decisions and says where they went or what went wrong", async () => {
+    const original = useOrbit.getState().action;
+    const exports: unknown[] = [];
+    let attempt = 0;
+    const action = vi.fn(
+      async (command: string, args?: Record<string, unknown>) => {
+        if (command === "get_decisions")
+          return { ok: true, data: demoDecisions() };
+        if (command !== "export_decisions") return { ok: true };
+        exports.push(args);
+        attempt++;
+        return attempt === 1
+          ? { ok: true, data: null }
+          : attempt === 2
+            ? { ok: false, error: "Disk full" }
+            : { ok: true, data: "/chosen/decisions.md" };
+      },
+    );
+    useOrbit.setState({ action: action as unknown as typeof original });
+    render(<DecisionsPage />);
+    const button = await screen.findByRole("button", { name: "Export" });
+    // Cancelling the save says nothing.
+    fireEvent.click(button);
+    await waitFor(() => expect(exports).toHaveLength(1));
+    expect(screen.queryByText(/Decisions exported/)).toBeNull();
+    fireEvent.click(button);
+    expect(
+      await screen.findByText("Couldn't export the decisions"),
+    ).toBeTruthy();
+    expect(screen.getByText("Disk full")).toBeTruthy();
+    fireEvent.click(button);
+    expect(
+      await screen.findByText("Decisions exported: /chosen/decisions.md"),
+    ).toHaveProperty("role", "status");
+    expect(screen.queryByText("Couldn't export the decisions")).toBeNull();
+    // The export covers the repository chosen in the filter.
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("combobox", { name: "Repository" }));
+    await user.click(await screen.findByRole("option", { name: "acme/api" }));
+    await user.click(screen.getByRole("button", { name: "Export" }));
+    await waitFor(() => expect(exports).toHaveLength(4));
+    expect(exports).toEqual([
+      { repo: null },
+      { repo: null },
+      { repo: null },
+      { repo: "acme/api" },
+    ]);
+    useOrbit.setState({ action: original });
   });
 
   it("says when nothing has been read and when loading fails", async () => {

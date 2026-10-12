@@ -17,7 +17,7 @@ import type {
   Trajectory,
   WriteUp,
 } from "./decisions";
-import type { Category, PriorStatus } from "./types";
+import { sameRepo, type Category, type PriorStatus } from "./types";
 
 const at = (minutesAgo: number) =>
   new Date(Date.now() - minutesAgo * 60_000).toISOString();
@@ -756,4 +756,39 @@ function demoWriteUp(pr: History): WriteUp | null {
     default:
       return null;
   }
+}
+
+/** The demo's export of the Decisions page: a shorter form of the file the
+ * engine writes (src-tauri/src/ledger/export.rs). */
+export function demoExport(repo: string | null) {
+  const prs = demoDecisions().prs.filter(
+    (h) => !repo || sameRepo(h.repo, repo),
+  );
+  const ref = (h: History) => `${h.repo.split("/")[1]}#${h.number}`;
+  const day = new Date().toISOString().slice(0, 10);
+  const lines = [
+    `# Decisions: ${repo ?? "every connected repository"}`,
+    "",
+    `Exported from the Orbit demo on ${day}. ${prs.length} sample pull requests.`,
+    "",
+    "## Rulebook",
+    "",
+  ];
+  for (const h of prs.filter((h) => h.merged))
+    for (const d of h.writeup?.decisions ?? [])
+      if (d.kind === "rule")
+        lines.push(`- ${d.statement} (${d.area}, [${ref(h)}](${d.url}))`);
+  lines.push("", "## Pull requests");
+  for (const h of prs) {
+    lines.push("", `### [${ref(h)}: ${h.title}](${h.url})`, "");
+    if (h.writeup) lines.push(`**In plain words.** ${h.writeup.summary}`, "");
+    for (const t of h.trajectories)
+      lines.push(`- ${t.shortId ?? ""} P${t.priority} · ${t.title}`.trim());
+    for (const f of h.flags) lines.push(`- Worth a look: ${f.text}`);
+  }
+  const scope = repo ? repo.replace("/", "-") : "all";
+  return {
+    fileName: `orbit-decisions-${scope}-${day}.md`,
+    text: lines.join("\n"),
+  };
 }

@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 mod assemble;
+pub mod export;
 mod milo;
 mod narrative;
 mod orbit;
@@ -29,6 +30,8 @@ pub use store::{
 
 #[cfg(test)]
 mod assemble_tests;
+#[cfg(test)]
+mod export_tests;
 #[cfg(test)]
 mod milo_tests;
 #[cfg(test)]
@@ -442,7 +445,7 @@ pub struct CommentRef {
     pub edit: Option<usize>,
 }
 /// Everything Orbit works out about one pull request without a model.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct History {
     pub repo: String,

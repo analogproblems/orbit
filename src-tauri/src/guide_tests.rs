@@ -62,6 +62,7 @@ fn a_first_run_checks_connections_and_offers_your_repositories() {
     let lookups = Lookups {
         clones: BTreeMap::new(),
         connectable: Ok(listed(&["acme/api", "acme/web", "acme/docs", "acme/old"])),
+        ..Default::default()
     };
     let g = setup(&s, &lookups);
     assert_eq!(
@@ -135,6 +136,7 @@ fn each_repository_gets_its_next_steps() {
             ),
         ]),
         connectable: Ok(listed(&["acme/api"])),
+        ..Default::default()
     };
     let g = setup(&s, &lookups);
     assert_eq!(

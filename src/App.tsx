@@ -112,6 +112,8 @@ export default function App() {
   const [loop, setLoop] = useState<string | null>(null);
   // The finding whose page is open on the findings page.
   const [finding, setFinding] = useState<string | null>(null);
+  // The pull request whose chapter is open on the decisions page.
+  const [chapter, setChapter] = useState<string | null>(null);
   const openLoops = () => {
     setLoop(null);
     setPage("loops");
@@ -457,7 +459,10 @@ export default function App() {
                 label="Decisions"
                 icon={<Scale />}
                 isSelected={page === "decisions"}
-                onClick={() => setPage("decisions")}
+                onClick={() => {
+                  setChapter(null);
+                  setPage("decisions");
+                }}
               />
               <SideNavItem
                 label="Security scans"
@@ -651,7 +656,7 @@ export default function App() {
                       onChoose={choose}
                     />
                   ) : page === "decisions" ? (
-                    <DecisionsPage />
+                    <DecisionsPage selected={chapter} onSelect={setChapter} />
                   ) : page === "scans" ? (
                     <ScansPage
                       onFindings={() => {
@@ -668,7 +673,10 @@ export default function App() {
                     <BuddyPage
                       onSettings={() => setPage("settings")}
                       onNote={(note) => {
-                        if (note.prId) {
+                        if (note.kind === "decide") {
+                          setChapter(note.prId ?? null);
+                          setPage("decisions");
+                        } else if (note.prId) {
                           setLoop(note.prId);
                           setPage("loops");
                         } else if (note.repo) setPage("repositories");

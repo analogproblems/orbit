@@ -7,6 +7,7 @@
 use crate::{
     buddy::{self, Buddy, MemoryChange, MemoryKind},
     extras,
+    ledger::{writeup::DecisionKind, History},
     setup::{self, CloneFacts, RepositoryPatch},
     types::*,
 };
@@ -40,6 +41,12 @@ const MAX_FINDINGS: usize = 8;
 const EARLIER: usize = 4;
 /// Repositories you could connect that the summary lists.
 pub const MAX_CONNECTABLE: usize = 30;
+/// Pull requests the summary's decisions describe, newest first.
+const MAX_STORIES: usize = 15;
+/// Decisions given per pull request, besides its rules.
+const MAX_DECISIONS: usize = 6;
+/// Rules the summary's rulebook gives, newest first.
+const MAX_RULES: usize = 60;
 
 /// What a button in an answer does: one of Orbit's own controls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,7 +133,7 @@ impl Proposal {
 /// Trusted accounts aren't among them: they decide which pull requests are
 /// published automatically. A repository's own settings are changed with
 /// Set up repository instead.
-pub const SETTINGS: [&str; 24] = [
+pub const SETTINGS: [&str; 26] = [
     "automatic",
     "autoPost",
     "pollSeconds",
@@ -142,6 +149,8 @@ pub const SETTINGS: [&str; 24] = [
     "commitStatus",
     "notify",
     "keepScanArtifacts",
+    "writeUps.enabled",
+    "writeUps.writer",
     "buddy.enabled",
     "buddy.name",
     "buddy.colour",
@@ -179,6 +188,11 @@ In `proposals` you can offer up to {MAX_PROPOSALS} buttons for Orbit's own contr
 - set_up_repository, with repository and changes: connects a repository from the summary's `connectableRepositories`, or changes the settings of one in `repositories`. Orbit downloads its own copy of a repository it connects, and starts it with autopilot off, no setup command and no network, plus your changes. Its changes use the repository settings named in the summary's repositories: setupCommand, checkCommand, networkAccess, devContainer, reviewer (codex, claude or antigravity), roundLimit ({round_limits}), approvalMinutes ({approval_minutes}, where 0 waits for the person), keepCloneUpdated and autopilot.
 - check_connections: checks the connections to GitHub, Codex and the other reviewers again, once the person has fixed one, such as by signing in.
 Use pull request ids and repository names from the summary. Leave pr and repository null, and changes empty, when an action doesn't use them. You can't change trusted accounts: say they can do that themselves in Orbit's Settings.
+
+Decisions:
+- The summary's `decisions` is Orbit's Decisions page: the review story of each connected repository's newest pull requests, read from GitHub, with how many rounds and findings each had and what is worth a look. With write-ups on, each merged or closed one is also summed up in plain words, with the decisions made in it, and `rulebook` lists the rules the app now commits to, from merged pull requests, by the part of the app they govern.
+- Use it to answer questions about what was decided, why, what the reviewer challenged and what needs a decision, naming pull requests like orbit#64. It covers only the newest pull requests and the rules it lists: say so when a question reaches further back, and that the Decisions page has the rest.
+- Write-ups are off until the person turns them on, as each one uses the writer's allowance. When they are off and the person asks about decisions or rules, say what the review stories show, and offer change_settings with writeUps.enabled \"true\" as a button only when they want write-ups.
 
 Setting up a repository:
 - A setup command runs in each review's sandbox before the reviewer starts, to install what the code needs. Use the `suggestedSetup` the summary gives for the repository's copy, which Orbit picks from its first lock file: {setup_commands}. With none, leave it empty unless the person tells you what it needs.
@@ -245,12 +259,15 @@ pub struct Lookups {
     /// Your GitHub repositories that aren't connected, most recently pushed
     /// first, or why GitHub didn't list them.
     pub connectable: Result<Vec<RepositorySummary>, String>,
+    /// The Decisions page's pull requests, most recently updated first.
+    pub decisions: Vec<History>,
 }
 impl Default for Lookups {
     fn default() -> Self {
         Self {
             clones: BTreeMap::new(),
             connectable: Ok(vec![]),
+            decisions: vec![],
         }
     }
 }
@@ -477,6 +494,7 @@ pub fn briefing(s: &Snapshot, lookups: &Lookups) -> Value {
             Err(e) => json!({"error": clip(e, 300)}),
         },
         "pullRequests": pull_requests,
+        "decisions": decisions(&lookups.decisions, s.settings.write_ups.enabled),
         "needsYou": needs_you,
         "recentNotes": recent,
         "earlierConversation": earlier,
@@ -486,6 +504,70 @@ pub fn briefing(s: &Snapshot, lookups: &Lookups) -> Value {
             "generalLimit": buddy::MEMORY_GENERAL,
             "perRepositoryLimit": buddy::MEMORY_PER_REPO,
         },
+    })
+}
+
+/// What the summary says of the Decisions page: the newest pull requests'
+/// review stories and write-ups, and the newest rules.
+fn decisions(prs: &[History], write_ups: bool) -> Value {
+    let reference = |h: &History| format!("{}#{}", h.repo, h.number);
+    let stories: Vec<Value> = prs
+        .iter()
+        .take(MAX_STORIES)
+        .map(|h| {
+            let w = h.writeup.as_ref();
+            json!({
+                "pr": reference(h),
+                "title": clip(&h.title, 200),
+                "state": if h.merged { "merged" } else { h.state.as_str() },
+                "mergedAt": h.merged_at,
+                "rounds": h.metrics.rounds,
+                "findings": h.metrics.findings,
+                "fixed": h.metrics.fixed,
+                "declined": h.metrics.declined,
+                "worthALook": h.flags.iter().take(4).map(|f| json!({
+                    "needsADecision": f.attention == crate::ledger::Glance::Act,
+                    "text": clip(&f.text, 240),
+                })).collect::<Vec<_>>(),
+                "inPlainWords": w.map(|w| clip(&w.summary, 500)),
+                "decisions": w.iter().flat_map(|w| &w.decisions)
+                    .filter(|d| d.kind != DecisionKind::Rule)
+                    .take(MAX_DECISIONS)
+                    .map(|d| json!({
+                        "kind": key(&d.kind),
+                        "decision": clip(&d.statement, 240),
+                        "area": clip(&d.area, 60),
+                        "worthALook": d.attention.map(|_| d.attention_reason.as_deref()
+                            .map(|r| clip(r, 240)).unwrap_or_default()),
+                    }))
+                    .collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    // Only a merged pull request's rules stand.
+    let rulebook: Vec<Value> = prs
+        .iter()
+        .filter(|h| h.merged)
+        .flat_map(|h| {
+            h.writeup
+                .iter()
+                .flat_map(|w| &w.decisions)
+                .filter(|d| d.kind == DecisionKind::Rule)
+                .map(move |d| {
+                    json!({
+                        "area": clip(&d.area, 60),
+                        "rule": clip(&d.statement, 240),
+                        "pr": reference(h),
+                    })
+                })
+        })
+        .take(MAX_RULES)
+        .collect();
+    json!({
+        "writeUpsOn": write_ups,
+        "pullRequestsRead": prs.len(),
+        "pullRequests": stories,
+        "rulebook": rulebook,
     })
 }
 
@@ -767,6 +849,14 @@ fn settings_patch(s: &Snapshot, changes: &[RawChange]) -> Option<Value> {
                 .as_object_mut()?;
         }
         at.insert(last.to_string(), value);
+    }
+    // Write-ups change as a whole, so a change to one of their settings
+    // keeps the other.
+    if let Some(Value::Object(w)) = patch.get_mut("writeUps") {
+        let saved = serde_json::to_value(s.settings.write_ups).ok()?;
+        for (k, v) in saved.as_object()? {
+            w.entry(k.clone()).or_insert_with(|| v.clone());
+        }
     }
     let patch = Value::Object(patch);
     let parsed: SettingsPatch = serde_json::from_value(patch.clone()).ok()?;

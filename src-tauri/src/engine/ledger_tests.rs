@@ -501,3 +501,43 @@ async fn only_one_read_runs_at_a_time() {
     .unwrap();
     assert!(e.refresh_ledger_soon());
 }
+
+#[tokio::test]
+async fn exports_one_repositorys_decisions_or_every_one() {
+    let d = tempfile::tempdir().unwrap();
+    let e = Engine::new(d.path().join("state"), |_| {}).unwrap();
+    e.update(|s| s.settings.repositories = vec![repository("a/b")])
+        .await;
+    assert_eq!(
+        e.export_decisions(None).await.unwrap_err(),
+        "There are no pull requests to export yet."
+    );
+    let gh = fake_gh(d.path());
+    let milo = "## Milo PR review\n\n**CHANGES REQUESTED**\n\n- Full head: `aaaaaaa`\n\n**F1 · P2 · Guard the empty list**\n\nIt panics.";
+    answer(
+        d.path(),
+        "repos/a/b/pulls",
+        json!([{"number": 1, "state": "closed", "updated_at": "2026-10-11T11:00:00Z"}]),
+    );
+    serve_pr(
+        d.path(),
+        1,
+        "closed",
+        "2026-10-11T11:00:00Z",
+        json!([issue_comment(1, "2026-10-11T10:00:00Z", milo)]),
+    );
+    refresh(&e, &gh).await;
+    let (name, text) = e.export_decisions(Some("A/B".into())).await.unwrap();
+    assert!(
+        name.starts_with("orbit-decisions-a-b-20") && name.ends_with(".md"),
+        "{name}"
+    );
+    assert!(text.starts_with("# Decisions: a/b\n"), "{text}");
+    assert!(
+        text.contains("- F1 · P2 · Guard the empty list: no ruling\n"),
+        "{text}"
+    );
+    let (name, _) = e.export_decisions(Some("all".into())).await.unwrap();
+    assert!(name.starts_with("orbit-decisions-all-"), "{name}");
+    assert!(e.export_decisions(Some("c/d".into())).await.is_err());
+}

@@ -197,6 +197,7 @@ impl Engine {
         Lookups {
             clones,
             connectable,
+            decisions: vec![],
         }
     }
     /// Checks every connection again, as Settings' Reconnect does: the

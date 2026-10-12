@@ -33,6 +33,7 @@ import {
 import {
   ArrowLeft,
   ArrowUpRight,
+  Download,
   RefreshCw,
   Scale,
   Search,
@@ -983,7 +984,15 @@ function Chapter({ pr, onBack }: { pr: History; onBack: () => void }) {
 /** The story of every pull request in the connected repositories, read
  * from GitHub without a model: what each set out to do, how its reviews
  * went, what the builder pushed back on, and what is worth a second look. */
-export function DecisionsPage() {
+export function DecisionsPage({
+  selected: chosenKey,
+  onSelect,
+}: {
+  /** The open chapter's pull request, as `owner/name#n` in any case, when
+   * the app chooses it (Bit's notes open one). */
+  selected?: string | null;
+  onSelect?: (key: string | null) => void;
+} = {}) {
   const { action } = useOrbit();
   const version = useOrbit((state) => state.snapshot.ledger?.version ?? 0);
   const refreshing = useOrbit(
@@ -994,7 +1003,12 @@ export function DecisionsPage() {
   const [data, setData] = useState<Decisions | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<View>("story");
-  const [selected, setSelected] = useState<string | null>(null);
+  const [ownSelected, setOwnSelected] = useState<string | null>(null);
+  const selected = chosenKey === undefined ? ownSelected : chosenKey;
+  const setSelected = onSelect ?? setOwnSelected;
+  const [exporting, setExporting] = useState(false);
+  const [exported, setExported] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
   const [repo, setRepo] = useState("all");
   const [area, setArea] = useState("all");
   const [search, setSearch] = useState("");
@@ -1024,7 +1038,9 @@ export function DecisionsPage() {
     activeArea === "all" ? inRepo : inArea(inRepo, activeArea),
     search,
   );
-  const chosen = all.find((h) => historyKey(h) === selected);
+  const chosen = all.find(
+    (h) => historyKey(h).toLowerCase() === selected?.toLowerCase(),
+  );
   if (chosen)
     return (
       <VStack gap={6} padding={6} maxWidth={960} className="content-page">
@@ -1037,17 +1053,43 @@ export function DecisionsPage() {
       <VStack gap={2}>
         <HStack gap={3} vAlign="center" hAlign="between" wrap="wrap">
           <Heading level={2}>Decisions</Heading>
-          {live && (
-            <Button
-              label="Read again"
-              size="sm"
-              variant="ghost"
-              icon={<RefreshCw />}
-              isLoading={refreshing}
-              isDisabled={refreshing}
-              onClick={() => void action("refresh_decisions")}
-            />
-          )}
+          <HStack gap={2} wrap="wrap">
+            {all.length > 0 && (
+              <Button
+                label={exporting ? "Exporting…" : "Export"}
+                tooltip="Save the decisions for the chosen repository as a Markdown file"
+                size="sm"
+                variant="ghost"
+                icon={<Download />}
+                isLoading={exporting}
+                onClick={async () => {
+                  setExporting(true);
+                  setExported(null);
+                  setExportError(null);
+                  const result = await action<string | null>(
+                    "export_decisions",
+                    { repo: repo === "all" ? null : repo },
+                    { quiet: true },
+                  );
+                  setExporting(false);
+                  if (!result.ok) setExportError(result.error);
+                  else if (result.data)
+                    setExported(`Decisions exported: ${result.data}`);
+                }}
+              />
+            )}
+            {live && (
+              <Button
+                label="Read again"
+                size="sm"
+                variant="ghost"
+                icon={<RefreshCw />}
+                isLoading={refreshing}
+                isDisabled={refreshing}
+                onClick={() => void action("refresh_decisions")}
+              />
+            )}
+          </HStack>
         </HStack>
         <Text color="secondary">
           The story of each pull request in your connected repositories: what it
@@ -1057,6 +1099,15 @@ export function DecisionsPage() {
           plain words.
         </Text>
         <ReadStatus />
+        {exported && <Text role="status">{exported}</Text>}
+        {exportError && (
+          <Banner
+            status="error"
+            title="Couldn't export the decisions"
+            description={exportError}
+            collapsible={false}
+          />
+        )}
         {error && (
           <Banner
             status="error"

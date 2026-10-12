@@ -243,10 +243,12 @@ function ProposalButton({
   );
 }
 
-/** Where a note leads: its loop, the repositories, or settings. Answers
- * lead nowhere; their lines carry their own buttons. */
+/** Where a note leads: its pull request's decisions, its loop, the
+ * repositories, or settings. Answers lead nowhere; their lines carry their
+ * own buttons. */
 function noteLink(note: BuddyNote) {
   if (note.kind === "answer") return undefined;
+  if (note.kind === "decide") return "Open decisions";
   if (note.prId) return "Open loop";
   if (note.repo) return "Open repositories";
   if (note.key || note.kind === "fixing" || note.kind === "fixed")

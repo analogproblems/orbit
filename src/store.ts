@@ -639,6 +639,12 @@ async function demoAction(
     return (await import("./demoDecisions")).demoDecisions();
   // The demo's history is made up; there is nothing to read again.
   if (command === "refresh_decisions") return;
+  if (command === "export_decisions") {
+    const { demoExport } = await import("./demoDecisions");
+    const file = demoExport((args.repo as string | null) ?? null);
+    download(file.fileName, file.text);
+    return file.fileName;
+  }
   if (command === "get_storage_usage") {
     const worktrees = demo.reviews
       .filter((r) => r.worktree)
@@ -878,8 +884,9 @@ async function remoteAction<T>(
   command: string,
   args: Record<string, unknown>,
 ): Promise<T> {
-  if (command !== "export_report") return call<T>(token, command, args);
-  // The browser saves the report itself, as the desktop's save dialog would.
+  if (command !== "export_report" && command !== "export_decisions")
+    return call<T>(token, command, args);
+  // The browser saves the file itself, as the desktop's save dialog would.
   const report = await call<{ fileName: string; text: string }>(
     token,
     command,

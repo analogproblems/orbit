@@ -480,7 +480,8 @@ export type NoteKind =
   | "fixing"
   | "fixed"
   | "answer"
-  | "connected";
+  | "connected"
+  | "decide";
 /** A question Bit answers straight from Orbit's state. */
 export type Question =
   "needs_you" | "running" | "loops" | "repositories" | "setup";

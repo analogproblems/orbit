@@ -76,7 +76,9 @@ impl Engine {
         };
         let _ = self.flush().await;
         // The question shows while Bit looks up your repositories.
-        let lookups = self.look_up(connected, true).await;
+        let mut lookups = self.look_up(connected, true).await;
+        // What the Decisions page knows, so Bit can answer about it.
+        lookups.decisions = self.decisions().await.map(|d| d.prs).unwrap_or_default();
         let names = lookups.connectable_names();
         if self.asking_mut(note, |a| a.connectable = names).is_none() {
             return Ok(());

@@ -30,6 +30,8 @@ it("runs against the desktop app from a browser with an access link", async () =
       );
     if (url === "/api/export_report")
       return Response.json({ fileName: "report.md", text: "# Report" });
+    if (url === "/api/export_decisions")
+      return Response.json({ fileName: "decisions.md", text: "# Decisions" });
     return Response.json("review-1");
   });
   const stop = await useOrbit.getState().init();
@@ -58,5 +60,10 @@ it("runs against the desktop app from a browser with an access link", async () =
     .action<string>("export_report", { reviewId: "review-1" });
   expect(exported).toEqual({ ok: true, data: "report.md" });
   expect(click).toHaveBeenCalled();
+  const decisions = await useOrbit
+    .getState()
+    .action<string>("export_decisions", { repo: null });
+  expect(decisions).toEqual({ ok: true, data: "decisions.md" });
+  expect(click).toHaveBeenCalledTimes(2);
   stop();
 });

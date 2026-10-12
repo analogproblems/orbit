@@ -267,6 +267,7 @@ impl Engine {
                     self.write_failed.lock().unwrap().remove(&key);
                     writeups.insert(h.number, w);
                     self.update(|s| s.ledger.version += 1).await;
+                    self.note_decisions().await;
                 }
                 Err(e) => {
                     let mut failed = self.write_failed.lock().unwrap();
