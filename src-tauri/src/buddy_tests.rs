@@ -896,7 +896,7 @@ fn bit_notes_each_new_thing_to_decide_once_but_not_history() {
         &to_decide(std::slice::from_ref(&old))
     ));
     assert!(decide_notes(&s).is_empty());
-    assert_eq!(s.buddy_feed.to_decide.len(), 2);
+    assert_eq!(s.buddy_feed.decisions_seen.len(), 2);
     assert!(s.buddy_feed.decisions_since.contains_key("a/b"));
     assert!(!observe_decisions(
         &mut s,
@@ -929,10 +929,53 @@ fn bit_notes_each_new_thing_to_decide_once_but_not_history() {
     s.settings.repositories.clear();
     assert!(observe_decisions(&mut s, &[]));
     assert!(s.buddy_feed.decisions_since.is_empty());
+    assert!(s.buddy_feed.decisions_seen.is_empty());
     let (mut quiet, _) = snapshot();
     quiet.settings.buddy.enabled = false;
     observe_decisions(&mut quiet, &[]);
     observe_decisions(&mut quiet, &to_decide(&[new]));
     assert!(decide_notes(&quiet).is_empty());
-    assert_eq!(quiet.buddy_feed.to_decide.len(), 2);
+    assert_eq!(quiet.buddy_feed.decisions_seen.len(), 2);
+}
+
+#[test]
+fn bit_never_notes_a_decision_twice_however_many_there_are() {
+    let (mut s, _) = snapshot();
+    observe_decisions(&mut s, &[]);
+    // Far more than a fixed list of seen keys would hold.
+    let prs: Vec<crate::ledger::History> = (1..=700)
+        .map(|n| story(n, "2999-01-01T00:00:00Z"))
+        .collect();
+    let items = to_decide(&prs);
+    assert_eq!(items.len(), 1400);
+    let written = |s: &Snapshot| s.buddy_feed.next_id;
+    let start = written(&s);
+    observe_decisions(&mut s, &items);
+    let first = written(&s);
+    assert_eq!(first - start, 1400);
+    // The same history again, after a restart, and with Bit hidden then
+    // shown again: no more notes.
+    assert!(!observe_decisions(&mut s, &items));
+    s.buddy_feed = serde_json::from_value(serde_json::to_value(&s.buddy_feed).unwrap()).unwrap();
+    assert!(!observe_decisions(&mut s, &items));
+    s.settings.buddy.enabled = false;
+    observe_decisions(&mut s, &items);
+    s.settings.buddy.enabled = true;
+    observe_decisions(&mut s, &items);
+    assert_eq!(written(&s), first);
+
+    // A key still in the history is kept however old; one gone from it
+    // for a month is forgotten.
+    let long_ago = "2020-01-01T00:00:00.000Z".to_string();
+    for seen in s.buddy_feed.decisions_seen.values_mut() {
+        *seen = long_ago.clone();
+    }
+    assert!(observe_decisions(&mut s, &items[2..]));
+    assert_eq!(s.buddy_feed.decisions_seen.len(), 1398);
+    assert!(s
+        .buddy_feed
+        .decisions_seen
+        .values()
+        .all(|seen| *seen > long_ago));
+    assert_eq!(written(&s), first);
 }

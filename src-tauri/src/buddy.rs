@@ -421,15 +421,18 @@ pub struct Feed {
     pub next_id: u64,
     pub memory: Memory,
     /// What needs a decision that Bit has already seen, by `ToDecide::key`,
-    /// oldest first, at most `MAX_DECIDE_SEEN`.
-    pub to_decide: Vec<String>,
+    /// with when Bit last saw it in the history (to the day). A key stays
+    /// while it is still there, so it is never noted twice, and is
+    /// forgotten `FORGET_DECISION_DAYS` after it is gone or as soon as its
+    /// repository is disconnected.
+    pub decisions_seen: BTreeMap<String, String>,
     /// When Bit began watching each connected repository's decisions, by
     /// lowercased name. What needs a decision in a pull request last
     /// updated before then gets no note, so Bit doesn't retell history.
     pub decisions_since: BTreeMap<String, String>,
 }
-/// The most keys of things to decide Bit keeps.
-pub const MAX_DECIDE_SEEN: usize = 1000;
+/// How long Bit remembers a thing to decide after it has left the history.
+pub const FORGET_DECISION_DAYS: i64 = 30;
 
 /// What Bit remembers between questions, in its own words: lines about you
 /// and Orbit in general, and lines about each repository. Bit adds and
@@ -1059,12 +1062,23 @@ pub fn observe_decisions(s: &mut Snapshot, items: &[ToDecide]) -> bool {
             changed = true;
         }
     }
+    let ago = |days: i64| {
+        (chrono::Utc::now() - chrono::Duration::days(days))
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    };
+    // Last seen is kept to the day, so an unchanged history isn't saved
+    // again on every read.
+    let yesterday = ago(1);
     let mut written = vec![];
     for item in items {
-        if feed.to_decide.contains(&item.key) {
+        if let Some(seen) = feed.decisions_seen.get_mut(&item.key) {
+            if *seen < yesterday {
+                *seen = at.clone();
+                changed = true;
+            }
             continue;
         }
-        feed.to_decide.push(item.key.clone());
+        feed.decisions_seen.insert(item.key.clone(), at.clone());
         changed = true;
         let since = feed.decisions_since.get(&item.repo.to_ascii_lowercase());
         if enabled && since.is_some_and(|since| item.at.as_str() > since.as_str()) {
@@ -1077,8 +1091,15 @@ pub fn observe_decisions(s: &mut Snapshot, items: &[ToDecide]) -> bool {
             });
         }
     }
-    let excess = feed.to_decide.len().saturating_sub(MAX_DECIDE_SEEN);
-    feed.to_decide.drain(..excess);
+    // Forget what left the history long ago, and every key of a repository
+    // no longer connected (its keys start `owner/name#`).
+    let forget = ago(FORGET_DECISION_DAYS);
+    let before = feed.decisions_seen.len();
+    feed.decisions_seen.retain(|key, seen| {
+        let repo = key.split('#').next().unwrap_or_default();
+        *seen >= forget && connected.iter().any(|c| c == repo)
+    });
+    changed |= feed.decisions_seen.len() != before;
     append(feed, written);
     changed
 }
