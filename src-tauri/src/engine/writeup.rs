@@ -74,6 +74,14 @@ fn due(root: &Path, repos: &[String]) -> Due {
     (out, made)
 }
 
+/// Whether `repo` is still connected.
+fn connected(s: &Snapshot, repo: &str) -> bool {
+    s.settings
+        .repositories
+        .iter()
+        .any(|r| same_repo(&r.name, repo))
+}
+
 /// Who writes and with what, or why write-ups wait; None when they are off.
 fn writer(s: &Snapshot) -> Result<Option<(Writer, ModelSelection)>, String> {
     let w = s.settings.write_ups;
@@ -190,7 +198,10 @@ impl Engine {
             )
         });
         for (done, (h, hash)) in todo.into_iter().enumerate() {
-            let ready = writer(&*self.state.lock().await);
+            let (ready, still) = {
+                let s = self.state.lock().await;
+                (writer(&s), connected(&s, &h.repo))
+            };
             let (writer, selection) = match ready {
                 Ok(Some(ready)) => ready,
                 Ok(None) => break,
@@ -199,6 +210,10 @@ impl Engine {
                     break;
                 }
             };
+            // A repository disconnected since the pass began isn't sent.
+            if !still {
+                continue;
+            }
             self.update_live(|s| {
                 s.ledger.writing = Some(LedgerProgress {
                     repo: h.repo.clone(),
@@ -215,6 +230,11 @@ impl Engine {
                 Writer::Codex => self.write_with_codex(&input, &selection).await,
                 Writer::Claude => self.write_with_claude(&input, &selection).await,
             };
+            // Nor is it kept when it was disconnected while the writer was
+            // answering, so its removed history isn't made again.
+            if !connected(&*self.state.lock().await, &h.repo) {
+                continue;
+            }
             let made_up = answer.and_then(|(output, model)| {
                 let a = writeup::read(&output, &h)?;
                 Ok(WriteUp {

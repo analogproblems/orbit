@@ -12,7 +12,10 @@ use tokio::sync::mpsc;
 /// A pull request with one of Milo's findings, the builder's fix and a
 /// clean second round, stored as the background read leaves it.
 fn stored(number: u64, state: &str) -> ledger::StoredPr {
-    let url = format!("https://github.com/a/b/pull/{number}");
+    stored_in("a/b", number, state)
+}
+fn stored_in(repo: &str, number: u64, state: &str) -> ledger::StoredPr {
+    let url = format!("https://github.com/{repo}/pull/{number}");
     let comment = |id: u64, at: &str, body: &str| {
         json!({
             "id": id, "user": {"login": "jason"}, "body": body, "created_at": at, "updated_at": at,
@@ -46,7 +49,7 @@ fn stored(number: u64, state: &str) -> ledger::StoredPr {
         "head": {"ref": "fix", "sha": "c".repeat(40)}, "base": {"ref": "master"},
     });
     ledger::from_github(
-        "a/b",
+        repo,
         &pr,
         &comments,
         &[],
@@ -214,6 +217,100 @@ async fn codex_writes_up_a_merged_pull_request_once_in_a_thread_that_cant_change
     e.write_up_due().await;
     assert_eq!(sent(&rpc, "thread/start").await.len(), 1);
     assert_eq!(e.snapshot().await.ledger.version, 1);
+}
+
+#[tokio::test]
+async fn a_repository_disconnected_during_a_pass_is_neither_sent_nor_kept() {
+    let (dir, e, rpc) = fixture(Writer::Codex).await;
+    // Each write-up gets a fresh thread that reports the chosen model.
+    rpc.request(
+        "fixture/configure",
+        json!({"startResponse": {"model": "model-a", "reasoningEffort": "high"}}),
+    )
+    .await
+    .unwrap();
+    let root = dir.path().join("state");
+    // c/d#3 is the newest and goes first, then a/b#1, then c/d#4.
+    ledger::save(&root, &stored_in("c/d", 3, "closed")).unwrap();
+    let mut oldest = stored_in("c/d", 4, "closed");
+    oldest.pr.updated_at = "2026-10-11T11:59:00Z".into();
+    ledger::save(&root, &oldest).unwrap();
+    e.update(|s| {
+        let mut other = s.settings.repositories[0].clone();
+        other.name = "c/d".into();
+        s.settings.repositories.push(other);
+    })
+    .await;
+    let running = tokio::spawn({
+        let e = e.clone();
+        async move { e.write_up_due().await }
+    });
+    let answer_turn = |n: usize| {
+        let (e, rpc) = (e.clone(), rpc.clone());
+        async move {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while sent(&rpc, "turn/start").await.len() < n {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("turn {n} never started"));
+            e.event(json!({"method": "item/completed", "params": {
+                "threadId": "fixture-thread",
+                "item": {"type": "agentMessage", "id": "m1", "text": answer().to_string()},
+            }}))
+            .await;
+            e.event(json!({"method": "turn/completed", "params": {
+                "threadId": "fixture-thread",
+                "turn": {"id": "fixture-turn", "status": "completed"},
+            }}))
+            .await;
+        }
+    };
+    // c/d is disconnected while the writer is answering for c/d#3.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while sent(&rpc, "turn/start").await.is_empty() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    e.update(|s| s.settings.repositories.retain(|r| r.name != "c/d"))
+        .await;
+    answer_turn(1).await;
+    answer_turn(2).await;
+    running.await.unwrap();
+
+    let inputs: Vec<String> = sent(&rpc, "turn/start")
+        .await
+        .iter()
+        .map(|t| {
+            t["input"][0]["text"]
+                .as_str()
+                .unwrap()
+                .lines()
+                .take(2)
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect();
+    assert_eq!(
+        inputs,
+        [
+            "Repository: c/d Pull request #3: Redact tokens",
+            "Repository: a/b Pull request #1: Redact tokens"
+        ],
+        "c/d#4 was never sent"
+    );
+    assert!(ledger::load_writeups(&root, "c/d").unwrap().is_empty());
+    assert!(ledger::load_writeups(&root, "a/b")
+        .unwrap()
+        .contains_key(&1));
+    let s = e.snapshot().await;
+    assert_eq!(
+        (s.ledger.version, s.ledger.write_error.as_deref()),
+        (1, None)
+    );
 }
 
 #[tokio::test]

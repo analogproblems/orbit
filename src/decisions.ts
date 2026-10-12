@@ -397,11 +397,13 @@ export interface RulebookArea {
   area: string;
   rules: RuleRow[];
 }
-/** Every rule the write-ups found, by area, the area with most rules first
- * and the oldest rule first within each. With an area, only its rules. */
+/** Every rule the write-ups found in merged pull requests, by area, the
+ * area with most rules first and the oldest rule first within each. A pull
+ * request closed without merging, or reopened, only proposed its rules, so
+ * they stay in its chapter. With an area, only its rules. */
 export function rulebook(prs: History[], area = "all"): RulebookArea[] {
   const groups = new Map<string, RulebookArea>();
-  for (const pr of prs)
+  for (const pr of prs.filter((pr) => pr.merged))
     for (const rule of pr.writeup?.decisions ?? []) {
       if (rule.kind !== "rule") continue;
       if (area !== "all" && !sameArea(rule.area, area)) continue;
@@ -456,7 +458,8 @@ export function areas(prs: History[]): AreaRow[] {
         if (!row.repos.includes(pr.repo)) row.repos.push(pr.repo);
       }
       row.decisions++;
-      if (d.kind === "rule") row.rules++;
+      // Only a merged pull request's rules count as gained.
+      if (d.kind === "rule" && pr.merged) row.rules++;
       if (d.kind === "challenge") row.challenges++;
       if (d.kind === "pushback") row.pushbacks++;
       if (d.attention) row.attention++;

@@ -329,14 +329,21 @@ function Story({
 }
 
 /** Where rules and areas come from when there are none. */
-function NoWriteUps({ what }: { what: string }) {
+function NoWriteUps({
+  what,
+  from = "merged and closed pull requests are",
+}: {
+  what: string;
+  /** What has to be written up for them to appear. */
+  from?: string;
+}) {
   const on = useOrbit(
     (state) => state.snapshot.settings.writeUps?.enabled ?? false,
   );
   return (
     <Text color="secondary">
       {on
-        ? `${what} appear as merged and closed pull requests are written up.`
+        ? `${what} appear as ${from} written up.`
         : `${what} come from write-ups. Turn them on in Settings to have each merged or closed pull request summed up in plain words.`}
     </Text>
   );
@@ -350,13 +357,14 @@ function Rulebook({
   groups: RulebookArea[];
   onOpen: (pr: History) => void;
 }) {
-  if (!groups.length) return <NoWriteUps what="Rules" />;
+  if (!groups.length)
+    return <NoWriteUps what="Rules" from="merged pull requests are" />;
   return (
     <VStack gap={4}>
       <Text color="secondary">
-        What the app now commits to: each standing rule the builder set or the
-        reviewer asked for, grouped by the part of the app it governs, oldest
-        first.
+        What the app now commits to: each standing rule a merged pull request
+        set, grouped by the part of the app it governs, oldest first. Rules in a
+        pull request closed without merging stay in its chapter.
       </Text>
       {groups.map((g) => (
         <List

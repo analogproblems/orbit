@@ -92,6 +92,17 @@ describe("decisions summaries", () => {
       ],
     ]);
     expect(rulebook(prs, "settings").map((g) => g.area)).toEqual(["Settings"]);
+    // A pull request closed without merging, or reopened, only proposed its
+    // rules: they stay in its chapter, not the rulebook or the areas' count.
+    for (const state of ["closed", "open"]) {
+      const proposed = demoDecisions().prs.map((pr) =>
+        pr.number === 318
+          ? { ...pr, state, merged: false, mergedAt: null }
+          : pr,
+      );
+      expect(rulebook(proposed).map((g) => g.area)).toEqual(["Settings"]);
+      expect(areas(proposed).find((a) => a.name === "Webhooks")?.rules).toBe(0);
+    }
     expect(
       areas(prs).map((a) => [
         a.name,
