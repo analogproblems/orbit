@@ -2,7 +2,8 @@
 // stream. Usage: node agy_fixture.cjs <mode>[@log] <agy args...>
 // Modes: ok, signed-out, wrong-model, always-proceed, wrong-conversation,
 // crash, slow, linger, denied, incomplete, no-sandbox.
-// With a log, each call's arguments and prompt are appended to it as JSON.
+// With a log, each call's arguments and prompt are appended to it as JSON,
+// and a structured answer is <log>.answer when the test left one.
 const fs = require("node:fs");
 const [modeArg, ...args] = process.argv.slice(2);
 const [mode, log] = modeArg.split("@");
@@ -160,6 +161,13 @@ function run(prompt) {
       if (log) fs.writeFileSync(`${log}.child`, String(child.pid));
       setTimeout(() => {}, 30000);
     }
+  } else if (log && fs.existsSync(`${log}.answer`)) {
+    // An answer the test left beside the log.
+    const structured = JSON.parse(fs.readFileSync(`${log}.answer`, "utf8"));
+    result({
+      response: JSON.stringify(structured),
+      structured_output: structured,
+    });
   } else if (args.includes("--json-schema")) {
     const structured = {
       verdict: "changes_requested",

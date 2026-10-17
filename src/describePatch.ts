@@ -1,8 +1,10 @@
 import {
+  buddyAnswerers,
   fixLabels,
   fixRuleLabels,
   providerLabels,
   type Buddy,
+  type BuddyAnswerer,
   type FixRule,
   type Model,
   type RepositoryPatch,
@@ -40,6 +42,7 @@ const buddyLabels: Record<keyof Buddy, string> = {
   tone: "Buddy's tone",
   personality: "Buddy's personality",
   rules: "Buddy's rules",
+  answerer: "Who answers your questions",
 };
 
 function buddyEntries(
@@ -54,7 +57,15 @@ function buddyEntries(
             `${fixLabels[fix as RuledFix]} rule`,
           ],
         )
-      : [[field, v, buddyLabels[field as keyof Buddy]]],
+      : [
+          [
+            field,
+            field === "answerer"
+              ? (buddyAnswerers[v as BuddyAnswerer] ?? v)
+              : v,
+            buddyLabels[field as keyof Buddy],
+          ],
+        ],
   );
 }
 

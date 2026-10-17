@@ -1180,6 +1180,29 @@ describe("Bit", () => {
     });
   });
 
+  it("chooses who answers Bit's questions in Settings", async () => {
+    snapshot.claude = { ready: false, error: "Claude is not signed in." };
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Settings" }));
+    await chooseOption(
+      await screen.findByRole("combobox", {
+        name: /^Who answers your questions/,
+      }),
+      "Claude Code",
+    );
+    expect(invoke).toHaveBeenCalledWith("update_settings", {
+      patch: { buddy: { answerer: "claude" } },
+    });
+    expect(buddyOf(snapshot.settings).answerer).toBe("claude");
+    expect(
+      await screen.findByText(/^Claude Code isn't connected yet, so Bit can't/),
+    ).toBeTruthy();
+    await user().click(screen.getByRole("button", { name: "Bit" }));
+    expect(
+      await screen.findByText(/Bit answers with Claude Code/),
+    ).toBeTruthy();
+  });
+
   it("shows what Bit remembers in Settings and forgets what you choose", async () => {
     invoke.mockImplementation(async (cmd, args) => {
       const memory = snapshot.buddyFeed!.memory!;

@@ -438,12 +438,18 @@ fn settings_check_the_name_and_choices() {
         ),
         ("hat", "fez", "'fez' isn't one of the buddy's hats."),
         ("tone", "grumpy", "'grumpy' isn't one of the buddy's tones."),
+        (
+            "answerer",
+            "eliza",
+            "'eliza' can't answer the buddy's questions.",
+        ),
     ] {
         let mut bad = b.clone();
         match field {
             "name" => bad.name = value.into(),
             "colour" => bad.colour = value.into(),
             "hat" => bad.hat = value.into(),
+            "answerer" => bad.answerer = value.into(),
             _ => bad.tone = value.into(),
         }
         assert_eq!(bad.validate().unwrap_err(), error, "{field}");
@@ -453,6 +459,13 @@ fn settings_check_the_name_and_choices() {
     patch.apply(&mut b);
     assert_eq!((b.name.as_str(), b.hat.as_str()), ("Orbie", "wizard"));
     assert!(serde_json::from_value::<BuddyPatch>(json!({"mood": "happy"})).is_err());
+    // Codex answers until you choose another.
+    assert_eq!(b.answered_by(), Provider::Codex);
+    let patch: BuddyPatch = serde_json::from_value(json!({"answerer": "claude"})).unwrap();
+    patch.apply(&mut b);
+    assert_eq!(b.answered_by(), Provider::Claude);
+    b.answerer = "antigravity".into();
+    assert_eq!(b.answered_by(), Provider::Antigravity);
 
     // Every rule starts on Ask first; a patch changes only the rules it names.
     assert!(RULES
@@ -480,10 +493,11 @@ fn saved_state_from_another_version_falls_back_to_defaults() {
     assert_eq!(settings.buddy, Buddy::default());
     // Newer state may name a hat or colour this version doesn't know.
     let mut b: Buddy = serde_json::from_value(
-        json!({"name": "Sprocket", "colour": "plaid", "hat": "fez", "tone": "grumpy"}),
+        json!({"name": "Sprocket", "colour": "plaid", "hat": "fez", "tone": "grumpy", "answerer": "eliza"}),
     )
     .unwrap();
     b.normalize();
+    assert_eq!(b.answerer, "codex");
     assert_eq!(b.name, "Sprocket");
     assert_eq!(
         (b.colour.as_str(), b.hat.as_str(), b.tone.as_str()),
@@ -520,6 +534,7 @@ fn the_app_offers_the_same_choices() {
     assert_eq!(list("colours"), COLOURS);
     assert_eq!(list("hats"), HATS);
     assert_eq!(list("tones"), TONES);
+    assert_eq!(list("answerers"), ANSWERERS);
     assert_eq!(list("rules"), RULES);
     let names = |values: Vec<serde_json::Value>| -> Vec<String> {
         values

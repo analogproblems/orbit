@@ -422,6 +422,21 @@ fn reviewers_are_only_checked_while_a_repository_uses_them() {
 }
 
 #[test]
+fn bits_answerer_is_checked_even_when_no_repository_uses_it() {
+    let mut s = connected_snapshot();
+    let names = |s: &Snapshot| -> Vec<&str> { connections(s).iter().map(|c| c.name).collect() };
+    assert!(connections(&s)[1].for_bit);
+    s.settings.buddy.answerer = "antigravity".into();
+    assert_eq!(names(&s), ["GitHub", "Codex", "Antigravity"]);
+    let c = &connections(&s)[2];
+    assert!(c.for_bit && c.needed_by.is_empty());
+    assert!(!connections(&s)[1].for_bit);
+    // Not while Bit is off.
+    s.settings.buddy.enabled = false;
+    assert_eq!(names(&s), ["GitHub", "Codex"]);
+}
+
+#[test]
 fn every_suggested_command_is_one_an_answer_could_set() {
     for (file, command) in setup::SETUP_COMMANDS {
         assert!(setup::TELLTALE_FILES.contains(&file), "{file}");

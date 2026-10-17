@@ -1,14 +1,18 @@
-//! Questions you type to Bit, answered by Codex in a thread of their own:
-//! read-only, in an empty folder, with no network, no approvals and none of
-//! Codex's other tools. The answer's buttons run only when you tap them.
+//! Questions you type to Bit, answered by the answerer you chose: Codex in
+//! a thread of its own (read-only, in an empty folder, with no network, no
+//! approvals and none of Codex's other tools), Claude Code with no tools at
+//! all, or Antigravity in its sandbox. The answer's buttons run only when
+//! you tap them.
 use super::{
     extras::{self, sentence},
     publish::By,
     Engine,
 };
 use crate::{
+    antigravity,
     ask::{self, Action},
-    buddy,
+    buddy, claude,
+    cli::{Init, Output, Running, Turn, TurnKind},
     types::*,
 };
 use serde_json::{json, Value};
@@ -17,13 +21,17 @@ use std::{
     time::Duration,
 };
 
-/// How long Bit waits for Codex's answer.
+/// How long Bit waits for an answer.
 pub(super) const ANSWER_TIMEOUT: Duration = Duration::from_secs(180);
 
-/// The question Codex is answering.
+/// The question being answered.
 pub(super) struct Asking {
     /// The question's note.
     note: u64,
+    /// Who answers it.
+    by: Provider,
+    /// Claude Code or Antigravity answering it; dropping it stops them.
+    running: Option<Running>,
     thread: Option<String>,
     turn: Option<String>,
     /// Codex's latest message, its answer once the turn completes.
@@ -36,8 +44,8 @@ pub(super) struct Asking {
 }
 
 impl Engine {
-    /// Asks Codex a question you typed. The question shows straight away
-    /// and its answer follows in the same note.
+    /// Asks the answerer you chose a question you typed. The question
+    /// shows straight away and its answer follows in the same note.
     pub async fn ask_buddy_anything(self: &Arc<Self>, question: &str) -> Result<(), String> {
         let question = question.trim();
         if question.is_empty() || question.chars().count() > ask::MAX_QUESTION {
@@ -46,7 +54,7 @@ impl Engine {
                 ask::MAX_QUESTION
             ));
         }
-        let (note, selection, connected) = {
+        let (note, by, selection, connected) = {
             let mut s = self.state.lock().await;
             let name = s.settings.buddy.name.clone();
             if !s.settings.buddy.enabled {
@@ -55,16 +63,19 @@ impl Engine {
             if self.asking.lock().unwrap().is_some() {
                 return Err(format!("{name} is still answering your last question."));
             }
-            let selection = ModelSelection {
-                model: s.settings.model.clone(),
-                effort: s.settings.effort.clone(),
-            };
-            selection.validate_execution(&s).map_err(|e| {
-                format!("{name} answers typed questions with Codex, which isn't ready: {e}")
+            let by = s.settings.buddy.answered_by();
+            let selection = s.settings.selection(by);
+            selection.validate_for(by, &s).map_err(|e| {
+                format!(
+                    "{name} answers typed questions with {}, which isn't ready: {e}",
+                    by.label()
+                )
             })?;
             let note = buddy::asked(&mut s, question);
             *self.asking.lock().unwrap() = Some(Asking {
                 note,
+                by,
+                running: None,
                 thread: None,
                 turn: None,
                 text: String::new(),
@@ -72,7 +83,7 @@ impl Engine {
                 connectable: vec![],
             });
             self.dirty.store(true, Ordering::SeqCst);
-            (note, selection, s.settings.repositories.clone())
+            (note, by, selection, s.settings.repositories.clone())
         };
         let _ = self.flush().await;
         // The question shows while Bit looks up your repositories.
@@ -90,17 +101,21 @@ impl Engine {
                 ask::instructions(&s.settings.buddy),
             )
         };
-        if let Err(error) = self
-            .start_answer(note, &prompt, &instructions, &selection)
-            .await
-        {
+        let started = match by {
+            Provider::Codex => {
+                self.start_answer(note, &prompt, &instructions, &selection)
+                    .await
+            }
+            _ => self.start_cli_answer(note, by, &prompt, &instructions, &selection),
+        };
+        if let Err(error) = started {
             self.answer_done(note, Err(error)).await;
             return Ok(());
         }
         let e = self.clone();
         tokio::spawn(async move {
             tokio::time::sleep(ANSWER_TIMEOUT).await;
-            e.answer_done(note, Err("Codex took too long.".into()))
+            e.answer_done(note, Err(format!("{} took too long.", by.label())))
                 .await;
         });
         Ok(())
@@ -168,6 +183,71 @@ impl Engine {
         self.asking_mut(note, |a| a.turn = turn_id);
         Ok(())
     }
+    /// Starts Claude Code or Antigravity on the question, in an empty folder
+    /// of Orbit's. Claude Code runs with no tools, no settings files and no
+    /// tool servers, in Codex's folder. Antigravity can't turn its tools
+    /// off, so it runs in its sandbox, with no network, and only with
+    /// settings under which it asks before anything that needs approval,
+    /// which nobody gives; its folder is emptied first, so nothing it wrote
+    /// for one question reaches the next.
+    fn start_cli_answer(
+        self: &Arc<Self>,
+        note: u64,
+        by: Provider,
+        prompt: &str,
+        instructions: &str,
+        selection: &ModelSelection,
+    ) -> Result<(), String> {
+        let folder = match by {
+            Provider::Antigravity => {
+                let folder = self.root.join("bit-antigravity");
+                if folder.exists() {
+                    std::fs::remove_dir_all(&folder).map_err(|e| e.to_string())?;
+                }
+                folder
+            }
+            _ => self.root.join("bit"),
+        };
+        std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+        let (running, init, outputs) = match by {
+            Provider::Antigravity => {
+                let setup = self.antigravity.lock().unwrap().clone();
+                // Antigravity has no separate instructions, so they lead
+                // the prompt.
+                let turn = Turn {
+                    kind: TurnKind::Extraction,
+                    cwd: folder,
+                    session: String::new(),
+                    resume: false,
+                    model: selection.model.clone(),
+                    effort: selection.effort.clone(),
+                    prompt: format!("{instructions}\n\n{prompt}"),
+                    schema: Some(ask::output_schema()),
+                    tool: None,
+                };
+                antigravity::start(&setup, &turn)?
+            }
+            _ => {
+                let launcher = self.claude_launcher.lock().unwrap().clone();
+                let args = claude::write_up_args(
+                    &selection.model,
+                    &selection.effort,
+                    &ask::output_schema(),
+                    instructions,
+                );
+                claude::start_write_up(&launcher, args, &folder, prompt.to_string())?
+            }
+        };
+        // A question that was dropped meanwhile drops its process too.
+        self.asking_mut(note, |a| a.running = Some(running))
+            .ok_or("The question was dropped.")?;
+        let e = self.clone();
+        tokio::spawn(async move {
+            let reply = cli_answer(by, init, outputs).await;
+            e.answer_done(note, reply).await;
+        });
+        Ok(())
+    }
     /// Checks with Codex that no tool server is on for `thread`.
     async fn tools_off(&self, rpc: &crate::rpc::Rpc, thread: &str) -> Result<(), String> {
         extras::check(rpc, thread, None)
@@ -229,8 +309,9 @@ impl Engine {
             _ => {}
         }
     }
-    /// Ends question `note` with Codex's reply or why there is none, and
-    /// puts its thread away. Only the first ending counts.
+    /// Ends question `note` with the reply or why there is none, and puts
+    /// its Codex thread away or stops its process. Only the first ending
+    /// counts.
     pub(super) async fn answer_done(self: &Arc<Self>, note: u64, reply: Result<String, String>) {
         let asking = {
             let mut asking = self.asking.lock().unwrap();
@@ -276,9 +357,15 @@ impl Engine {
         .await;
         let _ = self.flush().await;
     }
-    /// Ends the question being answered, if any, without an answer.
-    pub(super) async fn end_question(self: &Arc<Self>, why: &str) {
-        let note = self.asking.lock().unwrap().as_ref().map(|a| a.note);
+    /// Ends the question Codex is answering, if any, without an answer.
+    pub(super) async fn end_codex_question(self: &Arc<Self>, why: &str) {
+        let note = self
+            .asking
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|a| a.by == Provider::Codex)
+            .map(|a| a.note);
         if let Some(note) = note {
             self.answer_done(note, Err(why.into())).await;
         }
@@ -405,4 +492,43 @@ impl Drop for Using<'_> {
             .unwrap_or_else(|e| e.into_inner())
             .remove(&self.1);
     }
+}
+
+/// Claude Code's or Antigravity's answer, as the text Codex's would be.
+/// Antigravity must say it asks before anything that needs approval, as for
+/// reviews.
+async fn cli_answer(
+    by: Provider,
+    init: tokio::sync::oneshot::Receiver<Result<Init, String>>,
+    mut outputs: tokio::sync::mpsc::Receiver<Output>,
+) -> Result<String, String> {
+    let name = by.label();
+    let init = init
+        .await
+        .map_err(|_| format!("{name} stopped before it started."))??;
+    if by == Provider::Antigravity {
+        let mode = init.permission_mode.as_deref().unwrap_or("");
+        if !antigravity::ASKING_MODES.contains(&mode) {
+            return Err(format!(
+                "Antigravity would run without asking for approval (permission mode: {}), so I stopped it. Orbit never changes Antigravity's settings: set its tool permission back to request review.",
+                if mode.is_empty() { "not reported" } else { mode }
+            ));
+        }
+    }
+    while let Some(output) = outputs.recv().await {
+        match output {
+            Output::Result {
+                ok: true,
+                structured: Some(answer),
+                ..
+            } => return Ok(answer.to_string()),
+            Output::Result { ok: true, .. } => {
+                return Err(format!("{name}'s answer wasn't in the shape asked for."))
+            }
+            Output::Result { text, .. } => return Err(format!("{name} said: {}", sentence(&text))),
+            Output::Exited(why) => return Err(format!("{name} stopped: {}", sentence(&why))),
+            _ => {}
+        }
+    }
+    Err(format!("{name} stopped without an answer."))
 }

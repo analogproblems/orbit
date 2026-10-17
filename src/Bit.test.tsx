@@ -4,8 +4,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import options from "../test-fixtures/buddy-options.json";
 import { Bit, bitColours, bitHats, moodLabels } from "./Bit";
+import { describePatch } from "./describePatch";
 import {
   actionLabels,
+  buddyAnswerers,
   buddyTones,
   defaultBuddy,
   fixLabels,
@@ -28,6 +30,10 @@ describe("Bit", () => {
     expect(Object.keys(bitColours)).toEqual(options.colours);
     expect(hats).toEqual(options.hats);
     expect(Object.keys(buddyTones)).toEqual(options.tones);
+    expect(Object.keys(buddyAnswerers)).toEqual(options.answerers);
+    expect(describePatch({ buddy: { answerer: "antigravity" } }, [])).toBe(
+      "Who answers your questions: Antigravity",
+    );
     expect(Object.keys(fixRuleLabels)).toEqual(options.rules);
     expect(Object.keys(fixLabels)).toEqual(options.fixes);
     expect(Object.keys(questionLabels)).toEqual(options.questions);
