@@ -80,14 +80,16 @@ npm run tauri -- build --no-bundle  # Native executable (src-tauri/target/releas
 
 ### Releases
 
-Pushing a version tag builds every installer. Bump the version in `package.json`, `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`, merge that, then tag the merge commit and push the tag:
+Pushing a version tag builds every installer. Bump the version in `package.json`, `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`, merge that, then tag the latest `master` and push the tag. `git tag` marks the commit you have checked out, so pull first:
 
 ```sh
+git checkout master
+git pull
 git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The [Release workflow](.github/workflows/release.yml) checks the tag matches all three versions, builds on Linux, macOS and Windows, and attaches the files to a draft release. Check the draft on the Releases page, then publish it.
+The [Release workflow](.github/workflows/release.yml) checks the tag matches all three versions, builds on Linux, macOS and Windows, and attaches the files to a draft release. Check the draft on the Releases page, then publish it. If nothing runs, the tag is probably on an older commit that predates the workflow: delete it (`git tag -d v0.1.0` and `git push origin :refs/tags/v0.1.0`), pull, and tag again.
 
 ### Dev container
 
