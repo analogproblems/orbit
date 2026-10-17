@@ -407,6 +407,8 @@ export type BuddyHat =
   | "antenna"
   | "space-helmet";
 export type BuddyTone = "cheerful" | "calm" | "dry";
+/** Who answers the questions you type to Bit. */
+export type BuddyAnswerer = Provider;
 export interface Buddy {
   enabled: boolean;
   name: string;
@@ -418,6 +420,7 @@ export interface Buddy {
   personality: string;
   /** What Bit does about each fix it can do on its own. */
   rules: BuddyRules;
+  answerer: BuddyAnswerer;
 }
 /** One of Orbit's own controls, offered for something that needs you. */
 export type Fix =
@@ -466,11 +469,17 @@ export const defaultBuddy: Buddy = {
     publish: "ask_first",
     sync_now: "ask_first",
   },
+  answerer: "codex",
 };
 export const buddyTones: Record<BuddyTone, string> = {
   cheerful: "Cheerful",
   calm: "Calm",
   dry: "Dry",
+};
+export const buddyAnswerers: Record<BuddyAnswerer, string> = {
+  codex: "Codex",
+  claude: "Claude Code",
+  antigravity: "Antigravity",
 };
 export type NoteKind =
   | "round_started"

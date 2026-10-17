@@ -1,8 +1,9 @@
 // A fake `agy` for tests, following Antigravity's documented headless
 // stream. Usage: node agy_fixture.cjs <mode>[@log] <agy args...>
-// Modes: ok, signed-out, wrong-model, always-proceed, wrong-conversation,
+// Modes: ok, signed-out, wrong-model, no-model, always-proceed, wrong-conversation,
 // crash, slow, linger, denied, incomplete, no-sandbox.
-// With a log, each call's arguments and prompt are appended to it as JSON.
+// With a log, each call's arguments and prompt are appended to it as JSON,
+// and a structured answer is <log>.answer when the test left one.
 const fs = require("node:fs");
 const [modeArg, ...args] = process.argv.slice(2);
 const [mode, log] = modeArg.split("@");
@@ -47,7 +48,12 @@ function run(prompt) {
     mode === "wrong-conversation" && resumed
       ? "conv-other"
       : resumed || "conv-1";
-  const model = mode === "wrong-model" ? "gemini-other" : after("--model");
+  const model =
+    mode === "wrong-model"
+      ? "gemini-other"
+      : mode === "no-model"
+        ? undefined
+        : after("--model");
   if (mode === "no-sandbox") {
     if (args.includes("--sandbox")) {
       // What a sandbox that cannot start might look like; Orbit must stop
@@ -160,6 +166,13 @@ function run(prompt) {
       if (log) fs.writeFileSync(`${log}.child`, String(child.pid));
       setTimeout(() => {}, 30000);
     }
+  } else if (log && fs.existsSync(`${log}.answer`)) {
+    // An answer the test left beside the log.
+    const structured = JSON.parse(fs.readFileSync(`${log}.answer`, "utf8"));
+    result({
+      response: JSON.stringify(structured),
+      structured_output: structured,
+    });
   } else if (args.includes("--json-schema")) {
     const structured = {
       verdict: "changes_requested",

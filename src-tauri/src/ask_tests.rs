@@ -370,7 +370,7 @@ fn an_answer_that_isnt_usable_says_why() {
     let s = snapshot();
     assert_eq!(
         answer(&s, "Sure! Here's what I think.", &[]),
-        Err("Codex's answer didn't come back in the expected form.".into())
+        Err("The answer didn't come back in the expected form.".into())
     );
     assert_eq!(
         answer(
@@ -378,7 +378,7 @@ fn an_answer_that_isnt_usable_says_why() {
             &json!({"answer": "  ", "proposals": []}).to_string(),
             &[]
         ),
-        Err("Codex's answer was empty.".into())
+        Err("The answer was empty.".into())
     );
     let leaked =
         json!({"answer": format!("Your token is ghp_{}", "a1".repeat(18)), "proposals": []});

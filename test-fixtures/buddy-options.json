@@ -45,6 +45,7 @@
     "space-helmet"
   ],
   "tones": ["cheerful", "calm", "dry"],
+  "answerers": ["codex", "claude", "antigravity"],
   "rules": ["do_it", "ask_first", "leave_it"],
   "fixes": [
     "continue_loop",

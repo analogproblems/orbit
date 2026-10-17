@@ -547,3 +547,211 @@ async fn bit_can_offer_to_connect_a_repository_github_lists() {
     // Nothing is connected before a tap.
     assert!(e.snapshot().await.settings.repositories.is_empty());
 }
+
+/// Waits for Bit's latest note to stop waiting for its answer.
+async fn answer_of(e: &Engine) -> Note {
+    for _ in 0..200 {
+        let note = last(&e.snapshot().await);
+        if !note.pending {
+            return note;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("Bit never answered");
+}
+fn bit_answer() -> Value {
+    json!({
+        "answer": "b#1 is waiting for its author to push a fix.",
+        "proposals": [{"action": "stop_loop", "pr": "a/b#1", "changes": []}],
+        "memory": {"forget": [], "remember": []},
+    })
+}
+/// The fixture's engine, with Bit answering with `answerer`.
+async fn answering_with(answerer: &str) -> (tempfile::TempDir, Arc<Engine>, Arc<Rpc>) {
+    let (dir, e, rpc) = fixture().await;
+    e.update(|s| {
+        s.settings.buddy.answerer = answerer.into();
+        s.claude.ready = true;
+        s.antigravity.ready = true;
+        s.settings.antigravity_model = "gemini-3.1-pro-high".into();
+        s.antigravity_models = crate::antigravity::catalog("gemini-3.1-pro-high (Gemini)");
+    })
+    .await;
+    (dir, e, rpc)
+}
+
+#[tokio::test]
+async fn claude_code_answers_with_no_tools_and_the_same_answer_shape() {
+    let (dir, e, rpc) = answering_with("claude").await;
+    let log = dir.path().join("claude-log");
+    std::fs::write(log.with_extension("answer"), bit_answer().to_string()).unwrap();
+    e.use_claude(crate::claude::tests::fake(&format!("ok@{}", log.display())));
+    e.ask_buddy_anything("What's up with b#1?").await.unwrap();
+    let note = answer_of(&e).await;
+    assert_eq!(note.text, "b#1 is waiting for its author to push a fix.");
+    assert_eq!(note.proposals[0].action, Action::StopLoop);
+    assert!(!note.proposals[0].done);
+
+    let args: Vec<String> = serde_json::from_str(
+        std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    let after = |flag: &str| args[args.iter().position(|a| a == flag).unwrap() + 1].clone();
+    assert_eq!(after("--tools"), "");
+    assert_eq!(after("--setting-sources"), "");
+    assert!(args.contains(&"--strict-mcp-config".to_string()));
+    assert_eq!(
+        serde_json::from_str::<Value>(&after("--json-schema")).unwrap(),
+        crate::ask::output_schema()
+    );
+    assert!(after("--append-system-prompt").starts_with("You are Bit,"));
+    let selection = crate::models::claude_selection(&e.snapshot().await.settings);
+    assert_eq!(after("--model"), selection.model);
+    let input = std::fs::read_to_string(log.with_extension("stdin")).unwrap();
+    assert!(input.starts_with("The person asks: What's up with b#1?"));
+    // Codex isn't asked.
+    assert!(sent(&rpc, "thread/start").await.is_empty());
+}
+
+#[tokio::test]
+async fn antigravity_answers_in_its_sandbox_with_bits_instructions_first() {
+    let (dir, e, rpc) = answering_with("antigravity").await;
+    let log = dir.path().join("agy-log");
+    std::fs::write(log.with_extension("answer"), bit_answer().to_string()).unwrap();
+    e.use_antigravity(crate::antigravity::tests::fake(
+        &format!("ok@{}", log.display()),
+        &dir.path().join("agy-settings.json"),
+    ));
+    e.ask_buddy_anything("What's up with b#1?").await.unwrap();
+    let note = answer_of(&e).await;
+    assert_eq!(note.text, "b#1 is waiting for its author to push a fix.");
+
+    let call: Value = serde_json::from_str(
+        std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    let args: Vec<String> = serde_json::from_value(call["args"].clone()).unwrap();
+    assert!(args.contains(&"--sandbox".to_string()));
+    let after = |flag: &str| args[args.iter().position(|a| a == flag).unwrap() + 1].clone();
+    assert_eq!(after("--model"), "gemini-3.1-pro-high");
+    assert_eq!(
+        serde_json::from_str::<Value>(&after("--json-schema")).unwrap(),
+        crate::ask::output_schema()
+    );
+    let prompt = call["prompt"].as_str().unwrap();
+    assert!(prompt.starts_with("You are Bit,"));
+    // Its own folder, emptied for each question.
+    let folder = dir.path().join("state").join("bit-antigravity");
+    std::fs::write(folder.join("left-behind"), "from the last answer").unwrap();
+    e.ask_buddy_anything("And now?").await.unwrap();
+    answer_of(&e).await;
+    assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 0);
+    assert!(prompt.contains("The person asks: What's up with b#1?"));
+    assert!(sent(&rpc, "thread/start").await.is_empty());
+}
+
+#[tokio::test]
+async fn antigravity_doesnt_answer_when_it_wouldnt_ask_first() {
+    let (dir, e, _rpc) = answering_with("antigravity").await;
+    e.use_antigravity(crate::antigravity::tests::fake(
+        "always-proceed",
+        &dir.path().join("agy-settings.json"),
+    ));
+    e.ask_buddy_anything("What's up with b#1?").await.unwrap();
+    let note = answer_of(&e).await;
+    assert_eq!(note.kind, NoteKind::Answer);
+    assert!(
+        note.text.contains("permission mode: always-proceed"),
+        "{}",
+        note.text
+    );
+    assert!(note.proposals.is_empty());
+}
+
+#[tokio::test]
+async fn bit_says_when_the_answerer_you_chose_isnt_ready() {
+    let (_dir, e, _rpc) = answering_with("claude").await;
+    e.update(|s| {
+        s.claude.ready = false;
+        s.claude.error = Some("Claude is not signed in.".into());
+    })
+    .await;
+    assert_eq!(
+        e.ask_buddy_anything("Hi?").await.unwrap_err(),
+        "Bit answers typed questions with Claude, which isn't ready: Claude is not signed in."
+    );
+}
+
+#[tokio::test]
+async fn codex_disconnecting_leaves_another_answerer_alone_and_ending_it_stops_it() {
+    let (dir, e, _rpc) = answering_with("claude").await;
+    let log = dir.path().join("claude.log");
+    e.use_claude(crate::claude::tests::fake(&format!(
+        "slow@{}",
+        log.display()
+    )));
+    e.ask_buddy_anything("What's up with b#1?").await.unwrap();
+    // Claude is running, with a command of its own.
+    while !log.with_extension("log.child").exists() {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    e.end_codex_question("Codex disconnected.").await;
+    assert!(last(&e.snapshot().await).pending);
+    let note = last(&e.snapshot().await).id;
+    e.answer_done(note, Err("Claude took too long.".into()))
+        .await;
+    let note = last(&e.snapshot().await);
+    assert!(!note.pending);
+    assert!(note.text.contains("Claude took too long."), "{}", note.text);
+    assert!(e.asking.lock().unwrap().is_none());
+    super::test_support::child_ends(&log).await;
+}
+
+#[tokio::test]
+async fn an_answer_from_another_model_isnt_used() {
+    for (answerer, mode, reported) in [
+        ("claude", "wrong-model", "claude-other"),
+        ("claude", "no-model", "none"),
+        ("antigravity", "wrong-model", "gemini-other"),
+        ("antigravity", "no-model", "none"),
+    ] {
+        let (dir, e, _rpc) = answering_with(answerer).await;
+        let log = dir.path().join("cli-log");
+        let reply = json!({
+            "answer": "From the wrong model.",
+            "proposals": [{"action": "sync_now", "pr": null, "changes": []}],
+            "memory": {"forget": [], "remember": [{"repository": null, "line": "Wrong model was here."}]},
+        });
+        std::fs::write(log.with_extension("answer"), reply.to_string()).unwrap();
+        let fake = format!("{mode}@{}", log.display());
+        match answerer {
+            "claude" => e.use_claude(crate::claude::tests::fake(&fake)),
+            _ => e.use_antigravity(crate::antigravity::tests::fake(
+                &fake,
+                &dir.path().join("agy-settings.json"),
+            )),
+        }
+        e.ask_buddy_anything("What's up with b#1?").await.unwrap();
+        let note = answer_of(&e).await;
+        let s = e.snapshot().await;
+        let model = s.settings.selection(s.settings.buddy.answered_by()).model;
+        assert!(
+            note.text.contains(&format!(
+                "didn't confirm the model '{model}' (reported: {reported})"
+            )),
+            "{answerer} {mode}: {}",
+            note.text
+        );
+        assert!(note.proposals.is_empty());
+        assert!(note.memory.is_empty());
+        assert!(s.buddy_feed.memory.general.is_empty());
+    }
+}

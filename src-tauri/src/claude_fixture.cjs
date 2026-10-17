@@ -1,5 +1,5 @@
 // A fake `claude` for tests. Usage: node claude_fixture.cjs <mode>[@log] <claude args...>
-// Modes: ok, signed-out, wrong-model, crash, slow, denied, schema-fail, incomplete,
+// Modes: ok, signed-out, wrong-model, no-model, crash, slow, denied, schema-fail, incomplete,
 // no-sandbox. A write-up (--no-session-persistence) answers with <log>.answer.
 const fs = require("node:fs");
 const [modeArg, ...args] = process.argv.slice(2);
@@ -24,7 +24,12 @@ const prompt = after("-p");
 const session = args.includes("--resume")
   ? after("--resume")
   : after("--session-id");
-const model = mode === "wrong-model" ? "claude-other" : after("--model");
+const model =
+  mode === "wrong-model"
+    ? "claude-other"
+    : mode === "no-model"
+      ? undefined
+      : after("--model");
 if (mode === "no-sandbox") {
   // Like the real CLI on a computer without bubblewrap: it refuses to start
   // when the sandbox is required, and otherwise runs commands unsandboxed,

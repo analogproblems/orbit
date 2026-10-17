@@ -180,13 +180,14 @@ pub const SETTINGS: [&str; 27] = [
     "buddy.colour",
     "buddy.hat",
     "buddy.tone",
+    "buddy.answerer",
     "buddy.rules.continue_loop",
     "buddy.rules.review_again",
     "buddy.rules.publish",
     "buddy.rules.sync_now",
 ];
 
-/// What Codex is told about being Bit, for every question.
+/// What Bit's answerer is told about being Bit, for every question.
 pub fn instructions(buddy: &Buddy) -> String {
     let tone = match buddy.tone.as_str() {
         "calm" => "calm and reassuring",
@@ -208,7 +209,7 @@ In `proposals` you can offer up to {MAX_PROPOSALS} buttons for Orbit's own contr
 - review_again, with pr: starts a new review of a pull request.
 - publish, with pr: publishes a pull request's report that is ready to publish.
 - sync_now: syncs with GitHub now.
-- change_settings, with changes: changes settings named in the summary's `settings`, each with its new value written as text, such as \"true\" or \"120\".
+- change_settings, with changes: changes settings named in the summary's `settings`, each with its new value written as text, such as \"true\" or \"120\". buddy.answerer is who answers these questions: codex, claude or antigravity.
 - set_up_repository, with repository and changes: connects a repository from the summary's `connectableRepositories`, or changes the settings of one in `repositories`. Orbit downloads its own copy of a repository it connects, and starts it with autopilot off, no setup command and no network, plus your changes. Its changes use the repository settings named in the summary's repositories: setupCommand, checkCommand, networkAccess, devContainer, reviewer (codex, claude or antigravity), roundLimit ({round_limits}), approvalMinutes ({approval_minutes}, where 0 waits for the person), keepCloneUpdated and autopilot.
 - check_connections: checks the connections to GitHub, Codex and the other reviewers again, once the person has fixed one, such as by signing in.
 Use pull request ids and repository names from the summary. Leave pr and repository null, and changes empty, when an action doesn't use them. You can't change trusted accounts: say they can do that themselves in Orbit's Settings.
@@ -659,16 +660,16 @@ struct RawChange {
     value: String,
 }
 
-/// Bit's answer from Codex's reply, with only the buttons Orbit's state
+/// Bit's answer from its answerer's reply, with only the buttons Orbit's state
 /// allows now and the memory changes it may make. `connectable` names the
 /// repositories the question's summary offered to connect. Text that looks
 /// like credentials is never shown or remembered.
 pub fn answer(s: &Snapshot, reply: &str, connectable: &[String]) -> Result<Answer, String> {
     let raw: RawAnswer = serde_json::from_str(reply.trim())
-        .map_err(|_| "Codex's answer didn't come back in the expected form.".to_string())?;
+        .map_err(|_| "The answer didn't come back in the expected form.".to_string())?;
     let text = raw.answer.trim();
     if text.is_empty() {
-        return Err("Codex's answer was empty.".into());
+        return Err("The answer was empty.".into());
     }
     let found = credential_kinds(text);
     if !found.is_empty() {

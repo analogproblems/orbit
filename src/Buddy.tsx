@@ -42,6 +42,7 @@ import {
   actionLabels,
   buddyMood,
   buddyOf,
+  buddyAnswerers,
   buddyTones,
   fixDescriptions,
   fixLabels,
@@ -57,6 +58,7 @@ import {
   type Buddy,
   type BuddyHat,
   type BuddyNote,
+  type BuddyAnswerer,
   type BuddyTone,
   type FixRule,
   type Mood,
@@ -64,6 +66,7 @@ import {
   type Question,
   type RuledFix,
   type SettingsPatch,
+  type Snapshot,
 } from "./types";
 import { Bit, bitColours, bitHats, moodLabels } from "./Bit";
 import { SaveFeedback } from "./SaveFeedback";
@@ -512,9 +515,10 @@ export function BuddyPage({
                   }
                 />
                 <Text type="supporting" color="secondary">
-                  {buddy.name} answers with Codex and can’t change anything
-                  until you tap a button. <Kbd keys="enter" /> to send ·{" "}
-                  <Kbd keys="shift+enter" /> for a new line
+                  {buddy.name} answers with {buddyAnswerers[buddy.answerer]} and
+                  can’t change anything until you tap a button.{" "}
+                  <Kbd keys="enter" /> to send · <Kbd keys="shift+enter" /> for
+                  a new line
                 </Text>
               </VStack>
             }
@@ -574,10 +578,23 @@ export function BuddyPage({
 
 const previewMoods: Mood[] = ["happy", "busy", "worried", "sleepy"];
 
-/** The buddy's part of Settings: on or off, name, colour, hat, tone and
- * personality, with a live preview. */
+/** What answering with the chosen answerer means, and whether it can yet. */
+function answererDescription(s: Snapshot, buddy: Buddy): string {
+  const ready = {
+    codex: s.codexReady,
+    claude: !!s.claude?.ready,
+    antigravity: !!s.antigravity?.ready,
+  }[buddy.answerer];
+  const uses = `Each uses its own sign-in, with the model and effort you chose for it as a reviewer. ${buddy.name} only answers and offers buttons; nothing changes until you tap one.`;
+  return ready
+    ? uses
+    : `${buddyAnswerers[buddy.answerer]} isn't connected yet, so ${buddy.name} can't answer until it is. ${uses}`;
+}
+
+/** The buddy's part of Settings: on or off, name, colour, hat, tone, who
+ * answers and personality, with a live preview. */
 export function BuddySettings() {
-  const { updateSettings, saves } = useOrbit();
+  const { snapshot: s, updateSettings, saves } = useOrbit();
   const buddy = useBuddy();
   const [preview, setPreview] = useState<Mood>("happy");
   const [name, setName] = useState<string | null>(null);
@@ -724,6 +741,21 @@ export function BuddySettings() {
             onChange={(tone) => void save({ tone: tone as BuddyTone }, "tone")}
           />
           <SaveFeedback saveKey="buddy.tone" />
+        </VStack>
+        <VStack gap={2}>
+          <Selector
+            label="Who answers your questions"
+            description={answererDescription(s, buddy)}
+            value={buddy.answerer}
+            isDisabled={pending("answerer")}
+            options={(
+              Object.entries(buddyAnswerers) as [BuddyAnswerer, string][]
+            ).map(([value, label]) => ({ value, label }))}
+            onChange={(answerer) =>
+              void save({ answerer: answerer as BuddyAnswerer }, "answerer")
+            }
+          />
+          <SaveFeedback saveKey="buddy.answerer" />
         </VStack>
         <VStack gap={2}>
           <TextArea

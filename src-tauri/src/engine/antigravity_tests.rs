@@ -440,35 +440,6 @@ async fn antigravity_reviews_refuse_a_setup_command() {
     assert!(error.contains("Antigravity reviews can't use"), "{error}");
 }
 
-/// Waits until the pid the fake wrote to `<log>.child` is gone.
-async fn child_ends(log: &Path) {
-    let child = log.with_extension("log.child");
-    let pid = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if let Ok(pid) = std::fs::read_to_string(&child) {
-                return pid;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
-    let alive = || {
-        std::process::Command::new("kill")
-            .args(["-0", &pid])
-            .status()
-            .unwrap()
-            .success()
-    };
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while alive() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("the turn's command outlived it");
-}
-
 #[tokio::test]
 async fn a_run_that_answers_but_never_exits_fails_and_is_stopped() {
     let t = antigravity_review("ok").await;

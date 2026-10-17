@@ -268,7 +268,7 @@ impl Engine {
         for id in recovered {
             self.autopost(&id);
         }
-        self.end_question("Codex disconnected.").await;
+        self.end_codex_question("Codex disconnected.").await;
     }
     pub(super) async fn client(&self) -> Result<Arc<Rpc>, String> {
         self.rpc

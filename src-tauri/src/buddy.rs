@@ -57,6 +57,9 @@ pub const HATS: [&str; 21] = [
 ];
 /// How Bit's notes sound.
 pub const TONES: [&str; 3] = ["cheerful", "calm", "dry"];
+/// Who answers the questions you type: Codex, Claude Code or Antigravity,
+/// each with its own sign-in.
+pub const ANSWERERS: [&str; 3] = ["codex", "claude", "antigravity"];
 /// The longest name, in characters.
 pub const MAX_NAME: usize = 24;
 /// The longest personality text, in characters.
@@ -171,6 +174,8 @@ pub struct Buddy {
     /// Saved now, used once Bit can chat.
     pub personality: String,
     pub rules: Rules,
+    /// One of `ANSWERERS`.
+    pub answerer: String,
 }
 impl Default for Buddy {
     fn default() -> Self {
@@ -182,6 +187,7 @@ impl Default for Buddy {
             tone: "cheerful".into(),
             personality: String::new(),
             rules: Rules::default(),
+            answerer: "codex".into(),
         }
     }
 }
@@ -217,7 +223,21 @@ impl Buddy {
         if let Some(rule) = self.rules.each().into_iter().find(|r| !RULES.contains(r)) {
             return Err(format!("'{rule}' isn't one of the buddy's rules."));
         }
+        if !ANSWERERS.contains(&self.answerer.as_str()) {
+            return Err(format!(
+                "'{}' can't answer the buddy's questions.",
+                self.answerer
+            ));
+        }
         Ok(())
+    }
+    /// Who answers the questions you type.
+    pub fn answered_by(&self) -> Provider {
+        match self.answerer.as_str() {
+            "claude" => Provider::Claude,
+            "antigravity" => Provider::Antigravity,
+            _ => Provider::Codex,
+        }
     }
     /// Replaces anything saved state holds that this version doesn't know,
     /// such as a hat from a newer Orbit, with the default.
@@ -247,6 +267,9 @@ impl Buddy {
                 *rule = "ask_first".into();
             }
         }
+        if !ANSWERERS.contains(&self.answerer.as_str()) {
+            self.answerer = default.answerer;
+        }
     }
 }
 /// Only supplied fields change.
@@ -260,6 +283,7 @@ pub struct BuddyPatch {
     pub tone: Option<String>,
     pub personality: Option<String>,
     pub rules: Option<RulesPatch>,
+    pub answerer: Option<String>,
 }
 impl BuddyPatch {
     pub fn apply(self, buddy: &mut Buddy) {
@@ -280,6 +304,9 @@ impl BuddyPatch {
         }
         if let Some(v) = self.personality {
             buddy.personality = v;
+        }
+        if let Some(v) = self.answerer {
+            buddy.answerer = v;
         }
         if let Some(rules) = self.rules {
             let patch = [
