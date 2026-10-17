@@ -1,8 +1,9 @@
 //! Questions you type to Bit, answered by the answerer you chose: Codex in
 //! a thread of its own (read-only, in an empty folder, with no network, no
 //! approvals and none of Codex's other tools), Claude Code with no tools at
-//! all, Antigravity in its sandbox, or Ollama, which only ever writes an
-//! answer. The answer's buttons run only when you tap them.
+//! all, Antigravity in its sandbox, or Ollama or a provider's API with your
+//! key, which only ever write an answer. The answer's buttons run only when
+//! you tap them.
 use super::{
     extras::{self, sentence},
     publish::By,
@@ -10,6 +11,7 @@ use super::{
 };
 use crate::{
     antigravity,
+    api::{self, Api},
     ask::{self, Action},
     buddy::{self, Answerer},
     claude,
@@ -33,7 +35,7 @@ pub(super) struct Asking {
     by: Answerer,
     /// Claude Code or Antigravity answering it; dropping it stops them.
     running: Option<Running>,
-    /// Ollama's request; dropping it stops the request.
+    /// Ollama's or an API's request; dropping it stops the request.
     request: Option<Request>,
     thread: Option<String>,
     turn: Option<String>,
@@ -72,6 +74,34 @@ fn ollama_ready(s: &Snapshot, model: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether your key for `api` can answer with `model`, from its latest
+/// check.
+fn api_ready(s: &Snapshot, api: Api, model: &str) -> Result<(), String> {
+    let key = s.api_keys.get(api);
+    let company = api.company();
+    if !key.saved {
+        return Err(format!(
+            "Save your {company} API key in Settings, under Buddy."
+        ));
+    }
+    if !key.status.ready {
+        return Err(key.status.error.clone().unwrap_or_else(|| {
+            "Orbit hasn't checked your key yet. Tap Check again in Settings.".into()
+        }));
+    }
+    if model.is_empty() {
+        return Err(format!(
+            "Choose a model for your {company} key in Settings."
+        ));
+    }
+    if !key.models.iter().any(|m| m == model) {
+        return Err(format!(
+            "{company} doesn't offer model '{model}' to your key. Choose one in Settings."
+        ));
+    }
+    Ok(())
+}
+
 impl Engine {
     /// Asks the answerer you chose a question you typed. The question
     /// shows straight away and its answer follows in the same note.
@@ -93,16 +123,23 @@ impl Engine {
                 return Err(format!("{name} is still answering your last question."));
             }
             let by = s.settings.buddy.answered_by();
-            let selection = match by.provider() {
-                Some(p) => s.settings.selection(p),
-                None => ModelSelection {
+            let selection = match by {
+                Answerer::Ollama => ModelSelection {
                     model: s.settings.buddy.ollama_model.clone(),
                     effort: String::new(),
                 },
+                Answerer::Api(api) => ModelSelection {
+                    model: s.settings.buddy.api_model(api).to_string(),
+                    effort: String::new(),
+                },
+                _ => s
+                    .settings
+                    .selection(by.provider().unwrap_or(Provider::Codex)),
             };
-            match by.provider() {
-                Some(p) => selection.validate_for(p, &s),
-                None => ollama_ready(&s, &selection.model),
+            match (by, by.provider()) {
+                (_, Some(p)) => selection.validate_for(p, &s),
+                (Answerer::Api(api), None) => api_ready(&s, api, &selection.model),
+                _ => ollama_ready(&s, &selection.model),
             }
             .map_err(|e| {
                 format!(
@@ -147,13 +184,45 @@ impl Engine {
                 ask::instructions(&s.settings.buddy),
             )
         };
-        let started = match by.provider() {
-            Some(Provider::Codex) => {
+        let started = match (by, by.provider()) {
+            (_, Some(Provider::Codex)) => {
                 self.start_answer(note, &prompt, &instructions, &selection)
                     .await
             }
-            Some(p) => self.start_cli_answer(note, p, &prompt, &instructions, &selection),
-            None => self.start_ollama_answer(note, ollama_url, prompt, instructions, selection),
+            (_, Some(p)) => self.start_cli_answer(note, p, &prompt, &instructions, &selection),
+            (Answerer::Api(api), None) => {
+                let setup = self.apis.lock().unwrap().clone();
+                self.start_request(note, async move {
+                    let key = setup.key(api).await?.ok_or_else(|| {
+                        format!(
+                            "Your {} API key isn't in your password store any more. Save it again in Settings.",
+                            api.company()
+                        )
+                    })?;
+                    api::answer(
+                        api,
+                        setup.base(api),
+                        &key,
+                        &selection.model,
+                        &instructions,
+                        &prompt,
+                        &ask::output_schema(),
+                        ANSWER_TIMEOUT,
+                    )
+                    .await
+                })
+            }
+            _ => self.start_request(note, async move {
+                crate::ollama::answer(
+                    &ollama_url,
+                    &selection.model,
+                    &instructions,
+                    &prompt,
+                    &ask::output_schema(),
+                    ANSWER_TIMEOUT,
+                )
+                .await
+            }),
         };
         if let Err(error) = started {
             self.answer_done(note, Err(error)).await;
@@ -331,27 +400,86 @@ impl Engine {
         .await;
         let _ = self.flush().await;
     }
-    /// Asks Ollama, which only ever writes an answer: it is sent the
-    /// question with what Orbit knows, and nothing more.
-    fn start_ollama_answer(
+    /// Checks whoever answers Bit and isn't checked with the reviewers:
+    /// Ollama, or your key for a provider's API.
+    pub async fn check_bit_answerer(&self) {
+        self.check_ollama().await;
+        let answerer = self.state.lock().await.settings.buddy.answered_by();
+        if let Answerer::Api(api) = answerer {
+            let _turn = self.api_lock.lock().await;
+            self.check_api(api).await;
+        }
+    }
+    /// Saves your key for a provider's API in your system's password store,
+    /// or removes it when `key` is None, then checks it.
+    pub async fn set_api_key(&self, provider: &str, key: Option<String>) -> Result<(), String> {
+        let api = Api::from_key(provider)
+            .ok_or_else(|| format!("Orbit doesn't use API keys for '{provider}'."))?;
+        let key = key.map(|k| k.trim().to_string());
+        if let Some(key) = &key {
+            api::validate_key(key)?;
+        }
+        let _turn = self.api_lock.lock().await;
+        let setup = self.apis.lock().unwrap().clone();
+        setup.save(api, key.clone()).await?;
+        self.update(|s| {
+            *s.api_keys.get_mut(api) = ApiKey {
+                saved: key.is_some(),
+                ..Default::default()
+            }
+        })
+        .await;
+        self.check_api(api).await;
+        Ok(())
+    }
+    /// Lists the models your saved key for `api` can use, recording whether
+    /// it works. Only called holding `api_lock`, so checks and saves don't
+    /// cross.
+    async fn check_api(&self, api: Api) {
+        let saved = self.state.lock().await.api_keys.get(api).saved;
+        let setup = self.apis.lock().unwrap().clone();
+        let result = match saved {
+            false => None,
+            true => match setup.key(api).await {
+                Ok(None) => None,
+                Ok(Some(key)) => Some(api::models(api, setup.base(api), &key).await.and_then(
+                    |models| {
+                        if models.is_empty() {
+                            Err(format!(
+                                "{} didn't offer your key any models that can answer Bit.",
+                                api.company()
+                            ))
+                        } else {
+                            Ok(models)
+                        }
+                    },
+                )),
+                Err(e) => Some(Err(e)),
+            },
+        };
+        self.update(|s| {
+            let key = s.api_keys.get_mut(api);
+            *key = match &result {
+                // Not saved, or gone from your password store.
+                None => ApiKey::default(),
+                Some(result) => ApiKey {
+                    saved: true,
+                    status: status(result),
+                    models: result.clone().unwrap_or_default(),
+                },
+            };
+        })
+        .await;
+        let _ = self.flush().await;
+    }
+    /// Asks Ollama or a provider's API, which only ever write an answer:
+    /// `asking` sends the question with what Orbit knows, and nothing more.
+    fn start_request(
         self: &Arc<Self>,
         note: u64,
-        url: String,
-        prompt: String,
-        instructions: String,
-        selection: ModelSelection,
+        asking: impl std::future::Future<Output = Result<String, String>> + Send + 'static,
     ) -> Result<(), String> {
-        let asked = tokio::spawn(async move {
-            crate::ollama::answer(
-                &url,
-                &selection.model,
-                &instructions,
-                &prompt,
-                &ask::output_schema(),
-                ANSWER_TIMEOUT,
-            )
-            .await
-        });
+        let asked = tokio::spawn(asking);
         // A question that was dropped meanwhile drops its request too.
         let request = Request(asked.abort_handle());
         self.asking_mut(note, |a| a.request = Some(request))

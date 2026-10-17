@@ -46,6 +46,9 @@ const buddyLabels: Record<keyof Buddy, string> = {
   answerer: "Who answers your questions",
   ollamaUrl: "Ollama address",
   ollamaModel: "Ollama model",
+  openaiModel: "OpenAI model",
+  anthropicModel: "Anthropic model",
+  googleModel: "Gemini model",
 };
 
 function buddyEntries(

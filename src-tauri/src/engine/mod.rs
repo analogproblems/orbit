@@ -194,6 +194,11 @@ pub struct Engine {
     /// How Antigravity is started and where its settings are; tests use a
     /// fake.
     antigravity: std::sync::Mutex<crate::antigravity::Setup>,
+    /// Where API keys are kept and where their providers answer; tests use
+    /// a fake store and fake providers.
+    apis: std::sync::Mutex<crate::api::Setup>,
+    /// Held while an API key is saved or checked.
+    api_lock: Mutex<()>,
     /// How Docker and the Dev Container CLI are started; tests use fakes.
     dev_tools: std::sync::Mutex<crate::devcontainer::Tools>,
     /// Dev containers kept for reviewers' own commands, by review; removed
@@ -324,6 +329,11 @@ impl Engine {
         state.claude_models = crate::claude::catalog();
         state.antigravity = CliStatus::default();
         state.ollama = CliStatus::default();
+        for api in crate::api::Api::ALL {
+            let key = state.api_keys.get_mut(api);
+            key.status = CliStatus::default();
+            key.models.clear();
+        }
         state.dev_containers = CliStatus::default();
         state.ledger.refreshing = false;
         state.ledger.progress = None;
@@ -358,6 +368,8 @@ impl Engine {
             stopping_scans: std::sync::Mutex::new(HashSet::new()),
             usage_account: std::sync::Mutex::new(None),
             claude_launcher: std::sync::Mutex::new(crate::claude::launcher()),
+            apis: std::sync::Mutex::new(crate::api::Setup::default()),
+            api_lock: Mutex::new(()),
             antigravity: std::sync::Mutex::new(crate::antigravity::Setup::default()),
             dev_tools: std::sync::Mutex::new(Default::default()),
             boxes: Default::default(),

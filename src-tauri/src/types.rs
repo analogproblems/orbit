@@ -119,6 +119,41 @@ pub struct CliStatus {
     pub error: Option<String>,
     pub version: Option<String>,
 }
+/// Your API keys, by provider.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ApiKeys {
+    pub openai: ApiKey,
+    pub anthropic: ApiKey,
+    pub google: ApiKey,
+}
+impl ApiKeys {
+    pub fn get(&self, api: crate::api::Api) -> &ApiKey {
+        match api {
+            crate::api::Api::OpenAi => &self.openai,
+            crate::api::Api::Anthropic => &self.anthropic,
+            crate::api::Api::Google => &self.google,
+        }
+    }
+    pub fn get_mut(&mut self, api: crate::api::Api) -> &mut ApiKey {
+        match api {
+            crate::api::Api::OpenAi => &mut self.openai,
+            crate::api::Api::Anthropic => &mut self.anthropic,
+            crate::api::Api::Google => &mut self.google,
+        }
+    }
+}
+/// One API key: never the key, only whether it is saved and, from its
+/// latest check, whether the provider takes it and its models.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ApiKey {
+    /// Kept between runs, so Orbit only opens your password store when a
+    /// key is used.
+    pub saved: bool,
+    pub status: CliStatus,
+    pub models: Vec<String>,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Review {
@@ -1241,6 +1276,11 @@ pub struct Snapshot {
     pub ollama: CliStatus,
     /// The models Ollama had when last checked.
     pub ollama_models: Vec<String>,
+    /// Your API keys for OpenAI, Anthropic and Google: whether each is
+    /// saved and, once checked, what it can use. The keys themselves are
+    /// only in your system's password store.
+    #[serde(default)]
+    pub api_keys: ApiKeys,
     /// Per-PR controls of the automatic review loop.
     pub loops: Vec<LoopControl>,
     /// Commit statuses Orbit has set, so each is sent only when it changes

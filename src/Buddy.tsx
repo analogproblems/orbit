@@ -36,10 +36,11 @@ import {
   Token,
   VStack,
 } from "@astryxdesign/core";
-import { RefreshCw, Trash2 } from "lucide-react";
+import { ExternalLink, RefreshCw, Trash2 } from "lucide-react";
 import { openLink, useOrbit } from "./store";
 import {
   actionLabels,
+  apiProviders,
   buddyMood,
   buddyOf,
   buddyAnswerers,
@@ -55,6 +56,7 @@ import {
   offeredFix,
   questionLabels,
   withPatch,
+  type ApiProvider,
   type Buddy,
   type BuddyHat,
   type BuddyNote,
@@ -658,6 +660,121 @@ function OllamaSettings() {
   );
 }
 
+/** Your key for a provider's API, kept in your system's password store,
+ * and which of the provider's models answers. */
+function ApiKeySettings({ provider }: { provider: ApiProvider }) {
+  const { snapshot: s, updateSettings, saves, action } = useOrbit();
+  const buddy = useBuddy();
+  const [connecting, reconnect] = useReconnect();
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const { company, page, pageName } = apiProviders[provider];
+  const saved = s.apiKeys?.[provider];
+  const models = saved?.models ?? [];
+  const field = `${provider}Model` as const;
+  const saving = saves[`buddy.${field}`]?.state === "saving";
+  const save = async (next: string | null) => {
+    if (next !== null && !next.trim()) return;
+    setError(null);
+    setBusy(true);
+    const result = await action(
+      "set_api_key",
+      { provider, key: next },
+      { quiet: true },
+    );
+    setBusy(false);
+    if (result.ok) setKey("");
+    else setError(result.error);
+  };
+  return (
+    <VStack gap={2}>
+      <Text color="secondary">
+        Orbit keeps your key in this computer&rsquo;s password store, never in
+        its settings, and only sends it to {company}. Each question you type is
+        billed to your {company} account.
+      </Text>
+      <HStack gap={2} vAlign="end">
+        <TextInput
+          type="password"
+          autoComplete="off"
+          label={`${company} API key`}
+          description={
+            saved?.saved
+              ? "A key is saved. Paste a new one here to replace it."
+              : "Paste your key here."
+          }
+          width="100%"
+          value={key}
+          onChange={setKey}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void save(key);
+            }
+          }}
+        />
+        <Button
+          label="Save key"
+          variant="secondary"
+          isDisabled={!key.trim() || busy}
+          onClick={() => void save(key)}
+        />
+      </HStack>
+      <HStack gap={2}>
+        <Button
+          label={`Get a key from ${pageName}`}
+          variant="ghost"
+          size="sm"
+          icon={<ExternalLink />}
+          onClick={() => openLink(page)}
+        />
+        {saved?.saved && (
+          <Button
+            label="Remove key"
+            variant="ghost"
+            size="sm"
+            icon={<Trash2 />}
+            isDisabled={busy}
+            onClick={() => void save(null)}
+          />
+        )}
+      </HStack>
+      {error && <Banner status="error" title={error} />}
+      {saved?.status.error && (
+        <Banner
+          status="warning"
+          title={saved.status.error}
+          endContent={
+            <Button
+              label={connecting ? "Checking…" : "Check again"}
+              size="sm"
+              icon={<RefreshCw />}
+              isLoading={connecting}
+              onClick={() => void reconnect()}
+            />
+          }
+        />
+      )}
+      <Selector
+        label={`${company} model`}
+        description={
+          models.length
+            ? `The models ${company} offers your key.`
+            : `${company}'s models show here once your key is saved.`
+        }
+        value={buddy[field]}
+        isDisabled={!models.length || saving}
+        options={models.map((m) => ({ value: m, label: m }))}
+        onChange={(model) =>
+          void updateSettings({ buddy: { [field]: model } }, `buddy.${field}`)
+        }
+      />
+      <SaveFeedback saveKey={`buddy.${field}`} />
+    </VStack>
+  );
+}
+
 /** What answering with the chosen answerer means, and whether it can yet. */
 function answererDescription(s: Snapshot, buddy: Buddy): string {
   const ready = {
@@ -665,11 +782,17 @@ function answererDescription(s: Snapshot, buddy: Buddy): string {
     claude: !!s.claude?.ready,
     antigravity: !!s.antigravity?.ready,
     ollama: !!s.ollama?.ready,
+    openai: !!s.apiKeys?.openai.status.ready,
+    anthropic: !!s.apiKeys?.anthropic.status.ready,
+    google: !!s.apiKeys?.google.status.ready,
   }[buddy.answerer];
+  const only = `${buddy.name} only answers and offers buttons; nothing changes until you tap one.`;
   const uses =
     buddy.answerer === "ollama"
-      ? `Ollama runs on this computer or another one on your network, with the model you choose below. ${buddy.name} only answers and offers buttons; nothing changes until you tap one.`
-      : `Each uses its own sign-in, with the model and effort you chose for it as a reviewer. ${buddy.name} only answers and offers buttons; nothing changes until you tap one.`;
+      ? `Ollama runs on this computer or another one on your network, with the model you choose below. ${only}`
+      : buddy.answerer in apiProviders
+        ? `${apiProviders[buddy.answerer as ApiProvider].company} answers with your API key and the model you choose below. ${only}`
+        : `Each uses its own sign-in, with the model and effort you chose for it as a reviewer. ${only}`;
   return ready
     ? uses
     : `${buddyAnswerers[buddy.answerer]} isn't connected yet, so ${buddy.name} can't answer until it is. ${uses}`;
@@ -842,6 +965,12 @@ export function BuddySettings() {
           <SaveFeedback saveKey="buddy.answerer" />
         </VStack>
         {buddy.answerer === "ollama" && <OllamaSettings />}
+        {buddy.answerer in apiProviders && (
+          <ApiKeySettings
+            key={buddy.answerer}
+            provider={buddy.answerer as ApiProvider}
+          />
+        )}
         <VStack gap={2}>
           <TextArea
             label="Personality"

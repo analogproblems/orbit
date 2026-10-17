@@ -407,8 +407,10 @@ export type BuddyHat =
   | "antenna"
   | "space-helmet";
 export type BuddyTone = "cheerful" | "calm" | "dry";
+/** A provider Bit can use with an API key of yours. */
+export type ApiProvider = "openai" | "anthropic" | "google";
 /** Who answers the questions you type to Bit. */
-export type BuddyAnswerer = Provider | "ollama";
+export type BuddyAnswerer = Provider | "ollama" | ApiProvider;
 export interface Buddy {
   enabled: boolean;
   name: string;
@@ -425,6 +427,12 @@ export interface Buddy {
   ollamaUrl: string;
   /** The Ollama model that answers. */
   ollamaModel: string;
+  /** The model that answers with your OpenAI key. */
+  openaiModel: string;
+  /** The model that answers with your Anthropic key. */
+  anthropicModel: string;
+  /** The model that answers with your Google key. */
+  googleModel: string;
 }
 /** One of Orbit's own controls, offered for something that needs you. */
 export type Fix =
@@ -476,6 +484,9 @@ export const defaultBuddy: Buddy = {
   answerer: "codex",
   ollamaUrl: "http://localhost:11434",
   ollamaModel: "",
+  openaiModel: "",
+  anthropicModel: "",
+  googleModel: "",
 };
 export const buddyTones: Record<BuddyTone, string> = {
   cheerful: "Cheerful",
@@ -487,7 +498,37 @@ export const buddyAnswerers: Record<BuddyAnswerer, string> = {
   claude: "Claude Code",
   antigravity: "Antigravity",
   ollama: "Ollama",
+  openai: "OpenAI (API key)",
+  anthropic: "Anthropic (API key)",
+  google: "Google Gemini (API key)",
 };
+export const apiProviders: Record<
+  ApiProvider,
+  { company: string; page: string; pageName: string }
+> = {
+  openai: {
+    company: "OpenAI",
+    page: "https://platform.openai.com/api-keys",
+    pageName: "OpenAI's API keys page",
+  },
+  anthropic: {
+    company: "Anthropic",
+    page: "https://console.anthropic.com/settings/keys",
+    pageName: "Anthropic's API keys page",
+  },
+  google: {
+    company: "Google",
+    page: "https://aistudio.google.com/apikey",
+    pageName: "Google AI Studio",
+  },
+};
+/** One API key: never the key, only whether it is saved and, once checked,
+ * whether the provider takes it and its models. */
+export interface ApiKeyStatus {
+  saved: boolean;
+  status: CliStatus;
+  models: string[];
+}
 export type NoteKind =
   | "round_started"
   | "round_finished"
@@ -952,6 +993,9 @@ export interface Snapshot {
   ollama?: CliStatus;
   /** The models Ollama had when last checked. */
   ollamaModels?: string[];
+  /** Your API keys, by provider; the keys themselves are only in your
+   * system's password store. */
+  apiKeys?: Record<ApiProvider, ApiKeyStatus>;
   modelCatalogReady: boolean;
   modelConfigurationError?: string | null;
   modelSelectionNotice?: string | null;
