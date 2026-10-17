@@ -1159,8 +1159,9 @@ pub fn not_fixed(s: &mut Snapshot, item: &Attention, fix: Fix, error: &str) {
 }
 
 /// Notes a sign-in to `name` waiting for you: the code to enter, and a
-/// button for the page that takes it.
-pub fn signing_in(s: &mut Snapshot, name: &str, code: &str, page: &str) {
+/// button for the page that takes it. Returns the note's id.
+pub fn signing_in(s: &mut Snapshot, name: &str, code: &str, page: &str) -> u64 {
+    let id = s.buddy_feed.next_id;
     let text = format!(
         "Let's sign you in to {name}. Open its sign-in page and enter the code below. I'll check again as soon as you're done."
     );
@@ -1180,9 +1181,15 @@ pub fn signing_in(s: &mut Snapshot, name: &str, code: &str, page: &str) {
             ..Note::new(NoteKind::SignIn, text)
         }],
     );
+    id
 }
-/// Notes how a sign-in to `name` ended.
-pub fn signed_in(s: &mut Snapshot, name: &str, result: Result<(), String>) {
+/// Notes how a sign-in to `name` ended. Its code, in the note `code`, is
+/// no use any more, so that note loses it and its button.
+pub fn signed_in(s: &mut Snapshot, name: &str, code: Option<u64>, result: Result<(), String>) {
+    if let Some(note) = s.buddy_feed.notes.iter_mut().find(|n| Some(n.id) == code) {
+        note.lines = vec![line("That code is no longer needed.".into(), None, None)];
+        note.proposals.clear();
+    }
     let note = match result {
         Ok(()) => Note::new(
             NoteKind::Fixed,

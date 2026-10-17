@@ -214,6 +214,8 @@ impl Engine {
     }
     /// Ends everything that ran on a Codex connection that has gone away.
     pub(super) async fn disconnected(self: &Arc<Self>) {
+        let rpc = self.rpc.lock().await.clone();
+        self.codex_login_lost(rpc.as_ref());
         self.items.lock().await.clear();
         let mut recovered = vec![];
         self.update(|s| {
