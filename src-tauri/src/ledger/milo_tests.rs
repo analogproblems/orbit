@@ -28,7 +28,7 @@ fn verdicts_in_every_phrasing_milo_used() {
         ("Reviewed `abc`. Two actionable findings:", ChangesRequested),
         ("**The original P3 finding is resolved. No new findings.**", Clean),
         (
-            "## Milo PR review\n\n**BLOCKED: JUPITER is offline.**\n\nNo actionable findings.",
+            "## Milo PR review\n\n**BLOCKED: TESTBOX is offline.**\n\nNo actionable findings.",
             Unknown,
         ),
         ("```\nCLEAR TO MERGE\n```\nStill looking.", Unknown),
