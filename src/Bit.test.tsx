@@ -34,6 +34,9 @@ describe("Bit", () => {
     expect(describePatch({ buddy: { answerer: "antigravity" } }, [])).toBe(
       "Who answers your questions: Antigravity",
     );
+    expect(
+      describePatch({ buddy: { ollamaUrl: "http://jupiter:11434" } }, []),
+    ).toBe("Ollama address: http://jupiter:11434");
     expect(Object.keys(fixRuleLabels)).toEqual(options.rules);
     expect(Object.keys(fixLabels)).toEqual(options.fixes);
     expect(Object.keys(questionLabels)).toEqual(options.questions);

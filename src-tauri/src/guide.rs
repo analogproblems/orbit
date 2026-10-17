@@ -4,6 +4,7 @@
 //! each repository's copy, with no AI.
 use crate::{
     ask::{self, Action, Lookups, Proposal},
+    buddy::Answerer,
     setup::{self, CloneFacts, RepositoryPatch},
     types::*,
 };
@@ -59,13 +60,14 @@ pub enum Remedy {
 }
 
 /// The pages Bit's setup help links to, which the desktop app may open.
-pub const PAGES: [&str; 6] = [
+pub const PAGES: [&str; 7] = [
     "https://cli.github.com/",
     "https://github.com/openai/codex",
     "https://code.claude.com/docs/en/setup",
     "https://antigravity.google/docs/cli",
     "https://docs.docker.com/get-started/get-docker/",
     "https://github.com/devcontainers/cli",
+    "https://ollama.com/download",
 ];
 /// Where a sign-in sends you to enter its code.
 pub const SIGN_IN_PAGES: [&str; 2] = [
@@ -85,7 +87,7 @@ pub fn may_open(url: &str) -> bool {
 /// Antigravity and dev containers while a repository or Bit uses them.
 pub fn connections(s: &Snapshot) -> Vec<Connection> {
     let buddy = &s.settings.buddy;
-    let for_bit = |p: Provider| buddy.enabled && buddy.answered_by() == p;
+    let for_bit = |a: Answerer| buddy.enabled && buddy.answered_by() == a;
     let using = |uses: fn(&Repository) -> bool| -> Vec<String> {
         s.settings
             .repositories
@@ -123,7 +125,7 @@ pub fn connections(s: &Snapshot) -> Vec<Connection> {
             ready: s.codex_ready,
             error: s.codex_error.clone(),
             needed_by: using(|r| r.provider == Provider::Codex),
-            for_bit: for_bit(Provider::Codex),
+            for_bit: for_bit(Answerer::Codex),
             how: "Run codex login in a terminal on the computer running Orbit.",
             program: "Codex CLI",
             page: PAGES[1],
@@ -133,7 +135,7 @@ pub fn connections(s: &Snapshot) -> Vec<Connection> {
             "claude",
             &s.claude,
             using(|r| r.provider == Provider::Claude),
-            for_bit(Provider::Claude),
+            for_bit(Answerer::Claude),
             "Install Claude Code, then run claude in a terminal to sign in.",
             "Claude Code",
             PAGES[2],
@@ -143,7 +145,7 @@ pub fn connections(s: &Snapshot) -> Vec<Connection> {
             "antigravity",
             &s.antigravity,
             using(|r| r.provider == Provider::Antigravity),
-            for_bit(Provider::Antigravity),
+            for_bit(Answerer::Antigravity),
             "Install Antigravity, then run agy in a terminal to sign in.",
             "Antigravity",
             PAGES[3],
@@ -168,6 +170,16 @@ pub fn connections(s: &Snapshot) -> Vec<Connection> {
         c.program = "Dev Container CLI";
         c.page = PAGES[5];
     }
+    out.push(cli(
+        "Ollama",
+        "ollama",
+        &s.ollama,
+        vec![],
+        for_bit(Answerer::Ollama),
+        "Start Ollama on this computer or another one on your network, then check its address in Settings, under Buddy.",
+        "Ollama",
+        PAGES[6],
+    ));
     out.retain(|c| matches!(c.key, "github" | "codex") || !c.needed_by.is_empty() || c.for_bit);
     out
 }

@@ -1,8 +1,8 @@
 //! Questions you type to Bit, answered by the answerer you chose: Codex in
 //! a thread of its own (read-only, in an empty folder, with no network, no
 //! approvals and none of Codex's other tools), Claude Code with no tools at
-//! all, or Antigravity in its sandbox. The answer's buttons run only when
-//! you tap them.
+//! all, Antigravity in its sandbox, or Ollama, which only ever writes an
+//! answer. The answer's buttons run only when you tap them.
 use super::{
     extras::{self, sentence},
     publish::By,
@@ -11,7 +11,8 @@ use super::{
 use crate::{
     antigravity,
     ask::{self, Action},
-    buddy, claude,
+    buddy::{self, Answerer},
+    claude,
     cli::{Init, Output, Running, Turn, TurnKind},
     types::*,
 };
@@ -29,9 +30,11 @@ pub(super) struct Asking {
     /// The question's note.
     note: u64,
     /// Who answers it.
-    by: Provider,
+    by: Answerer,
     /// Claude Code or Antigravity answering it; dropping it stops them.
     running: Option<Running>,
+    /// Ollama's request; dropping it stops the request.
+    request: Option<Request>,
     thread: Option<String>,
     turn: Option<String>,
     /// Codex's latest message, its answer once the turn completes.
@@ -41,6 +44,32 @@ pub(super) struct Asking {
     memory_generation: u64,
     /// The repositories the question's summary offered to connect.
     connectable: Vec<String>,
+}
+
+/// A request for an answer; dropping it stops the request.
+struct Request(tokio::task::AbortHandle);
+impl Drop for Request {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Whether Ollama can answer with `model`, from its latest check.
+fn ollama_ready(s: &Snapshot, model: &str) -> Result<(), String> {
+    if !s.ollama.ready {
+        return Err(s.ollama.error.clone().unwrap_or_else(|| {
+            "Orbit hasn't reached it yet. Check its address in Settings.".into()
+        }));
+    }
+    if model.is_empty() {
+        return Err("Choose an Ollama model in Settings.".into());
+    }
+    if !s.ollama_models.iter().any(|m| m == model) {
+        return Err(format!(
+            "Ollama doesn't have model '{model}'. Choose one in Settings."
+        ));
+    }
+    Ok(())
 }
 
 impl Engine {
@@ -54,7 +83,7 @@ impl Engine {
                 ask::MAX_QUESTION
             ));
         }
-        let (note, by, selection, connected) = {
+        let (note, by, selection, ollama_url, connected) = {
             let mut s = self.state.lock().await;
             let name = s.settings.buddy.name.clone();
             if !s.settings.buddy.enabled {
@@ -64,8 +93,18 @@ impl Engine {
                 return Err(format!("{name} is still answering your last question."));
             }
             let by = s.settings.buddy.answered_by();
-            let selection = s.settings.selection(by);
-            selection.validate_for(by, &s).map_err(|e| {
+            let selection = match by.provider() {
+                Some(p) => s.settings.selection(p),
+                None => ModelSelection {
+                    model: s.settings.buddy.ollama_model.clone(),
+                    effort: String::new(),
+                },
+            };
+            match by.provider() {
+                Some(p) => selection.validate_for(p, &s),
+                None => ollama_ready(&s, &selection.model),
+            }
+            .map_err(|e| {
                 format!(
                     "{name} answers typed questions with {}, which isn't ready: {e}",
                     by.label()
@@ -76,6 +115,7 @@ impl Engine {
                 note,
                 by,
                 running: None,
+                request: None,
                 thread: None,
                 turn: None,
                 text: String::new(),
@@ -83,7 +123,13 @@ impl Engine {
                 connectable: vec![],
             });
             self.dirty.store(true, Ordering::SeqCst);
-            (note, by, selection, s.settings.repositories.clone())
+            (
+                note,
+                by,
+                selection,
+                s.settings.buddy.ollama_url.clone(),
+                s.settings.repositories.clone(),
+            )
         };
         let _ = self.flush().await;
         // The question shows while Bit looks up your repositories.
@@ -101,12 +147,13 @@ impl Engine {
                 ask::instructions(&s.settings.buddy),
             )
         };
-        let started = match by {
-            Provider::Codex => {
+        let started = match by.provider() {
+            Some(Provider::Codex) => {
                 self.start_answer(note, &prompt, &instructions, &selection)
                     .await
             }
-            _ => self.start_cli_answer(note, by, &prompt, &instructions, &selection),
+            Some(p) => self.start_cli_answer(note, p, &prompt, &instructions, &selection),
+            None => self.start_ollama_answer(note, ollama_url, prompt, instructions, selection),
         };
         if let Err(error) = started {
             self.answer_done(note, Err(error)).await;
@@ -249,6 +296,75 @@ impl Engine {
         });
         Ok(())
     }
+    /// Lists Ollama's models at Bit's address while Ollama answers Bit,
+    /// recording whether it can.
+    pub async fn check_ollama(&self) {
+        let asked = |s: &Snapshot| {
+            let buddy = &s.settings.buddy;
+            (buddy.answered_by() == Answerer::Ollama).then(|| buddy.ollama_url.clone())
+        };
+        let url = asked(&*self.state.lock().await);
+        let result = match &url {
+            Some(url) => Some(crate::ollama::models(url).await.and_then(|models| {
+                if models.is_empty() {
+                    Err(format!("Ollama at {url} has no models yet. Pull one there, such as with ollama pull, then check again."))
+                } else {
+                    Ok(models)
+                }
+            })),
+            None => None,
+        };
+        self.update(|s| {
+            // A change since the check started gets a check of its own.
+            if asked(s) != url {
+                return;
+            }
+            s.ollama_models = match &result {
+                Some(Ok(models)) => models.clone(),
+                _ => vec![],
+            };
+            s.ollama = match result {
+                Some(result) => status(&result),
+                None => CliStatus::default(),
+            };
+        })
+        .await;
+        let _ = self.flush().await;
+    }
+    /// Asks Ollama, which only ever writes an answer: it is sent the
+    /// question with what Orbit knows, and nothing more.
+    fn start_ollama_answer(
+        self: &Arc<Self>,
+        note: u64,
+        url: String,
+        prompt: String,
+        instructions: String,
+        selection: ModelSelection,
+    ) -> Result<(), String> {
+        let asked = tokio::spawn(async move {
+            crate::ollama::answer(
+                &url,
+                &selection.model,
+                &instructions,
+                &prompt,
+                &ask::output_schema(),
+                ANSWER_TIMEOUT,
+            )
+            .await
+        });
+        // A question that was dropped meanwhile drops its request too.
+        let request = Request(asked.abort_handle());
+        self.asking_mut(note, |a| a.request = Some(request))
+            .ok_or("The question was dropped.")?;
+        let e = self.clone();
+        tokio::spawn(async move {
+            // Stopped when the question ended without it.
+            if let Ok(reply) = asked.await {
+                e.answer_done(note, reply).await;
+            }
+        });
+        Ok(())
+    }
     /// Checks with Codex that no tool server is on for `thread`.
     async fn tools_off(&self, rpc: &crate::rpc::Rpc, thread: &str) -> Result<(), String> {
         extras::check(rpc, thread, None)
@@ -365,7 +481,7 @@ impl Engine {
             .lock()
             .unwrap()
             .as_ref()
-            .filter(|a| a.by == Provider::Codex)
+            .filter(|a| a.by == Answerer::Codex)
             .map(|a| a.note);
         if let Some(note) = note {
             self.answer_done(note, Err(why.into())).await;
@@ -543,4 +659,13 @@ async fn cli_answer(
         }
     }
     Err(format!("{name} stopped without an answer."))
+}
+
+/// A check's result as a connection's status.
+fn status<T>(result: &Result<T, String>) -> CliStatus {
+    CliStatus {
+        ready: result.is_ok(),
+        error: result.as_ref().err().cloned(),
+        version: None,
+    }
 }

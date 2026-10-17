@@ -36,7 +36,7 @@ import {
   Token,
   VStack,
 } from "@astryxdesign/core";
-import { Trash2 } from "lucide-react";
+import { RefreshCw, Trash2 } from "lucide-react";
 import { openLink, useOrbit } from "./store";
 import {
   actionLabels,
@@ -70,6 +70,7 @@ import {
 } from "./types";
 import { Bit, bitColours, bitHats, moodLabels } from "./Bit";
 import { SaveFeedback } from "./SaveFeedback";
+import { useReconnect } from "./CliReviewers";
 import { SafeMarkdown } from "./SafeMarkdown";
 import { describePatch, describeRepositoryPatch } from "./describePatch";
 import { recentTimestamp } from "./timestamps";
@@ -578,14 +579,97 @@ export function BuddyPage({
 
 const previewMoods: Mood[] = ["happy", "busy", "worried", "sleepy"];
 
+/** Where Ollama is and which of its models answers Bit. */
+function OllamaSettings() {
+  const { snapshot: s, updateSettings, saves } = useOrbit();
+  const buddy = useBuddy();
+  const [connecting, reconnect] = useReconnect();
+  const [url, setUrl] = useState<string | null>(null);
+  const typedUrl = url ?? buddy.ollamaUrl;
+  const saving = (key: string) => saves[`buddy.${key}`]?.state === "saving";
+  const saveUrl = async () => {
+    if (!typedUrl.trim() || typedUrl.trim() === buddy.ollamaUrl) return;
+    const result = await updateSettings(
+      { buddy: { ollamaUrl: typedUrl } },
+      "buddy.ollamaUrl",
+    );
+    if (result.ok) setUrl(null);
+  };
+  const models = s.ollamaModels ?? [];
+  return (
+    <VStack gap={2}>
+      <HStack gap={2} vAlign="end">
+        <TextInput
+          label="Ollama address"
+          description={`${buddy.name} sends each question, with what Orbit knows, to this address.`}
+          width="100%"
+          value={typedUrl}
+          onChange={setUrl}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void saveUrl();
+            }
+          }}
+        />
+        <Button
+          label="Save address"
+          variant="secondary"
+          isDisabled={
+            !typedUrl.trim() ||
+            typedUrl.trim() === buddy.ollamaUrl ||
+            saving("ollamaUrl")
+          }
+          onClick={() => void saveUrl()}
+        />
+      </HStack>
+      <SaveFeedback saveKey="buddy.ollamaUrl" />
+      {s.ollama?.error && (
+        <Banner
+          status="warning"
+          title={s.ollama.error}
+          endContent={
+            <Button
+              label={connecting ? "Checking…" : "Check again"}
+              size="sm"
+              icon={<RefreshCw />}
+              isLoading={connecting}
+              onClick={() => void reconnect()}
+            />
+          }
+        />
+      )}
+      <Selector
+        label="Ollama model"
+        description={
+          models.length
+            ? "The models Ollama has at that address."
+            : "Ollama's models show here once Orbit reaches it."
+        }
+        value={buddy.ollamaModel}
+        isDisabled={!models.length || saving("ollamaModel")}
+        options={models.map((m) => ({ value: m, label: m }))}
+        onChange={(ollamaModel) =>
+          void updateSettings({ buddy: { ollamaModel } }, "buddy.ollamaModel")
+        }
+      />
+      <SaveFeedback saveKey="buddy.ollamaModel" />
+    </VStack>
+  );
+}
+
 /** What answering with the chosen answerer means, and whether it can yet. */
 function answererDescription(s: Snapshot, buddy: Buddy): string {
   const ready = {
     codex: s.codexReady,
     claude: !!s.claude?.ready,
     antigravity: !!s.antigravity?.ready,
+    ollama: !!s.ollama?.ready,
   }[buddy.answerer];
-  const uses = `Each uses its own sign-in, with the model and effort you chose for it as a reviewer. ${buddy.name} only answers and offers buttons; nothing changes until you tap one.`;
+  const uses =
+    buddy.answerer === "ollama"
+      ? `Ollama runs on this computer or another one on your network, with the model you choose below. ${buddy.name} only answers and offers buttons; nothing changes until you tap one.`
+      : `Each uses its own sign-in, with the model and effort you chose for it as a reviewer. ${buddy.name} only answers and offers buttons; nothing changes until you tap one.`;
   return ready
     ? uses
     : `${buddyAnswerers[buddy.answerer]} isn't connected yet, so ${buddy.name} can't answer until it is. ${uses}`;
@@ -757,6 +841,7 @@ export function BuddySettings() {
           />
           <SaveFeedback saveKey="buddy.answerer" />
         </VStack>
+        {buddy.answerer === "ollama" && <OllamaSettings />}
         <VStack gap={2}>
           <TextArea
             label="Personality"

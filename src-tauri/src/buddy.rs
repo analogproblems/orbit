@@ -58,8 +58,35 @@ pub const HATS: [&str; 21] = [
 /// How Bit's notes sound.
 pub const TONES: [&str; 3] = ["cheerful", "calm", "dry"];
 /// Who answers the questions you type: Codex, Claude Code or Antigravity,
-/// each with its own sign-in.
-pub const ANSWERERS: [&str; 3] = ["codex", "claude", "antigravity"];
+/// each with its own sign-in, or Ollama on this computer or your network.
+pub const ANSWERERS: [&str; 4] = ["codex", "claude", "antigravity", "ollama"];
+
+/// Who answers the questions you type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Answerer {
+    Codex,
+    Claude,
+    Antigravity,
+    Ollama,
+}
+impl Answerer {
+    /// Its name in messages.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ollama => "Ollama",
+            _ => self.provider().map_or("", Provider::label),
+        }
+    }
+    /// The reviewer it is, if it is one.
+    pub fn provider(self) -> Option<Provider> {
+        match self {
+            Self::Codex => Some(Provider::Codex),
+            Self::Claude => Some(Provider::Claude),
+            Self::Antigravity => Some(Provider::Antigravity),
+            Self::Ollama => None,
+        }
+    }
+}
 /// The longest name, in characters.
 pub const MAX_NAME: usize = 24;
 /// The longest personality text, in characters.
@@ -176,6 +203,10 @@ pub struct Buddy {
     pub rules: Rules,
     /// One of `ANSWERERS`.
     pub answerer: String,
+    /// Where Ollama listens, when it answers.
+    pub ollama_url: String,
+    /// The Ollama model that answers.
+    pub ollama_model: String,
 }
 impl Default for Buddy {
     fn default() -> Self {
@@ -188,6 +219,8 @@ impl Default for Buddy {
             personality: String::new(),
             rules: Rules::default(),
             answerer: "codex".into(),
+            ollama_url: crate::ollama::DEFAULT_URL.into(),
+            ollama_model: String::new(),
         }
     }
 }
@@ -229,14 +262,17 @@ impl Buddy {
                 self.answerer
             ));
         }
+        crate::ollama::validate_url(&self.ollama_url)?;
+        crate::ollama::validate_model(&self.ollama_model)?;
         Ok(())
     }
     /// Who answers the questions you type.
-    pub fn answered_by(&self) -> Provider {
+    pub fn answered_by(&self) -> Answerer {
         match self.answerer.as_str() {
-            "claude" => Provider::Claude,
-            "antigravity" => Provider::Antigravity,
-            _ => Provider::Codex,
+            "claude" => Answerer::Claude,
+            "antigravity" => Answerer::Antigravity,
+            "ollama" => Answerer::Ollama,
+            _ => Answerer::Codex,
         }
     }
     /// Replaces anything saved state holds that this version doesn't know,
@@ -270,6 +306,12 @@ impl Buddy {
         if !ANSWERERS.contains(&self.answerer.as_str()) {
             self.answerer = default.answerer;
         }
+        if crate::ollama::validate_url(&self.ollama_url).is_err() {
+            self.ollama_url = default.ollama_url;
+        }
+        if crate::ollama::validate_model(&self.ollama_model).is_err() {
+            self.ollama_model = default.ollama_model;
+        }
     }
 }
 /// Only supplied fields change.
@@ -284,6 +326,8 @@ pub struct BuddyPatch {
     pub personality: Option<String>,
     pub rules: Option<RulesPatch>,
     pub answerer: Option<String>,
+    pub ollama_url: Option<String>,
+    pub ollama_model: Option<String>,
 }
 impl BuddyPatch {
     pub fn apply(self, buddy: &mut Buddy) {
@@ -307,6 +351,12 @@ impl BuddyPatch {
         }
         if let Some(v) = self.answerer {
             buddy.answerer = v;
+        }
+        if let Some(v) = self.ollama_url {
+            buddy.ollama_url = v.trim().to_string();
+        }
+        if let Some(v) = self.ollama_model {
+            buddy.ollama_model = v.trim().to_string();
         }
         if let Some(rules) = self.rules {
             let patch = [

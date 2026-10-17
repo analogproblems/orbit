@@ -742,7 +742,10 @@ async fn an_answer_from_another_model_isnt_used() {
         e.ask_buddy_anything("What's up with b#1?").await.unwrap();
         let note = answer_of(&e).await;
         let s = e.snapshot().await;
-        let model = s.settings.selection(s.settings.buddy.answered_by()).model;
+        let model = s
+            .settings
+            .selection(s.settings.buddy.answered_by().provider().unwrap())
+            .model;
         assert!(
             note.text.contains(&format!(
                 "didn't confirm the model '{model}' (reported: {reported})"
@@ -754,4 +757,127 @@ async fn an_answer_from_another_model_isnt_used() {
         assert!(note.memory.is_empty());
         assert!(s.buddy_feed.memory.general.is_empty());
     }
+}
+
+/// The fixture's engine, with Bit answering with a fake Ollama.
+async fn answering_with_ollama(
+    fake: crate::ollama::tests::Fake,
+) -> (tempfile::TempDir, Arc<Engine>, Arc<Rpc>) {
+    let (dir, e, rpc) = fixture().await;
+    let url = crate::ollama::tests::serve(fake).await;
+    let patch: SettingsPatch = serde_json::from_value(json!({"buddy": {
+        "answerer": "ollama",
+        "ollamaUrl": url,
+        "ollamaModel": "llama3.2:3b",
+    }}))
+    .unwrap();
+    e.update_settings(patch).await.unwrap();
+    (dir, e, rpc)
+}
+fn ollama_with(content: &str) -> crate::ollama::tests::Fake {
+    crate::ollama::tests::Fake {
+        models: vec!["llama3.2:3b".into(), "qwen3:8b".into()],
+        content: content.into(),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn ollama_answers_with_bits_instructions_and_the_answer_form() {
+    let fake = ollama_with(&bit_answer().to_string());
+    let chats = fake.chats.clone();
+    let (_dir, e, rpc) = answering_with_ollama(fake).await;
+    // Choosing Ollama checked it straight away.
+    let s = e.snapshot().await;
+    assert!(s.ollama.ready, "{:?}", s.ollama.error);
+    assert_eq!(s.ollama_models, ["llama3.2:3b", "qwen3:8b"]);
+
+    e.ask_buddy_anything("What's up with b#1?").await.unwrap();
+    let note = answer_of(&e).await;
+    assert_eq!(note.text, "b#1 is waiting for its author to push a fix.");
+    assert_eq!(note.proposals[0].action, Action::StopLoop);
+    let chat = chats.lock().unwrap()[0].clone();
+    assert_eq!(chat["model"], "llama3.2:3b");
+    assert_eq!(chat["format"], crate::ask::output_schema());
+    assert!(chat["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .starts_with("You are Bit,"));
+    assert!(chat["messages"][1]["content"]
+        .as_str()
+        .unwrap()
+        .starts_with("The person asks: What's up with b#1?"));
+    assert!(sent(&rpc, "thread/start").await.is_empty());
+
+    // Back to Codex, Ollama is no longer checked.
+    let patch: SettingsPatch =
+        serde_json::from_value(json!({"buddy": {"answerer": "codex"}})).unwrap();
+    e.update_settings(patch).await.unwrap();
+    let s = e.snapshot().await;
+    assert_eq!(s.ollama, CliStatus::default());
+    assert!(s.ollama_models.is_empty());
+}
+
+#[tokio::test]
+async fn bit_says_what_ollama_needs_before_asking_it() {
+    let (_dir, e, _rpc) = answering_with_ollama(ollama_with("{}")).await;
+    let patch: SettingsPatch =
+        serde_json::from_value(json!({"buddy": {"ollamaModel": "mistral"}})).unwrap();
+    e.update_settings(patch).await.unwrap();
+    assert_eq!(
+        e.ask_buddy_anything("Hi?").await.unwrap_err(),
+        "Bit answers typed questions with Ollama, which isn't ready: Ollama doesn't have model 'mistral'. Choose one in Settings."
+    );
+    // Nothing at the address.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let gone = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    let patch: SettingsPatch =
+        serde_json::from_value(json!({"buddy": {"ollamaUrl": gone}})).unwrap();
+    e.update_settings(patch).await.unwrap();
+    let error = e.ask_buddy_anything("Hi?").await.unwrap_err();
+    assert!(
+        error.contains(&format!("Nothing answered at {gone}.")),
+        "{error}"
+    );
+    // A server with no models.
+    let empty = crate::ollama::tests::serve(Default::default()).await;
+    let patch: SettingsPatch =
+        serde_json::from_value(json!({"buddy": {"ollamaUrl": empty}})).unwrap();
+    e.update_settings(patch).await.unwrap();
+    let error = e.ask_buddy_anything("Hi?").await.unwrap_err();
+    assert!(error.contains("has no models yet"), "{error}");
+}
+
+#[tokio::test]
+async fn an_ollama_answer_from_another_model_isnt_used_and_ending_a_question_stops_it() {
+    let mut fake = ollama_with(&bit_answer().to_string());
+    fake.reported = Some("qwen3:8b".into());
+    let (_dir, e, _rpc) = answering_with_ollama(fake).await;
+    e.ask_buddy_anything("What's up with b#1?").await.unwrap();
+    let note = answer_of(&e).await;
+    assert!(
+        note.text
+            .contains("didn't confirm the model 'llama3.2:3b' (reported: qwen3:8b)"),
+        "{}",
+        note.text
+    );
+    assert!(note.proposals.is_empty());
+
+    let mut slow = ollama_with(&bit_answer().to_string());
+    slow.delay = std::time::Duration::from_secs(30);
+    let chats = slow.chats.clone();
+    let (_dir, e, _rpc) = answering_with_ollama(slow).await;
+    e.ask_buddy_anything("What's up with b#1?").await.unwrap();
+    while chats.lock().unwrap().is_empty() {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    e.end_codex_question("Codex disconnected.").await;
+    assert!(last(&e.snapshot().await).pending);
+    let note = last(&e.snapshot().await).id;
+    e.answer_done(note, Err("Ollama took too long.".into()))
+        .await;
+    assert!(e.asking.lock().unwrap().is_none());
+    let note = last(&e.snapshot().await);
+    assert!(note.text.contains("Ollama took too long."), "{}", note.text);
 }

@@ -443,6 +443,11 @@ fn settings_check_the_name_and_choices() {
             "eliza",
             "'eliza' can't answer the buddy's questions.",
         ),
+        (
+            "ollama_url",
+            "localhost:11434",
+            "Ollama's address starts with http:// or https://, such as http://localhost:11434.",
+        ),
     ] {
         let mut bad = b.clone();
         match field {
@@ -450,6 +455,7 @@ fn settings_check_the_name_and_choices() {
             "colour" => bad.colour = value.into(),
             "hat" => bad.hat = value.into(),
             "answerer" => bad.answerer = value.into(),
+            "ollama_url" => bad.ollama_url = value.into(),
             _ => bad.tone = value.into(),
         }
         assert_eq!(bad.validate().unwrap_err(), error, "{field}");
@@ -460,12 +466,15 @@ fn settings_check_the_name_and_choices() {
     assert_eq!((b.name.as_str(), b.hat.as_str()), ("Orbie", "wizard"));
     assert!(serde_json::from_value::<BuddyPatch>(json!({"mood": "happy"})).is_err());
     // Codex answers until you choose another.
-    assert_eq!(b.answered_by(), Provider::Codex);
+    assert_eq!(b.answered_by(), Answerer::Codex);
     let patch: BuddyPatch = serde_json::from_value(json!({"answerer": "claude"})).unwrap();
     patch.apply(&mut b);
-    assert_eq!(b.answered_by(), Provider::Claude);
+    assert_eq!(b.answered_by(), Answerer::Claude);
     b.answerer = "antigravity".into();
-    assert_eq!(b.answered_by(), Provider::Antigravity);
+    assert_eq!(b.answered_by(), Answerer::Antigravity);
+    b.answerer = "ollama".into();
+    assert_eq!(b.answered_by(), Answerer::Ollama);
+    assert_eq!(b.answered_by().provider(), None);
 
     // Every rule starts on Ask first; a patch changes only the rules it names.
     assert!(RULES
@@ -504,6 +513,14 @@ fn saved_state_from_another_version_falls_back_to_defaults() {
         ("lime", "none", "cheerful")
     );
     assert!(b.validate().is_ok());
+    // An Ollama address Orbit can't use.
+    let mut b: Buddy =
+        serde_json::from_value(json!({"ollamaUrl": "file:///etc", "ollamaModel": "a\nb"})).unwrap();
+    b.normalize();
+    assert_eq!(
+        (b.ollama_url.as_str(), b.ollama_model.as_str()),
+        (crate::ollama::DEFAULT_URL, "")
+    );
     // Older state has no rules; newer state may name a rule or a fix this
     // version doesn't know.
     let mut b: Buddy = serde_json::from_value(

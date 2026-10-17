@@ -1237,6 +1237,10 @@ pub struct Snapshot {
     /// The models Antigravity offered when last checked, in the shape of
     /// `models`.
     pub antigravity_models: Vec<Value>,
+    /// Ollama at Bit's address, as last checked while it answers Bit.
+    pub ollama: CliStatus,
+    /// The models Ollama had when last checked.
+    pub ollama_models: Vec<String>,
     /// Per-PR controls of the automatic review loop.
     pub loops: Vec<LoopControl>,
     /// Commit statuses Orbit has set, so each is sent only when it changes

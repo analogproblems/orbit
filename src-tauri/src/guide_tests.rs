@@ -431,6 +431,16 @@ fn bits_answerer_is_checked_even_when_no_repository_uses_it() {
     let c = &connections(&s)[2];
     assert!(c.for_bit && c.needed_by.is_empty());
     assert!(!connections(&s)[1].for_bit);
+    // Ollama too, with a button to get it.
+    s.settings.buddy.answerer = "ollama".into();
+    s.ollama.error = Some("Nothing answered at http://localhost:11434.".into());
+    assert_eq!(names(&s), ["GitHub", "Codex", "Ollama"]);
+    let ollama = connections(&s).pop().unwrap();
+    assert_eq!(
+        fix(&ollama).unwrap().link.as_deref(),
+        Some("https://ollama.com/download")
+    );
+    assert!(may_open("https://ollama.com/download"));
     // Not while Bit is off.
     s.settings.buddy.enabled = false;
     assert_eq!(names(&s), ["GitHub", "Codex"]);
