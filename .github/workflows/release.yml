@@ -1,0 +1,112 @@
+# Builds Orbit for Linux, macOS and Windows when a version tag such as v0.1.0
+# is pushed, and attaches the installers to a draft GitHub Release. Check the
+# draft, then publish it by hand. A pull request that changes this file or the
+# app's bundle settings, or a run started by hand from the Actions tab, builds
+# without a release and keeps the installers on the run instead.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - src-tauri/tauri.conf.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-version:
+    name: Check the tag matches the app version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Compare tag with package.json, tauri.conf.json and Cargo.toml
+        if: github.event_name == 'push'
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          npm_version=$(node -p "require('./package.json').version")
+          tauri_version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          cargo_version=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -n 1)
+          echo "tag $tag, package.json $npm_version, tauri.conf.json $tauri_version, Cargo.toml $cargo_version"
+          if [ "$tag" != "$npm_version" ] || [ "$tag" != "$tauri_version" ] || [ "$tag" != "$cargo_version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match the version in package.json, tauri.conf.json and Cargo.toml. Bump all three, then tag again."
+            exit 1
+          fi
+
+  build:
+    name: Build (${{ matrix.name }})
+    needs: check-version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            runner: ubuntu-22.04
+            args: ""
+          - name: macOS
+            runner: macos-latest
+            args: "--target universal-apple-darwin"
+          - name: Windows
+            runner: windows-latest
+            args: ""
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write # for the draft release on a pushed tag
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Linux libraries
+        if: matrix.name == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.name == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - run: npm ci
+
+      # Only a pushed tag makes a release. A run started by hand, even on a tag,
+      # only builds.
+      - uses: tauri-apps/tauri-action@v0
+        if: github.event_name == 'push'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: Orbit ${{ github.ref_name }}
+          releaseBody: Download the file for your system below. The macOS and Windows builds aren't signed yet, so your system will warn the first time you open them.
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+
+      - name: Build without a release
+        if: github.event_name != 'push'
+        run: npm run tauri -- build ${{ matrix.args }}
+
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'push'
+        with:
+          name: orbit-${{ matrix.name }}
+          path: |
+            src-tauri/target/**/release/bundle/*/*.deb
+            src-tauri/target/**/release/bundle/*/*.rpm
+            src-tauri/target/**/release/bundle/*/*.AppImage
+            src-tauri/target/**/release/bundle/*/*.dmg
+            src-tauri/target/**/release/bundle/*/*.msi
+            src-tauri/target/**/release/bundle/*/*.exe
+          if-no-files-found: error

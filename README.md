@@ -15,7 +15,11 @@ Built with Tauri 2, Rust, React 19, TypeScript, Zustand, and the Astryx design s
 
 Orbit runs `gh`, `git`, `codex`, `claude`, and `agy` from your `PATH` and uses their own sign-ins. It never asks for or stores your tokens.
 
-## Run
+## Download
+
+Installers for Linux (`.deb`, `.AppImage`, `.rpm`), macOS (`.dmg`, for Apple silicon and Intel) and Windows (`.msi`, `.exe`) are attached to each [release](https://github.com/analogproblems/orbit/releases). The macOS and Windows builds aren't signed yet: on macOS, open it once, then choose **Open Anyway** in **System Settings → Privacy & Security**; on Windows, choose **More info → Run anyway**. You still need the CLIs listed above.
+
+## Run from source
 
 ```sh
 npm install
@@ -74,6 +78,17 @@ npm run diagnose   # Read-only GitHub/Codex connection check; no inference or co
 npm run tauri -- build --no-bundle  # Native executable (src-tauri/target/release/orbit on Linux)
 ```
 
+### Releases
+
+Pushing a version tag builds every installer. Bump the version in `package.json`, `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`, merge that, then tag the merge commit and push the tag:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The [Release workflow](.github/workflows/release.yml) checks the tag matches all three versions, builds on Linux, macOS and Windows, and attaches the files to a draft release. Check the draft on the Releases page, then publish it.
+
 ### Dev container
 
 [`.devcontainer/`](.devcontainer/devcontainer.json) describes a box with everything `npm run check` needs: Node 22, stable Rust with rustfmt and Clippy, the Linux libraries Tauri needs, Git and `gh`. Open the folder in VS Code and choose **Reopen in Container**, start a GitHub Codespace, or run `devcontainer up --workspace-folder .` with the [Dev Container CLI](https://github.com/devcontainers/cli). `npm ci` runs when the container is created. The box has no display, so use `npm run check` and the browser demo (`npm run dev`, port 1420 is forwarded) there, and `npm run desktop` on your own machine.
@@ -82,21 +97,21 @@ UI code follows [`AGENTS.md`](AGENTS.md): Astryx components and tokens only. Run
 
 ## Architecture
 
-| Area                                                    | Implementation                                                                                                                                  |
-| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| UI shell and theme                                      | `src/App.tsx`, `src/main.tsx`, `src/styles.css`                                                                                                 |
-| Workflow UI                                             | `src/Inbox.tsx`, `src/Detail.tsx`, `src/Chat.tsx`, `src/Files.tsx`, `src/Repositories.tsx`, `src/Settings.tsx`, `src/Loops.tsx`, `src/Live.tsx` |
-| Typed application state and native bridge               | `src/types.ts`, `src/store.ts`                                                                                                                  |
-| Separate interactive demo                               | `src/demo.ts` and the demo adapter in `src/store.ts`                                                                                            |
-| Queue, worktrees, orchestration, persistence            | `src-tauri/src/engine/` (one file per area; see `engine/mod.rs`)                                                                                |
-| Review loop state, verdicts, and attention items        | `src-tauri/src/review_loop.rs`, `src-tauri/src/attention.rs`                                                                                    |
-| GitHub discovery, PR details, files, comments           | `src-tauri/src/github.rs`                                                                                                                       |
-| Pull-request history and the Decisions page             | `src-tauri/src/ledger/` (reading), `src-tauri/src/engine/ledger.rs`, `engine/writeup.rs` (background), `src/Decisions.tsx`, `src/decisions.ts`  |
-| Setup and checks in dev containers                      | `src-tauri/src/devcontainer.rs`, `src-tauri/src/engine/checks.rs`                                                                               |
-| Codex process and bidirectional RPC                     | `src-tauri/src/rpc.rs`                                                                                                                          |
-| Storage inspection, ownership checks, report generation | `src-tauri/src/storage.rs`                                                                                                                      |
-| Storage and report actions                              | `src/Storage.tsx`, `src/ReviewActions.tsx`                                                                                                      |
-| Native command allowlist and lifecycle                  | `src-tauri/src/lib.rs`                                                                                                                          |
+| Area                                                    | Implementation                                                                                                                                    |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| UI shell and theme                                      | `src/App.tsx`, `src/main.tsx`, `src/styles.css`                                                                                                   |
+| Workflow UI                                             | `src/Inbox.tsx`, `src/Detail.tsx`, `src/Chat.tsx`, `src/Files.tsx`, `src/Repositories.tsx`, `src/Settings.tsx`, `src/Loops.tsx`, `src/Live.tsx`   |
+| Typed application state and native bridge               | `src/types.ts`, `src/store.ts`                                                                                                                    |
+| Separate interactive demo                               | `src/demo.ts` and the demo adapter in `src/store.ts`                                                                                              |
+| Queue, worktrees, orchestration, persistence            | `src-tauri/src/engine/` (one file per area; see `engine/mod.rs`)                                                                                  |
+| Review loop state, verdicts, and attention items        | `src-tauri/src/review_loop.rs`, `src-tauri/src/attention.rs`                                                                                      |
+| GitHub discovery, PR details, files, comments           | `src-tauri/src/github.rs`                                                                                                                         |
+| Pull-request history and the Decisions page             | `src-tauri/src/ledger/` (reading), `src-tauri/src/engine/ledger.rs`, `engine/writeup.rs` (background), `src/Decisions.tsx`, `src/decisionData.ts` |
+| Setup and checks in dev containers                      | `src-tauri/src/devcontainer.rs`, `src-tauri/src/engine/checks.rs`                                                                                 |
+| Codex process and bidirectional RPC                     | `src-tauri/src/rpc.rs`                                                                                                                            |
+| Storage inspection, ownership checks, report generation | `src-tauri/src/storage.rs`                                                                                                                        |
+| Storage and report actions                              | `src/Storage.tsx`, `src/ReviewActions.tsx`                                                                                                        |
+| Native command allowlist and lifecycle                  | `src-tauri/src/lib.rs`                                                                                                                            |
 
 ## Contributing and license
 
