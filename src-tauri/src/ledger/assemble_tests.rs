@@ -216,7 +216,7 @@ fn a_review_edited_in_place_for_a_new_head_keeps_both_rounds() {
 
 #[test]
 fn an_edit_for_the_same_head_stays_one_round_with_the_latest_text() {
-    let first = "## Milo PR review\n\nBLOCKED: required isolated testing could not start because JUPITER is offline.\n\n- Full head: `aaaaaaa`";
+    let first = "## Milo PR review\n\nBLOCKED: required isolated testing could not start because TESTBOX is offline.\n\n- Full head: `aaaaaaa`";
     let second = "## Milo PR review\n\n**CLEAR TO MERGE**\n\n- Full head: `aaaaaaa`";
     let mut review = comment(10, "2026-10-11T10:00:00Z", second);
     review.updated_at = "2026-10-11T11:00:00Z".into();
@@ -366,7 +366,7 @@ fn a_blocked_review_has_no_verdict() {
     let review = comment(
         10,
         "2026-10-11T10:00:00Z",
-        "## Milo PR review\n\n**BLOCKED: required isolated testing could not start because JUPITER is offline.**\n\nNo actionable findings in the static review.",
+        "## Milo PR review\n\n**BLOCKED: required isolated testing could not start because TESTBOX is offline.**\n\nNo actionable findings in the static review.",
     );
     let h = derive(&merged_pr(vec![review]));
     assert_eq!(h.rounds[0].verdict, RoundVerdict::Unknown);
