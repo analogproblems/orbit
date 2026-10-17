@@ -1195,6 +1195,7 @@ describe("Bit", () => {
     snapshot.claude = { ready: false, error: "Claude is not signed in." };
     await mount();
     await user().click(screen.getByRole("button", { name: "Settings" }));
+    await openSettingsTab("Buddy");
     await chooseOption(
       await screen.findByRole("combobox", {
         name: /^Who answers your questions/,
