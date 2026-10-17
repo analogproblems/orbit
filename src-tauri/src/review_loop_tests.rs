@@ -68,10 +68,32 @@ fn with_blocking_off_findings_never_block() {
         (r.blocking, r.orbit_verdict, r.blocking_priority),
         (Some(0), Some(Verdict::Clean), None)
     );
+    assert!(blocking_off(&r));
+    // A dispute about an earlier declined finding doesn't block the loop or
+    // the status check either.
+    let (mut s, p) = snapshot();
+    s.settings.auto_post = true;
+    let mut latest = round(&p, &p.head_sha, 1, vec![finding("b-0", 0, "Severe")]);
+    latest.prior_findings = vec![prior("a-0", PriorStatus::DeclinedDisputed)];
+    decide(&mut latest, None);
+    s.reviews.push(latest.clone());
+    assert_eq!(status(&s, &p).0, LoopStatus::Clean);
+    assert_eq!(wanted_status(&s, &p).unwrap().state, "success");
+    // A round judged with blocking on still needs you for the same dispute.
+    decide(&mut s.reviews[0], Some(1));
+    assert_eq!(
+        status(&s, &p),
+        (
+            LoopStatus::NeedsYou,
+            Some("The reviewer disputes a declined finding.".into())
+        )
+    );
+    assert_eq!(wanted_status(&s, &p).unwrap().state, "error");
     // A run without structured findings still has no verdict.
     r.findings = None;
     decide(&mut r, None);
     assert_eq!((r.blocking, r.orbit_verdict), (None, None));
+    assert!(!blocking_off(&r));
 }
 fn status(s: &Snapshot, p: &PullRequest) -> (LoopStatus, Option<String>) {
     let l = state(s, p).unwrap();

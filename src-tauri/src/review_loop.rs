@@ -47,6 +47,12 @@ pub fn decide(r: &mut Review, blocking_priority: Option<u8>) {
     });
 }
 
+/// Whether a round was judged with blocking off: it has Orbit's verdict but
+/// no blocking priority. Rounds from before blocking labels have neither.
+pub fn blocking_off(r: &Review) -> bool {
+    r.orbit_verdict.is_some() && r.blocking_priority.is_none()
+}
+
 fn control<'a>(s: &'a Snapshot, pr_id: &str) -> Option<&'a LoopControl> {
     s.loops.iter().find(|c| c.pr_id == pr_id)
 }
@@ -188,10 +194,13 @@ pub fn state(s: &Snapshot, pr: &PullRequest) -> Option<LoopState> {
             Some("The review has no structured findings."),
         );
     };
-    if latest
-        .prior_findings
-        .iter()
-        .any(|p| p.status == PriorStatus::DeclinedDisputed)
+    // A dispute blocks only while findings can; a round judged with
+    // blocking off keeps its disputes visible without stopping the loop.
+    if !blocking_off(latest)
+        && latest
+            .prior_findings
+            .iter()
+            .any(|p| p.status == PriorStatus::DeclinedDisputed)
     {
         return make(
             LoopStatus::NeedsYou,
