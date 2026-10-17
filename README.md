@@ -97,3 +97,7 @@ UI code follows [`AGENTS.md`](AGENTS.md): Astryx components and tokens only. Run
 | Storage inspection, ownership checks, report generation | `src-tauri/src/storage.rs`                                                                                                                      |
 | Storage and report actions                              | `src/Storage.tsx`, `src/ReviewActions.tsx`                                                                                                      |
 | Native command allowlist and lifecycle                  | `src-tauri/src/lib.rs`                                                                                                                          |
+
+## Contributing and license
+
+Bug reports and ideas are welcome as [issues](https://github.com/analogproblems/orbit/issues); [CONTRIBUTING.md](CONTRIBUTING.md) explains how. Please report security problems privately, as [SECURITY.md](SECURITY.md) describes. Orbit is released under the [MIT License](LICENSE).
