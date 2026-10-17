@@ -60,6 +60,7 @@ import {
   type Attention,
   type PullRequest,
   type Review,
+  type SettingsTab,
 } from "./types";
 import { Inbox } from "./Inbox";
 import { Detail, type DetailTab } from "./Detail";
@@ -114,6 +115,11 @@ export default function App() {
   const [finding, setFinding] = useState<string | null>(null);
   // The pull request whose chapter is open on the decisions page.
   const [chapter, setChapter] = useState<string | null>(null);
+  // Settings, open at one of its pages.
+  const openSettings = (tab: SettingsTab) => {
+    useOrbit.getState().setSettingsTab(tab);
+    setPage("settings");
+  };
   const openLoops = () => {
     setLoop(null);
     setPage("loops");
@@ -246,7 +252,7 @@ export default function App() {
   const handlers = {
     onChoose: choose,
     onRepositories: () => setPage("repositories"),
-    onSettings: () => setPage("settings"),
+    onSettings: () => openSettings("connections"),
     onApproval: openApproval,
     onPublish: setPublish,
   };
@@ -311,7 +317,7 @@ export default function App() {
       onStart={() => void start()}
       onPublish={setPublish}
       onHistory={setSelectedReview}
-      onSettings={() => setPage("settings")}
+      onSettings={() => openSettings("reviewers")}
       onRepositories={() => setPage("repositories")}
       onBack={onBack}
     />
@@ -533,7 +539,7 @@ export default function App() {
                 <IconButton
                   label="Open settings"
                   icon={<SlidersHorizontal />}
-                  onClick={() => setPage("settings")}
+                  onClick={() => openSettings("automation")}
                 />
               </HStack>
             }
@@ -554,7 +560,7 @@ export default function App() {
                       <Button
                         label="Connect your workspace"
                         size="sm"
-                        onClick={() => setPage("settings")}
+                        onClick={() => openSettings("connections")}
                       />
                     }
                   />
@@ -671,7 +677,7 @@ export default function App() {
                     />
                   ) : page === "buddy" ? (
                     <BuddyPage
-                      onSettings={() => setPage("settings")}
+                      onSettings={() => openSettings("connections")}
                       onNote={(note) => {
                         if (note.kind === "decide") {
                           setChapter(note.prId ?? null);
@@ -680,7 +686,7 @@ export default function App() {
                           setLoop(note.prId);
                           setPage("loops");
                         } else if (note.repo) setPage("repositories");
-                        else setPage("settings");
+                        else openSettings("connections");
                       }}
                     />
                   ) : (

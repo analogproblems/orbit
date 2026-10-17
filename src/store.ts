@@ -55,6 +55,7 @@ import {
   type CleanupResult,
   followUpUnavailable,
   canExport,
+  type SettingsTab,
 } from "./types";
 /** Running in the native desktop window. */
 export const desktop = isTauri();
@@ -94,6 +95,8 @@ interface Store {
   removeWorktrees: (ids: string[]) => Promise<ActionResult<CleanupResult[]>>;
   trustedInput: string;
   setTrustedInput: (text: string) => void;
+  settingsTab: SettingsTab;
+  setSettingsTab: (tab: SettingsTab) => void;
   chatDrafts: Record<string, string>;
   setChatDraft: (id: string, text: string) => void;
   mutate: (
@@ -921,6 +924,8 @@ export const useOrbit = create<Store>((set, get) => ({
   },
   trustedInput: "",
   setTrustedInput: (trustedInput) => set({ trustedInput }),
+  settingsTab: "connections",
+  setSettingsTab: (settingsTab) => set({ settingsTab }),
   chatDrafts: {},
   setChatDraft: (id, text) =>
     set((s) => ({ chatDrafts: { ...s.chatDrafts, [id]: text } })),

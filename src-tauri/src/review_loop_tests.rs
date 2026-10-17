@@ -50,8 +50,50 @@ fn round(p: &PullRequest, head: &str, minute: u32, findings: Vec<Finding>) -> Re
     r.status = "posted".into();
     r.report = "Report".into();
     r.findings = Some(findings);
-    decide(&mut r, 1);
+    decide(&mut r, Some(1));
     r
+}
+#[test]
+fn with_blocking_off_findings_never_block() {
+    let p = pr();
+    let mut r = round(&p, "h", 0, vec![finding("r-0", 0, "Severe")]);
+    r.verdict = Some(Verdict::ChangesRequested);
+    let settings = Settings {
+        block_findings: false,
+        ..Default::default()
+    };
+    assert_eq!(settings.blocking(), None);
+    decide(&mut r, settings.blocking());
+    assert_eq!(
+        (r.blocking, r.orbit_verdict, r.blocking_priority),
+        (Some(0), Some(Verdict::Clean), None)
+    );
+    assert!(blocking_off(&r));
+    // A dispute about an earlier declined finding doesn't block the loop or
+    // the status check either.
+    let (mut s, p) = snapshot();
+    s.settings.auto_post = true;
+    let mut latest = round(&p, &p.head_sha, 1, vec![finding("b-0", 0, "Severe")]);
+    latest.prior_findings = vec![prior("a-0", PriorStatus::DeclinedDisputed)];
+    decide(&mut latest, None);
+    s.reviews.push(latest.clone());
+    assert_eq!(status(&s, &p).0, LoopStatus::Clean);
+    assert_eq!(wanted_status(&s, &p).unwrap().state, "success");
+    // A round judged with blocking on still needs you for the same dispute.
+    decide(&mut s.reviews[0], Some(1));
+    assert_eq!(
+        status(&s, &p),
+        (
+            LoopStatus::NeedsYou,
+            Some("The reviewer disputes a declined finding.".into())
+        )
+    );
+    assert_eq!(wanted_status(&s, &p).unwrap().state, "error");
+    // A run without structured findings still has no verdict.
+    r.findings = None;
+    decide(&mut r, None);
+    assert_eq!((r.blocking, r.orbit_verdict), (None, None));
+    assert!(!blocking_off(&r));
 }
 fn status(s: &Snapshot, p: &PullRequest) -> (LoopStatus, Option<String>) {
     let l = state(s, p).unwrap();
@@ -63,13 +105,13 @@ fn verdict_follows_the_blocking_priority_not_the_model() {
     let p = pr();
     let mut r = round(&p, "h", 0, vec![finding("r-0", 2, "Minor")]);
     r.verdict = Some(Verdict::ChangesRequested);
-    decide(&mut r, 1);
+    decide(&mut r, Some(1));
     assert_eq!(
         (r.blocking, r.orbit_verdict),
         (Some(0), Some(Verdict::Clean))
     );
     assert_eq!(r.verdict, Some(Verdict::ChangesRequested));
-    decide(&mut r, 2);
+    decide(&mut r, Some(2));
     assert_eq!(
         (r.blocking, r.orbit_verdict),
         (Some(1), Some(Verdict::ChangesRequested))
@@ -78,10 +120,10 @@ fn verdict_follows_the_blocking_priority_not_the_model() {
     assert_eq!(r.blocking_priority, Some(2));
     let mut unstructured = r.clone();
     unstructured.findings = None;
-    decide(&mut unstructured, 2);
+    decide(&mut unstructured, Some(2));
     assert_eq!(unstructured.blocking_priority, None);
     r.findings = Some(vec![finding("r-0", 0, "Severe"), finding("r-1", 1, "Bad")]);
-    decide(&mut r, 0);
+    decide(&mut r, Some(0));
     assert_eq!(r.blocking, Some(1));
     // Earlier findings count while they are still open or disputed.
     r.findings = Some(vec![]);
@@ -106,13 +148,13 @@ fn verdict_follows_the_blocking_priority_not_the_model() {
         prior("old-2", PriorStatus::DeclinedAccepted),
         prior("old-3", PriorStatus::StillOpen),
     ];
-    decide(&mut r, 1);
+    decide(&mut r, Some(1));
     assert_eq!(
         (r.blocking, r.orbit_verdict),
         (Some(2), Some(Verdict::ChangesRequested))
     );
     r.findings = None;
-    decide(&mut r, 1);
+    decide(&mut r, Some(1));
     assert_eq!((r.blocking, r.orbit_verdict), (None, None));
 }
 #[test]
@@ -132,7 +174,7 @@ fn states_follow_the_latest_automatic_round() {
     assert_eq!((l.rounds, l.round_limit), (1, 4));
 
     s.reviews.last_mut().unwrap().findings = Some(vec![finding("x-0", 2, "Nit")]);
-    decide(s.reviews.last_mut().unwrap(), 1);
+    decide(s.reviews.last_mut().unwrap(), Some(1));
     assert_eq!(status(&s, &p), (LoopStatus::Clean, None));
     // A clean round on an older head means the new head is next.
     s.reviews.last_mut().unwrap().head_sha = "old".into();
@@ -170,12 +212,12 @@ fn needs_a_person_when_a_round_cannot_continue_on_its_own() {
     let r = s.reviews.last_mut().unwrap();
     r.status = "ready".into();
     r.findings = None;
-    decide(r, 1);
+    decide(r, Some(1));
     assert_eq!(needs(&s), "The review has no structured findings.");
 
     let r = s.reviews.last_mut().unwrap();
     r.findings = Some(bug());
-    decide(r, 1);
+    decide(r, Some(1));
     r.error = Some("Not published automatically: …".into());
     assert_eq!(needs(&s), "Publication was held.");
     s.reviews.last_mut().unwrap().error = None;
@@ -243,7 +285,7 @@ fn a_loop_that_keeps_the_same_blocking_findings_is_not_converging() {
         comments_omitted: 0,
     });
     second.prior_findings = vec![prior("one-0", PriorStatus::StillOpen)];
-    decide(&mut second, 1);
+    decide(&mut second, Some(1));
     s.reviews.extend([first, second]);
     assert_eq!(
         status(&s, &p),
@@ -254,14 +296,14 @@ fn a_loop_that_keeps_the_same_blocking_findings_is_not_converging() {
     );
     // Progress on the blocking finding means it is converging.
     s.reviews[1].prior_findings = vec![prior("one-0", PriorStatus::Fixed)];
-    decide(&mut s.reviews[1], 1);
+    decide(&mut s.reviews[1], Some(1));
     assert_eq!(status(&s, &p).0, LoopStatus::Clean);
     // Without statuses, the same blocking path and title in both rounds.
     let r = &mut s.reviews[1];
     r.previous_round = None;
     r.prior_findings.clear();
     r.findings = Some(vec![finding("two-0", 1, "race")]);
-    decide(r, 1);
+    decide(r, Some(1));
     assert_eq!(
         status(&s, &p),
         (
@@ -297,14 +339,14 @@ fn the_commit_status_follows_the_loop_on_the_latest_round() {
     let mut running = round(&p, &p.head_sha, 0, vec![]);
     running.status = "reviewing".into();
     running.findings = None;
-    decide(&mut running, 1);
+    decide(&mut running, Some(1));
     s.reviews.push(running);
     assert_eq!(wanted(&s), pair("pending", "Round 1 · reviewing"));
 
     let r = s.reviews.last_mut().unwrap();
     r.status = "posted".into();
     r.findings = Some(vec![finding("x-0", 1, "Bug"), finding("x-1", 0, "Worse")]);
-    decide(r, 1);
+    decide(r, Some(1));
     assert_eq!(wanted(&s), pair("failure", "Round 1 · 2 blocking findings"));
     // Waiting to be published automatically is still in progress.
     s.reviews.last_mut().unwrap().status = "ready".into();
@@ -313,7 +355,7 @@ fn the_commit_status_follows_the_loop_on_the_latest_round() {
     let r = s.reviews.last_mut().unwrap();
     r.status = "posted".into();
     r.findings = Some(vec![finding("x-0", 2, "Nit")]);
-    decide(r, 1);
+    decide(r, Some(1));
     assert_eq!(
         wanted(&s),
         pair("success", "Round 1 · no blocking findings")

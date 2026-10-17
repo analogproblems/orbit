@@ -1,5 +1,7 @@
+import { useState } from "react";
 import {
   Banner,
+  Button,
   Card,
   FormLayout,
   Heading,
@@ -10,17 +12,21 @@ import {
   Text,
   VStack,
 } from "@astryxdesign/core";
-import { Bot, Sparkles } from "lucide-react";
+import { Bot, RefreshCw, Sparkles } from "lucide-react";
 import { useOrbit } from "./store";
 import {
   type CliProvider,
   type Settings,
   type SettingsPatch,
+  type Provider,
   cliStatus,
+  connectionState,
   defaultEffort,
+  providerLabels,
   providerModels,
   providerSelection,
   reviewerSelectionUnavailable,
+  reviewerUnavailable,
   withPatch,
 } from "./types";
 import { SaveFeedback } from "./SaveFeedback";
@@ -64,6 +70,63 @@ function useDraft(): Settings {
   return draft;
 }
 
+/** Checks every connection again, and whether a check is running. */
+export function useReconnect(): [boolean, () => Promise<void>] {
+  const { action } = useOrbit();
+  const [connecting, setConnecting] = useState(false);
+  const reconnect = async () => {
+    setConnecting(true);
+    await action("connect_services");
+    setConnecting(false);
+  };
+  return [connecting, reconnect];
+}
+
+/** Whether any connected repository is reviewed by `provider`. */
+export function usedBy(settings: Settings, provider: Provider): boolean {
+  return settings.repositories.some(
+    (r) => (r.provider ?? "codex") === provider,
+  );
+}
+
+/** What stops a reviewer, if anything, with a way to check again. A
+ * reviewer that isn't connected says why whether or not a repository uses
+ * it; a wrong model or effort only matters once one does. Codex also runs
+ * Bit and write-ups, so it always counts as used. */
+export function ReviewerProblem({ provider }: { provider: Provider }) {
+  const { snapshot: s } = useOrbit();
+  const draft = useDraft();
+  const [connecting, reconnect] = useReconnect();
+  const label = providerLabels[provider];
+  const used = provider === "codex" || usedBy(draft, provider);
+  const unavailable = reviewerUnavailable(s, provider);
+  const problem = unavailable
+    ? used
+      ? `${label} reviews are blocked: ${unavailable}`
+      : `${label} isn’t set up: ${unavailable}`
+    : used && reviewerSelectionUnavailable(s, provider)
+      ? `${label} reviews are blocked: ${reviewerSelectionUnavailable(s, provider)}`
+      : null;
+  if (!problem) return null;
+  return (
+    <Banner
+      status={used ? "warning" : "info"}
+      title={problem}
+      endContent={
+        unavailable ? (
+          <Button
+            label={connecting ? "Checking…" : "Check again"}
+            size="sm"
+            icon={<RefreshCw />}
+            isLoading={connecting}
+            onClick={() => void reconnect()}
+          />
+        ) : undefined
+      }
+    />
+  );
+}
+
 /** A CLI reviewer's line in Connections. */
 export function CliConnection({ provider }: { provider: CliProvider }) {
   const { snapshot: s } = useOrbit();
@@ -90,7 +153,7 @@ export function CliConnection({ provider }: { provider: CliProvider }) {
             variant={status?.ready ? "success" : used ? "warning" : "neutral"}
           />
           <Text color="secondary" type="supporting">
-            {status?.ready ? "Connected" : "Not connected"}
+            {connectionState(!!status?.ready, status?.error)}
           </Text>
         </HStack>
       }
@@ -106,8 +169,8 @@ export function CliReviewSettings({ provider }: { provider: CliProvider }) {
   const models = providerModels(s, provider);
   const selection = providerSelection({ ...s, settings: draft }, provider);
   const model = models.find((m) => m.model === selection.model);
-  const used = draft.repositories.some((r) => r.provider === provider);
-  const blocked = used && reviewerSelectionUnavailable(s, provider);
+  // Settings for a reviewer that isn't connected would only be guesses.
+  const off = !!reviewerUnavailable(s, provider);
   const { modelKey, effortKey } = about;
   const pending = (key: string) => saves[key]?.state === "saving";
   return (
@@ -117,19 +180,14 @@ export function CliReviewSettings({ provider }: { provider: CliProvider }) {
           <Heading level={3}>{about.label} reviews</Heading>
           <Text color="secondary">{about.about}</Text>
         </VStack>
-        {blocked && (
-          <Banner
-            status="warning"
-            title={`${about.label} reviews are blocked: ${blocked}`}
-          />
-        )}
+        <ReviewerProblem provider={provider} />
         <FormLayout>
           <VStack gap={2}>
             <Selector
               label={`${about.label} model`}
               value={selection.model}
               placeholder="Choose a model"
-              isDisabled={pending(modelKey) || !models.length}
+              isDisabled={off || pending(modelKey) || !models.length}
               options={[
                 ...(selection.model && !model
                   ? [
@@ -165,6 +223,7 @@ export function CliReviewSettings({ provider }: { provider: CliProvider }) {
               value={selection.effort}
               placeholder="Choose an effort"
               isDisabled={
+                off ||
                 !model ||
                 pending(effortKey) ||
                 (!!saves[modelKey] && saves[modelKey].state !== "saved")

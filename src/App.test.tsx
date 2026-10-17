@@ -58,6 +58,12 @@ async function chooseOption(control: HTMLElement, label: string) {
 function emit() {
   useOrbit.setState({ snapshot: structuredClone(snapshot) });
 }
+/** Opens a page of Settings, once Settings is open. */
+async function openSettingsTab(name: string) {
+  await user().click(
+    await screen.findByRole("tab", { name: new RegExp(`^${name}`) }),
+  );
+}
 async function mount() {
   render(
     <Theme theme={neutralTheme} mode="dark">
@@ -152,6 +158,7 @@ beforeEach(() => {
     saves: {},
     cleanup: { running: false, results: [] },
     trustedInput: "",
+    settingsTab: "connections",
     chatDrafts: {},
   });
   invoke.mockReset().mockImplementation(backend);
@@ -274,6 +281,7 @@ describe("PR review regressions", () => {
   it("turns desktop notifications off from Settings", async () => {
     await mount();
     await user().click(screen.getByRole("button", { name: "Settings" }));
+    await openSettingsTab("Automation");
     await user().click(
       await screen.findByRole("switch", {
         name: /Notify me when a review needs attention/,
@@ -288,6 +296,7 @@ describe("PR review regressions", () => {
     snapshot.settings.writeUps = { enabled: false, writer: "codex" };
     await mount();
     await user().click(screen.getByRole("button", { name: "Settings" }));
+    await openSettingsTab("Decisions");
     await user().click(
       await screen.findByRole("switch", {
         name: /Write up each pull request in plain words/,
@@ -310,6 +319,7 @@ describe("PR review regressions", () => {
       waitFor(() => expect(document.body.textContent).toContain(text));
     await mount();
     await user().click(screen.getByRole("button", { name: "Settings" }));
+    await openSettingsTab("Other devices");
     const toggle = await screen.findByRole("switch", {
       name: /Allow access from a browser/,
     });
@@ -749,7 +759,7 @@ describe("Bit", () => {
     const chat = () => screen.getByRole("log", { name: "Bit's notes" });
     const text = chat().textContent!;
     expect(text.indexOf("is clean after 3 rounds!")).toBeLessThan(
-      text.indexOf("acme/dashboard failed to sync"),
+      text.indexOf("acme/dashboard can't sync"),
     );
     await user().click(
       within(chat()).getByRole("button", { name: "Open repositories" }),
@@ -1167,6 +1177,7 @@ describe("Bit", () => {
   it("sets what Bit may do on its own in Settings", async () => {
     await mount();
     await user().click(screen.getByRole("button", { name: "Settings" }));
+    await openSettingsTab("Buddy");
     await chooseOption(
       await screen.findByRole("combobox", { name: /^Publish report/ }),
       "Do it",
@@ -1200,6 +1211,7 @@ describe("Bit", () => {
     });
     await mount();
     await user().click(screen.getByRole("button", { name: "Settings" }));
+    await openSettingsTab("Buddy");
     const general = await screen.findByRole("list", {
       name: "Bit's memory: General",
     });
@@ -1252,6 +1264,7 @@ describe("Bit", () => {
     );
     await mount();
     await user().click(screen.getByRole("button", { name: "Settings" }));
+    await openSettingsTab("Buddy");
     const name = await screen.findByRole("textbox", { name: "Name" });
     await user().clear(name);
     await user().type(name, "Orbie{Enter}");
@@ -1406,6 +1419,7 @@ describe("autosave and follow-ups", () => {
     );
     await mount();
     fireEvent.keyDown(document, { key: ",", ctrlKey: true });
+    await openSettingsTab("Automation");
     const select = await screen.findByRole("combobox", {
       name: "Poll interval",
     });
@@ -1733,6 +1747,40 @@ describe("initial loading and repository errors", () => {
         .getAttribute("data-variant"),
     ).toBe("warning");
   });
+  it("says why Claude isn't set up and locks its settings until it is", async () => {
+    snapshot.claude = {
+      ready: false,
+      error:
+        "Cannot start Claude. Install Claude Code, then run claude once to sign in.",
+    };
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Settings" }));
+    expect(await screen.findAllByText("Not installed")).toBeTruthy();
+    await openSettingsTab("Reviewers");
+    expect(
+      screen.getByText(/Claude isn’t set up: Cannot start Claude/),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("combobox", { name: /^Claude model/ }),
+    ).toHaveProperty("disabled", true);
+    expect(
+      screen.getByRole("combobox", { name: /^Claude effort/ }),
+    ).toHaveProperty("disabled", true);
+  });
+  it("turns blocking findings off and locks the blocking priorities", async () => {
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Settings" }));
+    await openSettingsTab("Automation");
+    await user().click(
+      screen.getByRole("switch", { name: /Block on findings/ }),
+    );
+    expect(invoke).toHaveBeenCalledWith("update_settings", {
+      patch: { blockFindings: false },
+    });
+    expect(
+      screen.getByRole("combobox", { name: /^Blocking priorities/ }),
+    ).toHaveProperty("disabled", true);
+  });
   it("chooses Antigravity as a repository's reviewer and its model in Settings", async () => {
     await mount();
     await user().click(screen.getByRole("button", { name: "Repositories" }));
@@ -1771,6 +1819,7 @@ describe("initial loading and repository errors", () => {
       ),
     ).toBeTruthy();
     await user().click(screen.getByRole("button", { name: "Settings" }));
+    await openSettingsTab("Reviewers");
     expect(
       await screen.findByText(
         /Antigravity reviews are blocked: Choose an Antigravity model/,
@@ -1852,6 +1901,7 @@ describe("storage and export", () => {
     });
     await mount();
     fireEvent.keyDown(document, { key: ",", ctrlKey: true });
+    await openSettingsTab("Storage");
     expect(invoke.mock.calls.some(([c]) => c === "get_storage_usage")).toBe(
       false,
     );
@@ -1964,6 +2014,7 @@ describe("review regression cases", () => {
     );
     await mount();
     fireEvent.keyDown(document, { key: ",", ctrlKey: true });
+    await openSettingsTab("Automation");
     await user().click(
       screen.getByRole("switch", {
         name: "Automatically review new pull requests",
@@ -2028,6 +2079,7 @@ describe("review regression cases", () => {
     });
     await mount();
     fireEvent.keyDown(document, { key: ",", ctrlKey: true });
+    await openSettingsTab("Storage");
     await user().click(screen.getByRole("button", { name: "Inspect storage" }));
     await user().click(await findWorktreeRow());
     await user().click(
@@ -2085,6 +2137,7 @@ describe("review regression cases", () => {
     );
     await mount();
     fireEvent.keyDown(document, { key: ",", ctrlKey: true });
+    await openSettingsTab("Reviewers");
     await chooseOption(
       screen.getByRole("combobox", { name: /^Model/ }),
       "Codex · demo",
@@ -2125,6 +2178,7 @@ describe("review regression cases", () => {
     });
     await mount();
     fireEvent.keyDown(document, { key: ",", ctrlKey: true });
+    await openSettingsTab("Storage");
     await user().click(screen.getByRole("button", { name: "Inspect storage" }));
     await user().click(await findWorktreeRow());
     await user().click(
@@ -2221,6 +2275,7 @@ describe("deterministic model controls", () => {
     await mount();
     expect(screen.queryByRole("button", { name: "Review again" })).toBeNull();
     fireEvent.keyDown(document, { key: ",", ctrlKey: true });
+    await openSettingsTab("Reviewers");
     const model = screen.getByRole("combobox", { name: /^Model/ });
     const effort = screen.getByRole("combobox", { name: /^Reasoning effort/ });
     expect(model).toHaveProperty("textContent", "Choose a model");
@@ -2245,6 +2300,7 @@ describe("deterministic model controls", () => {
       "Model discovery failed. Reconnect in Settings.";
     await mount();
     fireEvent.keyDown(document, { key: ",", ctrlKey: true });
+    await openSettingsTab("Reviewers");
     expect(screen.getByRole("combobox", { name: /^Model/ })).toHaveProperty(
       "textContent",
       "missing-model (unavailable)",
@@ -2254,8 +2310,9 @@ describe("deterministic model controls", () => {
       true,
     );
     expect(
-      screen.getByText(/Reviews are blocked: Model discovery failed/),
+      screen.getByText(/Codex reviews are blocked: Model discovery failed/),
     ).toBeTruthy();
+    await openSettingsTab("Automation");
     const toggle = screen.getByRole("switch", {
       name: "Automatically review new pull requests",
     });
@@ -2441,6 +2498,7 @@ describe("Astryx dialog and composer integration", () => {
     );
     await mount();
     fireEvent.keyDown(document, { key: ",", ctrlKey: true });
+    await openSettingsTab("Storage");
     await user().click(screen.getByRole("button", { name: "Inspect storage" }));
     await user().click(await findWorktreeRow());
     await user().click(

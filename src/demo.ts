@@ -617,7 +617,7 @@ export function freshDemo(): Snapshot {
         approvalId: null,
         repo: "acme/dashboard",
         reason:
-          "acme/dashboard failed to sync 3 times in a row: GitHub returned 404 Not Found.",
+          "acme/dashboard can't sync. GitHub returned 404 Not Found. Orbit checks again every 2 minutes.",
         fix: "sync_now",
       },
     ],
@@ -694,7 +694,7 @@ export function freshDemo(): Snapshot {
           prId: null,
           reviewId: null,
           repo: "acme/dashboard",
-          text: "Heads up! acme/dashboard failed to sync 3 times in a row: GitHub returned 404 Not Found.",
+          text: "Heads up! acme/dashboard can't sync. GitHub returned 404 Not Found. Orbit checks again every 2 minutes.",
           key: "sync:acme/dashboard",
         },
       ],

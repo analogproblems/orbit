@@ -30,9 +30,14 @@ pub fn blocking(r: &Review, blocking_priority: u8) -> Option<u32> {
     Some((new + earlier) as u32)
 }
 /// Records Orbit's verdict on a review whose findings were just extracted.
-pub fn decide(r: &mut Review, blocking_priority: u8) {
-    r.blocking = blocking(r, blocking_priority);
-    r.blocking_priority = r.blocking.map(|_| blocking_priority);
+/// With no blocking priority, findings never block, so a review with
+/// structured findings is clean and its findings carry no blocking label.
+pub fn decide(r: &mut Review, blocking_priority: Option<u8>) {
+    r.blocking = match blocking_priority {
+        Some(p) => blocking(r, p),
+        None => r.findings.as_ref().map(|_| 0),
+    };
+    r.blocking_priority = r.blocking.and(blocking_priority);
     r.orbit_verdict = r.blocking.map(|n| {
         if n == 0 {
             Verdict::Clean
@@ -40,6 +45,12 @@ pub fn decide(r: &mut Review, blocking_priority: u8) {
             Verdict::ChangesRequested
         }
     });
+}
+
+/// Whether a round was judged with blocking off: it has Orbit's verdict but
+/// no blocking priority. Rounds from before blocking labels have neither.
+pub fn blocking_off(r: &Review) -> bool {
+    r.orbit_verdict.is_some() && r.blocking_priority.is_none()
 }
 
 fn control<'a>(s: &'a Snapshot, pr_id: &str) -> Option<&'a LoopControl> {
@@ -183,10 +194,13 @@ pub fn state(s: &Snapshot, pr: &PullRequest) -> Option<LoopState> {
             Some("The review has no structured findings."),
         );
     };
-    if latest
-        .prior_findings
-        .iter()
-        .any(|p| p.status == PriorStatus::DeclinedDisputed)
+    // A dispute blocks only while findings can; a round judged with
+    // blocking off keeps its disputes visible without stopping the loop.
+    if !blocking_off(latest)
+        && latest
+            .prior_findings
+            .iter()
+            .any(|p| p.status == PriorStatus::DeclinedDisputed)
     {
         return make(
             LoopStatus::NeedsYou,

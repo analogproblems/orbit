@@ -771,7 +771,7 @@ pub(super) fn apply_event(s: &mut Snapshot, id: &str, event: ReviewEvent) -> Nex
     if let ReviewEvent::TurnDone(_) = &event {
         s.approvals.retain(|a| a.review_id != id);
     }
-    let blocking_priority = s.settings.blocking_priority;
+    let blocking_priority = s.settings.blocking();
     let first_number =
         matches!(event, ReviewEvent::Text { .. }).then(|| findings::next_number(s, id));
     let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) else {
