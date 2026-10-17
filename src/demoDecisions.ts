@@ -16,7 +16,7 @@ import type {
   Ruling,
   Trajectory,
   WriteUp,
-} from "./decisions";
+} from "./decisionData";
 import { sameRepo, type Category, type PriorStatus } from "./types";
 
 const at = (minutesAgo: number) =>

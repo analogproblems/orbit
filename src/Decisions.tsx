@@ -76,7 +76,7 @@ import {
   type Trajectory,
   type WorthRow,
   type WriteUp,
-} from "./decisions";
+} from "./decisionData";
 
 type View = "story" | "rulebook" | "pushback" | "health" | "areas";
 const views: [View, string][] = [

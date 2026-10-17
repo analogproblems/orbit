@@ -22,7 +22,7 @@ import {
   searchHistories,
   worthALook,
   type Decisions,
-} from "./decisions";
+} from "./decisionData";
 import { useOrbit } from "./store";
 import type { ActionResult } from "./types";
 afterEach(cleanup);
