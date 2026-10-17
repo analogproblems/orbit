@@ -22,10 +22,10 @@ When you review a new head of a PR that Orbit already reviewed with a findings l
 
 ## Launch and connect
 
-On this Linux checkout, launch the compiled app with:
+After building it with `npm run tauri -- build --no-bundle`, launch the compiled app from the repository folder. On Linux:
 
 ```sh
-/home/jdub/Documents/ChatGPT/Orbit/src-tauri/target/release/orbit
+./src-tauri/target/release/orbit
 ```
 
 Close an existing Orbit instance before launching another. Orbit allows only one instance using the same app-data directory.
