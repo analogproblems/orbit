@@ -379,6 +379,13 @@ impl Engine {
                 self.set_up_repository(name, &patch, p.connect).await
             }
             Action::CheckConnections => self.check_connections().await,
+            // It isn't done until you've entered the code, and Bit says
+            // when it is.
+            Action::SignIn => {
+                let service = p.service.as_deref().ok_or("This button isn't a sign-in.")?;
+                return self.sign_in(service).await;
+            }
+            Action::OpenPage => return Err("The app opens this page itself.".into()),
         }?;
         // Done before the claim ends, so no tap gets in between.
         self.update(|s| buddy::proposal_done(s, note, proposal))

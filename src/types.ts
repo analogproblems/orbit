@@ -481,7 +481,8 @@ export type NoteKind =
   | "fixed"
   | "answer"
   | "connected"
-  | "decide";
+  | "decide"
+  | "sign_in";
 /** A question Bit answers straight from Orbit's state. */
 export type Question =
   "needs_you" | "running" | "loops" | "repositories" | "setup";
@@ -533,7 +534,9 @@ export type Action =
   | "sync_now"
   | "change_settings"
   | "set_up_repository"
-  | "check_connections";
+  | "check_connections"
+  | "sign_in"
+  | "open_page";
 export const actionLabels: Record<Action, string> = {
   continue_loop: "Continue loop",
   stop_loop: "Stop loop",
@@ -543,6 +546,8 @@ export const actionLabels: Record<Action, string> = {
   change_settings: "Change settings",
   set_up_repository: "Set up repository",
   check_connections: "Check again",
+  sign_in: "Sign in",
+  open_page: "Open page",
 };
 /** A change to a repository's settings from one of Bit's answers. Only
  * what is given changes. */
@@ -599,6 +604,12 @@ export interface Proposal {
   repository?: RepositoryPatch | null;
   /** For Set up repository, whether it connects the repository. */
   connect?: boolean;
+  /** For Sign in, what to sign in to: github or codex. */
+  service?: string | null;
+  /** For Open page, the page, which the app opens where you are. */
+  link?: string | null;
+  /** What the button says, when Orbit words it. */
+  label?: string | null;
   /** You tapped it and it worked. */
   done?: boolean;
 }

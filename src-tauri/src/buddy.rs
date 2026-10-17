@@ -325,6 +325,9 @@ pub enum NoteKind {
     /// A pull request's story has something for you to decide, from the
     /// Decisions page.
     Decide,
+    /// A sign-in waiting for you to enter its code on a website, or one
+    /// that didn't finish.
+    SignIn,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1153,6 +1156,54 @@ pub fn not_fixed(s: &mut Snapshot, item: &Attention, fix: Fix, error: &str) {
             ..Note::new(NoteKind::NeedsYou, text).about(item)
         }],
     );
+}
+
+/// Notes a sign-in to `name` waiting for you: the code to enter, and a
+/// button for the page that takes it. Returns the note's id.
+pub fn signing_in(s: &mut Snapshot, name: &str, code: &str, page: &str) -> u64 {
+    let id = s.buddy_feed.next_id;
+    let text = format!(
+        "Let's sign you in to {name}. Open its sign-in page and enter the code below. I'll check again as soon as you're done."
+    );
+    let host = page
+        .trim_start_matches("https://")
+        .trim_end_matches('/')
+        .to_string();
+    append(
+        &mut s.buddy_feed,
+        vec![Note {
+            lines: vec![line(format!("Your code: `{code}`"), None, None)],
+            proposals: vec![crate::ask::Proposal {
+                link: Some(page.into()),
+                label: Some(format!("Open {host}")),
+                ..crate::ask::Proposal::new(crate::ask::Action::OpenPage)
+            }],
+            ..Note::new(NoteKind::SignIn, text)
+        }],
+    );
+    id
+}
+/// Notes how a sign-in to `name` ended. Its code, in the note `code`, is
+/// no use any more, so that note loses it and its button.
+pub fn signed_in(s: &mut Snapshot, name: &str, code: Option<u64>, result: Result<(), String>) {
+    if let Some(note) = s.buddy_feed.notes.iter_mut().find(|n| Some(n.id) == code) {
+        note.lines = vec![line("That code is no longer needed.".into(), None, None)];
+        note.proposals.clear();
+    }
+    let note = match result {
+        Ok(()) => Note::new(
+            NoteKind::Fixed,
+            format!("You're signed in to {name}. All good!"),
+        ),
+        Err(e) => Note::new(
+            NoteKind::SignIn,
+            format!(
+                "Signing in to {name} didn't finish: {} Tap Help me set up to try again.",
+                e.trim()
+            ),
+        ),
+    };
+    append(&mut s.buddy_feed, vec![note]);
 }
 
 /// Adds a question you typed, which Bit answers once Codex has, and

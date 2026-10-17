@@ -54,6 +54,7 @@
     "turn_on_autopilot",
     "check_connections"
   ],
+  "helpActions": ["sign_in", "open_page"],
   "questions": ["needs_you", "running", "loops", "repositories", "setup"],
   "defaultRules": {
     "continue_loop": "ask_first",

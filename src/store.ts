@@ -63,8 +63,8 @@ const remoteToken = desktop ? null : readToken();
 export const remote = remoteToken !== null;
 /** Connected to a real workspace, rather than the browser demo. */
 export const live = desktop || remote;
-/** Opens a GitHub link: with the system browser from the desktop window, in a
- * new tab in a browser. */
+/** Opens a GitHub link or one of Bit's setup pages: with the system browser
+ * from the desktop window, in a new tab in a browser. */
 export function openLink(url: string) {
   if (desktop) void useOrbit.getState().action("open_github", { url });
   else window.open(url, "_blank", "noopener,noreferrer");
@@ -358,6 +358,8 @@ async function demoAction(
     const p = find();
     if (!p) throw Error("This button isn't there any more.");
     if (p.done) throw Error("That's done already.");
+    if (p.action === "sign_in" || p.action === "open_page")
+      throw Error("The demo can't sign in. Orbit on your computer can.");
     if (p.action === "continue_loop")
       await demoAction("continue_loop", { prId: p.prId, rounds: 2 });
     else if (p.action === "stop_loop")

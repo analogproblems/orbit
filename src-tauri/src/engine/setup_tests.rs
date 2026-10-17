@@ -60,6 +60,9 @@ async fn offered(e: &Engine, repo: &str, patch: RepositoryPatch, connect: bool) 
         repo: Some(repo.into()),
         repository: Some(patch),
         connect,
+        service: None,
+        link: None,
+        label: None,
         done: false,
     };
     answered(&mut s, id, "Tap below.".into(), vec![p], vec![]);
@@ -412,9 +415,14 @@ async fn help_me_set_up_offers_your_repositories_and_bit_follows_up() {
     let answer = s.buddy_feed.notes.last().unwrap();
     assert!(answer.lines.iter().any(|l| l.text
         == "acme/api sets up with `npm ci --ignore-scripts`. Its pull requests are reviewed automatically."));
+    // The taps above synced without the stand-in, so gh couldn't start.
+    assert!(answer.lines[0]
+        .text
+        .starts_with("GitHub CLI isn't installed"));
     assert_eq!(
         offered(answer),
         [
+            (Action::OpenPage, None, false),
             (Action::CheckConnections, None, false),
             (Action::ChangeSettings, None, false),
         ]

@@ -85,7 +85,7 @@ tokio::task_local! {
     /// A stand-in for `gh` in tests, so no test reaches GitHub.
     pub static GH: std::path::PathBuf;
 }
-fn gh() -> String {
+pub(crate) fn gh() -> String {
     #[cfg(test)]
     return GH
         .try_with(|p| p.to_string_lossy().into_owned())

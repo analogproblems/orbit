@@ -581,6 +581,10 @@ impl Engine {
             self.disconnected().await;
             return;
         }
+        if method == "account/login/completed" {
+            self.codex_signed_in(p);
+            return;
+        }
         if method == "account/rateLimits/updated" {
             self.update_live(|s| s.usage = Usage::apply_update(s.usage.take(), p, now()))
                 .await;

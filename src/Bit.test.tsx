@@ -31,7 +31,10 @@ describe("Bit", () => {
     expect(Object.keys(fixRuleLabels)).toEqual(options.rules);
     expect(Object.keys(fixLabels)).toEqual(options.fixes);
     expect(Object.keys(questionLabels)).toEqual(options.questions);
-    expect(Object.keys(actionLabels)).toEqual(options.actions);
+    expect(Object.keys(actionLabels)).toEqual([
+      ...options.actions,
+      ...options.helpActions,
+    ]);
     expect(memoryLimits).toEqual(options.memoryLimits);
     // Every fix but a settings change or checking connections has a rule,
     // which starts on Ask first, under the same names the engine saves and
