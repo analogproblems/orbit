@@ -70,7 +70,15 @@ pub enum Action {
     /// Checks the connections to GitHub, Codex and the other reviewers
     /// again, as Settings' Reconnect does.
     CheckConnections,
+    /// Signs in to GitHub or Codex from Orbit, with a code you enter on
+    /// its website. Only Bit's setup help offers it.
+    SignIn,
+    /// Opens a web page where you are: a program's page, or where a
+    /// sign-in's code goes. The app opens it; nothing runs in Orbit. Only
+    /// Bit's setup help and sign-ins offer it.
+    OpenPage,
 }
+/// The actions an answer from Codex may offer.
 pub const ACTIONS: [Action; 8] = [
     Action::ContinueLoop,
     Action::StopLoop,
@@ -81,6 +89,9 @@ pub const ACTIONS: [Action; 8] = [
     Action::SetUpRepository,
     Action::CheckConnections,
 ];
+
+/// The actions only Orbit's own help offers, never an answer from Codex.
+pub const HELP_ACTIONS: [Action; 2] = [Action::SignIn, Action::OpenPage];
 
 /// A button in an answer. It is checked against Orbit's state when the
 /// answer arrives and again when you tap it.
@@ -108,6 +119,15 @@ pub struct Proposal {
     /// wasn't connected when Bit answered.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub connect: bool,
+    /// For Sign in, what to sign in to: `github` or `codex`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+    /// For Open page, the page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
+    /// What the button says, when Orbit words it rather than the app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     /// You tapped it and it worked.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub done: bool,
@@ -124,6 +144,9 @@ impl Proposal {
             repo: None,
             repository: None,
             connect: false,
+            service: None,
+            link: None,
+            label: None,
             done: false,
         }
     }
@@ -763,6 +786,8 @@ fn proposal(s: &Snapshot, raw: RawProposal, connectable: &[String]) -> Option<Pr
             p.pr_id = Some(pr.id.clone());
         }
         Action::SyncNow | Action::CheckConnections => {}
+        // Orbit's own help offers these, never an answer.
+        Action::SignIn | Action::OpenPage => return None,
         Action::ChangeSettings => p.settings = Some(settings_patch(s, &raw.changes)?),
         Action::SetUpRepository => {
             let name = raw.repository.as_deref()?.trim();

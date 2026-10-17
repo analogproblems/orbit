@@ -241,6 +241,9 @@ async fn a_tapped_button_is_checked_again() {
                 repo: None,
                 repository: None,
                 connect: false,
+                service: None,
+                link: None,
+                label: None,
                 done: false,
             }],
             vec![],
@@ -324,6 +327,9 @@ async fn a_button_runs_once_even_when_two_windows_tap_it_at_once() {
             repo: None,
             repository: None,
             connect: false,
+            service: None,
+            link: None,
+            label: None,
             done: false,
         };
         answered(&mut s, id, "Tap below.".into(), vec![sync], vec![]);

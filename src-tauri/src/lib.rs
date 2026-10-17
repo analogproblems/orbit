@@ -338,8 +338,8 @@ mod desktop {
     }
     #[tauri::command]
     async fn open_github(url: String) -> Result<(), String> {
-        if !url.starts_with("https://github.com/") || url.chars().any(|c| c.is_control()) {
-            return Err("Only GitHub links can be opened.".into());
+        if !guide::may_open(&url) {
+            return Err("Only GitHub links and Bit's setup pages can be opened.".into());
         }
         let (program, args) = if cfg!(target_os = "macos") {
             ("open", vec![url])

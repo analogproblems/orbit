@@ -31,6 +31,7 @@ mod run;
 mod scans;
 mod settings;
 mod setup;
+mod sign_in;
 mod status;
 mod worktrees;
 mod writeup;
@@ -82,6 +83,8 @@ mod scans_tests;
 mod settings_tests;
 #[cfg(test)]
 mod setup_tests;
+#[cfg(test)]
+mod sign_in_tests;
 #[cfg(test)]
 mod state_tests;
 #[cfg(test)]
@@ -211,6 +214,11 @@ pub struct Engine {
     /// Counts the times you forgot something from Bit's memory, so an
     /// answer to a question asked before can't bring it back.
     memory_generation: std::sync::atomic::AtomicU64,
+    /// Sign-ins waiting for you to enter their code, by `github` or
+    /// `codex`.
+    signing_in: std::sync::Mutex<HashSet<&'static str>>,
+    /// The Codex sign-in Bit started, until Codex says it finished.
+    codex_login: std::sync::Mutex<Option<sign_in::Waiting>>,
     cloning: Mutex<()>,
     _instance_lock: std::fs::File,
 }
@@ -358,6 +366,8 @@ impl Engine {
             asking: std::sync::Mutex::new(None),
             using: std::sync::Mutex::new(HashSet::new()),
             memory_generation: std::sync::atomic::AtomicU64::new(0),
+            signing_in: std::sync::Mutex::new(HashSet::new()),
+            codex_login: std::sync::Mutex::new(None),
             cloning: Mutex::new(()),
             _instance_lock: instance_lock,
         }))

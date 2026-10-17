@@ -24,6 +24,59 @@ pub struct Connection {
     pub needed_by: Vec<String>,
     /// How to connect it, when there's no error that says.
     pub how: &'static str,
+    /// What to install, by name, and the page that has it.
+    pub program: &'static str,
+    pub page: &'static str,
+}
+impl Connection {
+    /// What fixes it, while it isn't ready.
+    pub fn remedy(&self) -> Remedy {
+        let error = self.error.as_deref().unwrap_or_default();
+        let missing = error.starts_with("Cannot start");
+        match self.key {
+            "github" | "codex" if missing => Remedy::Install,
+            // Each says so when signing in would fix it.
+            "github" if error.contains("gh auth login") => Remedy::SignIn,
+            "codex" if error.contains("not signed in") => Remedy::SignIn,
+            "github" | "codex" => Remedy::CheckAgain,
+            // The reviewers' pages say how to install them and sign in.
+            _ => Remedy::Install,
+        }
+    }
+}
+
+/// What fixes a connection that isn't ready.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Remedy {
+    /// Installing it, or setting it up, from its own page.
+    Install,
+    /// Signing in from Orbit, for GitHub and Codex.
+    SignIn,
+    /// Checking again, once whatever went wrong has passed.
+    CheckAgain,
+}
+
+/// The pages Bit's setup help links to, which the desktop app may open.
+pub const PAGES: [&str; 6] = [
+    "https://cli.github.com/",
+    "https://github.com/openai/codex",
+    "https://code.claude.com/docs/en/setup",
+    "https://antigravity.google/docs/cli",
+    "https://docs.docker.com/get-started/get-docker/",
+    "https://github.com/devcontainers/cli",
+];
+/// Where a sign-in sends you to enter its code.
+pub const SIGN_IN_PAGES: [&str; 2] = [
+    "https://github.com/login/device",
+    "https://auth.openai.com/",
+];
+/// Whether the desktop app may open `url` for you: a GitHub link, one of
+/// Bit's setup pages, or a sign-in page.
+pub fn may_open(url: &str) -> bool {
+    !url.chars().any(|c| c.is_control() || c.is_whitespace())
+        && (url.starts_with("https://github.com/")
+            || PAGES.contains(&url)
+            || SIGN_IN_PAGES.iter().any(|p| url.starts_with(p)))
 }
 
 /// What Orbit connects to: GitHub and Codex always, and Claude,
@@ -37,14 +90,17 @@ pub fn connections(s: &Snapshot) -> Vec<Connection> {
             .map(|r| r.name.clone())
             .collect()
     };
-    let cli = |name, key, status: &CliStatus, needed_by: Vec<String>, how| Connection {
-        name,
-        key,
-        ready: status.ready,
-        error: status.error.clone(),
-        needed_by,
-        how,
-    };
+    let cli =
+        |name, key, status: &CliStatus, needed_by: Vec<String>, how, program, page| Connection {
+            name,
+            key,
+            ready: status.ready,
+            error: status.error.clone(),
+            needed_by,
+            how,
+            program,
+            page,
+        };
     let mut out = vec![
         Connection {
             name: "GitHub",
@@ -53,6 +109,8 @@ pub fn connections(s: &Snapshot) -> Vec<Connection> {
             error: s.github_error.clone(),
             needed_by: using(|_| true),
             how: "Run gh auth login in a terminal on the computer running Orbit.",
+            program: "GitHub CLI",
+            page: PAGES[0],
         },
         Connection {
             name: "Codex",
@@ -61,6 +119,8 @@ pub fn connections(s: &Snapshot) -> Vec<Connection> {
             error: s.codex_error.clone(),
             needed_by: using(|r| r.provider == Provider::Codex),
             how: "Run codex login in a terminal on the computer running Orbit.",
+            program: "Codex CLI",
+            page: PAGES[1],
         },
         cli(
             "Claude",
@@ -68,6 +128,8 @@ pub fn connections(s: &Snapshot) -> Vec<Connection> {
             &s.claude,
             using(|r| r.provider == Provider::Claude),
             "Install Claude Code, then run claude in a terminal to sign in.",
+            "Claude Code",
+            PAGES[2],
         ),
         cli(
             "Antigravity",
@@ -75,6 +137,8 @@ pub fn connections(s: &Snapshot) -> Vec<Connection> {
             &s.antigravity,
             using(|r| r.provider == Provider::Antigravity),
             "Install Antigravity, then run agy in a terminal to sign in.",
+            "Antigravity",
+            PAGES[3],
         ),
         cli(
             "Docker and the Dev Container CLI",
@@ -82,8 +146,19 @@ pub fn connections(s: &Snapshot) -> Vec<Connection> {
             &s.dev_containers,
             using(|r| r.dev_container.enabled),
             "Install and start Docker, then run npm install -g @devcontainers/cli.",
+            "Docker",
+            PAGES[4],
         ),
     ];
+    // Docker answered, so what's missing is the Dev Container CLI.
+    if let Some(c) = out.last_mut().filter(|c| {
+        c.error
+            .as_deref()
+            .is_some_and(|e| e.contains("Dev Container CLI"))
+    }) {
+        c.program = "Dev Container CLI";
+        c.page = PAGES[5];
+    }
     out.retain(|c| matches!(c.key, "github" | "codex") || !c.needed_by.is_empty());
     out
 }
@@ -122,19 +197,31 @@ impl Guide {
 pub fn setup(s: &Snapshot, lookups: &Lookups) -> Guide {
     let mut g = Guide::default();
     let mut off = false;
+    let mut github = true;
     for c in connections(s) {
         if c.ready {
             g.lines.push(match (&s.github_user, c.key) {
                 (Some(user), "github") => format!("GitHub: connected as @{user}."),
                 _ => format!("{}: connected.", c.name),
             });
-        } else {
-            off = true;
-            g.to_do += 1;
-            let why = c.error.as_deref().unwrap_or(c.how);
-            g.lines
-                .push(format!("{} isn't connected. {}", c.name, why.trim()));
+            continue;
         }
+        off = true;
+        github &= c.key != "github";
+        g.to_do += 1;
+        let why = c.error.as_deref().unwrap_or(c.how).trim();
+        g.lines.push(match c.remedy() {
+            Remedy::Install if matches!(c.key, "github" | "codex") => format!(
+                "{} isn't installed on the computer running Orbit. Get the {} from its page, then tap Check again.",
+                c.program, c.program
+            ),
+            Remedy::SignIn => format!(
+                "{} isn't signed in. Tap Sign in to {} and I'll give you a code to enter on its website.",
+                c.name, c.name
+            ),
+            Remedy::Install | Remedy::CheckAgain => format!("{} isn't connected. {why}", c.name),
+        });
+        g.offer(fix(&c));
     }
     if off {
         g.offer(Some(Proposal::new(Action::CheckConnections)));
@@ -142,6 +229,8 @@ pub fn setup(s: &Snapshot, lookups: &Lookups) -> Guide {
     if s.settings.repositories.is_empty() {
         g.to_do += 1;
         let line = match &lookups.connectable {
+            // GitHub's own line says how to connect it.
+            Err(_) if !github => "No repositories are connected yet. Once GitHub is connected, I'll list yours here to pick from.".into(),
             Ok(repos) if !repos.is_empty() => {
                 let names = lookups.connectable_names();
                 for name in names.iter().take(SUGGESTED_REPOS) {
@@ -163,6 +252,23 @@ pub fn setup(s: &Snapshot, lookups: &Lookups) -> Guide {
     }
     autopilot(&mut g, s);
     g
+}
+
+/// The button that fixes a connection, besides Check again.
+pub fn fix(c: &Connection) -> Option<Proposal> {
+    match c.remedy() {
+        Remedy::SignIn => Some(Proposal {
+            service: Some(c.key.into()),
+            label: Some(format!("Sign in to {}", c.name)),
+            ..Proposal::new(Action::SignIn)
+        }),
+        Remedy::Install => Some(Proposal {
+            link: Some(c.page.into()),
+            label: Some(format!("Get {}", c.program)),
+            ..Proposal::new(Action::OpenPage)
+        }),
+        Remedy::CheckAgain => None,
+    }
 }
 
 /// The next steps for a repository that was just connected.

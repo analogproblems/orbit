@@ -156,6 +156,9 @@ fn an_answer_offers_only_buttons_orbit_allows_now() {
                 repo: None,
                 repository: None,
                 connect: false,
+                service: None,
+                link: None,
+                label: None,
                 done: false,
             },
             Proposal {
@@ -167,6 +170,9 @@ fn an_answer_offers_only_buttons_orbit_allows_now() {
                 repo: None,
                 repository: None,
                 connect: false,
+                service: None,
+                link: None,
+                label: None,
                 done: false,
             },
         ]
@@ -437,6 +443,19 @@ fn the_app_offers_the_same_actions() {
     let fixture: Value =
         serde_json::from_str(include_str!("../../test-fixtures/buddy-options.json")).unwrap();
     assert_eq!(fixture["actions"], json!(ACTIONS.map(|a| key(&a))));
+    assert_eq!(fixture["helpActions"], json!(HELP_ACTIONS.map(|a| key(&a))));
+}
+#[test]
+fn an_answer_cant_offer_a_sign_in_or_a_page() {
+    let s = Snapshot::default();
+    for action in HELP_ACTIONS {
+        assert!(!ACTIONS.contains(&action));
+        let raw: RawProposal = serde_json::from_value(json!({
+            "action": key(&action), "pr": null, "repository": null, "changes": [],
+        }))
+        .unwrap();
+        assert_eq!(proposal(&s, raw, &[]), None);
+    }
 }
 #[test]
 fn bits_thread_turns_off_every_tool_server_and_feature() {

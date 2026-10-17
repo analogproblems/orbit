@@ -37,7 +37,7 @@ import {
   VStack,
 } from "@astryxdesign/core";
 import { Trash2 } from "lucide-react";
-import { useOrbit } from "./store";
+import { openLink, useOrbit } from "./store";
 import {
   actionLabels,
   buddyMood,
@@ -161,6 +161,7 @@ function FixButton({ itemKey }: { itemKey: string | null | undefined }) {
 
 /** What a button from one of Bit's answers says it does. */
 function proposalLabel(p: Proposal) {
+  if (p.label) return p.label;
   const pr = p.prId?.split("/").pop();
   const only = (patch: object | null | undefined, key: string) =>
     !!patch && Object.keys(patch).length === 1 && key in patch;
@@ -211,6 +212,11 @@ function ProposalButton({
           isDisabled={!!proposal.done}
           clickAction={async () => {
             setError(null);
+            // A page opens where you are, on this computer or your phone.
+            if (proposal.action === "open_page") {
+              if (proposal.link) openLink(proposal.link);
+              return;
+            }
             const result = await action(
               "use_proposal",
               { noteId, proposalId: proposal.id },
@@ -247,7 +253,7 @@ function ProposalButton({
  * repositories, or settings. Answers lead nowhere; their lines carry their
  * own buttons. */
 function noteLink(note: BuddyNote) {
-  if (note.kind === "answer") return undefined;
+  if (note.kind === "answer" || note.kind === "sign_in") return undefined;
   if (note.kind === "decide") return "Open decisions";
   if (note.prId) return "Open loop";
   if (note.repo) return "Open repositories";

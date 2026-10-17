@@ -1009,6 +1009,89 @@ describe("Bit", () => {
     expect(box.textContent).toBe("And the others?");
   });
 
+  it("signs in from Bit's setup help and opens pages where you are", async () => {
+    snapshot.buddyFeed!.notes.push(
+      {
+        id: 300,
+        at: new Date().toISOString(),
+        kind: "answer",
+        prId: null,
+        reviewId: null,
+        repo: null,
+        question: "Help me set up",
+        text: "Let's get you set up!",
+        lines: [
+          {
+            text: "GitHub isn't signed in. Tap Sign in to GitHub and I'll give you a code to enter on its website.",
+            prId: null,
+            key: null,
+          },
+        ],
+        proposals: [
+          {
+            id: 0,
+            action: "sign_in",
+            service: "github",
+            label: "Sign in to GitHub",
+          },
+          {
+            id: 1,
+            action: "open_page",
+            link: "https://github.com/openai/codex",
+            label: "Get Codex CLI",
+          },
+        ],
+      },
+      {
+        id: 301,
+        at: new Date().toISOString(),
+        kind: "sign_in",
+        prId: null,
+        reviewId: null,
+        repo: null,
+        text: "Let's sign you in to GitHub.",
+        lines: [{ text: "Your code: `ABCD-1234`", prId: null, key: null }],
+        proposals: [
+          {
+            id: 0,
+            action: "open_page",
+            link: "https://github.com/login/device",
+            label: "Open github.com/login/device",
+          },
+        ],
+      },
+    );
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Bit" }));
+    const chat = () => screen.getByRole("log", { name: "Bit's notes" });
+    await user().click(
+      within(chat()).getByRole("button", { name: "Sign in to GitHub" }),
+    );
+    expect(invoke).toHaveBeenCalledWith("use_proposal", {
+      noteId: 300,
+      proposalId: 0,
+    });
+    // Pages open in the browser, without asking Orbit to do anything.
+    await user().click(
+      within(chat()).getByRole("button", { name: "Get Codex CLI" }),
+    );
+    expect(invoke).toHaveBeenCalledWith("open_github", {
+      url: "https://github.com/openai/codex",
+    });
+    expect(within(chat()).getByText("ABCD-1234").tagName).toBe("CODE");
+    await user().click(
+      within(chat()).getByRole("button", {
+        name: "Open github.com/login/device",
+      }),
+    );
+    expect(invoke).toHaveBeenCalledWith("open_github", {
+      url: "https://github.com/login/device",
+    });
+    expect(
+      invoke.mock.calls.filter(([c]) => c === "use_proposal"),
+    ).toHaveLength(1);
+  });
+
   it("shows exactly how a button would set up a repository", async () => {
     snapshot.buddyFeed!.notes.push({
       id: 300,
