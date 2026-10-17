@@ -78,6 +78,8 @@ fn only_plain_web_addresses_are_used() {
         "http://user:pass@host",
         "http://host/ path",
         "http://host\\x",
+        "http://host:11434/?x=1",
+        "http://host:11434#top",
         "ftp://host",
     ] {
         assert!(validate_url(url).is_err(), "{url}");
