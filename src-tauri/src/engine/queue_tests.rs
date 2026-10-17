@@ -270,7 +270,7 @@ async fn sends_each_commit_status_once_and_records_refusals() {
         r.status = "posted".into();
         r.report = "Report".into();
         r.findings = Some(vec![]);
-        crate::review_loop::decide(r, 1);
+        crate::review_loop::decide(r, Some(1));
     })
     .await;
     sync(&e).await;
@@ -346,7 +346,7 @@ async fn a_slow_status_for_a_stopped_round_cannot_overwrite_a_newer_one() {
     e.update(|s| {
         let r = s.reviews.iter_mut().find(|r| r.id == newer).unwrap();
         r.findings = Some(vec![]);
-        crate::review_loop::decide(r, 1);
+        crate::review_loop::decide(r, Some(1));
     })
     .await;
     sync(&e).await;
@@ -388,7 +388,7 @@ async fn a_round_that_finishes_before_a_push_still_closes_its_check() {
         let r = s.reviews.iter_mut().find(|r| r.id == id).unwrap();
         r.status = "ready".into();
         r.findings = Some(vec![]);
-        crate::review_loop::decide(r, 1);
+        crate::review_loop::decide(r, Some(1));
         s.prs[0].head_sha = "d".repeat(40);
     })
     .await;

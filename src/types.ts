@@ -355,6 +355,8 @@ export interface Settings {
   trustedAuthors: string[];
   /** Findings at this priority or more severe (0 = P0) block a clean verdict. */
   blockingPriority: number;
+  /** Whether findings can block a clean verdict at all; missing means on. */
+  blockFindings?: boolean;
   /** Queue a new head automatically only once it is a poll interval old. */
   settlePushes: boolean;
   /** Show each automatic round's result on its commit as `orbit/review`. */
@@ -725,6 +727,15 @@ export interface CommitCheck {
   /** The last status GitHub refused, with why. */
   refused?: CommitStatus | null;
 }
+/** A page of Settings. */
+export type SettingsTab =
+  | "connections"
+  | "reviewers"
+  | "automation"
+  | "decisions"
+  | "buddy"
+  | "devices"
+  | "storage";
 export type SettingsPatch = Partial<
   Omit<Settings, "repositories" | "buddy">
 > & {
@@ -1075,6 +1086,7 @@ export const defaults: Settings = {
   repositories: [],
   trustedAuthors: [],
   blockingPriority: 1,
+  blockFindings: true,
   settlePushes: true,
   commitStatus: true,
   notify: true,
@@ -1154,7 +1166,8 @@ export function selectionError(
   return null;
 }
 export function catalogUnavailable(s: Snapshot): string | null {
-  if (!s.codexReady) return "Codex is disconnected. Reconnect in Settings.";
+  if (!s.codexReady)
+    return s.codexError || "Codex is disconnected. Reconnect in Settings.";
   if (!s.modelCatalogReady)
     return (
       s.modelConfigurationError ||
@@ -1193,6 +1206,15 @@ export function antigravitySelection(s: Snapshot): ModelSelection {
     model: s.settings.antigravityModel || "",
     effort: s.settings.antigravityEffort || "high",
   };
+}
+/** A connection's state in a few words. Orbit's own errors start with
+ * "Cannot start" when a program is missing and say "not signed in" when it
+ * needs a sign-in. */
+export function connectionState(ready: boolean, error?: string | null) {
+  if (ready && !error) return "Connected";
+  if (error?.startsWith("Cannot start")) return "Not installed";
+  if (error && /not signed in|auth login/i.test(error)) return "Not signed in";
+  return "Not connected";
 }
 /** A CLI reviewer's status, as last checked. */
 export function cliStatus(s: Snapshot, provider: CliProvider) {

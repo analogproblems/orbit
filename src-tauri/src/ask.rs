@@ -133,7 +133,7 @@ impl Proposal {
 /// Trusted accounts aren't among them: they decide which pull requests are
 /// published automatically. A repository's own settings are changed with
 /// Set up repository instead.
-pub const SETTINGS: [&str; 26] = [
+pub const SETTINGS: [&str; 27] = [
     "automatic",
     "autoPost",
     "pollSeconds",
@@ -145,6 +145,7 @@ pub const SETTINGS: [&str; 26] = [
     "antigravityModel",
     "antigravityEffort",
     "blockingPriority",
+    "blockFindings",
     "settlePushes",
     "commitStatus",
     "notify",

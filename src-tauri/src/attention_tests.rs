@@ -146,7 +146,7 @@ fn a_held_publication_is_one_item_on_the_current_head() {
     let (mut s, p) = snapshot();
     let mut held = run(&p, "ready", 1);
     held.findings = Some(vec![]);
-    crate::review_loop::decide(&mut held, 1);
+    crate::review_loop::decide(&mut held, Some(1));
     held.error = Some("Not published automatically: looks like credentials.".into());
     s.reviews.push(held);
     let all = items(&s);
@@ -209,7 +209,7 @@ fn a_repository_needs_you_after_three_failed_syncs_in_a_row() {
     assert_eq!(all[0].repo.as_deref(), Some("A/b"));
     assert_eq!(
         all[0].reason,
-        "A/b failed to sync 3 times in a row: Not found"
+        "A/b can't sync. Not found. Orbit checks again every 2 minutes."
     );
     count_sync_failures(&mut s, &[]);
     assert!(s.sync_failures.is_empty());
@@ -240,8 +240,35 @@ fn github_needs_you_after_three_failed_polls_in_a_row() {
     assert_eq!(all[0].repo, None);
     assert_eq!(
         all[0].reason,
-        "Orbit could not sync with GitHub 3 times in a row: HTTP 401: Bad credentials"
+        "Orbit can't sync with GitHub. HTTP 401: Bad credentials. Orbit checks again every 2 minutes."
     );
+}
+#[test]
+fn a_missing_or_signed_out_gh_needs_you_at_once() {
+    let (mut s, _) = snapshot();
+    s.settings.poll_seconds = 60;
+    s.poll_failures = 1;
+    s.github_error = Some(crate::github::GH_MISSING.into());
+    let all = items(&s);
+    assert_eq!(all.len(), 1);
+    assert_eq!(
+        all[0].reason,
+        format!(
+            "Orbit can't sync with GitHub. {} Orbit checks again every minute.",
+            crate::github::GH_MISSING
+        )
+    );
+    s.github_error = Some(crate::github::GH_SIGNED_OUT.into());
+    assert_eq!(items(&s).len(), 1);
+}
+#[test]
+fn finds_programs_by_path_or_on_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let gh = dir.path().join("gh");
+    assert!(!crate::github::installed(&gh.to_string_lossy()));
+    std::fs::write(&gh, "").unwrap();
+    assert!(crate::github::installed(&gh.to_string_lossy()));
+    assert!(!crate::github::installed("surely-no-such-program-here"));
 }
 #[test]
 fn each_item_names_the_control_that_fixes_it() {
@@ -270,7 +297,7 @@ fn each_item_names_the_control_that_fixes_it() {
     let mut held = run(&p, "ready", 1);
     held.report = "Looks fine.".into();
     held.findings = Some(vec![]);
-    crate::review_loop::decide(&mut held, 1);
+    crate::review_loop::decide(&mut held, Some(1));
     held.error = Some("Comment not confirmed: timeout.".into());
     s.reviews.push(held);
     assert_eq!(fix(&s), [Some(Fix::Publish)]);
@@ -288,7 +315,7 @@ fn each_item_names_the_control_that_fixes_it() {
         priority: 1,
         ..Default::default()
     }]);
-    crate::review_loop::decide(&mut s.reviews[0], 1);
+    crate::review_loop::decide(&mut s.reviews[0], Some(1));
     let all = items(&s);
     assert_eq!(
         all[0].reason,

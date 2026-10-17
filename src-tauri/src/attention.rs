@@ -117,6 +117,25 @@ pub fn count_sync_failures(s: &mut Snapshot, failed: &[(String, String)]) {
         })
         .collect();
 }
+/// Text as a sentence, ending in a full stop.
+fn sentence(text: &str) -> String {
+    let text = text.trim();
+    if text.ends_with(['.', '!', '?']) {
+        text.to_string()
+    } else {
+        format!("{text}.")
+    }
+}
+/// When Orbit syncs again, such as "Orbit checks again every 2 minutes."
+fn checks_again(s: &Snapshot) -> String {
+    let n = s.settings.poll_seconds;
+    let every = match n {
+        60 => "minute".to_string(),
+        n if n % 60 == 0 => format!("{} minutes", n / 60),
+        n => format!("{n} seconds"),
+    };
+    format!("Orbit checks again every {every}.")
+}
 /// Every open item, oldest kind of problem first: the workspace, then each
 /// PR in inbox order.
 pub fn items(s: &Snapshot) -> Vec<Attention> {
@@ -137,7 +156,12 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
             });
         }
     }
-    if s.poll_failures >= SYNC_FAILURES {
+    // A missing or signed-out gh won't fix itself, so it shows at once.
+    let lasting = s
+        .github_error
+        .as_deref()
+        .is_some_and(|e| e == crate::github::GH_MISSING || e == crate::github::GH_SIGNED_OUT);
+    if s.poll_failures >= SYNC_FAILURES || (s.poll_failures > 0 && lasting) {
         out.push(Attention {
             fix: Some(Fix::SyncNow),
             ..item(
@@ -146,9 +170,9 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
                 None,
                 None,
                 format!(
-                    "Orbit could not sync with GitHub {} times in a row: {}",
-                    s.poll_failures,
-                    s.github_error.as_deref().unwrap_or("unknown error")
+                    "Orbit can't sync with GitHub. {} {}",
+                    sentence(s.github_error.as_deref().unwrap_or("Unknown error")),
+                    checks_again(s)
                 ),
             )
         });
@@ -163,8 +187,10 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
                 None,
                 None,
                 format!(
-                    "{} failed to sync {} times in a row: {}",
-                    f.repo, f.count, f.error
+                    "{} can't sync. {} {}",
+                    f.repo,
+                    sentence(&f.error),
+                    checks_again(s)
                 ),
             )
         });

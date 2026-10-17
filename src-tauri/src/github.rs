@@ -117,8 +117,45 @@ pub async fn api(
     let out = run(&gh(), &args, None, body.map(|v| v.to_string())).await?;
     serde_json::from_str(&out).map_err(|e| format!("Invalid GitHub response: {e}"))
 }
+/// What Orbit says when gh isn't installed. It starts with "Cannot start",
+/// like any program Orbit can't find.
+pub const GH_MISSING: &str =
+    "Cannot start gh: the GitHub CLI isn't installed. Install it from cli.github.com, then run gh auth login.";
+/// What Orbit says when gh is installed but not signed in.
+pub const GH_SIGNED_OUT: &str = "The GitHub CLI isn't signed in. Run gh auth login in a terminal.";
+/// Whether `program` can be started: a path to a file, or a name found on
+/// PATH.
+pub fn installed(program: &str) -> bool {
+    let path = Path::new(program);
+    if path.components().count() > 1 {
+        return path.is_file();
+    }
+    let names: Vec<String> = if cfg!(windows) {
+        ["", ".exe", ".cmd", ".bat"]
+            .iter()
+            .map(|ext| format!("{program}{ext}"))
+            .collect()
+    } else {
+        vec![program.to_string()]
+    };
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|dir| names.iter().any(|n| dir.join(n).is_file()))
+    })
+}
+/// The signed-in GitHub user. Doesn't start gh when it isn't installed, and
+/// says plainly when it isn't signed in.
 pub async fn user() -> Result<String, String> {
-    let v = api("user", "GET", &[], None).await?;
+    // Tests without a stand-in keep failing to start gh, as they always have.
+    if !cfg!(test) && !installed(&gh()) {
+        return Err(GH_MISSING.into());
+    }
+    let v = api("user", "GET", &[], None).await.map_err(|e| {
+        if e.contains("gh auth login") {
+            GH_SIGNED_OUT.to_string()
+        } else {
+            e
+        }
+    })?;
     v["login"]
         .as_str()
         .map(str::to_owned)

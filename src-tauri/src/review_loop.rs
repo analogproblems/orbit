@@ -30,9 +30,14 @@ pub fn blocking(r: &Review, blocking_priority: u8) -> Option<u32> {
     Some((new + earlier) as u32)
 }
 /// Records Orbit's verdict on a review whose findings were just extracted.
-pub fn decide(r: &mut Review, blocking_priority: u8) {
-    r.blocking = blocking(r, blocking_priority);
-    r.blocking_priority = r.blocking.map(|_| blocking_priority);
+/// With no blocking priority, findings never block, so a review with
+/// structured findings is clean and its findings carry no blocking label.
+pub fn decide(r: &mut Review, blocking_priority: Option<u8>) {
+    r.blocking = match blocking_priority {
+        Some(p) => blocking(r, p),
+        None => r.findings.as_ref().map(|_| 0),
+    };
+    r.blocking_priority = r.blocking.and(blocking_priority);
     r.orbit_verdict = r.blocking.map(|n| {
         if n == 0 {
             Verdict::Clean

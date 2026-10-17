@@ -285,7 +285,7 @@ fn each_new_needs_you_item_writes_one_note() {
     assert_eq!(written.len(), 1);
     assert_eq!(
         written[0].1,
-        "Heads up! a/b failed to sync 3 times in a row: timeout"
+        "Heads up! a/b can't sync. timeout. Orbit checks again every 2 minutes."
     );
     let note = s.buddy_feed.notes.last().unwrap();
     assert_eq!(

@@ -899,6 +899,9 @@ pub struct Settings {
     pub trusted_authors: Vec<String>,
     /// Findings at this priority or more severe (0 = P0) block a clean verdict.
     pub blocking_priority: u8,
+    /// Whether findings can block a clean verdict at all. When off, every
+    /// review with structured findings is clean.
+    pub block_findings: bool,
     /// Queue a new head automatically only once it is a poll interval old.
     pub settle_pushes: bool,
     /// Show each automatic round's result on its commit as the `orbit/review`
@@ -955,6 +958,7 @@ pub struct SettingsPatch {
     pub antigravity_effort: Option<String>,
     pub trusted_authors: Option<Vec<String>>,
     pub blocking_priority: Option<u8>,
+    pub block_findings: Option<bool>,
     pub settle_pushes: Option<bool>,
     pub commit_status: Option<bool>,
     pub notify: Option<bool>,
@@ -1000,6 +1004,9 @@ impl SettingsPatch {
         if let Some(v) = self.blocking_priority {
             settings.blocking_priority = v;
         }
+        if let Some(v) = self.block_findings {
+            settings.block_findings = v;
+        }
         if let Some(v) = self.settle_pushes {
             settings.settle_pushes = v;
         }
@@ -1036,6 +1043,7 @@ impl Default for Settings {
             repositories: vec![],
             trusted_authors: vec![],
             blocking_priority: 1,
+            block_findings: true,
             settle_pushes: true,
             commit_status: true,
             notify: true,
@@ -1046,6 +1054,11 @@ impl Default for Settings {
     }
 }
 impl Settings {
+    /// The priority at or above which findings block a clean verdict, or
+    /// None when findings never block.
+    pub fn blocking(&self) -> Option<u8> {
+        self.block_findings.then_some(self.blocking_priority)
+    }
     /// The model and effort new reviews by `provider` use.
     pub fn selection(&self, provider: Provider) -> ModelSelection {
         match provider {
