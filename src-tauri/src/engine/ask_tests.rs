@@ -941,7 +941,8 @@ async fn an_api_key_answers_with_bits_instructions_and_stays_out_of_orbits_files
             .unwrap();
         let s = e.snapshot().await;
         let saved = s.api_keys.get(api);
-        assert!(saved.saved && saved.status.ready, "{:?}", saved.status);
+        assert!(saved.saved);
+        assert!(saved.status.ready);
         assert!(saved.models.contains(&model.to_string()));
 
         e.ask_buddy_anything("What's up with b#1?").await.unwrap();
@@ -1008,8 +1009,13 @@ async fn bit_says_what_an_api_key_needs_before_using_it() {
         .unwrap();
     let s = e.snapshot().await;
     assert!(s.api_keys.openai.saved);
-    let error = s.api_keys.openai.status.error.clone().unwrap();
-    assert!(error.contains("OpenAI didn't accept your key"), "{error}");
+    assert!(s
+        .api_keys
+        .openai
+        .status
+        .error
+        .as_deref()
+        .is_some_and(|e| e.contains("OpenAI didn't accept your key")));
     let error = e.ask_buddy_anything("Hi?").await.unwrap_err();
     assert!(error.contains("didn't accept your key"), "{error}");
     let help = crate::guide::connections(&s);
