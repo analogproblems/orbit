@@ -242,8 +242,9 @@ impl Engine {
         self.asking_mut(note, |a| a.running = Some(running))
             .ok_or("The question was dropped.")?;
         let e = self.clone();
+        let model = selection.model.clone();
         tokio::spawn(async move {
-            let reply = cli_answer(by, init, outputs).await;
+            let reply = cli_answer(by, &model, init, outputs).await;
             e.answer_done(note, reply).await;
         });
         Ok(())
@@ -495,10 +496,11 @@ impl Drop for Using<'_> {
 }
 
 /// Claude Code's or Antigravity's answer, as the text Codex's would be.
-/// Antigravity must say it asks before anything that needs approval, as for
-/// reviews.
+/// As for reviews, it must say it runs `model`, and Antigravity that it
+/// asks before anything that needs approval.
 async fn cli_answer(
     by: Provider,
+    model: &str,
     init: tokio::sync::oneshot::Receiver<Result<Init, String>>,
     mut outputs: tokio::sync::mpsc::Receiver<Output>,
 ) -> Result<String, String> {
@@ -506,6 +508,16 @@ async fn cli_answer(
     let init = init
         .await
         .map_err(|_| format!("{name} stopped before it started."))??;
+    if init.model != model {
+        return Err(format!(
+            "{name} didn't confirm the model '{model}' (reported: {}), so I stopped it.",
+            if init.model.is_empty() {
+                "none"
+            } else {
+                &init.model
+            }
+        ));
+    }
     if by == Provider::Antigravity {
         let mode = init.permission_mode.as_deref().unwrap_or("");
         if !antigravity::ASKING_MODES.contains(&mode) {

@@ -1,6 +1,6 @@
 // A fake `agy` for tests, following Antigravity's documented headless
 // stream. Usage: node agy_fixture.cjs <mode>[@log] <agy args...>
-// Modes: ok, signed-out, wrong-model, always-proceed, wrong-conversation,
+// Modes: ok, signed-out, wrong-model, no-model, always-proceed, wrong-conversation,
 // crash, slow, linger, denied, incomplete, no-sandbox.
 // With a log, each call's arguments and prompt are appended to it as JSON,
 // and a structured answer is <log>.answer when the test left one.
@@ -48,7 +48,12 @@ function run(prompt) {
     mode === "wrong-conversation" && resumed
       ? "conv-other"
       : resumed || "conv-1";
-  const model = mode === "wrong-model" ? "gemini-other" : after("--model");
+  const model =
+    mode === "wrong-model"
+      ? "gemini-other"
+      : mode === "no-model"
+        ? undefined
+        : after("--model");
   if (mode === "no-sandbox") {
     if (args.includes("--sandbox")) {
       // What a sandbox that cannot start might look like; Orbit must stop

@@ -714,3 +714,44 @@ async fn codex_disconnecting_leaves_another_answerer_alone_and_ending_it_stops_i
     assert!(e.asking.lock().unwrap().is_none());
     super::test_support::child_ends(&log).await;
 }
+
+#[tokio::test]
+async fn an_answer_from_another_model_isnt_used() {
+    for (answerer, mode, reported) in [
+        ("claude", "wrong-model", "claude-other"),
+        ("claude", "no-model", "none"),
+        ("antigravity", "wrong-model", "gemini-other"),
+        ("antigravity", "no-model", "none"),
+    ] {
+        let (dir, e, _rpc) = answering_with(answerer).await;
+        let log = dir.path().join("cli-log");
+        let reply = json!({
+            "answer": "From the wrong model.",
+            "proposals": [{"action": "sync_now", "pr": null, "changes": []}],
+            "memory": {"forget": [], "remember": [{"repository": null, "line": "Wrong model was here."}]},
+        });
+        std::fs::write(log.with_extension("answer"), reply.to_string()).unwrap();
+        let fake = format!("{mode}@{}", log.display());
+        match answerer {
+            "claude" => e.use_claude(crate::claude::tests::fake(&fake)),
+            _ => e.use_antigravity(crate::antigravity::tests::fake(
+                &fake,
+                &dir.path().join("agy-settings.json"),
+            )),
+        }
+        e.ask_buddy_anything("What's up with b#1?").await.unwrap();
+        let note = answer_of(&e).await;
+        let s = e.snapshot().await;
+        let model = s.settings.selection(s.settings.buddy.answered_by()).model;
+        assert!(
+            note.text.contains(&format!(
+                "didn't confirm the model '{model}' (reported: {reported})"
+            )),
+            "{answerer} {mode}: {}",
+            note.text
+        );
+        assert!(note.proposals.is_empty());
+        assert!(note.memory.is_empty());
+        assert!(s.buddy_feed.memory.general.is_empty());
+    }
+}

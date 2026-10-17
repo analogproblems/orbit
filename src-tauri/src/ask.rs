@@ -659,16 +659,16 @@ struct RawChange {
     value: String,
 }
 
-/// Bit's answer from Codex's reply, with only the buttons Orbit's state
+/// Bit's answer from its answerer's reply, with only the buttons Orbit's state
 /// allows now and the memory changes it may make. `connectable` names the
 /// repositories the question's summary offered to connect. Text that looks
 /// like credentials is never shown or remembered.
 pub fn answer(s: &Snapshot, reply: &str, connectable: &[String]) -> Result<Answer, String> {
     let raw: RawAnswer = serde_json::from_str(reply.trim())
-        .map_err(|_| "Codex's answer didn't come back in the expected form.".to_string())?;
+        .map_err(|_| "The answer didn't come back in the expected form.".to_string())?;
     let text = raw.answer.trim();
     if text.is_empty() {
-        return Err("Codex's answer was empty.".into());
+        return Err("The answer was empty.".into());
     }
     let found = credential_kinds(text);
     if !found.is_empty() {
