@@ -15,7 +15,11 @@ Built with Tauri 2, Rust, React 19, TypeScript, Zustand, and the Astryx design s
 
 Orbit runs `gh`, `git`, `codex`, `claude`, and `agy` from your `PATH` and uses their own sign-ins. It never asks for or stores your tokens.
 
-## Run
+## Download
+
+Installers for Linux (`.deb`, `.AppImage`, `.rpm`), macOS (`.dmg`, for Apple silicon and Intel) and Windows (`.msi`, `.exe`) are attached to each [release](https://github.com/analogproblems/orbit/releases). The macOS and Windows builds aren't signed yet: on macOS, open it once, then choose **Open Anyway** in **System Settings → Privacy & Security**; on Windows, choose **More info → Run anyway**. You still need the CLIs listed above.
+
+## Run from source
 
 ```sh
 npm install
@@ -73,6 +77,17 @@ npm run format     # Prettier and rustfmt
 npm run diagnose   # Read-only GitHub/Codex connection check; no inference or comments
 npm run tauri -- build --no-bundle  # Native executable (src-tauri/target/release/orbit on Linux)
 ```
+
+### Releases
+
+Pushing a version tag builds every installer. Bump the version in `package.json`, `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`, merge that, then tag the merge commit and push the tag:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The [Release workflow](.github/workflows/release.yml) checks the tag matches all three versions, builds on Linux, macOS and Windows, and attaches the files to a draft release. Check the draft on the Releases page, then publish it.
 
 ### Dev container
 
