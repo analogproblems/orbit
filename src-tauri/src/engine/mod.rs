@@ -323,6 +323,7 @@ impl Engine {
         state.claude = CliStatus::default();
         state.claude_models = crate::claude::catalog();
         state.antigravity = CliStatus::default();
+        state.ollama = CliStatus::default();
         state.dev_containers = CliStatus::default();
         state.ledger.refreshing = false;
         state.ledger.progress = None;

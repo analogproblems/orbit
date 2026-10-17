@@ -1215,6 +1215,47 @@ describe("Bit", () => {
     ).toBeTruthy();
   });
 
+  it("sets up Ollama to answer Bit's questions", async () => {
+    snapshot.ollama = { ready: true };
+    snapshot.ollamaModels = ["llama3.2:3b", "qwen3:8b"];
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Settings" }));
+    await openSettingsTab("Buddy");
+    expect(
+      screen.queryByRole("textbox", { name: /^Ollama address/ }),
+    ).toBeNull();
+    await chooseOption(
+      await screen.findByRole("combobox", {
+        name: /^Who answers your questions/,
+      }),
+      "Ollama",
+    );
+    expect(invoke).toHaveBeenCalledWith("update_settings", {
+      patch: { buddy: { answerer: "ollama" } },
+    });
+    const address = await screen.findByRole("textbox", {
+      name: /^Ollama address/,
+    });
+    expect((address as HTMLInputElement).value).toBe("http://localhost:11434");
+    await user().clear(address);
+    await user().type(address, "http://jupiter:11434{Enter}");
+    expect(invoke).toHaveBeenCalledWith("update_settings", {
+      patch: { buddy: { ollamaUrl: "http://jupiter:11434" } },
+    });
+    await chooseOption(
+      screen.getByRole("combobox", { name: /^Ollama model/ }),
+      "qwen3:8b",
+    );
+    expect(invoke).toHaveBeenCalledWith("update_settings", {
+      patch: { buddy: { ollamaModel: "qwen3:8b" } },
+    });
+    expect(buddyOf(snapshot.settings)).toMatchObject({
+      answerer: "ollama",
+      ollamaUrl: "http://jupiter:11434",
+      ollamaModel: "qwen3:8b",
+    });
+  });
+
   it("shows what Bit remembers in Settings and forgets what you choose", async () => {
     invoke.mockImplementation(async (cmd, args) => {
       const memory = snapshot.buddyFeed!.memory!;

@@ -12,6 +12,7 @@ pub mod github;
 pub mod guide;
 pub mod ledger;
 pub mod models;
+pub mod ollama;
 pub mod remote;
 pub mod review_instructions;
 pub mod review_loop;

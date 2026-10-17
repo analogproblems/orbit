@@ -44,6 +44,8 @@ const buddyLabels: Record<keyof Buddy, string> = {
   personality: "Buddy's personality",
   rules: "Buddy's rules",
   answerer: "Who answers your questions",
+  ollamaUrl: "Ollama address",
+  ollamaModel: "Ollama model",
 };
 
 function buddyEntries(

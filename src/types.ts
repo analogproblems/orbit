@@ -408,7 +408,7 @@ export type BuddyHat =
   | "space-helmet";
 export type BuddyTone = "cheerful" | "calm" | "dry";
 /** Who answers the questions you type to Bit. */
-export type BuddyAnswerer = Provider;
+export type BuddyAnswerer = Provider | "ollama";
 export interface Buddy {
   enabled: boolean;
   name: string;
@@ -421,6 +421,10 @@ export interface Buddy {
   /** What Bit does about each fix it can do on its own. */
   rules: BuddyRules;
   answerer: BuddyAnswerer;
+  /** Where Ollama listens, when it answers. */
+  ollamaUrl: string;
+  /** The Ollama model that answers. */
+  ollamaModel: string;
 }
 /** One of Orbit's own controls, offered for something that needs you. */
 export type Fix =
@@ -470,6 +474,8 @@ export const defaultBuddy: Buddy = {
     sync_now: "ask_first",
   },
   answerer: "codex",
+  ollamaUrl: "http://localhost:11434",
+  ollamaModel: "",
 };
 export const buddyTones: Record<BuddyTone, string> = {
   cheerful: "Cheerful",
@@ -480,6 +486,7 @@ export const buddyAnswerers: Record<BuddyAnswerer, string> = {
   codex: "Codex",
   claude: "Claude Code",
   antigravity: "Antigravity",
+  ollama: "Ollama",
 };
 export type NoteKind =
   | "round_started"
@@ -941,6 +948,10 @@ export interface Snapshot {
   devContainers?: CliStatus;
   /** The models Antigravity offered when last checked. */
   antigravityModels?: Model[];
+  /** Ollama at Bit's address, as last checked while it answers Bit. */
+  ollama?: CliStatus;
+  /** The models Ollama had when last checked. */
+  ollamaModels?: string[];
   modelCatalogReady: boolean;
   modelConfigurationError?: string | null;
   modelSelectionNotice?: string | null;

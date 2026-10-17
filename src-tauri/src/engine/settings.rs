@@ -68,11 +68,21 @@ impl Engine {
         self.commit_settings(&mut *self.state.lock().await, settings)
     }
     pub async fn update_settings(&self, patch: SettingsPatch) -> Result<Settings, String> {
-        let mut s = self.state.lock().await;
-        let mut settings = s.settings.clone();
-        patch.apply(&mut settings);
-        self.commit_settings(&mut s, settings)?;
-        Ok(s.settings.clone())
+        let ollama = |s: &Settings| (s.buddy.answered_by(), s.buddy.ollama_url.clone());
+        let (saved, recheck) = {
+            let mut s = self.state.lock().await;
+            let before = ollama(&s.settings);
+            let mut settings = s.settings.clone();
+            patch.apply(&mut settings);
+            self.commit_settings(&mut s, settings)?;
+            (s.settings.clone(), ollama(&s.settings) != before)
+        };
+        // Ollama answering Bit, or at a new address, is checked straight
+        // away, so Settings can list its models.
+        if recheck {
+            self.check_ollama().await;
+        }
+        Ok(saved)
     }
     /// Connects a repository, or saves a connected one's settings. A new
     /// repository without a folder gets Orbit's own copy, downloaded into
