@@ -401,7 +401,12 @@ async fn reads_history_in_the_background_and_only_what_changed() {
         "Guard the empty list"
     );
 
-    // Nothing changed: only the open pull request is read again.
+    // Nothing changed: within the hour, nothing is read again.
+    refresh(&e, &gh).await;
+    assert_eq!(calls(d.path(), "repos/a/b/pulls/1/reviews"), 1);
+    assert_eq!(calls(d.path(), "repos/a/b/pulls/2/reviews"), 1);
+    // The hourly pass, or Refresh, reads the open one too.
+    *e.ledger_full_at.lock().unwrap() = None;
     refresh(&e, &gh).await;
     assert_eq!(calls(d.path(), "repos/a/b/pulls/1/reviews"), 1);
     assert_eq!(calls(d.path(), "repos/a/b/pulls/2/reviews"), 2);
@@ -416,6 +421,9 @@ async fn reads_history_in_the_background_and_only_what_changed() {
     );
     edited["updated_at"] = json!("2026-10-11T11:30:00Z");
     answer(d.path(), "repos/a/b/issues/2/comments", json!([edited]));
+    refresh(&e, &gh).await;
+    assert_eq!(e.snapshot().await.ledger.version, 1);
+    *e.ledger_full_at.lock().unwrap() = None;
     refresh(&e, &gh).await;
     assert_eq!(e.snapshot().await.ledger.version, 2);
     let pr2 = e

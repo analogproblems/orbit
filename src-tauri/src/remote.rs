@@ -282,7 +282,7 @@ async fn dispatch(e: &Arc<Engine>, name: &str, a: &Value) -> Result<Value, Strin
         }
         "get_decisions" => out(e.decisions().await?),
         "refresh_decisions" => {
-            e.refresh_ledger_soon();
+            e.refresh_ledger_fully();
             out(())
         }
         "export_decisions" => {

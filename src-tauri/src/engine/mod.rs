@@ -167,6 +167,8 @@ pub struct Engine {
     /// The pull-request history is being read; another read skips rather
     /// than waits.
     refreshing_ledger: AtomicBool,
+    /// When the history last read every open pull request, changed or not.
+    ledger_full_at: std::sync::Mutex<Option<std::time::Instant>>,
     /// Write-ups are being made; another run skips rather than waits.
     writing_up: AtomicBool,
     /// The Codex thread writing a pull request up.
@@ -362,6 +364,7 @@ impl Engine {
             stopping: AtomicBool::new(false),
             updating_clones: AtomicBool::new(false),
             refreshing_ledger: AtomicBool::new(false),
+            ledger_full_at: std::sync::Mutex::new(None),
             writing_up: AtomicBool::new(false),
             writing_thread: std::sync::Mutex::new(None),
             write_failed: std::sync::Mutex::new(HashMap::new()),

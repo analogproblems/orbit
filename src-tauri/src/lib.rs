@@ -157,7 +157,7 @@ mod desktop {
     }
     #[tauri::command]
     async fn refresh_decisions(engine: State<'_, AppState>) -> Result<(), String> {
-        engine.refresh_ledger_soon();
+        engine.refresh_ledger_fully();
         Ok(())
     }
     /// Saves the Decisions page as Markdown where you choose, as
