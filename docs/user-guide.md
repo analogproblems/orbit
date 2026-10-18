@@ -556,7 +556,7 @@ On a phone-sized screen, the sidebar moves into a menu: tap the menu button at t
 
 ## Restart, retained data, and cleanup
 
-Orbit saves settings, PR metadata, reviews, reports, and chat messages in `state.json` under its app-data directory. On Linux this is normally `~/.local/share/dev.orbit.review`; an absolute `XDG_DATA_HOME` changes the parent directory. Review checkouts are under its `worktrees` subdirectory. The browser demo uses separate browser local storage.
+Orbit saves settings, PR metadata, reviews, reports, and chat messages in `state.json` under its app-data directory. To keep it from growing forever, a pull request that has left your inbox (merged, closed or no longer requested) keeps only its last three reviews, and their chat is cleared a month after it last changed; their reports and findings stay. On Linux this is normally `~/.local/share/dev.orbit.review`; an absolute `XDG_DATA_HOME` changes the parent directory. Review checkouts are under its `worktrees` subdirectory. The browser demo uses separate browser local storage.
 
 Treat Orbit's saved state and worktrees as local project data: reports and logs can contain private repository content. There is no history deletion or age-based retention setting. Worktree cleanup preserves reports, conversations, publication metadata, and the run records used to avoid duplicate automatic reviews. Retained chat history continues to grow. Copying `state.json` alone does not recreate the Git worktrees or Codex's own stored threads.
 

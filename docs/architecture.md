@@ -108,7 +108,7 @@ The Decisions page (epic #77, folding PRism into Orbit) reads every connected re
 
 ## Persistence and recovery
 
-- State is atomically replaced in `state.json` under Tauri's app-data directory (typically `~/.local/share/dev.orbit.review` on Linux). Invalid state is left untouched.
+- State is atomically replaced in `state.json` under Tauri's app-data directory (typically `~/.local/share/dev.orbit.review` on Linux). Invalid state is left untouched. Since the whole file is written on every change, each housekeeping tick prunes it (`engine/prune.rs`): a pull request no longer in `Snapshot.prs` keeps its newest 3 reviews (`KEEP_ROUNDS`), and a kept review's chat is cleared 30 days after it last changed (`KEEP_CHAT_DAYS`). A review that is active, has a worktree or clean-up pending, or is named by an approval or a Needs you item is never touched. A reopened pull request's loop then counts only the kept rounds.
 - Active runs become visibly interrupted after restart instead of being silently retried.
 - A state-write failure turns Autopilot off; after resolving it, re-enable Autopilot to resume automatic reviews.
 - Threads and worktrees are retained for follow-ups. Orbit removes a review's worktree automatically once its pull request is no longer open in a connected repository (merged, closed, or the repository was disconnected), and when a review fails or is stopped before it starts; the chat stays readable, but follow-ups then need a new review.

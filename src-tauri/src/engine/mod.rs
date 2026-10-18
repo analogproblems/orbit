@@ -24,6 +24,7 @@ mod findings;
 mod fixes;
 mod inline;
 mod ledger;
+mod prune;
 mod publish;
 mod queue;
 mod rounds;
@@ -72,6 +73,8 @@ mod ledger_tests;
 mod model_tests;
 #[cfg(test)]
 mod notice_tests;
+#[cfg(test)]
+mod prune_tests;
 #[cfg(test)]
 mod publish_tests;
 #[cfg(test)]
@@ -603,6 +606,7 @@ impl Engine {
         self.expire_approvals().await;
         self.close_boxes().await;
         self.sync_commit_statuses().await;
+        self.prune_state().await;
     }
     pub async fn storage_usage(&self) -> Result<storage::StorageUsage, String> {
         let snapshot = self.snapshot().await;
