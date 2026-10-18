@@ -92,7 +92,7 @@ export function RemoteAccess() {
               onChange={(enabled) =>
                 void run("set_remote_access", { enabled, port: status.port })
               }
-              description="Open this workspace on your phone or laptop through Tailscale. Anyone with the link can do everything you can here, including running repository setup commands on this computer, so only open it on your own devices."
+              description="Open this workspace on your phone or laptop through Tailscale. Anyone with the link can do everything you can here, including running repository setup commands on this computer, so only open it on your own devices. Turning this off makes a new link."
             />
             <NumberInput
               label="Port"

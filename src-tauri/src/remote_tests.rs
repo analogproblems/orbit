@@ -357,6 +357,17 @@ async fn turns_on_and_off_from_settings() {
     assert!(tokio::net::TcpStream::connect(("127.0.0.1", port))
         .await
         .is_err());
+
+    // Turning it back on gives a new link; the old one never works again.
+    let again = link_token(&access.set(true, port).await.unwrap());
+    assert_ne!(again, token);
+    assert_eq!(
+        request(port, "POST", "/api/get_snapshot", &token).await.0,
+        401
+    );
+    // Moving it to another port keeps the link.
+    let moved = link_token(&access.set(true, free_port()).await.unwrap());
+    assert_eq!(moved, again);
 }
 
 #[tokio::test]
