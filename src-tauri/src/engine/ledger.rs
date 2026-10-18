@@ -54,20 +54,15 @@ impl Engine {
     /// Starts a read that also reads every open pull request, as Refresh on
     /// the Decisions page asks.
     pub fn refresh_ledger_fully(self: &Arc<Self>) -> bool {
-        *self.ledger_full_at.lock().unwrap() = None;
+        self.ledger_full_at.lock().unwrap().clear();
         self.refresh_ledger_soon()
     }
     /// Reads each connected repository's 100 most recently updated pull
     /// requests: those not stored yet and those updated since, and once an
     /// hour every open one, as an edited comment doesn't always update its
-    /// pull request. The stored history of repositories no longer connected
-    /// is removed.
+    /// pull request. An hourly read that fails is tried again next time. The
+    /// stored history of repositories no longer connected is removed.
     pub(super) async fn refresh_ledger(&self) {
-        let full = self
-            .ledger_full_at
-            .lock()
-            .unwrap()
-            .is_none_or(|t| t.elapsed() >= FULL_REFRESH);
         let repos: Vec<String> = {
             let s = self.state.lock().await;
             s.settings
@@ -82,8 +77,18 @@ impl Engine {
         // A folder that can't be removed now is tried again next time.
         let _ = blocking(move || store::prune(&root, &connected)).await;
         for repo in &repos {
+            let full = self
+                .ledger_full_at
+                .lock()
+                .unwrap()
+                .get(repo)
+                .is_none_or(|t| t.elapsed() >= FULL_REFRESH);
             let mut changed = false;
             let result = self.refresh_repo(repo, full, &mut changed).await;
+            if full && result.is_ok() {
+                let mut stamps = self.ledger_full_at.lock().unwrap();
+                stamps.insert(repo.clone(), std::time::Instant::now());
+            }
             self.update(|s| {
                 let at = result.is_ok().then(now);
                 let error = result.err();
@@ -104,9 +109,10 @@ impl Engine {
             })
             .await;
         }
-        if full {
-            *self.ledger_full_at.lock().unwrap() = Some(std::time::Instant::now());
-        }
+        self.ledger_full_at
+            .lock()
+            .unwrap()
+            .retain(|repo, _| repos.contains(repo));
         self.update(|s| {
             s.ledger.refreshing = false;
             s.ledger.progress = None;
