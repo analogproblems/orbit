@@ -103,7 +103,7 @@ export function mainAction(
       a.reason === "The report is waiting for you to publish it.")
   )
     return { label: "Publish", onClick: () => go.onPublish(r) };
-  if (a.kind === "loop" && a.reason === "Round limit reached.")
+  if (a.fix === "continue_loop")
     return {
       label: "Continue loop",
       onClick: () => run("continue_loop", { prId: a.prId, rounds: 2 }),
