@@ -10,6 +10,7 @@ import {
 } from "@testing-library/react";
 import {
   ScanDialog,
+  ScanReportDialog,
   ScansPage,
   progressLabel,
   scanDuration,
@@ -148,6 +149,22 @@ describe("security scans", () => {
           { scanId: "scan-running" },
         ]),
       );
+    } finally {
+      restore();
+    }
+  });
+  it("reads a scan's report once, however often the scan is updated", async () => {
+    const { calls, restore } = mockActions({ get_scan_report: "# Report" });
+    try {
+      const scan = { ...demoScan("acme/orbit", 90), id: "scan-1" };
+      const { rerender } = render(
+        <ScanReportDialog scan={scan} onClose={() => {}} />,
+      );
+      // Each update brings a new copy of the same scan.
+      rerender(<ScanReportDialog scan={{ ...scan }} onClose={() => {}} />);
+      rerender(<ScanReportDialog scan={{ ...scan }} onClose={() => {}} />);
+      await waitFor(() => expect(calls.length).toBe(1));
+      expect(calls[0]).toEqual(["get_scan_report", { scanId: "scan-1" }]);
     } finally {
       restore();
     }

@@ -137,7 +137,10 @@ export function ScanDialog({
 }) {
   const { snapshot: s, action } = useOrbit();
   const repos = s.settings.repositories.map((r) => r.name);
-  const [chosen, setChosen] = useState(repo ?? repos[0] ?? "");
+  const [picked, setChosen] = useState(repo ?? repos[0] ?? "");
+  // A repository connected after the dialog first showed, or one since
+  // disconnected, falls back to the first one there is.
+  const chosen = repos.includes(picked) ? picked : (repos[0] ?? "");
   const [mode, setMode] = useState<ScanMode>("standard");
   const [plugin, setPlugin] = useState<ScanPluginStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -315,22 +318,23 @@ export function ScanReportDialog({
     null,
   );
   const [error, setError] = useState<{ id: string; text: string } | null>(null);
+  // Read once per scan: the scan object is rebuilt with every update while
+  // anything runs, and the report doesn't change with it.
+  const scanId = scan?.id;
   useEffect(() => {
-    if (!scan) return;
+    if (!scanId) return;
     let current = true;
-    void action<string>(
-      "get_scan_report",
-      { scanId: scan.id },
-      { quiet: true },
-    ).then((result) => {
-      if (!current) return;
-      if (result.ok) setReport({ id: scan.id, text: result.data });
-      else setError({ id: scan.id, text: result.error });
-    });
+    void action<string>("get_scan_report", { scanId }, { quiet: true }).then(
+      (result) => {
+        if (!current) return;
+        if (result.ok) setReport({ id: scanId, text: result.data });
+        else setError({ id: scanId, text: result.error });
+      },
+    );
     return () => {
       current = false;
     };
-  }, [scan, action]);
+  }, [scanId, action]);
   const text = report?.id === scan?.id ? report?.text : undefined;
   const failed = error?.id === scan?.id ? error?.text : undefined;
   return (

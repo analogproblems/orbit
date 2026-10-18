@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Banner,
   Button,
@@ -38,7 +38,10 @@ export function RemoteAccess() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Set once you change something, so the first read can't undo it.
+  const changed = useRef(false);
   const run = async (command: string, args: Record<string, unknown> = {}) => {
+    changed.current = true;
     setBusy(true);
     setError(null);
     const result = await action<RemoteAccessStatus>(command, args, {
@@ -54,9 +57,11 @@ export function RemoteAccess() {
       "get_remote_access",
       {},
       { quiet: true },
-    ).then((result) =>
-      result.ok ? setStatus(result.data) : setLoadError(result.error),
-    );
+    ).then((result) => {
+      if (changed.current) return;
+      if (result.ok) setStatus(result.data);
+      else setLoadError(result.error);
+    });
   }, [action]);
   const link = status && shareLink(status);
   return (

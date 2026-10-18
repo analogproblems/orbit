@@ -209,6 +209,12 @@ export default function App() {
   const knownPrs = [...s.prs, ...(s.historyPrs ?? [])];
   const chosen = knownPrs.find((p) => p.id === selected);
   const pr = chosen ?? s.prs[0];
+  // Read after an await, to see which pull request is showing by then.
+  const shownPr = useRef<string | undefined>(undefined);
+  const shownId = pr?.id;
+  useEffect(() => {
+    shownPr.current = shownId;
+  }, [shownId]);
   const review =
     (selectedReview
       ? s.reviews.find((r) => r.id === selectedReview && r.prId === pr?.id)
@@ -274,8 +280,10 @@ export default function App() {
   const start = async () => {
     if (!pr || busy) return;
     setBusy(true);
-    const result = await action<string>("start_review", { prId: pr.id });
-    if (result.ok) {
+    const started = pr.id;
+    const result = await action<string>("start_review", { prId: started });
+    // Only open the chat if the same pull request is still showing.
+    if (result.ok && shownPr.current === started) {
       setSelectedReview(result.data ?? null);
       setTab("chat");
     }
