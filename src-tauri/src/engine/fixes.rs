@@ -41,12 +41,14 @@ impl Engine {
         Ok(())
     }
     /// Answers a quick question in Bit's feed, after any notes still to be
-    /// written. Help me set up first looks at each repository's copy, and
-    /// at your GitHub repositories while none is connected.
+    /// written. Help me set up first switches Bit to the one sign-in that's
+    /// ready if the one you chose isn't, and looks at each repository's
+    /// copy, and at your GitHub repositories while none is connected.
     pub async fn ask_buddy(&self, question: Question) -> Result<(), String> {
         let _ = self.flush().await;
         let lookups = match question {
             Question::Setup => {
+                self.pick_bit_answerer().await;
                 let connected = self.state.lock().await.settings.repositories.clone();
                 let list = connected.is_empty();
                 self.look_up(connected, list).await

@@ -16,6 +16,7 @@ use crate::{
     buddy::{self, Answerer},
     claude,
     cli::{Init, Output, Running, Turn, TurnKind},
+    guide,
     types::*,
 };
 use serde_json::{json, Value};
@@ -56,55 +57,11 @@ impl Drop for Request {
     }
 }
 
-/// Whether Ollama can answer with `model`, from its latest check.
-fn ollama_ready(s: &Snapshot, model: &str) -> Result<(), String> {
-    if !s.ollama.ready {
-        return Err(s.ollama.error.clone().unwrap_or_else(|| {
-            "Orbit hasn't reached it yet. Check its address in Settings.".into()
-        }));
-    }
-    if model.is_empty() {
-        return Err("Choose an Ollama model in Settings.".into());
-    }
-    if !s.ollama_models.iter().any(|m| m == model) {
-        return Err(format!(
-            "Ollama doesn't have model '{model}'. Choose one in Settings."
-        ));
-    }
-    Ok(())
-}
-
-/// Whether your key for `api` can answer with `model`, from its latest
-/// check.
-fn api_ready(s: &Snapshot, api: Api, model: &str) -> Result<(), String> {
-    let key = s.api_keys.get(api);
-    let company = api.company();
-    if !key.saved {
-        return Err(format!(
-            "Save your {company} API key in Settings, under Buddy."
-        ));
-    }
-    if !key.status.ready {
-        return Err(key.status.error.clone().unwrap_or_else(|| {
-            "Orbit hasn't checked your key yet. Tap Check again in Settings.".into()
-        }));
-    }
-    if model.is_empty() {
-        return Err(format!(
-            "Choose a model for your {company} key in Settings."
-        ));
-    }
-    if !key.models.iter().any(|m| m == model) {
-        return Err(format!(
-            "{company} doesn't offer model '{model}' to your key. Choose one in Settings."
-        ));
-    }
-    Ok(())
-}
-
 impl Engine {
     /// Asks the answerer you chose a question you typed. The question
-    /// shows straight away and its answer follows in the same note.
+    /// shows straight away and its answer follows in the same note. When
+    /// the one you chose isn't ready, Bit switches to the one sign-in that
+    /// is; with none, Bit's answer is how to connect one.
     pub async fn ask_buddy_anything(self: &Arc<Self>, question: &str) -> Result<(), String> {
         let question = question.trim();
         if question.is_empty() || question.chars().count() > ask::MAX_QUESTION {
@@ -113,6 +70,7 @@ impl Engine {
                 ask::MAX_QUESTION
             ));
         }
+        self.pick_bit_answerer().await;
         let (note, by, selection, ollama_url, connected) = {
             let mut s = self.state.lock().await;
             let name = s.settings.buddy.name.clone();
@@ -123,30 +81,16 @@ impl Engine {
                 return Err(format!("{name} is still answering your last question."));
             }
             let by = s.settings.buddy.answered_by();
-            let selection = match by {
-                Answerer::Ollama => ModelSelection {
-                    model: s.settings.buddy.ollama_model.clone(),
-                    effort: String::new(),
-                },
-                Answerer::Api(api) => ModelSelection {
-                    model: s.settings.buddy.api_model(api).to_string(),
-                    effort: String::new(),
-                },
-                _ => s
-                    .settings
-                    .selection(by.provider().unwrap_or(Provider::Codex)),
-            };
-            match (by, by.provider()) {
-                (_, Some(p)) => selection.validate_for(p, &s),
-                (Answerer::Api(api), None) => api_ready(&s, api, &selection.model),
-                _ => ollama_ready(&s, &selection.model),
+            // Nothing to answer with yet, so Bit's answer is how to
+            // connect something.
+            if guide::bit_ready(&s, by).is_err() {
+                buddy::cant_answer(&mut s, question);
+                self.dirty.store(true, Ordering::SeqCst);
+                drop(s);
+                let _ = self.flush().await;
+                return Ok(());
             }
-            .map_err(|e| {
-                format!(
-                    "{name} answers typed questions with {}, which isn't ready: {e}",
-                    by.label()
-                )
-            })?;
+            let selection = guide::bit_selection(&s, by);
             let note = buddy::asked(&mut s, question);
             *self.asking.lock().unwrap() = Some(Asking {
                 note,

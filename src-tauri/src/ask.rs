@@ -5,7 +5,7 @@
 //! text in the summary is someone else's, so it is marked as data, and every
 //! button waits for your tap, checked again when you tap it.
 use crate::{
-    buddy::{self, Buddy, MemoryChange, MemoryKind},
+    buddy::{self, Answerer, Buddy, MemoryChange, MemoryKind},
     extras,
     ledger::{writeup::DecisionKind, History},
     setup::{self, CloneFacts, RepositoryPatch},
@@ -847,6 +847,19 @@ pub fn autopilot_proposal(s: &Snapshot) -> Option<Proposal> {
     };
     Some(Proposal {
         settings: Some(settings_patch(s, &[change])?),
+        ..Proposal::new(Action::ChangeSettings)
+    })
+}
+/// A button that has Bit answer your questions with `a`, if that changes
+/// anything.
+pub fn answerer_proposal(s: &Snapshot, a: Answerer, label: String) -> Option<Proposal> {
+    let change = RawChange {
+        setting: "buddy.answerer".into(),
+        value: a.key().into(),
+    };
+    Some(Proposal {
+        settings: Some(settings_patch(s, &[change])?),
+        label: Some(label),
         ..Proposal::new(Action::ChangeSettings)
     })
 }
