@@ -654,16 +654,21 @@ async fn run(launcher: &Launcher, args: &[&str], timeout: Duration) -> Result<Ou
     let stdout = child.stdout.take().map(|s| Box::new(s) as _);
     let stderr = child.stderr.take().map(|s| Box::new(s) as _);
     let finished = tokio::time::timeout(timeout, async {
-        let (_, _, status) = tokio::join!(read(stdout), read(stderr), child.wait());
+        let wait = async {
+            let status = child.wait().await;
+            // Reaped, so its group id may be reused from here on, even
+            // while something it started still holds its output open.
+            group.disarm();
+            status
+        };
+        let (_, _, status) = tokio::join!(read(stdout), read(stderr), wait);
         status
     })
     .await;
     let (status, timed_out) = match finished {
-        Ok(status) => {
-            group.disarm();
-            (status.map_err(|e| e.to_string())?.code(), false)
-        }
+        Ok(status) => (status.map_err(|e| e.to_string())?.code(), false),
         Err(_) => {
+            // Signals the group only if the command hasn't been reaped.
             drop(group);
             let _ = child.kill().await;
             (None, true)

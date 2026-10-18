@@ -662,3 +662,37 @@ async fn a_command_that_runs_out_of_time_stops_with_what_it_started() {
         "the child kept running: {stat}"
     );
 }
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_command_that_exited_is_never_signalled_as_a_group() {
+    let d = tempfile::tempdir().unwrap();
+    let pid_file = d.path().join("pid");
+    let sh = Launcher {
+        program: "sh".into(),
+        prefix: vec!["-c".into()],
+    };
+    // The command exits at once, but what it started keeps its output open,
+    // so the run times out after the command was reaped. Its group id may
+    // have been reused by then, so nothing is sent to it.
+    let script = format!("sleep 30 & echo $! > '{}'", pid_file.display());
+    let out = run(&sh, &[&script], Duration::from_millis(500))
+        .await
+        .unwrap();
+    assert!(out.timed_out);
+    let pid: i32 = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    // Time for a signal, had one been sent, to land.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+    unsafe {
+        libc::kill(pid, libc::SIGKILL);
+    }
+    assert!(
+        !stat.is_empty() && !stat.contains(") Z "),
+        "the group was signalled after its leader was reaped: {stat:?}"
+    );
+}

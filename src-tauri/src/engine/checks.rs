@@ -39,8 +39,9 @@ impl Engine {
     /// Removes check containers an earlier run of Orbit left behind, and
     /// recipe checkouts it didn't get to remove.
     pub(super) async fn remove_leftover_containers(&self) {
-        // Reviews may already be starting, so their own containers and
-        // recipe checkouts stay.
+        // Reviews may already have started, so their own containers and
+        // recipe checkouts stay; no review sets one up until this is done.
+        let _cleaning = self.containers.write().await;
         let snapshot = self.snapshot().await;
         let mut keep: Vec<String> = snapshot
             .reviews
@@ -81,6 +82,9 @@ impl Engine {
         base_sha: &str,
         keep: bool,
     ) -> Result<(), String> {
+        // Not while launch removes leftovers, which could take this
+        // review's container or recipe checkout for one.
+        let _containers = self.containers.read().await;
         let tools = self.dev_tools.lock().unwrap().clone();
         let recipe = git(
             worktree,

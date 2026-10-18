@@ -433,3 +433,30 @@ async fn a_setup_that_cant_be_stopped_costs_the_reviewer_its_container() {
         .join(devcontainer::container(&t.id))
         .exists());
 }
+
+#[tokio::test]
+async fn launch_clean_up_waits_for_a_review_setting_up_its_container() {
+    let t = review_with_recipe(true).await;
+    t.e.check_dev_containers().await.unwrap();
+    std::fs::create_dir_all(t.docker.join("containers/orbit-checks-old/fs")).unwrap();
+    // A review is setting up its dev container as Orbit launches.
+    let setting_up = t.e.containers.read().await;
+    let cleaning = tokio::spawn({
+        let e = t.e.clone();
+        async move { e.remove_leftover_containers().await }
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(t.docker.join("containers/orbit-checks-old").exists());
+    // Its container starts while the clean-up waits.
+    let ours = t
+        .docker
+        .join("containers")
+        .join(devcontainer::container(&t.id));
+    std::fs::create_dir_all(ours.join("fs")).unwrap();
+    t.e.update(|s| s.reviews[0].status = "preparing".into())
+        .await;
+    drop(setting_up);
+    cleaning.await.unwrap();
+    assert!(!t.docker.join("containers/orbit-checks-old").exists());
+    assert!(ours.exists(), "the review's own container stays");
+}
