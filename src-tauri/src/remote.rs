@@ -97,6 +97,8 @@ const CONFIG_FILE: &str = "remote.json";
 pub const DEFAULT_PORT: u16 = 4317;
 const HTML_CSP: &str = "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'";
 
+/// Added to the page Orbit serves; `src/store.ts` looks for it.
+pub const SERVED_MARK: &str = r#"<meta name="orbit-served" content="">"#;
 /// A file of the built frontend.
 pub struct Asset {
     pub bytes: Vec<u8>,
@@ -417,7 +419,16 @@ async fn asset(State(remote): State<Remote>, uri: Uri) -> Response {
         return StatusCode::NOT_FOUND.into_response();
     };
     let html = file.mime_type.starts_with("text/html");
-    let mut response = Response::new(Body::from(file.bytes));
+    let bytes = if html {
+        // Marks the page as served here, so a browser without a working link
+        // says so rather than showing the demo.
+        String::from_utf8_lossy(&file.bytes)
+            .replacen("<head>", &format!("<head>{SERVED_MARK}"), 1)
+            .into_bytes()
+    } else {
+        file.bytes
+    };
+    let mut response = Response::new(Body::from(bytes));
     let headers = response.headers_mut();
     if let Ok(mime) = HeaderValue::from_str(&file.mime_type) {
         headers.insert(header::CONTENT_TYPE, mime);
@@ -472,7 +483,7 @@ pub struct Status {
 }
 struct Running {
     stop: watch::Sender<bool>,
-    task: tokio::task::JoinHandle<()>,
+    port: u16,
     token: String,
 }
 struct Inner {
@@ -571,14 +582,15 @@ impl Access {
     }
     /// Stops the server, then starts it again if it is turned on.
     async fn restart(&self, inner: &mut Inner) {
+        let port = inner.config.port;
+        let was_on_port = inner.running.as_ref().is_some_and(|r| r.port == port);
         if let Some(running) = inner.running.take() {
-            stop(running).await;
+            stop(running);
         }
         inner.error = None;
         if !inner.config.enabled {
             return;
         }
-        let port = inner.config.port;
         let token = match token(&self.root) {
             Ok(token) => token,
             Err(e) => {
@@ -586,7 +598,7 @@ impl Access {
                 return;
             }
         };
-        let listener = match TcpListener::bind(("127.0.0.1", port)).await {
+        let listener = match bind(port, was_on_port).await {
             Ok(listener) => listener,
             Err(e) => {
                 inner.error = Some(format!(
@@ -604,26 +616,35 @@ impl Access {
             stopped.clone(),
         );
         let mut shutdown = stopped;
-        let task = tokio::spawn(async move {
+        tokio::spawn(async move {
             let _ = axum::serve(listener, app)
                 .with_graceful_shutdown(async move {
                     let _ = shutdown.wait_for(|stop| *stop).await;
                 })
                 .await;
         });
-        inner.running = Some(Running { stop, task, token });
+        inner.running = Some(Running { stop, port, token });
     }
 }
-/// Stops a server: event streams end at once, and other requests get a few
-/// seconds to finish.
-async fn stop(running: Running) {
+/// Stops a server without waiting for it: it stops listening and event
+/// streams end at once, while requests already running finish on their own,
+/// so Settings is never held up by a browser part way through one.
+fn stop(running: Running) {
     let _ = running.stop.send(true);
-    let mut task = running.task;
-    if tokio::time::timeout(Duration::from_secs(5), &mut task)
-        .await
-        .is_err()
-    {
-        task.abort();
+}
+/// Listens on `port`. When Orbit's own server was just stopped there
+/// (`again`), it may not have closed its listener yet, so a port in use is
+/// tried again for a moment.
+async fn bind(port: u16, again: bool) -> std::io::Result<TcpListener> {
+    let mut tries = 0;
+    loop {
+        match TcpListener::bind(("127.0.0.1", port)).await {
+            Err(e) if again && e.kind() == std::io::ErrorKind::AddrInUse && tries < 50 => {
+                tries += 1;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            result => return result,
+        }
     }
 }
 fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {

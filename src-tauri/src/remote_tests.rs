@@ -8,7 +8,7 @@ const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789a
 fn assets() -> Assets {
     Arc::new(|path: &str| {
         (path == "index.html").then(|| Asset {
-            bytes: b"<!doctype html>".to_vec(),
+            bytes: b"<!doctype html><html><head></head></html>".to_vec(),
             mime_type: "text/html".into(),
         })
     })
@@ -211,6 +211,13 @@ async fn serves_the_frontend_without_escaping_it() {
     assert_eq!(
         response.headers()[header::CONTENT_SECURITY_POLICY],
         HTML_CSP
+    );
+    let page = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::str::from_utf8(&page).unwrap(),
+        format!("<!doctype html><html><head>{SERVED_MARK}</head></html>")
     );
     for path in [
         "/../index.html",
@@ -469,4 +476,31 @@ fn reads_the_tailnet_name() {
     ] {
         assert_eq!(tailnet_name(status), None, "{status}");
     }
+}
+
+#[tokio::test]
+async fn a_request_still_in_flight_does_not_hold_up_settings() {
+    use tokio::io::AsyncWriteExt;
+    let (_d, access) = access();
+    let port = free_port();
+    access.set(true, port).await.unwrap();
+    // A browser part way through sending a request.
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    stream
+        .write_all(b"POST /api/get_snapshot HTTP/1.1\r\nHost: localhost\r\n")
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let started = std::time::Instant::now();
+    let status = access.reset_link().await.unwrap();
+    assert!(status.running, "{status:?}");
+    access.set(false, port).await.unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "Settings waited {:?}",
+        started.elapsed()
+    );
+    drop(stream);
 }

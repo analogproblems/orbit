@@ -1,0 +1,32 @@
+// @vitest-environment jsdom
+import { expect, it, vi } from "vitest";
+
+const { fetchMock } = vi.hoisted(() => {
+  // Opened from Orbit's own server, which marks its page, with no link.
+  const mark = document.createElement("meta");
+  mark.name = "orbit-served";
+  document.head.append(mark);
+  const fetchMock = vi.fn();
+  vi.stubGlobal("fetch", fetchMock);
+  return { fetchMock };
+});
+vi.mock("@tauri-apps/api/core", () => ({
+  isTauri: () => false,
+  invoke: vi.fn(),
+}));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
+import { expiredLink } from "./remote";
+import { desktop, live, remote, useOrbit } from "./store";
+
+it("says an old or missing link no longer works instead of showing the demo", async () => {
+  expect([desktop, remote, live]).toEqual([false, true, true]);
+  await useOrbit.getState().init();
+  const state = useOrbit.getState();
+  expect(state.error).toBe(expiredLink);
+  expect(state.loaded).toBe(true);
+  expect(state.snapshot.prs).toEqual([]);
+  expect(
+    await useOrbit.getState().action("start_review", { prId: "a/b#1" }),
+  ).toEqual({ ok: false, error: `Error: ${expiredLink}` });
+  expect(fetchMock).not.toHaveBeenCalled();
+});
