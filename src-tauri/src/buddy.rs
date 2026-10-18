@@ -88,6 +88,16 @@ impl Answerer {
             _ => self.provider().map_or("", Provider::label),
         }
     }
+    /// Its name in settings: `buddy.answerer`.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::Claude => "claude",
+            Self::Antigravity => "antigravity",
+            Self::Ollama => "ollama",
+            Self::Api(api) => api.key(),
+        }
+    }
     /// The reviewer it is, if it is one.
     pub fn provider(self) -> Option<Provider> {
         match self {
@@ -948,6 +958,20 @@ mod say {
             _ => format!("Sorry, I couldn't answer that. {error} Try asking again?"),
         }
     }
+    pub fn switched(tone: &str, from: &str, to: &str) -> String {
+        match tone {
+            "calm" => format!("{from} isn't ready, so I'll answer your questions with {to}, which is. You can change that in Settings, under Buddy."),
+            "dry" => format!("{from} wasn't answering, so I switched to {to}. Change it back in Settings, under Buddy, if you like."),
+            _ => format!("{from} isn't ready, but {to} is, so I'll answer your questions with {to} from now on! You can change that in Settings, under Buddy."),
+        }
+    }
+    pub fn cant_answer(tone: &str) -> String {
+        match tone {
+            "calm" => "I can't answer yet. First, connect something for me to answer with:".into(),
+            "dry" => "Can't answer that. Nothing to answer with yet:".into(),
+            _ => "I'd love to answer that, but I need something to answer with first. Tap a button to connect one:".into(),
+        }
+    }
 }
 
 /// Every note kind in a tone, for tests.
@@ -1351,6 +1375,31 @@ pub fn asked(s: &mut Snapshot, question: &str) -> u64 {
         }],
     );
     id
+}
+/// Answers a question you typed that Bit can't answer yet: what it would
+/// answer with, and buttons to connect something.
+pub fn cant_answer(s: &mut Snapshot, question: &str) {
+    let guide = crate::guide::bit_setup(s);
+    let text = say::cant_answer(&s.settings.buddy.tone);
+    append(
+        &mut s.buddy_feed,
+        vec![Note {
+            question: Some(question.into()),
+            lines: guide
+                .lines
+                .into_iter()
+                .map(|t| line(t, None, None))
+                .collect(),
+            proposals: guide.proposals,
+            ..Note::new(NoteKind::Answer, text)
+        }],
+    );
+}
+/// Notes that Bit switched to answering with `to`, the one sign-in that's
+/// ready, since `from` wasn't.
+pub fn switched(s: &mut Snapshot, from: Answerer, to: Answerer) {
+    let text = say::switched(&s.settings.buddy.tone, from.label(), to.label());
+    append(&mut s.buddy_feed, vec![Note::new(NoteKind::Fixed, text)]);
 }
 /// Fills in the answer to a question you typed, and makes the changes it
 /// asks for in Bit's memory, while the question is still waiting.

@@ -84,6 +84,21 @@ impl Engine {
         }
         Ok(saved)
     }
+    /// Switches Bit to the one sign-in that's ready when the one you chose
+    /// to answer isn't, and says so in Bit's feed.
+    pub(super) async fn pick_bit_answerer(&self) {
+        let mut s = self.state.lock().await;
+        let Some(to) = crate::guide::pick_answerer(&s) else {
+            return;
+        };
+        let from = s.settings.buddy.answered_by();
+        let mut settings = s.settings.clone();
+        settings.buddy.answerer = to.key().into();
+        if self.commit_settings(&mut s, settings).is_ok() {
+            crate::buddy::switched(&mut s, from, to);
+            self.dirty.store(true, Ordering::SeqCst);
+        }
+    }
     /// Connects a repository, or saves a connected one's settings. A new
     /// repository without a folder gets Orbit's own copy, downloaded into
     /// its data folder and kept up to date. The whole save carries on even

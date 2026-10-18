@@ -361,20 +361,25 @@ async fn help_me_set_up_offers_your_repositories_and_bit_follows_up() {
             .map(|p| (p.action, p.repo.clone(), p.connect))
             .collect()
     };
-    // GitHub and Codex aren't connected in tests.
-    assert_eq!(
-        offered(answer),
-        [
-            (Action::CheckConnections, None, false),
-            (Action::SetUpRepository, Some("acme/api".into()), true),
-            (Action::SetUpRepository, Some("a/b".into()), true),
-        ]
-    );
+    // GitHub and Codex aren't connected in tests, so Bit's own buttons
+    // come first: Claude Code, Antigravity, Ollama and the three API keys.
+    let bits = || {
+        let mut b = vec![(Action::OpenPage, None, false); 2];
+        b.extend(vec![(Action::ChangeSettings, None, false); 4]);
+        b
+    };
+    let mut expected = bits();
+    expected.extend([
+        (Action::CheckConnections, None, false),
+        (Action::SetUpRepository, Some("acme/api".into()), true),
+        (Action::SetUpRepository, Some("a/b".into()), true),
+    ]);
+    assert_eq!(offered(answer), expected);
 
     // Connecting one gets a note with its next steps.
     let note = answer.id;
     crate::github::GH
-        .scope(gh.clone(), e.use_proposal(note, 1))
+        .scope(gh.clone(), e.use_proposal(note, 7))
         .await
         .unwrap();
     let s = e.snapshot().await;
@@ -416,17 +421,17 @@ async fn help_me_set_up_offers_your_repositories_and_bit_follows_up() {
     assert!(answer.lines.iter().any(|l| l.text
         == "acme/api sets up with `npm ci --ignore-scripts`. Its pull requests are reviewed automatically."));
     // The taps above synced without the stand-in, so gh couldn't start.
-    assert!(answer.lines[0]
-        .text
-        .starts_with("GitHub CLI isn't installed"));
-    assert_eq!(
-        offered(answer),
-        [
-            (Action::OpenPage, None, false),
-            (Action::CheckConnections, None, false),
-            (Action::ChangeSettings, None, false),
-        ]
-    );
+    assert!(answer
+        .lines
+        .iter()
+        .any(|l| l.text.starts_with("GitHub CLI isn't installed")));
+    let mut expected = bits();
+    expected.extend([
+        (Action::OpenPage, None, false),
+        (Action::CheckConnections, None, false),
+        (Action::ChangeSettings, None, false),
+    ]);
+    assert_eq!(offered(answer), expected);
     assert_eq!(log(dir.path()), "");
 }
 

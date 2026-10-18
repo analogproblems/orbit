@@ -87,10 +87,112 @@ pub fn may_open(url: &str) -> bool {
             || SIGN_IN_PAGES.iter().any(|p| url.starts_with(p)))
 }
 
+/// Whether Ollama can answer with `model`, from its latest check.
+fn ollama_ready(s: &Snapshot, model: &str) -> Result<(), String> {
+    if !s.ollama.ready {
+        return Err(s.ollama.error.clone().unwrap_or_else(|| {
+            "Orbit hasn't reached it yet. Check its address in Settings.".into()
+        }));
+    }
+    if model.is_empty() {
+        return Err("Choose an Ollama model in Settings.".into());
+    }
+    if !s.ollama_models.iter().any(|m| m == model) {
+        return Err(format!(
+            "Ollama doesn't have model '{model}'. Choose one in Settings."
+        ));
+    }
+    Ok(())
+}
+
+/// Whether your key for `api` can answer with `model`, from its latest
+/// check.
+fn api_ready(s: &Snapshot, api: Api, model: &str) -> Result<(), String> {
+    let key = s.api_keys.get(api);
+    let company = api.company();
+    if !key.saved {
+        return Err(format!(
+            "Save your {company} API key in Settings, under Buddy."
+        ));
+    }
+    if !key.status.ready {
+        return Err(key.status.error.clone().unwrap_or_else(|| {
+            "Orbit hasn't checked your key yet. Tap Check again in Settings.".into()
+        }));
+    }
+    if model.is_empty() {
+        return Err(format!(
+            "Choose a model for your {company} key in Settings."
+        ));
+    }
+    if !key.models.iter().any(|m| m == model) {
+        return Err(format!(
+            "{company} doesn't offer model '{model}' to your key. Choose one in Settings."
+        ));
+    }
+    Ok(())
+}
+
+/// The answerers you sign in to, which Bit may pick on its own.
+pub const SIGN_INS: [Answerer; 3] = [Answerer::Codex, Answerer::Claude, Answerer::Antigravity];
+
+/// The model, and effort, Bit answers with when `a` answers.
+pub fn bit_selection(s: &Snapshot, a: Answerer) -> ModelSelection {
+    let only = |model: &str| ModelSelection {
+        model: model.to_string(),
+        effort: String::new(),
+    };
+    match a {
+        Answerer::Ollama => only(&s.settings.buddy.ollama_model),
+        Answerer::Api(api) => only(s.settings.buddy.api_model(api)),
+        _ => s
+            .settings
+            .selection(a.provider().unwrap_or(Provider::Codex)),
+    }
+}
+
+/// Whether Bit can answer the questions you type with `a`, from the
+/// latest checks.
+pub fn bit_ready(s: &Snapshot, a: Answerer) -> Result<(), String> {
+    let selection = bit_selection(s, a);
+    match (a, a.provider()) {
+        (_, Some(p)) => selection.validate_for(p, s),
+        (Answerer::Api(api), None) => api_ready(s, api, &selection.model),
+        _ => ollama_ready(s, &selection.model),
+    }
+}
+
+/// Who Bit switches to on its own: the one sign-in that's ready, while Bit
+/// is on and the one you chose to answer isn't ready. Ollama and an API
+/// key are never switched away from, since you chose where your questions
+/// go.
+pub fn pick_answerer(s: &Snapshot) -> Option<Answerer> {
+    let buddy = &s.settings.buddy;
+    let by = buddy.answered_by();
+    if !buddy.enabled || by.provider().is_none() || bit_ready(s, by).is_ok() {
+        return None;
+    }
+    match SIGN_INS
+        .into_iter()
+        .filter(|&a| bit_ready(s, a).is_ok())
+        .collect::<Vec<_>>()[..]
+    {
+        [one] => Some(one),
+        _ => None,
+    }
+}
+
 /// What Orbit connects to: GitHub and Codex always, Claude, Antigravity
 /// and dev containers while a repository or Bit uses them, and Ollama or an
 /// API key while Bit answers with it.
 pub fn connections(s: &Snapshot) -> Vec<Connection> {
+    let mut out = all_connections(s);
+    out.retain(|c| matches!(c.key, "github" | "codex") || !c.needed_by.is_empty() || c.for_bit);
+    out
+}
+
+/// Everything Orbit can connect to, used or not.
+pub fn all_connections(s: &Snapshot) -> Vec<Connection> {
     let buddy = &s.settings.buddy;
     let for_bit = |a: Answerer| buddy.enabled && buddy.answered_by() == a;
     let using = |uses: fn(&Repository) -> bool| -> Vec<String> {
@@ -218,8 +320,16 @@ pub fn connections(s: &Snapshot) -> Vec<Connection> {
             page,
         ));
     }
-    out.retain(|c| matches!(c.key, "github" | "codex") || !c.needed_by.is_empty() || c.for_bit);
     out
+}
+
+/// The connection Bit answers with when `a` answers.
+fn connection_of(all: &[Connection], a: Answerer) -> Option<&Connection> {
+    let key = match a {
+        Answerer::Api(api) => format!("{}-api", api.key()),
+        _ => a.key().to_string(),
+    };
+    all.iter().find(|c| c.key == key)
 }
 
 /// Names a few repositories: one, two, or how many.
@@ -240,46 +350,46 @@ pub struct Guide {
     pub to_do: u32,
 }
 impl Guide {
+    /// Adds a button, unless the same one is there already. Says whether
+    /// it's there now.
     fn offer(&mut self, proposal: Option<Proposal>) -> bool {
         let Some(mut p) = proposal else {
             return false;
         };
+        p.id = 0;
+        if self
+            .proposals
+            .iter()
+            .any(|q| Proposal { id: 0, ..q.clone() } == p)
+        {
+            return true;
+        }
         p.id = self.proposals.len() as u32;
         self.proposals.push(p);
         true
     }
 }
 
-/// Where setup stands: each connection, a few of your repositories to
-/// connect when none is, each connected repository's next steps, and
-/// autopilot.
+/// Where setup stands: first what Bit answers your questions with, then
+/// each other connection, a few of your repositories to connect when none
+/// is, each connected repository's next steps, and autopilot.
 pub fn setup(s: &Snapshot, lookups: &Lookups) -> Guide {
     let mut g = Guide::default();
-    let mut off = false;
+    let mut off = bit_connection(&mut g, s);
     let mut github = true;
     for c in connections(s) {
+        // Bit's own lines cover what Bit answers with, unless a
+        // repository's reviews use it too and it's connected.
+        if c.for_bit && (!c.ready || (c.needed_by.is_empty() && c.key != "codex")) {
+            continue;
+        }
+        g.lines.push(connection_line(s, &c));
         if c.ready {
-            g.lines.push(match (&s.github_user, c.key) {
-                (Some(user), "github") => format!("GitHub: connected as @{user}."),
-                _ => format!("{}: connected.", c.name),
-            });
             continue;
         }
         off = true;
         github &= c.key != "github";
         g.to_do += 1;
-        let why = c.error.as_deref().unwrap_or(c.how).trim();
-        g.lines.push(match c.remedy() {
-            Remedy::Install if matches!(c.key, "github" | "codex") => format!(
-                "{} isn't installed on the computer running Orbit. Get the {} from its page, then tap Check again.",
-                c.program, c.program
-            ),
-            Remedy::SignIn => format!(
-                "{} isn't signed in. Tap Sign in to {} and I'll give you a code to enter on its website.",
-                c.name, c.name
-            ),
-            Remedy::Install | Remedy::CheckAgain => format!("{} isn't connected. {why}", c.name),
-        });
         g.offer(fix(&c));
     }
     if off {
@@ -311,6 +421,129 @@ pub fn setup(s: &Snapshot, lookups: &Lookups) -> Guide {
     }
     autopilot(&mut g, s);
     g
+}
+
+/// A connection's line in Bit's setup help: that it's connected, or what
+/// to do about it.
+fn connection_line(s: &Snapshot, c: &Connection) -> String {
+    if c.ready {
+        return match (&s.github_user, c.key) {
+            (Some(user), "github") => format!("GitHub: connected as @{user}."),
+            _ => format!("{}: connected.", c.name),
+        };
+    }
+    let why = c.error.as_deref().unwrap_or(c.how).trim();
+    match c.remedy() {
+        Remedy::Install if matches!(c.key, "github" | "codex") => format!(
+            "{} isn't installed on the computer running Orbit. Get the {} from its page, then tap Check again.",
+            c.program, c.program
+        ),
+        Remedy::SignIn => format!(
+            "{} isn't signed in. Tap Sign in to {} and I'll give you a code to enter on its website.",
+            c.name, c.name
+        ),
+        Remedy::Install | Remedy::CheckAgain => format!("{} isn't connected. {why}", c.name),
+    }
+}
+
+/// Bit's answer when it can't answer a question you typed: what it would
+/// answer with, and buttons to connect something.
+pub fn bit_setup(s: &Snapshot) -> Guide {
+    let mut g = Guide::default();
+    if bit_connection(&mut g, s) {
+        g.offer(Some(Proposal::new(Action::CheckConnections)));
+    }
+    g
+}
+
+/// What Bit answers your questions with: a line saying so, and while it
+/// isn't ready, buttons for each way to fix that, from switching to a
+/// sign-in that's ready, to connecting one, Ollama or an API key. Says
+/// whether anything is off.
+fn bit_connection(g: &mut Guide, s: &Snapshot) -> bool {
+    let buddy = &s.settings.buddy;
+    if !buddy.enabled {
+        return false;
+    }
+    let by = buddy.answered_by();
+    let error = match bit_ready(s, by) {
+        Ok(()) => {
+            g.lines
+                .push(format!("I answer your questions with {}.", by.label()));
+            return false;
+        }
+        Err(e) => e,
+    };
+    g.to_do += 1;
+    let all = all_connections(s);
+    let own = connection_of(&all, by).filter(|c| !c.ready);
+    let problem = match own {
+        Some(c) => connection_line(s, c),
+        None => format!(
+            "I answer your questions with {}, which isn't ready: {}",
+            by.label(),
+            error.trim()
+        ),
+    };
+    let ready: Vec<Answerer> = SIGN_INS
+        .into_iter()
+        .filter(|&a| a != by && bit_ready(s, a).is_ok())
+        .collect();
+    let names: Vec<&str> = ready.iter().map(|a| a.label()).collect();
+    match names[..] {
+        [] => g.lines.extend([
+            "First, I need something to answer your questions with: Codex, Claude, Antigravity, Ollama or your own API key. Tap one below to set it up.".into(),
+            problem,
+        ]),
+        [one] => g.lines.extend([
+            problem,
+            format!("{one} is ready, so tap Answer with {one} to use it instead."),
+        ]),
+        _ => g.lines.extend([
+            problem,
+            format!(
+                "{} are ready, so tap one to answer with it instead.",
+                and_list(&names)
+            ),
+        ]),
+    }
+    if let Some(c) = own {
+        g.offer(fix(c));
+    }
+    if !ready.is_empty() {
+        for a in ready {
+            g.offer(ask::answerer_proposal(
+                s,
+                a,
+                format!("Answer with {}", a.label()),
+            ));
+        }
+        return true;
+    }
+    for a in SIGN_INS.into_iter().filter(|&a| a != by) {
+        if let Some(c) = connection_of(&all, a).filter(|c| !c.ready) {
+            g.offer(fix(c));
+        }
+    }
+    let others = [Answerer::Ollama]
+        .into_iter()
+        .chain(Api::ALL.map(Answerer::Api))
+        .filter(|&a| a != by);
+    for a in others {
+        if let Some(c) = connection_of(&all, a) {
+            g.offer(ask::answerer_proposal(s, a, format!("Use {}", c.program)));
+        }
+    }
+    true
+}
+
+/// Names a few things: one, two, or a list ending in "and".
+fn and_list(names: &[&str]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.to_string(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
 }
 
 /// The button that fixes a connection, besides Check again.

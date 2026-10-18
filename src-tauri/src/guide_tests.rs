@@ -24,15 +24,39 @@ fn listed(names: &[&str]) -> Vec<RepositorySummary> {
         })
         .collect()
 }
-/// A snapshot with GitHub and Codex connected and autopilot on.
+/// A snapshot with GitHub and Codex connected, Codex's models listed, and
+/// autopilot on.
 fn connected_snapshot() -> Snapshot {
     let mut s = Snapshot {
         github_user: Some("jason".into()),
         codex_ready: true,
+        model_catalog_ready: true,
+        models: crate::models::tests::catalog(),
         ..Default::default()
     };
+    s.settings.model = "model-a".into();
+    s.settings.effort = "medium".into();
     s.settings.automatic = true;
     s
+}
+/// Bit's first line while nothing it answers with is ready.
+const NOTHING_TO_ANSWER_WITH: &str = "First, I need something to answer your questions with: Codex, Claude, Antigravity, Ollama or your own API key. Tap one below to set it up.";
+/// Bit's buttons for connecting something, besides Codex's own.
+const ANSWER_WITH: [&str; 6] = [
+    "OpenPage Get Claude Code",
+    "OpenPage Get Antigravity",
+    "ChangeSettings Use Ollama",
+    "ChangeSettings Use an OpenAI API key",
+    "ChangeSettings Use an Anthropic API key",
+    "ChangeSettings Use a Gemini API key",
+];
+fn with_bits(first: &[&str], rest: &[&str]) -> Vec<String> {
+    first
+        .iter()
+        .chain(ANSWER_WITH.iter())
+        .chain(rest)
+        .map(|l| l.to_string())
+        .collect()
 }
 fn labels(g: &Guide) -> Vec<String> {
     g.proposals
@@ -68,41 +92,46 @@ fn a_first_run_checks_connections_and_offers_your_repositories() {
         ..Default::default()
     };
     let g = setup(&s, &lookups);
+    // Bit's own connection comes first.
     assert_eq!(
         g.lines,
         [
-            "GitHub isn't connected. Could not sync a/b: HTTP 502",
+            NOTHING_TO_ANSWER_WITH,
             "Codex isn't signed in. Tap Sign in to Codex and I'll give you a code to enter on its website.",
+            "GitHub isn't connected. Could not sync a/b: HTTP 502",
             "No repositories are connected yet. Tap one of yours below and Orbit downloads its own copy and connects it, with automatic reviews off until you turn them on.",
         ]
     );
     assert_eq!(
         labels(&g),
-        [
-            "SignIn Sign in to Codex",
-            "CheckConnections - ",
-            "SetUpRepository acme/api {}",
-            "SetUpRepository acme/web {}",
-            "SetUpRepository acme/docs {}",
-        ]
+        with_bits(
+            &["SignIn Sign in to Codex"],
+            &[
+                "CheckConnections - ",
+                "SetUpRepository acme/api {}",
+                "SetUpRepository acme/web {}",
+                "SetUpRepository acme/docs {}",
+            ]
+        )
     );
-    assert!(g.proposals[2..].iter().all(|p| p.connect));
+    assert!(g.proposals[8..].iter().all(|p| p.connect));
     assert_eq!(g.proposals[0].service.as_deref(), Some("codex"));
     assert_eq!(
         g.proposals.iter().map(|p| p.id).collect::<Vec<_>>(),
-        [0, 1, 2, 3, 4]
+        (0..11).collect::<Vec<_>>()
     );
+    // Bit's connection, GitHub and a repository.
     assert_eq!(g.to_do, 3);
 
     // Without an error yet, it says how to connect.
     s.github_error = None;
     let g = setup(&s, &Lookups::default());
     assert_eq!(
-        g.lines[0],
+        g.lines[2],
         "GitHub isn't connected. Run gh auth login in a terminal on the computer running Orbit."
     );
     assert_eq!(
-        g.lines[2],
+        g.lines[3],
         "No repositories are connected yet, and GitHub lists none of yours to connect. You can add one under Repositories."
     );
     let failed = Lookups {
@@ -111,12 +140,12 @@ fn a_first_run_checks_connections_and_offers_your_repositories() {
     };
     // While GitHub isn't connected, the list waits on it.
     assert_eq!(
-        setup(&s, &failed).lines[2],
+        setup(&s, &failed).lines[3],
         "No repositories are connected yet. Once GitHub is connected, I'll list yours here to pick from."
     );
     s.github_user = Some("jason".into());
     assert_eq!(
-        setup(&s, &failed).lines[2],
+        setup(&s, &failed).lines[3],
         "No repositories are connected yet, and Orbit couldn't list yours on GitHub: GitHub took too long to list your repositories."
     );
 }
@@ -140,25 +169,29 @@ fn a_new_install_gets_a_button_for_each_problem() {
     assert_eq!(
         g.lines,
         [
-            "GitHub CLI isn't installed on the computer running Orbit. Get the GitHub CLI from its page, then tap Check again.",
+            NOTHING_TO_ANSWER_WITH,
             "Codex CLI isn't installed on the computer running Orbit. Get the Codex CLI from its page, then tap Check again.",
+            "GitHub CLI isn't installed on the computer running Orbit. Get the GitHub CLI from its page, then tap Check again.",
             "No repositories are connected yet. Once GitHub is connected, I'll list yours here to pick from.",
         ]
     );
     assert_eq!(
         labels(&g),
-        [
-            "OpenPage Get GitHub CLI",
-            "OpenPage Get Codex CLI",
-            "CheckConnections - ",
-        ]
+        with_bits(
+            &["OpenPage Get Codex CLI"],
+            &["OpenPage Get GitHub CLI", "CheckConnections - "]
+        )
     );
     assert_eq!(
-        g.proposals[..2]
+        g.proposals[..3]
             .iter()
             .map(|p| p.link.as_deref().unwrap())
             .collect::<Vec<_>>(),
-        ["https://cli.github.com/", "https://github.com/openai/codex"]
+        [
+            "https://github.com/openai/codex",
+            "https://code.claude.com/docs/en/setup",
+            "https://antigravity.google/docs/cli"
+        ]
     );
     assert_eq!(g.to_do, 3);
 
@@ -170,19 +203,18 @@ fn a_new_install_gets_a_button_for_each_problem() {
     };
     let g = setup(&s, &failed);
     assert_eq!(
-        g.lines[..2],
+        g.lines[1..3],
         [
-            "GitHub isn't signed in. Tap Sign in to GitHub and I'll give you a code to enter on its website.",
             "Codex isn't signed in. Tap Sign in to Codex and I'll give you a code to enter on its website.",
+            "GitHub isn't signed in. Tap Sign in to GitHub and I'll give you a code to enter on its website.",
         ]
     );
     assert_eq!(
         labels(&g),
-        [
-            "SignIn Sign in to GitHub",
-            "SignIn Sign in to Codex",
-            "CheckConnections - ",
-        ]
+        with_bits(
+            &["SignIn Sign in to Codex"],
+            &["SignIn Sign in to GitHub", "CheckConnections - "]
+        )
     );
 }
 
@@ -315,6 +347,7 @@ fn each_repository_gets_its_next_steps() {
     assert_eq!(
         g.lines,
         [
+            "I answer your questions with Codex.",
             "GitHub: connected as @jason.",
             "Codex: connected.",
             "Claude isn't connected. claude isn't installed.",
@@ -371,7 +404,7 @@ fn a_setup_command_already_set_or_network_already_on_is_kept() {
     assert!(g.proposals.is_empty());
     assert_eq!(g.to_do, 0);
     assert_eq!(
-        g.lines[2],
+        g.lines[3],
         "a/web sets up with `make deps`. Its pull requests are reviewed automatically."
     );
 }
@@ -462,4 +495,92 @@ fn every_suggested_command_is_one_an_answer_could_set() {
         Some(("package-lock.json", "npm ci --ignore-scripts"))
     );
     assert_eq!(setup::suggest(&["Makefile".into()]), None);
+}
+
+#[test]
+fn bit_picks_the_one_sign_in_thats_ready_and_never_leaves_ollama_or_a_key() {
+    let mut s = connected_snapshot();
+    // Codex answers and is ready.
+    assert_eq!(bit_ready(&s, Answerer::Codex), Ok(()));
+    assert_eq!(pick_answerer(&s), None);
+    // You chose Claude, which isn't signed in: Codex is the one that's ready.
+    s.settings.buddy.answerer = "claude".into();
+    s.claude.error = Some("Claude is not signed in.".into());
+    assert_eq!(pick_answerer(&s), Some(Answerer::Codex));
+    // With two ready, you choose.
+    s.antigravity.ready = true;
+    s.settings.antigravity_model = "gemini-3.1-pro-high".into();
+    s.antigravity_models = crate::antigravity::catalog("gemini-3.1-pro-high (Gemini)");
+    assert_eq!(pick_answerer(&s), None);
+    let g = setup(&s, &Lookups::default());
+    assert_eq!(
+        g.lines[..2],
+        [
+            "Claude isn't connected. Claude is not signed in.",
+            "Codex and Antigravity are ready, so tap one to answer with it instead.",
+        ]
+    );
+    assert_eq!(
+        labels(&g)[..3],
+        [
+            "OpenPage Get Claude Code",
+            "ChangeSettings Answer with Codex",
+            "ChangeSettings Answer with Antigravity",
+        ]
+    );
+    assert_eq!(
+        g.proposals[1].settings,
+        Some(json!({"buddy": {"answerer": "codex"}}))
+    );
+    // Ollama and API keys are where you chose to send your questions, so
+    // Bit offers the sign-in instead of switching.
+    s.antigravity.ready = false;
+    for answerer in ["ollama", "openai", "anthropic", "google"] {
+        s.settings.buddy.answerer = answerer.into();
+        assert_eq!(pick_answerer(&s), None, "{answerer}");
+        let g = setup(&s, &Lookups::default());
+        assert_eq!(
+            g.lines[1],
+            "Codex is ready, so tap Answer with Codex to use it instead."
+        );
+        assert!(labels(&g).contains(&"ChangeSettings Answer with Codex".to_string()));
+    }
+    // Not while Bit is off, when setup says nothing about it.
+    s.settings.buddy.answerer = "claude".into();
+    s.settings.buddy.enabled = false;
+    assert_eq!(pick_answerer(&s), None);
+    assert_eq!(
+        setup(&s, &Lookups::default()).lines[0],
+        "GitHub: connected as @jason."
+    );
+}
+
+#[test]
+fn a_button_offered_twice_shows_once() {
+    // Claude answers and Codex reviews, and neither is signed in: Codex's
+    // sign-in is in Bit's lines and the reviewers'.
+    let mut s = Snapshot {
+        github_user: Some("jason".into()),
+        codex_error: Some("Codex is not signed in.".into()),
+        ..Default::default()
+    };
+    s.settings.buddy.answerer = "claude".into();
+    s.settings.repositories = vec![repo("a/b")];
+    let g = setup(&s, &Lookups::default());
+    let labels = labels(&g);
+    assert_eq!(
+        labels
+            .iter()
+            .filter(|l| *l == "SignIn Sign in to Codex")
+            .count(),
+        1,
+        "{labels:?}"
+    );
+    assert!(g
+        .lines
+        .contains(&"Codex isn't signed in. Tap Sign in to Codex and I'll give you a code to enter on its website.".to_string()));
+    assert_eq!(
+        g.proposals.iter().map(|p| p.id).collect::<Vec<_>>(),
+        (0..g.proposals.len() as u32).collect::<Vec<_>>()
+    );
 }

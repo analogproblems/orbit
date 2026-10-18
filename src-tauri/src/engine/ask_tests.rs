@@ -68,6 +68,22 @@ async fn codex_says(e: &Arc<Engine>, text: &str, status: &str) {
 fn last(s: &Snapshot) -> Note {
     s.buddy_feed.notes.last().unwrap().clone()
 }
+/// Bit's answer to a question it can't answer yet: its lines and buttons.
+async fn cant_answer(e: &Arc<Engine>, question: &str) -> (Vec<String>, Vec<String>) {
+    e.ask_buddy_anything(question).await.unwrap();
+    let note = last(&e.snapshot().await);
+    assert_eq!(note.question.as_deref(), Some(question));
+    assert_eq!(note.kind, NoteKind::Answer);
+    assert!(!note.pending);
+    assert!(e.asking.lock().unwrap().is_none());
+    (
+        note.lines.iter().map(|l| l.text.clone()).collect(),
+        note.proposals
+            .iter()
+            .map(|p| p.label.clone().unwrap_or_else(|| format!("{:?}", p.action)))
+            .collect(),
+    )
+}
 
 #[tokio::test]
 async fn a_typed_question_is_answered_in_a_thread_that_cant_change_anything() {
@@ -173,11 +189,30 @@ async fn a_question_codex_cant_answer_says_why() {
         "Sorry, I couldn't answer that. Codex disconnected. Try asking again?"
     );
 
-    // Without Codex, the question isn't asked.
-    let error = e.ask_buddy_anything("Hello?").await.unwrap_err();
-    assert!(
-        error.starts_with("Bit answers typed questions with Codex, which isn't ready: "),
-        "{error}"
+    // Without Codex, or anything else to answer with, Bit's answer is
+    // how to connect something.
+    e.update(|s| s.codex_ready = false).await;
+    let (lines, buttons) = cant_answer(&e, "Hello?").await;
+    assert_eq!(
+        last(&e.snapshot().await).text,
+        "I'd love to answer that, but I need something to answer with first. Tap a button to connect one:"
+    );
+    assert_eq!(
+        lines[0],
+        "First, I need something to answer your questions with: Codex, Claude, Antigravity, Ollama or your own API key. Tap one below to set it up."
+    );
+    assert!(lines[1].starts_with("Codex isn't connected."), "{lines:?}");
+    assert_eq!(
+        buttons,
+        [
+            "Get Claude Code",
+            "Get Antigravity",
+            "Use Ollama",
+            "Use an OpenAI API key",
+            "Use an Anthropic API key",
+            "Use a Gemini API key",
+            "CheckConnections",
+        ]
     );
     e.update(|s| s.settings.buddy.enabled = false).await;
     assert_eq!(
@@ -677,17 +712,57 @@ async fn antigravity_doesnt_answer_when_it_wouldnt_ask_first() {
 }
 
 #[tokio::test]
-async fn bit_says_when_the_answerer_you_chose_isnt_ready() {
+async fn bit_says_when_the_answerer_you_chose_isnt_ready_and_picks_the_one_that_is() {
     let (_dir, e, _rpc) = answering_with("claude").await;
     e.update(|s| {
         s.claude.ready = false;
         s.claude.error = Some("Claude is not signed in.".into());
     })
     .await;
+    // Codex and Antigravity are both ready, so you choose.
+    let (lines, buttons) = cant_answer(&e, "Hi?").await;
     assert_eq!(
-        e.ask_buddy_anything("Hi?").await.unwrap_err(),
-        "Bit answers typed questions with Claude, which isn't ready: Claude is not signed in."
+        lines,
+        [
+            "Claude isn't connected. Claude is not signed in.",
+            "Codex and Antigravity are ready, so tap one to answer with it instead.",
+        ]
     );
+    assert_eq!(
+        buttons,
+        [
+            "Get Claude Code",
+            "Answer with Codex",
+            "Answer with Antigravity",
+            "CheckConnections"
+        ]
+    );
+    assert_eq!(e.snapshot().await.settings.buddy.answerer, "claude");
+    let note = last(&e.snapshot().await).id;
+    e.use_proposal(note, 2).await.unwrap();
+    assert_eq!(e.snapshot().await.settings.buddy.answerer, "antigravity");
+
+    // With only Codex signed in, Bit switches to it, says so, and answers.
+    e.update(|s| {
+        s.settings.buddy.answerer = "claude".into();
+        s.antigravity.ready = false;
+    })
+    .await;
+    e.ask_buddy_anything("Hi again?").await.unwrap();
+    let s = e.snapshot().await;
+    assert_eq!(s.settings.buddy.answerer, "codex");
+    let n = s.buddy_feed.notes.len();
+    let switched = &s.buddy_feed.notes[n - 2];
+    assert_eq!(switched.kind, NoteKind::Fixed);
+    assert_eq!(
+        switched.text,
+        "Claude isn't ready, but Codex is, so I'll answer your questions with Codex from now on! You can change that in Settings, under Buddy."
+    );
+    assert_eq!(
+        s.buddy_feed.notes[n - 1].question.as_deref(),
+        Some("Hi again?")
+    );
+    assert!(e.asking.lock().unwrap().is_some());
 }
 
 #[tokio::test]
@@ -824,10 +899,17 @@ async fn bit_says_what_ollama_needs_before_asking_it() {
     let patch: SettingsPatch =
         serde_json::from_value(json!({"buddy": {"ollamaModel": "mistral"}})).unwrap();
     e.update_settings(patch).await.unwrap();
+    // Never switched away from Ollama, even with Codex signed in.
+    let (lines, buttons) = cant_answer(&e, "Hi?").await;
     assert_eq!(
-        e.ask_buddy_anything("Hi?").await.unwrap_err(),
-        "Bit answers typed questions with Ollama, which isn't ready: Ollama doesn't have model 'mistral'. Choose one in Settings."
+        lines,
+        [
+            "I answer your questions with Ollama, which isn't ready: Ollama doesn't have model 'mistral'. Choose one in Settings.",
+            "Codex is ready, so tap Answer with Codex to use it instead.",
+        ]
     );
+    assert_eq!(buttons, ["Answer with Codex", "CheckConnections"]);
+    assert_eq!(e.snapshot().await.settings.buddy.answerer, "ollama");
     // Nothing at the address.
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let gone = format!("http://{}", listener.local_addr().unwrap());
@@ -835,18 +917,19 @@ async fn bit_says_what_ollama_needs_before_asking_it() {
     let patch: SettingsPatch =
         serde_json::from_value(json!({"buddy": {"ollamaUrl": gone}})).unwrap();
     e.update_settings(patch).await.unwrap();
-    let error = e.ask_buddy_anything("Hi?").await.unwrap_err();
+    let (lines, buttons) = cant_answer(&e, "Hi?").await;
     assert!(
-        error.contains(&format!("Nothing answered at {gone}.")),
-        "{error}"
+        lines[0].contains(&format!("Nothing answered at {gone}.")),
+        "{lines:?}"
     );
+    assert_eq!(buttons[0], "Get Ollama");
     // A server with no models.
     let empty = crate::ollama::tests::serve(Default::default()).await;
     let patch: SettingsPatch =
         serde_json::from_value(json!({"buddy": {"ollamaUrl": empty}})).unwrap();
     e.update_settings(patch).await.unwrap();
-    let error = e.ask_buddy_anything("Hi?").await.unwrap_err();
-    assert!(error.contains("has no models yet"), "{error}");
+    let (lines, _) = cant_answer(&e, "Hi?").await;
+    assert!(lines[0].contains("has no models yet"), "{lines:?}");
 }
 
 #[tokio::test]
@@ -927,15 +1010,13 @@ async fn an_api_key_answers_with_bits_instructions_and_stays_out_of_orbits_files
         let fake = provider_with(&bit_answer().to_string());
         let requests = fake.requests.clone();
         let (dir, e, store) = answering_with_api(api, model, fake).await;
-        // Without a key, Bit says where to save one.
-        let error = e.ask_buddy_anything("Hi?").await.unwrap_err();
+        // Without a key, Bit says where to get and save one.
+        let (lines, buttons) = cant_answer(&e, "Hi?").await;
         assert!(
-            error.ends_with(&format!(
-                "Save your {} API key in Settings, under Buddy.",
-                api.company()
-            )),
-            "{error}"
+            lines[0].ends_with("then save it in Settings, under Buddy."),
+            "{lines:?}"
         );
+        assert!(buttons[0].starts_with("Get "), "{buttons:?}");
         e.set_api_key(api.key(), Some(format!("  {KEY}\n")))
             .await
             .unwrap();
@@ -991,16 +1072,13 @@ async fn bit_says_what_an_api_key_needs_before_using_it() {
 
     e.set_api_key("openai", Some(KEY.into())).await.unwrap();
     assert_eq!(
-        e.ask_buddy_anything("Hi?").await.unwrap_err(),
-        "Bit answers typed questions with the OpenAI API, which isn't ready: OpenAI doesn't offer model 'gpt-9' to your key. Choose one in Settings."
+        cant_answer(&e, "Hi?").await.0[0],
+        "I answer your questions with the OpenAI API, which isn't ready: OpenAI doesn't offer model 'gpt-9' to your key. Choose one in Settings."
     );
     let patch: SettingsPatch =
         serde_json::from_value(json!({"buddy": {"openaiModel": ""}})).unwrap();
     e.update_settings(patch).await.unwrap();
-    assert!(e
-        .ask_buddy_anything("Hi?")
-        .await
-        .unwrap_err()
+    assert!(cant_answer(&e, "Hi?").await.0[0]
         .ends_with("Choose a model for your OpenAI key in Settings."));
 
     // A key the provider turns down.
@@ -1016,8 +1094,8 @@ async fn bit_says_what_an_api_key_needs_before_using_it() {
         .error
         .as_deref()
         .is_some_and(|e| e.contains("OpenAI didn't accept your key")));
-    let error = e.ask_buddy_anything("Hi?").await.unwrap_err();
-    assert!(error.contains("didn't accept your key"), "{error}");
+    let (lines, _) = cant_answer(&e, "Hi?").await;
+    assert!(lines[0].contains("didn't accept your key"), "{lines:?}");
     let help = crate::guide::connections(&s);
     let c = help.iter().find(|c| c.key == "openai-api").unwrap();
     assert!(!c.ready && c.for_bit);

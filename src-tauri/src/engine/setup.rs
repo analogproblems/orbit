@@ -209,6 +209,7 @@ impl Engine {
         if self.poll().await.is_ok() {
             self.update_clones_soon();
         }
+        self.pick_bit_answerer().await;
         let s = self.state.lock().await;
         let off: Vec<String> = guide::connections(&s)
             .into_iter()
