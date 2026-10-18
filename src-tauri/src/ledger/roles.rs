@@ -29,7 +29,7 @@ static BUILDER_MARKS: LazyLock<Regex> =
 /// Whether GitHub says the author can write to the repository (or is an
 /// app installed on it). Comments stored before Orbit kept the association
 /// have none and keep being read by their text.
-fn may_review(login: &str, association: &str) -> bool {
+pub(super) fn may_review(login: &str, association: &str) -> bool {
     association.is_empty()
         || login.ends_with("[bot]")
         || matches!(association, "OWNER" | "MEMBER" | "COLLABORATOR")

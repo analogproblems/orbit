@@ -101,8 +101,10 @@ pub(super) fn comment_refs(stored: &[StoredComment]) -> Vec<CommentRef> {
         let role = roles::infer(&c.body, &c.author, &c.association);
         let versions = versions(c, role);
         let last = versions.len() - 1;
+        // Only the reviewer's own inline comments can carry a finding.
+        let may_review = roles::may_review(&c.author, &c.association);
         for (i, (body, created_at)) in versions.into_iter().enumerate() {
-            let finding_marker = (c.kind == CommentKind::ReviewComment)
+            let finding_marker = (c.kind == CommentKind::ReviewComment && may_review)
                 .then(|| orbit::finding_marker(&body).or_else(|| legacy_marker(c, &body)))
                 .flatten();
             out.push(CommentRef {
