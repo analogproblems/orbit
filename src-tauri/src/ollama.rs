@@ -27,11 +27,13 @@ pub fn validate_url(url: &str) -> Result<(), String> {
         return Err(format!("Keep Ollama's address to {MAX_URL} characters."));
     }
     let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    // Orbit adds Ollama's paths to the address, so a query or fragment
+    // would end up in the wrong place.
     if host.is_empty()
         || host.contains('@')
         || url
             .chars()
-            .any(|c| c.is_control() || c.is_whitespace() || c == '\\')
+            .any(|c| c.is_control() || c.is_whitespace() || matches!(c, '\\' | '?' | '#'))
     {
         return Err(format!(
             "'{url}' isn't an address Orbit can use for Ollama."

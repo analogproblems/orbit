@@ -1256,6 +1256,73 @@ describe("Bit", () => {
     });
   });
 
+  it("saves an API key for Bit and never keeps it in the page", async () => {
+    const key = "sk-ant-api03-test-key";
+    invoke.mockImplementation(async (cmd, args) => {
+      if (cmd === "set_api_key") {
+        const saved = (args as { key: string | null }).key !== null;
+        snapshot.apiKeys = {
+          openai: { saved: false, status: { ready: false }, models: [] },
+          google: { saved: false, status: { ready: false }, models: [] },
+          anthropic: saved
+            ? {
+                saved: true,
+                status: { ready: true },
+                models: ["claude-opus-5-5", "claude-sonnet-5-5"],
+              }
+            : { saved: false, status: { ready: false }, models: [] },
+        };
+        emit();
+        return;
+      }
+      return backend(cmd, args);
+    });
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Settings" }));
+    await openSettingsTab("Buddy");
+    await chooseOption(
+      await screen.findByRole("combobox", {
+        name: /^Who answers your questions/,
+      }),
+      "Anthropic (API key)",
+    );
+    expect(invoke).toHaveBeenCalledWith("update_settings", {
+      patch: { buddy: { answerer: "anthropic" } },
+    });
+    const field = (await screen.findByLabelText(
+      /^Anthropic API key/,
+    )) as HTMLInputElement;
+    expect(field.type).toBe("password");
+    expect(
+      screen.getByText("Anthropic's models show here once your key is saved."),
+    ).toBeTruthy();
+    await user().type(field, `${key}{Enter}`);
+    expect(invoke).toHaveBeenCalledWith("set_api_key", {
+      provider: "anthropic",
+      key,
+    });
+    await waitFor(() => expect(field.value).toBe(""));
+    expect(JSON.stringify(snapshot)).not.toContain(key);
+    expect(
+      screen.getByText("A key is saved. Paste a new one here to replace it."),
+    ).toBeTruthy();
+    await chooseOption(
+      screen.getByRole("combobox", { name: /^Anthropic model/ }),
+      "claude-sonnet-5-5",
+    );
+    expect(invoke).toHaveBeenCalledWith("update_settings", {
+      patch: { buddy: { anthropicModel: "claude-sonnet-5-5" } },
+    });
+    await user().click(screen.getByRole("button", { name: "Remove key" }));
+    expect(invoke).toHaveBeenCalledWith("set_api_key", {
+      provider: "anthropic",
+      key: null,
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Remove key" })).toBeNull(),
+    );
+  });
+
   it("shows what Bit remembers in Settings and forgets what you choose", async () => {
     invoke.mockImplementation(async (cmd, args) => {
       const memory = snapshot.buddyFeed!.memory!;

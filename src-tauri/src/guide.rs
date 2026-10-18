@@ -3,6 +3,7 @@
 //! tap. Everything here is worked out from Orbit's state and the files in
 //! each repository's copy, with no AI.
 use crate::{
+    api::Api,
     ask::{self, Action, Lookups, Proposal},
     buddy::Answerer,
     setup::{self, CloneFacts, RepositoryPatch},
@@ -60,7 +61,7 @@ pub enum Remedy {
 }
 
 /// The pages Bit's setup help links to, which the desktop app may open.
-pub const PAGES: [&str; 7] = [
+pub const PAGES: [&str; 10] = [
     "https://cli.github.com/",
     "https://github.com/openai/codex",
     "https://code.claude.com/docs/en/setup",
@@ -68,6 +69,9 @@ pub const PAGES: [&str; 7] = [
     "https://docs.docker.com/get-started/get-docker/",
     "https://github.com/devcontainers/cli",
     "https://ollama.com/download",
+    "https://platform.openai.com/api-keys",
+    "https://console.anthropic.com/settings/keys",
+    "https://aistudio.google.com/apikey",
 ];
 /// Where a sign-in sends you to enter its code.
 pub const SIGN_IN_PAGES: [&str; 2] = [
@@ -83,8 +87,9 @@ pub fn may_open(url: &str) -> bool {
             || SIGN_IN_PAGES.iter().any(|p| url.starts_with(p)))
 }
 
-/// What Orbit connects to: GitHub and Codex always, and Claude,
-/// Antigravity and dev containers while a repository or Bit uses them.
+/// What Orbit connects to: GitHub and Codex always, Claude, Antigravity
+/// and dev containers while a repository or Bit uses them, and Ollama or an
+/// API key while Bit answers with it.
 pub fn connections(s: &Snapshot) -> Vec<Connection> {
     let buddy = &s.settings.buddy;
     let for_bit = |a: Answerer| buddy.enabled && buddy.answered_by() == a;
@@ -180,6 +185,39 @@ pub fn connections(s: &Snapshot) -> Vec<Connection> {
         "Ollama",
         PAGES[6],
     ));
+    for (api, page) in Api::ALL.into_iter().zip(&PAGES[7..]) {
+        let key = s.api_keys.get(api);
+        let (name, key_name, program, how) = match api {
+            Api::OpenAi => (
+                "OpenAI API",
+                "openai-api",
+                "an OpenAI API key",
+                "Get an API key from OpenAI's website, then save it in Settings, under Buddy.",
+            ),
+            Api::Anthropic => (
+                "Anthropic API",
+                "anthropic-api",
+                "an Anthropic API key",
+                "Get an API key from Anthropic's website, then save it in Settings, under Buddy.",
+            ),
+            Api::Google => (
+                "Gemini API",
+                "google-api",
+                "a Gemini API key",
+                "Get an API key from Google AI Studio, then save it in Settings, under Buddy.",
+            ),
+        };
+        out.push(cli(
+            name,
+            key_name,
+            &key.status,
+            vec![],
+            for_bit(Answerer::Api(api)),
+            how,
+            program,
+            page,
+        ));
+    }
     out.retain(|c| matches!(c.key, "github" | "codex") || !c.needed_by.is_empty() || c.for_bit);
     out
 }

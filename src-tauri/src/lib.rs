@@ -1,4 +1,5 @@
 pub mod antigravity;
+pub mod api;
 pub mod ask;
 pub mod attention;
 pub mod boxtool;
@@ -239,6 +240,14 @@ mod desktop {
         engine.forget_memory(repo.as_deref(), &line).await
     }
     #[tauri::command]
+    async fn set_api_key(
+        engine: State<'_, AppState>,
+        provider: String,
+        key: Option<String>,
+    ) -> Result<(), String> {
+        engine.set_api_key(&provider, key).await
+    }
+    #[tauri::command]
     async fn clear_memory(engine: State<'_, AppState>) -> Result<(), String> {
         engine.clear_memory().await
     }
@@ -459,6 +468,7 @@ mod desktop {
                 use_proposal,
                 forget_memory,
                 clear_memory,
+                set_api_key,
                 publish_review,
                 publish_plan,
                 send_message,

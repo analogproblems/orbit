@@ -3,7 +3,7 @@
 //! what needs you, quick answers about Orbit, and the memory Bit keeps
 //! between questions. Everything here is worked out from what Orbit already
 //! tracks; nothing here calls a model.
-use crate::{setup::CloneFacts, types::*};
+use crate::{api::Api, setup::CloneFacts, types::*};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -58,8 +58,17 @@ pub const HATS: [&str; 21] = [
 /// How Bit's notes sound.
 pub const TONES: [&str; 3] = ["cheerful", "calm", "dry"];
 /// Who answers the questions you type: Codex, Claude Code or Antigravity,
-/// each with its own sign-in, or Ollama on this computer or your network.
-pub const ANSWERERS: [&str; 4] = ["codex", "claude", "antigravity", "ollama"];
+/// each with its own sign-in, Ollama on this computer or your network, or
+/// OpenAI, Anthropic or Google with an API key of yours.
+pub const ANSWERERS: [&str; 7] = [
+    "codex",
+    "claude",
+    "antigravity",
+    "ollama",
+    "openai",
+    "anthropic",
+    "google",
+];
 
 /// Who answers the questions you type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,12 +77,14 @@ pub enum Answerer {
     Claude,
     Antigravity,
     Ollama,
+    Api(Api),
 }
 impl Answerer {
     /// Its name in messages.
     pub fn label(self) -> &'static str {
         match self {
             Self::Ollama => "Ollama",
+            Self::Api(api) => api.label(),
             _ => self.provider().map_or("", Provider::label),
         }
     }
@@ -83,7 +94,7 @@ impl Answerer {
             Self::Codex => Some(Provider::Codex),
             Self::Claude => Some(Provider::Claude),
             Self::Antigravity => Some(Provider::Antigravity),
-            Self::Ollama => None,
+            Self::Ollama | Self::Api(_) => None,
         }
     }
 }
@@ -207,6 +218,12 @@ pub struct Buddy {
     pub ollama_url: String,
     /// The Ollama model that answers.
     pub ollama_model: String,
+    /// The model that answers with your OpenAI key.
+    pub openai_model: String,
+    /// The model that answers with your Anthropic key.
+    pub anthropic_model: String,
+    /// The model that answers with your Google key.
+    pub google_model: String,
 }
 impl Default for Buddy {
     fn default() -> Self {
@@ -221,6 +238,9 @@ impl Default for Buddy {
             answerer: "codex".into(),
             ollama_url: crate::ollama::DEFAULT_URL.into(),
             ollama_model: String::new(),
+            openai_model: String::new(),
+            anthropic_model: String::new(),
+            google_model: String::new(),
         }
     }
 }
@@ -264,6 +284,9 @@ impl Buddy {
         }
         crate::ollama::validate_url(&self.ollama_url)?;
         crate::ollama::validate_model(&self.ollama_model)?;
+        for api in Api::ALL {
+            crate::api::validate_model(self.api_model(api))?;
+        }
         Ok(())
     }
     /// Who answers the questions you type.
@@ -272,7 +295,22 @@ impl Buddy {
             "claude" => Answerer::Claude,
             "antigravity" => Answerer::Antigravity,
             "ollama" => Answerer::Ollama,
-            _ => Answerer::Codex,
+            other => Api::from_key(other).map_or(Answerer::Codex, Answerer::Api),
+        }
+    }
+    /// The model that answers with your key for `api`.
+    pub fn api_model(&self, api: Api) -> &str {
+        match api {
+            Api::OpenAi => &self.openai_model,
+            Api::Anthropic => &self.anthropic_model,
+            Api::Google => &self.google_model,
+        }
+    }
+    fn api_model_mut(&mut self, api: Api) -> &mut String {
+        match api {
+            Api::OpenAi => &mut self.openai_model,
+            Api::Anthropic => &mut self.anthropic_model,
+            Api::Google => &mut self.google_model,
         }
     }
     /// Replaces anything saved state holds that this version doesn't know,
@@ -312,6 +350,11 @@ impl Buddy {
         if crate::ollama::validate_model(&self.ollama_model).is_err() {
             self.ollama_model = default.ollama_model;
         }
+        for api in Api::ALL {
+            if crate::api::validate_model(self.api_model(api)).is_err() {
+                self.api_model_mut(api).clear();
+            }
+        }
     }
 }
 /// Only supplied fields change.
@@ -328,6 +371,9 @@ pub struct BuddyPatch {
     pub answerer: Option<String>,
     pub ollama_url: Option<String>,
     pub ollama_model: Option<String>,
+    pub openai_model: Option<String>,
+    pub anthropic_model: Option<String>,
+    pub google_model: Option<String>,
 }
 impl BuddyPatch {
     pub fn apply(self, buddy: &mut Buddy) {
@@ -357,6 +403,15 @@ impl BuddyPatch {
         }
         if let Some(v) = self.ollama_model {
             buddy.ollama_model = v.trim().to_string();
+        }
+        for (api, v) in [
+            (Api::OpenAi, self.openai_model),
+            (Api::Anthropic, self.anthropic_model),
+            (Api::Google, self.google_model),
+        ] {
+            if let Some(v) = v {
+                *buddy.api_model_mut(api) = v.trim().to_string();
+            }
         }
         if let Some(rules) = self.rules {
             let patch = [

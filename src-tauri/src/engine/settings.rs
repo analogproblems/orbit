@@ -77,10 +77,10 @@ impl Engine {
             self.commit_settings(&mut s, settings)?;
             (s.settings.clone(), ollama(&s.settings) != before)
         };
-        // Ollama answering Bit, or at a new address, is checked straight
-        // away, so Settings can list its models.
+        // A new answerer for Bit, or Ollama at a new address, is checked
+        // straight away, so Settings can list its models.
         if recheck {
-            self.check_ollama().await;
+            self.check_bit_answerer().await;
         }
         Ok(saved)
     }

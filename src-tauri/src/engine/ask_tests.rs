@@ -881,3 +881,168 @@ async fn an_ollama_answer_from_another_model_isnt_used_and_ending_a_question_sto
     let note = last(&e.snapshot().await);
     assert!(note.text.contains("Ollama took too long."), "{}", note.text);
 }
+
+/// The fixture's engine, with Bit answering with your key for `api`, kept
+/// in a password store in memory, at fake providers.
+async fn answering_with_api(
+    api: crate::api::Api,
+    model: &str,
+    fake: crate::api::tests::Fake,
+) -> (
+    tempfile::TempDir,
+    Arc<Engine>,
+    Arc<crate::api::tests::Memory>,
+) {
+    let (dir, e, _rpc) = fixture().await;
+    let base = crate::api::tests::serve(fake).await;
+    let store = Arc::new(crate::api::tests::Memory::default());
+    *e.apis.lock().unwrap() = crate::api::Setup {
+        secrets: store.clone(),
+        bases: [base.clone(), base.clone(), base],
+    };
+    let mut buddy = json!({"answerer": api.key()});
+    buddy[format!("{}Model", api.key())] = json!(model);
+    let patch: SettingsPatch = serde_json::from_value(json!({ "buddy": buddy })).unwrap();
+    e.update_settings(patch).await.unwrap();
+    (dir, e, store)
+}
+fn provider_with(content: &str) -> crate::api::tests::Fake {
+    crate::api::tests::Fake {
+        models: ["gpt-5", "claude-opus-5-5", "gemini-2.5-flash"]
+            .map(String::from)
+            .to_vec(),
+        content: content.into(),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn an_api_key_answers_with_bits_instructions_and_stays_out_of_orbits_files() {
+    use crate::api::{tests::KEY, Api};
+    for (api, model) in [
+        (Api::OpenAi, "gpt-5"),
+        (Api::Anthropic, "claude-opus-5-5"),
+        (Api::Google, "gemini-2.5-flash"),
+    ] {
+        let fake = provider_with(&bit_answer().to_string());
+        let requests = fake.requests.clone();
+        let (dir, e, store) = answering_with_api(api, model, fake).await;
+        // Without a key, Bit says where to save one.
+        let error = e.ask_buddy_anything("Hi?").await.unwrap_err();
+        assert!(
+            error.ends_with(&format!(
+                "Save your {} API key in Settings, under Buddy.",
+                api.company()
+            )),
+            "{error}"
+        );
+        e.set_api_key(api.key(), Some(format!("  {KEY}\n")))
+            .await
+            .unwrap();
+        let s = e.snapshot().await;
+        let saved = s.api_keys.get(api);
+        assert!(saved.saved);
+        assert!(saved.status.ready);
+        assert!(saved.models.contains(&model.to_string()));
+
+        e.ask_buddy_anything("What's up with b#1?").await.unwrap();
+        let note = answer_of(&e).await;
+        assert_eq!(note.text, "b#1 is waiting for its author to push a fix.");
+        assert_eq!(note.proposals[0].action, Action::StopLoop);
+        let sent = requests.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(sent.1, KEY);
+        let body = sent.2.to_string();
+        assert!(body.contains("You are Bit,"), "{body}");
+        assert!(body.contains("The person asks: What's up with b#1?"));
+
+        // The key is only in the password store.
+        assert_eq!(store.keys.lock().unwrap().len(), 1);
+        let _ = e.flush().await;
+        let mut folders = vec![dir.path().to_path_buf()];
+        while let Some(folder) = folders.pop() {
+            for file in std::fs::read_dir(folder).unwrap() {
+                let path = file.unwrap().path();
+                if path.is_dir() {
+                    folders.push(path);
+                } else {
+                    let text = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).to_string();
+                    assert!(!text.contains(KEY), "{}", path.display());
+                }
+            }
+        }
+        assert!(!serde_json::to_string(&s).unwrap().contains(KEY));
+
+        // Removing it.
+        e.set_api_key(api.key(), None).await.unwrap();
+        assert!(store.keys.lock().unwrap().is_empty());
+        assert_eq!(e.snapshot().await.api_keys.get(api), &ApiKey::default());
+    }
+}
+
+#[tokio::test]
+async fn bit_says_what_an_api_key_needs_before_using_it() {
+    use crate::api::{tests::KEY, Api};
+    let (_dir, e, store) = answering_with_api(Api::OpenAi, "gpt-9", provider_with("{}")).await;
+    for key in ["", "sk test 1234567"] {
+        assert!(e.set_api_key("openai", Some(key.into())).await.is_err());
+    }
+    assert!(e.set_api_key("mistral", Some(KEY.into())).await.is_err());
+    assert!(store.keys.lock().unwrap().is_empty());
+
+    e.set_api_key("openai", Some(KEY.into())).await.unwrap();
+    assert_eq!(
+        e.ask_buddy_anything("Hi?").await.unwrap_err(),
+        "Bit answers typed questions with the OpenAI API, which isn't ready: OpenAI doesn't offer model 'gpt-9' to your key. Choose one in Settings."
+    );
+    let patch: SettingsPatch =
+        serde_json::from_value(json!({"buddy": {"openaiModel": ""}})).unwrap();
+    e.update_settings(patch).await.unwrap();
+    assert!(e
+        .ask_buddy_anything("Hi?")
+        .await
+        .unwrap_err()
+        .ends_with("Choose a model for your OpenAI key in Settings."));
+
+    // A key the provider turns down.
+    e.set_api_key("openai", Some("sk-revoked-0000".into()))
+        .await
+        .unwrap();
+    let s = e.snapshot().await;
+    assert!(s.api_keys.openai.saved);
+    assert!(s
+        .api_keys
+        .openai
+        .status
+        .error
+        .as_deref()
+        .is_some_and(|e| e.contains("OpenAI didn't accept your key")));
+    let error = e.ask_buddy_anything("Hi?").await.unwrap_err();
+    assert!(error.contains("didn't accept your key"), "{error}");
+    let help = crate::guide::connections(&s);
+    let c = help.iter().find(|c| c.key == "openai-api").unwrap();
+    assert!(!c.ready && c.for_bit);
+    assert_eq!(c.page, "https://platform.openai.com/api-keys");
+
+    // A key that went from the password store isn't counted as saved.
+    store.keys.lock().unwrap().clear();
+    e.check_bit_answerer().await;
+    assert_eq!(e.snapshot().await.api_keys.openai, ApiKey::default());
+}
+
+#[tokio::test]
+async fn a_password_store_that_wont_open_says_so() {
+    use crate::api::{tests::KEY, Api};
+    let (_dir, e, _store) =
+        answering_with_api(Api::Anthropic, "claude-opus-5-5", provider_with("{}")).await;
+    e.apis.lock().unwrap().secrets = Arc::new(crate::api::tests::Memory {
+        broken: Some("Orbit couldn't use your system's password store: locked".into()),
+        ..Default::default()
+    });
+    assert_eq!(
+        e.set_api_key("anthropic", Some(KEY.into()))
+            .await
+            .unwrap_err(),
+        "Orbit couldn't use your system's password store: locked"
+    );
+    assert!(!e.snapshot().await.api_keys.anthropic.saved);
+}
