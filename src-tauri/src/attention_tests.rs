@@ -358,3 +358,19 @@ fn each_item_names_the_control_that_fixes_it() {
         [Some(Fix::TurnOnAutopilot), Some(Fix::SyncNow), None]
     );
 }
+#[test]
+fn a_failed_review_is_settled_by_a_later_finished_review_of_the_same_commits() {
+    let (mut s, p) = snapshot();
+    let mut failed = run(&p, "failed", 1);
+    failed.error = Some("Codex exited.".into());
+    s.reviews.push(failed);
+    assert_eq!(keys(&s).len(), 1);
+    // Review again starts a manual review; while it runs the item stays.
+    let mut again = Review::new(&p, &Settings::default(), false);
+    again.created_at = "2026-01-01T00:02:00.000Z".into();
+    again.status = "reviewing".into();
+    s.reviews.push(again);
+    assert_eq!(keys(&s).len(), 1);
+    s.reviews.last_mut().unwrap().status = "ready".into();
+    assert!(keys(&s).is_empty());
+}

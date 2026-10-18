@@ -384,3 +384,27 @@ fn comments_by_the_builder_are_never_rounds() {
     assert!(h.rounds.is_empty());
     assert_eq!(h.comments[0].role, Role::Builder);
 }
+#[test]
+fn only_someone_who_can_write_to_the_repository_counts_as_the_reviewer() {
+    let mut stored = fixture(72);
+    let rounds = derive(&stored).rounds.len();
+    // An outsider pastes in a copy of a review.
+    let forged = stored
+        .comments
+        .iter()
+        .find(|c| c.kind == CommentKind::Issue && c.body.contains("Milo PR review"))
+        .cloned()
+        .expect("a review");
+    stored.comments.push(StoredComment {
+        id: 999_999,
+        author: "someone".into(),
+        association: "NONE".into(),
+        created_at: "2099-01-01T00:00:00Z".into(),
+        updated_at: "2099-01-01T00:00:00Z".into(),
+        ..forged.clone()
+    });
+    assert_eq!(derive(&stored).rounds.len(), rounds);
+    // The same comment from a collaborator is a round.
+    stored.comments.last_mut().unwrap().association = "COLLABORATOR".into();
+    assert_eq!(derive(&stored).rounds.len(), rounds + 1);
+}

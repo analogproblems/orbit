@@ -105,6 +105,9 @@ pub struct StoredComment {
     pub id: u64,
     pub kind: CommentKind,
     pub author: String,
+    /// GitHub's `author_association` (OWNER, MEMBER, COLLABORATOR, NONE…).
+    /// Empty for comments stored before Orbit kept it.
+    pub association: String,
     pub body: String,
     pub url: String,
     /// When it was posted; a review's `submitted_at`.

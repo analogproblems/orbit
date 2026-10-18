@@ -463,3 +463,23 @@ async fn a_codex_disconnect_ends_the_write_up_without_using_a_try() {
     let s = e.snapshot().await;
     assert!(s.ledger.write_error.unwrap().contains("Codex disconnected"));
 }
+#[tokio::test]
+async fn a_claude_write_up_on_another_model_is_not_kept() {
+    let (dir, e, _rpc) = fixture(Writer::Claude).await;
+    let log = dir.path().join("claude-log");
+    std::fs::write(log.with_extension("answer"), answer().to_string()).unwrap();
+    *e.claude_launcher.lock().unwrap() =
+        crate::claude::tests::fake(&format!("wrong-model@{}", log.display()));
+    e.write_up_due().await;
+    let s = e.snapshot().await;
+    assert_eq!(s.ledger.version, 0);
+    assert!(
+        s.ledger
+            .write_error
+            .as_deref()
+            .unwrap()
+            .contains("didn't confirm the model"),
+        "{:?}",
+        s.ledger.write_error
+    );
+}

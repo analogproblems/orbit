@@ -98,7 +98,7 @@ pub(super) fn comment_refs(stored: &[StoredComment]) -> Vec<CommentRef> {
         if c.kind == CommentKind::Review && c.body.trim().is_empty() {
             continue;
         }
-        let role = roles::infer(&c.body, &c.author);
+        let role = roles::infer(&c.body, &c.author, &c.association);
         let versions = versions(c, role);
         let last = versions.len() - 1;
         for (i, (body, created_at)) in versions.into_iter().enumerate() {
@@ -109,7 +109,7 @@ pub(super) fn comment_refs(stored: &[StoredComment]) -> Vec<CommentRef> {
                 id: c.id,
                 kind: c.kind,
                 author: c.author.clone(),
-                role: roles::infer(&body, &c.author),
+                role: roles::infer(&body, &c.author, &c.association),
                 created_at,
                 url: c.url.clone(),
                 body,

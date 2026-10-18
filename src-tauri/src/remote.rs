@@ -236,7 +236,11 @@ async fn command(
             _ => return failure(StatusCode::BAD_REQUEST, "Arguments must be a JSON object."),
         }
     };
-    match dispatch(&remote.engine, &name, &args).await {
+    // The work runs as its own task, as Tauri's commands do, so a browser
+    // that goes away mid-request (a phone locking) can't cut it off halfway
+    // and leave a review stuck publishing.
+    let engine = remote.engine.clone();
+    match crate::engine::carry_on(async move { dispatch(&engine, &name, &args).await }).await {
         Ok(value) => {
             let mut response = Json(value).into_response();
             no_store(&mut response);

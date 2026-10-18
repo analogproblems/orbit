@@ -64,6 +64,20 @@ fn publish_fix(s: &Snapshot, pr: &PullRequest, r: &Review) -> Option<Fix> {
 /// Why the PR's latest automatic run needs the developer, if it does.
 fn run_item(s: &Snapshot, pr: &PullRequest) -> Option<Attention> {
     let r = latest_automatic(s, pr)?;
+    // A failed or stopped run is settled once a later review of the same
+    // commits finished, such as the one Review again started.
+    let redone = || {
+        s.reviews.iter().any(|n| {
+            n.pr_id == pr.id
+                && n.created_at > r.created_at
+                && n.head_sha == r.head_sha
+                && n.base_sha == r.base_sha
+                && matches!(n.status.as_str(), "ready" | "posted")
+        })
+    };
+    if matches!(r.status.as_str(), "failed" | "cancelled") && redone() {
+        return None;
+    }
     let fix = match r.status.as_str() {
         // Review again starts a review, so not while one is running.
         "failed" | "cancelled" => (!s

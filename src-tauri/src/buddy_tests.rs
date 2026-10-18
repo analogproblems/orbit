@@ -336,6 +336,14 @@ fn the_feed_keeps_the_last_fifty_notes() {
     let ids: Vec<u64> = s.buddy_feed.notes.iter().map(|n| n.id).collect();
     assert_eq!(ids.first(), Some(&10));
     assert_eq!(ids.last(), Some(&59));
+    // A question still being answered stays however many notes follow it.
+    let question = asked(&mut s, "How's it going?");
+    for _ in 0..MAX_NOTES {
+        s.loops[0].stopped = !s.loops[0].stopped;
+        step(&mut s);
+    }
+    assert_eq!(s.buddy_feed.notes.len(), MAX_NOTES);
+    assert_eq!(s.buddy_feed.notes[0].id, question);
 }
 #[test]
 fn with_the_buddy_off_nothing_is_written_and_nothing_is_saved_up() {
@@ -1010,4 +1018,26 @@ fn bit_never_notes_a_decision_twice_however_many_there_are() {
         .values()
         .all(|seen| *seen > long_ago));
     assert_eq!(written(&s), first);
+}
+#[test]
+fn bit_continues_a_loop_on_its_own_only_once() {
+    let (mut s, p) = seeded();
+    s.settings.buddy.rules.continue_loop = "do_it".into();
+    let item = Attention {
+        key: format!("loop:{}:Round limit reached.", p.id),
+        kind: AttentionKind::Loop,
+        pr_id: Some(p.id.clone()),
+        review_id: None,
+        approval_id: None,
+        repo: Some(p.repo.clone()),
+        reason: "Round limit reached.".into(),
+        fix: Some(Fix::ContinueLoop),
+    };
+    assert_eq!(will_fix(&s, &item), Some(Fix::ContinueLoop));
+    s.loops.push(LoopControl {
+        pr_id: p.id.clone(),
+        stopped: false,
+        extra_rounds: CONTINUE_ROUNDS,
+    });
+    assert_eq!(will_fix(&s, &item), None);
 }

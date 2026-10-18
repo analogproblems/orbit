@@ -442,6 +442,18 @@ impl Engine {
             let init = init
                 .await
                 .map_err(|_| "Claude stopped before it started.".to_string())??;
+            // Like a review, a write-up runs only on the model you chose.
+            if init.model != selection.model {
+                return Err(format!(
+                    "Claude didn't confirm the model '{}' (reported: {})",
+                    selection.model,
+                    if init.model.is_empty() {
+                        "none"
+                    } else {
+                        &init.model
+                    }
+                ));
+            }
             while let Some(output) = outputs.recv().await {
                 match output {
                     Output::Result {
@@ -449,8 +461,7 @@ impl Engine {
                         structured: Some(answer),
                         ..
                     } => {
-                        let model = Some(init.model).filter(|m| !m.is_empty());
-                        return Ok((answer, model.unwrap_or_else(|| selection.model.clone())));
+                        return Ok((answer, init.model));
                     }
                     Output::Result { ok: true, .. } => {
                         return Err("Claude's answer wasn't in the shape asked for.".into())
