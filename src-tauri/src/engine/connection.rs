@@ -242,11 +242,12 @@ impl Engine {
                     _ => {}
                 }
             }
-            // Other providers' reviews never ran on this connection.
+            // Other providers' reviews never ran on this connection, and a
+            // queued review hasn't started: it waits for Codex to come back.
             for r in s
                 .reviews
                 .iter_mut()
-                .filter(|r| r.provider == Provider::Codex)
+                .filter(|r| r.provider == Provider::Codex && r.status != "queued")
             {
                 if !active(&r.status)
                     || r.end_follow_up(Some("Codex disconnected during the follow-up.".into()))
@@ -269,6 +270,7 @@ impl Engine {
             self.autopost(&id);
         }
         self.end_codex_question("Codex disconnected.").await;
+        self.end_codex_write_up();
     }
     pub(super) async fn client(&self) -> Result<Arc<Rpc>, String> {
         self.rpc

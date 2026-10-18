@@ -403,12 +403,20 @@ impl Engine {
             Some(instructions) => json!({"type":"custom", "instructions":instructions}),
             None => json!({"type":"baseBranch", "branch":r.base_sha}),
         };
-        let result = rpc
+        let result = match rpc
             .request(
                 "review/start",
                 json!({"threadId": thread_id, "delivery": "inline", "target": target}),
             )
-            .await?;
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                // Nothing ran on the thread, so it's archived like any unused one.
+                self.release_unused_thread(id, rpc, &thread_id).await;
+                return Err(error);
+            }
+        };
         self.update(|s| {
             if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
                 r.turn_id = result["turn"]["id"].as_str().map(str::to_owned);
@@ -774,10 +782,18 @@ pub(super) fn apply_event(s: &mut Snapshot, id: &str, event: ReviewEvent) -> Nex
     let blocking_priority = s.settings.blocking();
     let first_number =
         matches!(event, ReviewEvent::Text { .. }).then(|| findings::next_number(s, id));
+    let waiting = s.approvals.iter().any(|a| a.review_id == id);
     let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) else {
         return Next::Nothing;
     };
     r.updated_at = now();
+    // An approval answered elsewhere leaves the review working again.
+    if matches!(event, ReviewEvent::RequestResolved(_))
+        && r.status == "awaitingApproval"
+        && !waiting
+    {
+        r.status = "reviewing".into();
+    }
     let reviewer = r.provider.label();
     match event {
         ReviewEvent::TurnStarted(turn) => r.turn_id = turn,
@@ -802,13 +818,14 @@ pub(super) fn apply_event(s: &mut Snapshot, id: &str, event: ReviewEvent) -> Nex
                 .push(Message::new("system", format!("Running: {command}")));
         }
         ReviewEvent::Text { text, .. } if r.extracting => {
-            if let Ok(extracted) = findings::parse(
+            match findings::parse(
                 &text,
                 &r.id,
                 r.worktree.as_deref(),
                 r.previous_round.as_ref(),
             ) {
-                extracted.store(r, first_number.unwrap_or(1));
+                Ok(extracted) => extracted.store(r, first_number.unwrap_or(1)),
+                Err(problem) => r.extraction_problem = Some(problem),
             }
         }
         ReviewEvent::Text { item, text } => {

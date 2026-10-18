@@ -40,6 +40,8 @@ pub use settings::validate_checkout;
 
 /// How often the usage meter is read in full while Codex is connected.
 const USAGE_REFRESH: Duration = Duration::from_secs(5 * 60);
+/// How long to wait before trying again to save state that failed to save.
+const SAVE_RETRY: Duration = Duration::from_secs(5);
 
 #[cfg(test)]
 mod antigravity_tests;
@@ -527,6 +529,11 @@ impl Engine {
             while !e.stopping.load(Ordering::SeqCst) {
                 tick.tick().await;
                 if e.flush().await.is_err() {
+                    // Automation is paused until state saves again, but
+                    // approvals still expire, kept containers still go and
+                    // GitHub checks still close. Saving is retried less often.
+                    e.housekeeping().await;
+                    tokio::time::sleep(SAVE_RETRY).await;
                     continue;
                 }
                 let (poll_seconds, codex_ready, cli_ready, unread, now_write_ups) = {
@@ -581,6 +588,10 @@ impl Engine {
         if reviewer_ready {
             self.schedule().await;
         }
+        self.housekeeping().await;
+    }
+    /// Work that starts nothing new, so it runs even while state can't be saved.
+    async fn housekeeping(self: &Arc<Self>) {
         self.expire_approvals().await;
         self.close_boxes().await;
         self.sync_commit_statuses().await;

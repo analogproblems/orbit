@@ -39,15 +39,27 @@ impl Engine {
     /// Removes check containers an earlier run of Orbit left behind, and
     /// recipe checkouts it didn't get to remove.
     pub(super) async fn remove_leftover_containers(&self) {
+        // Reviews may already be starting, so their own containers and
+        // recipe checkouts stay.
+        let snapshot = self.snapshot().await;
+        let mut keep: Vec<String> = snapshot
+            .reviews
+            .iter()
+            .filter(|r| active(&r.status))
+            .map(|r| r.id.clone())
+            .collect();
+        keep.extend(self.boxes.lock().unwrap().keys().cloned());
         if let Ok(entries) = std::fs::read_dir(self.root.join("recipes")) {
             let _git = self.git_lock.lock().await;
             for entry in entries.flatten() {
-                let _ = remove_worktree(&entry.path()).await;
+                if !keep.iter().any(|id| entry.file_name() == id.as_str()) {
+                    let _ = remove_worktree(&entry.path()).await;
+                }
             }
         }
-        if self.snapshot().await.dev_containers.ready {
+        if snapshot.dev_containers.ready {
             let tools = self.dev_tools.lock().unwrap().clone();
-            devcontainer::remove_leftovers(&tools).await;
+            devcontainer::remove_leftovers(&tools, &keep).await;
         }
     }
     #[cfg(test)]

@@ -467,8 +467,11 @@ async fn leftover_containers_are_removed() {
     let d = tempfile::tempdir().unwrap();
     let state = d.path().join("docker");
     std::fs::create_dir_all(state.join("containers/orbit-checks-old/fs")).unwrap();
-    remove_leftovers(&fake(&state)).await;
+    std::fs::create_dir_all(state.join("containers/orbit-checks-new/fs")).unwrap();
+    remove_leftovers(&fake(&state), &["new".into()]).await;
     assert!(!state.join("containers/orbit-checks-old").exists());
+    // A review that started meanwhile keeps its container.
+    assert!(state.join("containers/orbit-checks-new").exists());
     let ps = calls(&state).into_iter().find(|c| c[1] == "ps").unwrap();
     assert!(ps.contains(&format!("label={LABEL}")), "{ps:?}");
 }
@@ -629,4 +632,33 @@ async fn real_docker_removes_the_container_of_stopped_checks() {
     }
     let _ = run(&tools.docker, &["image", "rm", &image], DOCKER_TIMEOUT).await;
     assert!(gone, "{name} is still there");
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_command_that_runs_out_of_time_stops_with_what_it_started() {
+    let d = tempfile::tempdir().unwrap();
+    let pid_file = d.path().join("pid");
+    let sh = Launcher {
+        program: "sh".into(),
+        prefix: vec!["-c".into()],
+    };
+    // Like the Dev Container CLI running `docker build` under it.
+    let script = format!("sleep 30 & echo $! > '{}'; wait", pid_file.display());
+    let out = run(&sh, &[&script], Duration::from_millis(500))
+        .await
+        .unwrap();
+    assert!(out.timed_out);
+    let pid: i32 = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    // Gone, or a zombie waiting for its parent to be reaped.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+    assert!(
+        stat.is_empty() || stat.contains(") Z "),
+        "the child kept running: {stat}"
+    );
 }

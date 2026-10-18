@@ -79,3 +79,12 @@ async fn limits_follow_ups_by_characters_not_bytes() {
     let error = e.message(&id, &"é".repeat(32001)).await.unwrap_err();
     assert!(error.contains("32,000"), "{error}");
 }
+#[tokio::test]
+async fn a_disconnect_leaves_queued_reviews_waiting() {
+    let (_d, e, _) = running_engine().await;
+    e.update(|s| s.reviews[0].status = "queued".into()).await;
+    e.event(json!({"method":"orbit/disconnected"})).await;
+    let r = e.snapshot().await.reviews[0].clone();
+    assert_eq!(r.status, "queued");
+    assert!(r.error.is_none());
+}

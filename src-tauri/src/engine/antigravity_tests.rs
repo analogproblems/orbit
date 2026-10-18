@@ -514,6 +514,39 @@ async fn a_large_change_goes_whole_to_a_file_the_reviewer_reads() {
 }
 
 #[tokio::test]
+async fn the_pull_request_cannot_hide_a_file_from_the_change() {
+    let t = antigravity_review("ok").await;
+    let log = logged(&t, "ok");
+    let identity = [
+        "-c",
+        "user.name=Orbit",
+        "-c",
+        "user.email=orbit@example.com",
+        "-c",
+        "commit.gpgsign=false",
+    ];
+    let base = git(&t.worktree, &["rev-parse", "HEAD"])
+        .await
+        .unwrap()
+        .trim()
+        .to_string();
+    t.e.update(|s| s.reviews[0].base_sha = base.clone()).await;
+    std::fs::write(t.worktree.join(".gitattributes"), "evil.js -diff\n").unwrap();
+    std::fs::write(t.worktree.join("evil.js"), "steal(tokens)\n").unwrap();
+    git(&t.worktree, &["add", "-A"]).await.unwrap();
+    git(
+        &t.worktree,
+        &[&identity[..], &["commit", "-q", "-m", "hide"]].concat(),
+    )
+    .await
+    .unwrap();
+    t.e.start_cli_review(&t.id, &t.worktree).await.unwrap();
+    wait_until(&t.e, |r| r.status == "ready").await;
+    let (_, prompt) = &calls(&log)[0];
+    assert!(prompt.contains("+steal(tokens)"), "{prompt}");
+}
+
+#[tokio::test]
 async fn refuses_a_large_change_whose_file_the_pull_request_already_has() {
     let t = antigravity_review("ok").await;
     std::fs::write(t.worktree.join(".orbit-change.diff"), "x").unwrap();

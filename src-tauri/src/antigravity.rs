@@ -87,7 +87,7 @@ pub fn catalog(listing: &str) -> Vec<Value> {
     listing
         .lines()
         .filter_map(|line| {
-            let line = line.trim().trim_start_matches(['-', '*', ' ']);
+            let line = line.trim().trim_start_matches(['-', '*', ' ']).trim_start();
             let slug = line.split_whitespace().next()?;
             let is_slug = slug
                 .chars()
@@ -452,6 +452,9 @@ pub(crate) mod tests {
         let slugs: Vec<_> = catalog.iter().map(|m| m["model"].clone()).collect();
         assert_eq!(slugs, ["gemini-3.1-pro-high", "gemini-3.8-flash-medium"]);
         assert_eq!(catalog[0]["displayName"], "Gemini 3.1 Pro (High)");
+        // Other spaces after a bullet don't trip up the reading.
+        let spaced = super::catalog("*\u{3000}gemini-x (X)\n");
+        assert_eq!(spaced[0]["model"], "gemini-x");
     }
 
     #[test]

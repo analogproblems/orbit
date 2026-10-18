@@ -63,6 +63,14 @@ fn calls(log: &std::path::Path) -> Vec<Vec<String>> {
 fn after(args: &[String], flag: &str) -> String {
     args[args.iter().position(|a| a == flag).unwrap() + 1].clone()
 }
+/// A turn's prompt, which the fake logs after `--stdin` when it came on
+/// standard input.
+fn prompt(args: &[String]) -> String {
+    match args.iter().position(|a| a == "--stdin") {
+        Some(i) => args[i + 1].clone(),
+        None => after(args, "-p"),
+    }
+}
 
 #[tokio::test]
 async fn reviews_with_code_review_then_extracts_findings_on_the_same_session() {
@@ -119,8 +127,10 @@ async fn reviews_with_code_review_then_extracts_findings_on_the_same_session() {
     assert_eq!(after(extraction, "--tools"), "");
     let schema: Value = serde_json::from_str(&after(extraction, "--json-schema")).unwrap();
     assert_eq!(schema, super::findings::output_schema());
-    let prompt = after(extraction, "-p");
+    let prompt = prompt(extraction);
     assert!(prompt.contains("failure scenario") && prompt.contains("reviewerNotes"));
+    // Only Orbit's own command goes on the command line; the rest is piped.
+    assert_eq!(after(extraction, "-p"), "--output-format");
     // The finished turn is forgotten once its process has gone.
     tokio::time::timeout(Duration::from_secs(5), async {
         while !e.cli_turns.lock().unwrap().is_empty() {
@@ -144,9 +154,7 @@ async fn a_later_round_classifies_earlier_findings_with_read_only_tools() {
     e.start_cli_review(&id, &worktree).await.unwrap();
     wait_until(&e, |r| r.status == "ready").await;
     let extraction = &calls(&log)[1];
-    assert!(
-        after(extraction, "-p").ends_with("<orbit-previous-round-x>F1</orbit-previous-round-x>")
-    );
+    assert!(prompt(extraction).ends_with("<orbit-previous-round-x>F1</orbit-previous-round-x>"));
     assert!(after(extraction, "--tools").contains("Read"));
     assert!(!after(extraction, "--tools").contains("Edit"));
 }
@@ -443,7 +451,7 @@ async fn extraction_weighs_dev_container_results_with_read_only_tools() {
         after(review, "-p"),
         format!("/code-review high {}...HEAD", "b".repeat(40))
     );
-    let prompt = after(extraction, "-p");
+    let prompt = prompt(extraction);
     assert!(
         prompt.contains("The repository's checks also ran"),
         "{prompt}"

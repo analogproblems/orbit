@@ -62,11 +62,18 @@ pub async fn check(launcher: &Launcher) -> Result<String, String> {
         .to_string())
 }
 
+/// The prompt of a turn that goes on the command line: only the review's
+/// own `/code-review` command, which Orbit writes. Every other prompt goes on
+/// standard input, so one that starts with "-" isn't read as an option and a
+/// long one isn't limited by the system's maximum argument size.
+fn prompt_argument(turn: &Turn) -> Option<&str> {
+    (turn.kind == TurnKind::Review).then_some(turn.prompt.as_str())
+}
+
 /// The arguments of a Claude turn.
 pub fn args(turn: &Turn) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "-p".into(),
-        turn.prompt.clone(),
         "--output-format".into(),
         "stream-json".into(),
         "--verbose".into(),
@@ -99,6 +106,9 @@ pub fn args(turn: &Turn) -> Vec<String> {
         }})
         .to_string(),
     ];
+    if let Some(prompt) = prompt_argument(turn) {
+        args.insert(1, prompt.to_owned());
+    }
     args.push(
         if turn.resume {
             "--resume"
@@ -185,11 +195,12 @@ pub fn start_write_up(
 
 /// Starts a Claude turn; see `cli::spawn`.
 pub fn start(launcher: &Launcher, turn: &Turn) -> Result<Started, String> {
+    let stdin = prompt_argument(turn).is_none().then(|| turn.prompt.clone());
     cli::spawn(
         launcher,
         args(turn),
         &turn.cwd,
-        None,
+        stdin,
         Reader::default(),
         MISSING,
     )

@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader},
     process::{Child, Command},
     sync::{mpsc, oneshot},
 };
@@ -23,6 +23,38 @@ const STDERR_LINES: usize = 20;
 const EXIT_GRACE: Duration = Duration::from_secs(10);
 #[cfg(test)]
 const EXIT_GRACE: Duration = Duration::from_secs(1);
+
+/// Reads a process's output line by line. Bytes that aren't UTF-8 are
+/// replaced rather than ending the stream, so one odd line can't hide the
+/// lines after it.
+pub struct Lines<R> {
+    reader: BufReader<R>,
+    buf: Vec<u8>,
+}
+impl<R: AsyncRead + Unpin> Lines<R> {
+    pub fn new(reader: R) -> Self {
+        Self {
+            reader: BufReader::new(reader),
+            buf: Vec::new(),
+        }
+    }
+    /// The next line without its line ending, or None at the end.
+    pub async fn next(&mut self) -> Option<String> {
+        self.buf.clear();
+        match self.reader.read_until(b'\n', &mut self.buf).await {
+            Ok(0) | Err(_) => None,
+            Ok(_) => {
+                if self.buf.ends_with(b"\n") {
+                    self.buf.pop();
+                    if self.buf.ends_with(b"\r") {
+                        self.buf.pop();
+                    }
+                }
+                Some(String::from_utf8_lossy(&self.buf).into_owned())
+            }
+        }
+    }
+}
 
 /// How to start a CLI; tests start a fake.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -282,8 +314,8 @@ pub fn spawn<D: Dialect>(
     {
         let (tail, denials, end) = (tail.clone(), denials.clone(), end.clone());
         tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
+            let mut lines = Lines::new(stderr);
+            while let Some(line) = lines.next().await {
                 match D::stderr(&line) {
                     Stderr::Plain => {}
                     Stderr::Denied(call) => denials.lock().unwrap().push(call),
@@ -300,8 +332,8 @@ pub fn spawn<D: Dialect>(
     tokio::spawn(async move {
         let mut init = Some(init_tx);
         let mut result = None;
-        let mut lines = BufReader::new(stdout).lines();
-        'read: while let Ok(Some(line)) = lines.next_line().await {
+        let mut lines = Lines::new(stdout);
+        'read: while let Some(line) = lines.next().await {
             let Ok(message) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
@@ -403,5 +435,18 @@ pub fn result_text(content: &Value) -> String {
             .collect::<Vec<_>>()
             .join("\n"),
         _ => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn a_line_that_is_not_utf8_does_not_end_the_stream() {
+        let input: &[u8] = b"first\r\nbad \xff byte\nlast";
+        let mut lines = super::Lines::new(input);
+        assert_eq!(lines.next().await.as_deref(), Some("first"));
+        assert_eq!(lines.next().await.as_deref(), Some("bad \u{fffd} byte"));
+        assert_eq!(lines.next().await.as_deref(), Some("last"));
+        assert_eq!(lines.next().await, None);
     }
 }

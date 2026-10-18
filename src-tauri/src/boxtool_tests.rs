@@ -316,3 +316,22 @@ async fn real_docker_runs_the_reviewers_commands() {
     assert!(alive.contains("can't fork"), "{alive}");
     assert!(alive.ends_with("alive"), "{alive}");
 }
+#[test]
+fn only_dockers_own_message_about_this_container_means_it_is_gone() {
+    let step = |output: &str| CheckStep {
+        command: "npm test".into(),
+        exit_code: Some(1),
+        timed_out: false,
+        seconds: 1,
+        output: output.into(),
+    };
+    assert!(gone(
+        &step("Error response from daemon: No such container: orbit-1"),
+        "orbit-1"
+    ));
+    // A project's own tests that drive Docker may print the same words.
+    assert!(!gone(
+        &step("expected error: No such container: test-db"),
+        "orbit-1"
+    ));
+}

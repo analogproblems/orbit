@@ -84,6 +84,22 @@ async fn a_new_head_replaces_queued_runs_and_supersedes_running_ones() {
     assert_eq!(s.reviews.len(), 3);
 }
 #[tokio::test]
+async fn a_queued_run_stops_when_its_pr_closes() {
+    let (_d, e) = autopilot_engine(trusted_pr()).await;
+    let queued = automatic(&e, &trusted_pr().head_sha, "queued").await;
+    e.supersede_outdated_runs().await;
+    assert_eq!(e.snapshot().await.reviews[0].status, "queued");
+    e.update(|s| {
+        let pr = s.prs.remove(0);
+        s.history_prs.push(pr);
+    })
+    .await;
+    e.supersede_outdated_runs().await;
+    let s = e.snapshot().await;
+    let r = s.reviews.iter().find(|r| r.id == queued).unwrap();
+    assert_eq!(r.status, "cancelled");
+}
+#[tokio::test]
 async fn a_follow_up_on_a_finished_round_keeps_its_round() {
     let (_d, e) = autopilot_engine(trusted_pr()).await;
     e.update(|s| s.settings.repositories[0].round_limit = 1)

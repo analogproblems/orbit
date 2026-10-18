@@ -33,6 +33,7 @@ const USAGE_PAUSE: f64 = 90.0;
 /// A pull request whose write-up failed this many times from the same
 /// input waits until it changes or Orbit starts again.
 const TRIES: u32 = 2;
+const DISCONNECTED: &str = "Codex disconnected.";
 
 /// The Codex thread writing a pull request up.
 pub(super) struct Writing {
@@ -270,12 +271,16 @@ impl Engine {
                     self.note_decisions().await;
                 }
                 Err(e) => {
-                    let mut failed = self.write_failed.lock().unwrap();
-                    let tries = failed.entry(key).or_insert_with(|| (hash.clone(), 0));
-                    if tries.0 != hash {
-                        *tries = (hash.clone(), 0);
+                    // Losing Codex isn't the pull request's fault, so it
+                    // doesn't count as one of its tries.
+                    if e != DISCONNECTED {
+                        let mut failed = self.write_failed.lock().unwrap();
+                        let tries = failed.entry(key).or_insert_with(|| (hash.clone(), 0));
+                        if tries.0 != hash {
+                            *tries = (hash.clone(), 0);
+                        }
+                        tries.1 += 1;
                     }
-                    tries.1 += 1;
                     error = Some(format!(
                         "Couldn't write up {}: {}",
                         short_ref(&h),
@@ -369,6 +374,19 @@ impl Engine {
         let output = serde_json::from_str(&result?)
             .map_err(|_| "Codex's answer wasn't in the shape asked for.".to_string())?;
         Ok((output, selection.model.clone()))
+    }
+    /// Ends a Codex write-up at once when Codex goes away, instead of
+    /// waiting out its time limit.
+    pub(super) fn end_codex_write_up(&self) {
+        let done = self
+            .writing_thread
+            .lock()
+            .unwrap()
+            .take()
+            .and_then(|mut w| w.done.take());
+        if let Some(done) = done {
+            let _ = done.send(Err(DISCONNECTED.into()));
+        }
     }
     /// Applies a Codex notification from the thread writing a pull request
     /// up. Returns whether it was that thread's.

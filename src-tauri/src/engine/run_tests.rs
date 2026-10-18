@@ -1,4 +1,6 @@
+use super::events::ReviewEvent;
 use super::test_support::*;
+use crate::types::*;
 use serde_json::json;
 use std::time::Duration;
 
@@ -168,4 +170,28 @@ async fn usage_updates_from_codex_reach_the_meter() {
     assert_eq!(usage.rate_limits.secondary.unwrap().used_percent, 42.0);
     // The review the update arrived during is untouched.
     assert_eq!(e.snapshot().await.reviews[0].status, "reviewing");
+}
+#[test]
+fn an_approval_answered_elsewhere_resumes_the_review() {
+    let p = crate::types::tests::pr();
+    let mut r = Review::new(&p, &Settings::default(), false);
+    r.status = "awaitingApproval".into();
+    let id = r.id.clone();
+    let approval = |n: u64| Approval {
+        id: serde_json::json!(n),
+        review_id: id.clone(),
+        method: "item/commandExecution/requestApproval".into(),
+        params: serde_json::json!({}),
+        requested_at: String::new(),
+    };
+    let mut s = Snapshot {
+        reviews: vec![r],
+        approvals: vec![approval(1), approval(2)],
+        ..Snapshot::default()
+    };
+    let resolved = |n: u64| ReviewEvent::RequestResolved(serde_json::json!(n));
+    super::run::apply_event(&mut s, &id, resolved(1));
+    assert_eq!(s.reviews[0].status, "awaitingApproval");
+    super::run::apply_event(&mut s, &id, resolved(2));
+    assert_eq!(s.reviews[0].status, "reviewing");
 }
