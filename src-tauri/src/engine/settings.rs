@@ -40,24 +40,28 @@ impl Engine {
                 .selection(Provider::Antigravity)
                 .validate_antigravity(&s.antigravity_models)?;
         }
-        let mut next = s.clone();
-        // Turning autopilot back on acknowledges a failed save that paused it.
-        if settings.automatic {
-            next.state_write_error = None;
-        }
-        next.settings = settings;
-        if ModelSelection::workspace(&next.settings)
-            .validate_execution(&next)
-            .is_ok()
-        {
-            next.model_configuration_error = None;
-        }
-        if changed {
-            next.model_selection_notice = None;
-        }
-        self.persist(&next)
-            .map_err(|e| format!("Settings were not saved: {e}"))?;
-        *s = next;
+        self.save(
+            s,
+            |next| {
+                // Turning autopilot back on acknowledges a failed save that
+                // paused it.
+                if settings.automatic {
+                    next.state_write_error = None;
+                }
+                next.settings = settings;
+                if ModelSelection::workspace(&next.settings)
+                    .validate_execution(next)
+                    .is_ok()
+                {
+                    next.model_configuration_error = None;
+                }
+                if changed {
+                    next.model_selection_notice = None;
+                }
+                Ok(())
+            },
+            |e| format!("Settings were not saved: {e}"),
+        )?;
         self.dirty.store(false, Ordering::SeqCst);
         self.changed.store(false, Ordering::SeqCst);
         (self.emit)(s);

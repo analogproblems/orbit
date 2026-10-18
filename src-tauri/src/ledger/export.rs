@@ -113,7 +113,7 @@ fn chapter(out: &mut String, h: &History) {
     {
         out.push_str("\nWhat it set out to do:\n\n");
         for l in gist.trim().lines() {
-            out.push_str(&format!("> {}\n", l.trim_end()).replace("> \n", ">\n"));
+            out.push_str(&format!("> {}\n", inert(l.trim_end())).replace("> \n", ">\n"));
         }
     }
     if let Some(w) = &h.writeup {
@@ -247,16 +247,41 @@ fn link(text: &str, url: &str) -> String {
     if url.is_empty() {
         text.to_string()
     } else {
-        format!("[{}]({url})", text.replace(['[', ']'], ""))
+        format!("[{text}]({url})")
     }
 }
-/// Text on one line, for a list item or heading.
+/// Text on one line, for a list item or heading, kept as written.
 fn line(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
+    inert(&text.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+/// Text from a pull request or a writer shown as written: its HTML, images
+/// and links come out as plain text. Code spans are left alone, since
+/// nothing in them renders; an unpaired backtick is shown as one.
+pub(super) fn inert(text: &str) -> String {
+    let paired = text.matches('`').count().is_multiple_of(2);
+    let mut out = String::with_capacity(text.len());
+    let mut code = false;
+    for c in text.chars() {
+        match c {
+            '`' if paired => {
+                code = !code;
+                out.push(c);
+            }
+            _ if code => out.push(c),
+            '`' | '\\' | '[' | ']' => {
+                out.push('\\');
+                out.push(c);
+            }
+            '<' => out.push_str("&lt;"),
+            '&' => out.push_str("&amp;"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 /// `2026-10-12` from a time.
 fn day(at: &str) -> String {
-    clip(at, 10)
+    cut(at, 10)
 }
 fn plural(n: usize, one: &str) -> String {
     format!("{n} {one}{}", if n == 1 { "" } else { "s" })

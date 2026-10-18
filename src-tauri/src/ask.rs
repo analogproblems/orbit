@@ -1,6 +1,7 @@
-//! Questions you type to Bit, answered by Codex: what Codex is told, the
-//! shape of its answer, the buttons Orbit lets an answer offer, and the
-//! changes it may make to Bit's memory. Codex sees a summary of Orbit's
+//! Questions you type to Bit, answered by Bit's answerer (Codex, Claude
+//! Code, Antigravity, Ollama or a provider's API): what it is told, the shape
+//! of its answer, the buttons Orbit lets an answer offer, and the changes it
+//! may make to Bit's memory. It sees a summary of Orbit's
 //! state and of your repositories' copies, not the computer. Pull request
 //! text in the summary is someone else's, so it is marked as data, and every
 //! button waits for your tap, checked again when you tap it.
@@ -9,6 +10,7 @@ use crate::{
     extras,
     ledger::{writeup::DecisionKind, History},
     setup::{self, CloneFacts, RepositoryPatch},
+    text::shorten,
     types::*,
 };
 use serde::{Deserialize, Serialize};
@@ -389,15 +391,6 @@ fn key<T: Serialize>(value: &T) -> String {
         .and_then(|v| v.as_str().map(str::to_owned))
         .unwrap_or_default()
 }
-fn clip(text: &str, max: usize) -> String {
-    let text = text.trim();
-    if text.chars().count() <= max {
-        return text.to_string();
-    }
-    let mut clipped: String = text.chars().take(max).collect();
-    clipped.push('…');
-    clipped
-}
 
 /// What Codex is told about Orbit right now.
 pub fn briefing(s: &Snapshot, lookups: &Lookups) -> Value {
@@ -427,7 +420,7 @@ pub fn briefing(s: &Snapshot, lookups: &Lookups) -> Value {
                 .max_by(|a, b| a.created_at.cmp(&b.created_at));
             json!({
                 "id": pr.id,
-                "title": clip(&pr.title, 200),
+                "title": shorten(&pr.title, 200),
                 "author": pr.author,
                 "draft": pr.draft,
                 "loop": state.map(|l| json!({
@@ -443,8 +436,8 @@ pub fn briefing(s: &Snapshot, lookups: &Lookups) -> Value {
                     "verdict": r.orbit_verdict.map(|v| key(&v)),
                     "blockingFindings": r.blocking,
                     "findings": r.findings.iter().flatten().take(MAX_FINDINGS)
-                        .map(|f| clip(&f.title, 160)).collect::<Vec<_>>(),
-                    "error": r.error.as_deref().map(|e| clip(e, 300)),
+                        .map(|f| shorten(&f.title, 160)).collect::<Vec<_>>(),
+                    "error": r.error.as_deref().map(|e| shorten(e, 300)),
                     "published": r.comment_url.is_some(),
                 })),
                 "readyToPublish": publishable_report(s, pr).is_some(),
@@ -457,7 +450,7 @@ pub fn briefing(s: &Snapshot, lookups: &Lookups) -> Value {
             json!({
                 "pr": a.pr_id,
                 "repository": a.repo,
-                "reason": clip(&a.reason, 300),
+                "reason": shorten(&a.reason, 300),
             })
         })
         .collect();
@@ -468,7 +461,7 @@ pub fn briefing(s: &Snapshot, lookups: &Lookups) -> Value {
         .filter(|n| n.question.is_none())
         .rev()
         .take(10)
-        .map(|n| clip(&n.text, 300))
+        .map(|n| shorten(&n.text, 300))
         .collect();
     let mut earlier: Vec<Value> = notes
         .iter()
@@ -477,8 +470,8 @@ pub fn briefing(s: &Snapshot, lookups: &Lookups) -> Value {
         .take(EARLIER)
         .map(|n| {
             json!({
-                "asked": n.question.as_deref().map(|q| clip(q, 500)),
-                "answered": clip(&n.text, 1000),
+                "asked": n.question.as_deref().map(|q| shorten(q, 500)),
+                "answered": shorten(&n.text, 1000),
             })
         })
         .collect();
@@ -489,7 +482,7 @@ pub fn briefing(s: &Snapshot, lookups: &Lookups) -> Value {
         "github": {
             "syncing": s.polling,
             "failedSyncsInARow": s.poll_failures,
-            "lastSyncError": s.github_error.as_deref().map(|e| clip(e, 300)),
+            "lastSyncError": s.github_error.as_deref().map(|e| shorten(e, 300)),
         },
         "reviewersReady": {
             "codex": s.codex_ready,
@@ -510,7 +503,7 @@ pub fn briefing(s: &Snapshot, lookups: &Lookups) -> Value {
             "approvalMinutes": r.approval_minutes,
             "copy": match lookups.clones.get(&r.name) {
                 Some(Ok(facts)) => json!(facts),
-                Some(Err(e)) => json!({"error": clip(e, 300)}),
+                Some(Err(e)) => json!({"error": shorten(e, 300)}),
                 None => Value::Null,
             },
         })).collect::<Vec<_>>(),
@@ -518,9 +511,9 @@ pub fn briefing(s: &Snapshot, lookups: &Lookups) -> Value {
             Ok(repos) => json!(repos.iter().take(MAX_CONNECTABLE).map(|r| json!({
                 "name": r.name,
                 "private": r.private,
-                "description": clip(&r.description, 120),
+                "description": shorten(&r.description, 120),
             })).collect::<Vec<_>>()),
-            Err(e) => json!({"error": clip(e, 300)}),
+            Err(e) => json!({"error": shorten(e, 300)}),
         },
         "pullRequests": pull_requests,
         "decisions": decisions(&lookups.decisions, s.settings.write_ups.enabled),
@@ -547,7 +540,7 @@ fn decisions(prs: &[History], write_ups: bool) -> Value {
             let w = h.writeup.as_ref();
             json!({
                 "pr": reference(h),
-                "title": clip(&h.title, 200),
+                "title": shorten(&h.title, 200),
                 "state": if h.merged { "merged" } else { h.state.as_str() },
                 "mergedAt": h.merged_at,
                 "rounds": h.metrics.rounds,
@@ -556,18 +549,18 @@ fn decisions(prs: &[History], write_ups: bool) -> Value {
                 "declined": h.metrics.declined,
                 "worthALook": h.flags.iter().take(4).map(|f| json!({
                     "needsADecision": f.attention == crate::ledger::Glance::Act,
-                    "text": clip(&f.text, 240),
+                    "text": shorten(&f.text, 240),
                 })).collect::<Vec<_>>(),
-                "inPlainWords": w.map(|w| clip(&w.summary, 500)),
+                "inPlainWords": w.map(|w| shorten(&w.summary, 500)),
                 "decisions": w.iter().flat_map(|w| &w.decisions)
                     .filter(|d| d.kind != DecisionKind::Rule)
                     .take(MAX_DECISIONS)
                     .map(|d| json!({
                         "kind": key(&d.kind),
-                        "decision": clip(&d.statement, 240),
-                        "area": clip(&d.area, 60),
+                        "decision": shorten(&d.statement, 240),
+                        "area": shorten(&d.area, 60),
                         "worthALook": d.attention.map(|_| d.attention_reason.as_deref()
-                            .map(|r| clip(r, 240)).unwrap_or_default()),
+                            .map(|r| shorten(r, 240)).unwrap_or_default()),
                     }))
                     .collect::<Vec<_>>(),
             })
@@ -584,8 +577,8 @@ fn decisions(prs: &[History], write_ups: bool) -> Value {
                 .filter(|d| d.kind == DecisionKind::Rule)
                 .map(move |d| {
                     json!({
-                        "area": clip(&d.area, 60),
-                        "rule": clip(&d.statement, 240),
+                        "area": shorten(&d.area, 60),
+                        "rule": shorten(&d.statement, 240),
                         "pr": reference(h),
                     })
                 })
@@ -716,7 +709,7 @@ pub fn answer(s: &Snapshot, reply: &str, connectable: &[String]) -> Result<Answe
         .take(buddy::MEMORY_CHANGES)
         .collect();
     Ok(Answer {
-        text: clip(text, MAX_ANSWER),
+        text: shorten(text, MAX_ANSWER),
         proposals,
         memory,
     })

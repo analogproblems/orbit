@@ -151,3 +151,18 @@ fn an_export_names_its_repository_and_a_safe_file() {
     );
     assert!(!file_name(Some("../../x"), "d").contains('/'));
 }
+
+#[test]
+fn text_from_a_pull_request_is_exported_as_written() {
+    let mut h = derive(&fixture(75));
+    h.title = "Show [a](b) and <img src=x> in `Vec<T>`".into();
+    h.narrative.after =
+        Some("![x](http://example.com/x.png) & \\[c\\]\n<script>no</script>".into());
+    let text = markdown(std::slice::from_ref(&h), None, "2026-10-12");
+    assert!(text.contains(r"Show \[a\](b) and &lt;img src=x> in `Vec<T>`]("));
+    assert!(text.contains(
+        "> !\\[x\\](http://example.com/x.png) &amp; \\\\\\[c\\\\\\]\n> &lt;script>no&lt;/script>\n"
+    ));
+    assert!(!text.contains("<img") && !text.contains("<script"));
+    assert_eq!(inert("one ` tick"), "one \\` tick");
+}

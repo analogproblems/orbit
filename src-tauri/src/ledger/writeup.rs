@@ -252,7 +252,7 @@ pub fn input(h: &History, known_areas: &[String]) -> (String, String) {
                     line.push_str(&format!(" in {commit}"));
                 }
                 if let Some(reason) = &c.reason {
-                    line.push_str(&format!(": {}", clip(reason, 160)));
+                    line.push_str(&format!(": {}", cut(reason, 160)));
                 }
             }
             if t.open_at_merge {
@@ -348,10 +348,10 @@ fn conversation(h: &History) -> String {
                         }
                         line.push_str(&format!(": {}", f.title));
                         if !f.problem.trim().is_empty() {
-                            line.push_str(&format!(". {}", clip(&f.problem, 500)));
+                            line.push_str(&format!(". {}", cut(&f.problem, 500)));
                         }
                         if let Some(s) = &f.failure_scenario {
-                            line.push_str(&format!(" Breaks when: {}", clip(s, 300)));
+                            line.push_str(&format!(" Breaks when: {}", cut(s, 300)));
                         }
                         out.push(line);
                     }
@@ -367,7 +367,7 @@ fn conversation(h: &History) -> String {
                                 e.status.map_or("?", prior_word)
                             );
                             if let Some(note) = &e.note {
-                                s.push_str(&format!(" ({})", clip(note, 120)));
+                                s.push_str(&format!(" ({})", cut(note, 120)));
                             }
                             s
                         })
@@ -456,7 +456,7 @@ fn description(n: &Narrative) -> String {
 /// `text` cut to `max` characters, saying so.
 fn clipped(text: &str, max: usize) -> String {
     if text.chars().count() > max {
-        format!("{}\n[trimmed]", clip(text, max))
+        format!("{}\n[trimmed]", cut(text, max))
     } else {
         text.to_string()
     }
@@ -512,7 +512,7 @@ pub fn read(output: &Value, h: &History) -> Result<Answer, String> {
         .ok_or("The answer had no decisions.")?;
     let text = |v: &Value, max: usize| {
         v.as_str()
-            .map(|s| clip(s.trim(), max))
+            .map(|s| cut(s.trim(), max))
             .filter(|s| !s.is_empty())
     };
     let sources = sources(h);
@@ -579,7 +579,7 @@ pub fn read(output: &Value, h: &History) -> Result<Answer, String> {
         }
     }
     Ok(Answer {
-        summary: clip(summary.trim(), 600),
+        summary: cut(summary.trim(), 600),
         areas,
         decisions,
         finding_notes,

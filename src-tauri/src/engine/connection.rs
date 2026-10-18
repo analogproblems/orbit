@@ -215,13 +215,22 @@ impl Engine {
     /// Ends everything that ran on a Codex connection that has gone away.
     pub(super) async fn disconnected(self: &Arc<Self>) {
         let rpc = self.rpc.lock().await.clone();
+        let why = rpc
+            .as_ref()
+            .and_then(|r| r.last_error.lock().unwrap().clone());
         self.codex_login_lost(rpc.as_ref());
         self.items.lock().await.clear();
         let mut recovered = vec![];
         self.update(|s| {
             s.codex_ready = false;
             if s.codex_error.is_none() {
-                s.codex_error = Some("Codex disconnected. Reconnect in Settings.".into());
+                s.codex_error = Some(match &why {
+                    Some(why) => format!(
+                        "Codex disconnected. It said: {} Reconnect in Settings.",
+                        crate::text::sentence(why)
+                    ),
+                    None => "Codex disconnected. Reconnect in Settings.".into(),
+                });
             }
             s.approvals.clear();
             for scan in &mut s.scans {

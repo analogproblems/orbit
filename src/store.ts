@@ -2,20 +2,6 @@ import { create } from "zustand";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
-  demoAnswer,
-  demoFixed,
-  demoTypedAnswer,
-  demoWorkspace,
-  freshDemo,
-  demoFindings,
-  demoReport,
-  demoRepositories,
-  demoScan,
-  demoScanFindings,
-  demoScanReport,
-  resolveDemoModelSelection,
-} from "./demo";
-import {
   call,
   download,
   expiredLink,
@@ -136,6 +122,9 @@ interface Store {
   ) => Promise<ActionResult<T>>;
   clearError: () => void;
 }
+/** The browser demo's sample workspace and helpers, loaded only for the
+ * demo so the desktop app and browser access don't ship them. */
+let D: typeof import("./demo");
 let demo: Snapshot;
 // Repository validation can wait on a slow filesystem. Keep its ordered lane
 // independent from the global settings lane, so disabling Autopilot stays fast.
@@ -195,8 +184,8 @@ function demoSchedule() {
           r.id,
           setTimeout(() => {
             r.status = "ready";
-            r.report = demoReport;
-            r.findings = demoFindings(r.id);
+            r.report = D.demoReport;
+            r.findings = D.demoFindings(r.id);
             r.verdict = "changes_requested";
             const earlier = demo.reviews.find(
               (p) => p.id !== r.id && p.prId === r.prId && p.findings?.length,
@@ -243,7 +232,7 @@ function demoSchedule() {
             r.messages.push({
               id: crypto.randomUUID(),
               role: "agent",
-              text: demoReport,
+              text: D.demoReport,
               createdAt: r.updatedAt,
             });
             timers.delete(r.id);
@@ -325,7 +314,7 @@ async function demoAction(
     demoNote({
       kind: "answer",
       question: questionLabels[question],
-      ...demoAnswer(demo, question),
+      ...D.demoAnswer(demo, question),
     });
     commit();
     return;
@@ -349,7 +338,7 @@ async function demoAction(
           (n) => n.id === id && n.pending,
         );
         if (!note) return;
-        const answer = demoTypedAnswer();
+        const answer = D.demoTypedAnswer();
         const memory = (demo.buddyFeed!.memory ??= {
           general: [],
           repositories: {},
@@ -464,7 +453,7 @@ async function demoAction(
     demo.attention = demo.attention?.filter((a) => a.key !== item.key);
     demoNote({
       kind: "fixed",
-      text: demoFixed(demo, item.fix, item.prId),
+      text: D.demoFixed(demo, item.fix, item.prId),
       prId: item.prId,
       reviewId: item.reviewId,
       repo: item.repo,
@@ -475,7 +464,7 @@ async function demoAction(
   if (command === "reset_demo") {
     timers.forEach(clearTimeout);
     timers.clear();
-    demo = demoWorkspace();
+    demo = D.demoWorkspace();
     commit();
     return;
   }
@@ -795,7 +784,7 @@ async function demoAction(
         "A security scan is already running. Wait for it or cancel it.",
       );
     const scan: SecurityScan = {
-      ...demoScan(args.repo as string, 0),
+      ...D.demoScan(args.repo as string, 0),
       id: `scan-${crypto.randomUUID()}`,
       mode: args.mode as ScanMode,
       status: "running",
@@ -830,7 +819,7 @@ async function demoAction(
         Object.assign(current, {
           status: "completed",
           finishedAt: new Date().toISOString(),
-          findings: demoScanFindings(scan.id),
+          findings: D.demoScanFindings(scan.id),
           hasReport: true,
           diskBytes: 3.2 * 1024 * 1024,
           progress: null,
@@ -876,9 +865,9 @@ async function demoAction(
   if (command === "get_scan_report") {
     if (!demo.scans?.some((s) => s.id === args.scanId && s.hasReport))
       throw Error("This scan has no report.");
-    return demoScanReport;
+    return D.demoScanReport;
   }
-  if (command === "list_repositories") return demoRepositories;
+  if (command === "list_repositories") return D.demoRepositories;
   if (command === "connect_services") {
     resolveDemoSelection();
     commit();
@@ -889,9 +878,9 @@ async function demoAction(
 function resolveDemoSelection() {
   demo.codexReady = true;
   demo.modelCatalogReady = true;
-  demo.models = freshDemo().models;
+  demo.models = D.freshDemo().models;
   try {
-    const { selection, notice } = resolveDemoModelSelection(
+    const { selection, notice } = D.resolveDemoModelSelection(
       demo.settings,
       demo.models,
     );
@@ -1020,10 +1009,11 @@ export const useOrbit = create<Store>((set, get) => ({
       );
     }
     if (!desktop) {
+      D = await import("./demo");
       try {
         demo =
           JSON.parse(localStorage.getItem("orbit-demo-v3") || "null") ||
-          demoWorkspace();
+          D.demoWorkspace();
         demo.reviews.forEach((r) => {
           // Older demos did not record a simulated Codex thread. Backfill those
           // runs without reviving worktrees explicitly removed by current builds
@@ -1043,7 +1033,7 @@ export const useOrbit = create<Store>((set, get) => ({
           note.text = "The demo restarted before I could answer. Ask me again?";
         }
       } catch {
-        demo = demoWorkspace();
+        demo = D.demoWorkspace();
       }
       resolveDemoSelection();
       commit();

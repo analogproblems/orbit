@@ -55,12 +55,15 @@ impl Engine {
                 Err("This chat's model and effort have already been pinned. Start a new review to use another selection.".into())
             };
         }
-        let mut next = s.clone();
-        let r = next.reviews.iter_mut().find(|r| r.id == id).unwrap();
-        r.legacy_chat_selection = Some(selection);
-        self.persist(&next)
-            .map_err(|e| format!("Chat model was not saved: {e}"))?;
-        *s = next;
+        self.save(
+            &mut s,
+            |next| {
+                let r = next.reviews.iter_mut().find(|r| r.id == id).unwrap();
+                r.legacy_chat_selection = Some(selection);
+                Ok(())
+            },
+            |e| format!("Chat model was not saved: {e}"),
+        )?;
         (self.emit)(&s);
         Ok(())
     }
@@ -163,22 +166,28 @@ impl Engine {
                 .map_err(|left| left.message("your message wasn't sent"))?;
             {
                 let mut state = self.state.lock().await;
-                let mut next = state.clone();
-                let run = next
-                    .reviews
-                    .iter_mut()
-                    .find(|r| r.id == id && r.before_follow_up.is_some() && active(&r.status))
-                    .ok_or("Follow-up was stopped.")?;
-                let message = run
-                    .messages
-                    .iter_mut()
-                    .find(|m| m.id == message_id && m.delivery == Some(MessageDelivery::Pending))
-                    .ok_or("Follow-up was stopped.")?;
-                message.confirmed_selection = Some(selection.clone());
-                self.persist(&next).map_err(|e| {
-                    format!("Could not save confirmed chat settings; no message was sent: {e}")
-                })?;
-                *state = next;
+                self.save(
+                    &mut state,
+                    |next| {
+                        let run = next
+                            .reviews
+                            .iter_mut()
+                            .find(|r| {
+                                r.id == id && r.before_follow_up.is_some() && active(&r.status)
+                            })
+                            .ok_or("Follow-up was stopped.")?;
+                        let message = run
+                            .messages
+                            .iter_mut()
+                            .find(|m| {
+                                m.id == message_id && m.delivery == Some(MessageDelivery::Pending)
+                            })
+                            .ok_or("Follow-up was stopped.")?;
+                        message.confirmed_selection = Some(selection.clone());
+                        Ok(())
+                    },
+                    |e| format!("Could not save confirmed chat settings; no message was sent: {e}"),
+                )?;
                 self.changed.store(true, Ordering::SeqCst);
             }
             self.pending_message(id, &message_id).await?;
