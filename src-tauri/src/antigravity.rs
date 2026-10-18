@@ -224,6 +224,8 @@ pub fn start(setup: &Setup, turn: &Turn) -> Result<Started, String> {
         Some(input(&turn.prompt)),
         Reader::default(),
         MISSING,
+        // Antigravity keeps its own time; see `--print-timeout`.
+        None,
     )
 }
 

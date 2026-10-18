@@ -35,6 +35,9 @@ const DENIED: [&str; 3] = [
     "Bash(*--textconv*)",
 ];
 const MISSING: &str = "Cannot start Claude. Install Claude Code, then run claude once to sign in.";
+/// How long a turn may run, the same as Antigravity's, so a stalled one
+/// doesn't hold its place until someone presses Stop.
+const TURN_LIMIT: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
 /// How Orbit starts `claude`.
 pub fn launcher() -> Launcher {
@@ -190,7 +193,15 @@ pub fn start_write_up(
     cwd: &std::path::Path,
     input: String,
 ) -> Result<Started, String> {
-    cli::spawn(launcher, args, cwd, Some(input), Reader::default(), MISSING)
+    cli::spawn(
+        launcher,
+        args,
+        cwd,
+        Some(input),
+        Reader::default(),
+        MISSING,
+        None,
+    )
 }
 
 /// Starts a Claude turn; see `cli::spawn`.
@@ -203,6 +214,7 @@ pub fn start(launcher: &Launcher, turn: &Turn) -> Result<Started, String> {
         stdin,
         Reader::default(),
         MISSING,
+        Some(TURN_LIMIT),
     )
 }
 
@@ -604,6 +616,50 @@ pub(crate) mod tests {
         let catalog = catalog();
         crate::models::validate_catalog(&catalog).unwrap();
         assert_eq!(catalog.iter().filter(|m| m["isDefault"] == true).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_turn_still_working_at_its_limit_is_stopped() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("calls");
+        let (_running, _init, mut rx) = cli::spawn(
+            &fake(&format!("slow@{}", log.display())),
+            ["-p", "--output-format", "stream-json"]
+                .map(String::from)
+                .into(),
+            dir.path(),
+            Some("Review this.".into()),
+            Reader::default(),
+            MISSING,
+            Some(std::time::Duration::from_millis(500)),
+        )
+        .unwrap();
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if let Some(Output::Exited(reason)) = rx.recv().await {
+                    return reason;
+                }
+            }
+        })
+        .await
+        .expect("the turn ran past its limit");
+        assert!(ended.contains("was still working after"), "{ended}");
+        // The command it started went with it.
+        let pid = std::fs::read_to_string(log.with_extension("child")).unwrap();
+        let alive = || {
+            std::process::Command::new("kill")
+                .args(["-0", &pid])
+                .status()
+                .unwrap()
+                .success()
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while alive() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the turn's command outlived it");
     }
 
     #[tokio::test]

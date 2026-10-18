@@ -361,6 +361,9 @@ impl Container {
             "no-new-privileges",
             "--pids-limit",
             "4096",
+            // An init that reaps what a review's commands leave behind, so
+            // dead processes can't fill the limit above.
+            "--init",
         ]
         .map(String::from)
         .into();
@@ -464,19 +467,38 @@ async fn copy_in(
     }
     Ok(())
 }
-/// Kills every process in a container but its first, the `sleep` that keeps
-/// it running, then waits up to ten seconds until none is left but zombies,
-/// which that `sleep` never reaps, and says `stopped`. It uses only the
-/// shell, since images needn't have `kill` or `ps`.
-pub const STOP_ALL: &str = r#"kill -KILL -1 2>/dev/null
+/// Kills every process in a container but Docker's init and the `sleep` that
+/// keeps the container running, then waits up to ten seconds until none is
+/// left, and says `stopped`. The `sleep` is the oldest child of the init:
+/// processes left behind by others also become its children, but later.
+/// Everything is paused first, the `sleep` too, so nothing can start more
+/// while they're killed one by one. It uses only the shell, since images
+/// needn't have `kill` or `ps`.
+pub const STOP_ALL: &str = r#"kill -STOP -1 2>/dev/null
+keep=
+first=
+for p in /proc/[0-9]*; do
+  p=${p#/proc/}
+  if [ "$p" = 1 ] || [ "$p" = $$ ]; then continue; fi
+  read -r stat 2>/dev/null < "/proc/$p/stat" || continue
+  set -- ${stat##*) }
+  if [ "$2" = 1 ] && { [ -z "$keep" ] || [ "${20}" -lt "$first" ]; }; then
+    keep=$p
+    first=${20}
+  fi
+done
 for _ in 1 2 3 4 5 6 7 8 9 10; do
   left=
   for p in /proc/[0-9]*; do
     p=${p#/proc/}
-    if [ "$p" = 1 ] || [ "$p" = $$ ]; then continue; fi
+    if [ "$p" = 1 ] || [ "$p" = $$ ] || [ "$p" = "$keep" ]; then continue; fi
     read -r stat 2>/dev/null < "/proc/$p/stat" || continue
-    case $stat in *") Z "*|*") X "*) ;; *) left=$p ;; esac
+    case $stat in
+      *") Z "*|*") X "*) ;;
+      *) left=$p; kill -KILL "$p" 2>/dev/null ;;
+    esac
   done
+  if [ -n "$keep" ]; then kill -CONT "$keep" 2>/dev/null; fi
   if [ -z "$left" ]; then echo stopped; exit 0; fi
   sleep 1
 done

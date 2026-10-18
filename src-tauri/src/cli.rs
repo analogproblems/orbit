@@ -252,7 +252,8 @@ pub type Started = (
 /// and then closing it. The first value from `init` is the conversation's
 /// start, or the reason it never started; the rest of the turn arrives on
 /// the channel. A turn's result waits for the process to exit, so tool calls
-/// refused on standard error are counted in it.
+/// refused on standard error are counted in it. A turn still running after
+/// `limit` is stopped and fails.
 pub fn spawn<D: Dialect>(
     launcher: &Launcher,
     args: Vec<String>,
@@ -260,6 +261,7 @@ pub fn spawn<D: Dialect>(
     stdin: Option<String>,
     mut dialect: D,
     missing: &str,
+    limit: Option<Duration>,
 ) -> Result<Started, String> {
     let name = D::NAME;
     let mut cmd = launcher.command();
@@ -311,6 +313,16 @@ pub fn spawn<D: Dialect>(
         }
     };
     let mut exited = tokio::spawn(wait(child, stopped, killed));
+    let timer = limit.map(|limit| {
+        let end = end.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(limit).await;
+            end(format!(
+                "{name} was still working after {} minutes, so Orbit stopped it and the commands it started, and the turn failed.",
+                limit.as_secs() / 60
+            ));
+        })
+    });
     {
         let (tail, denials, end) = (tail.clone(), denials.clone(), end.clone());
         tokio::spawn(async move {
@@ -368,6 +380,9 @@ pub fn spawn<D: Dialect>(
             }
         }
         .unwrap_or_else(|e| format!("Orbit lost track of it: {e}"));
+        if let Some(timer) = timer {
+            timer.abort();
+        }
         // Standard error is read to its end once the process is gone.
         tokio::time::sleep(Duration::from_millis(50)).await;
         let fatal = fatal.lock().unwrap().take();
