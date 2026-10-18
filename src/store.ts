@@ -15,7 +15,14 @@ import {
   demoScanReport,
   resolveDemoModelSelection,
 } from "./demo";
-import { call, download, follow, lostConnection, readToken } from "./remote";
+import {
+  call,
+  download,
+  expiredLink,
+  follow,
+  lostConnection,
+  readToken,
+} from "./remote";
 import {
   buddyOf,
   defaultWriteUps,
@@ -60,8 +67,20 @@ import {
 /** Running in the native desktop window. */
 export const desktop = isTauri();
 const remoteToken = desktop ? null : readToken();
-/** Running in a browser connected to a desktop Orbit through an access link. */
-export const remote = remoteToken !== null;
+/** Opened from a desktop Orbit's own server, which marks the page it serves
+ * (`SERVED_MARK` in remote.rs), rather than as the browser demo. */
+const served =
+  !desktop &&
+  typeof document !== "undefined" &&
+  document.querySelector('meta[name="orbit-served"]') !== null;
+/** Running in a browser connected to a desktop Orbit through an access link,
+ * or opened from its server without one that works. */
+export const remote = remoteToken !== null || served;
+/** The access link's token; without one, every call fails as an old link. */
+function linkToken(): string {
+  if (remoteToken === null) throw Error(expiredLink);
+  return remoteToken;
+}
 /** Connected to a real workspace, rather than the browser demo. */
 export const live = desktop || remote;
 /** Opens a GitHub link or one of Bit's setup pages: with the system browser
@@ -982,7 +1001,11 @@ export const useOrbit = create<Store>((set, get) => ({
   },
   clearError: () => set({ error: null }),
   init: async () => {
-    if (remoteToken !== null) {
+    if (remote) {
+      if (remoteToken === null) {
+        set({ error: expiredLink, loaded: true });
+        return () => {};
+      }
       return follow(
         remoteToken,
         (snapshot) => set({ snapshot, loaded: true }),
@@ -1027,11 +1050,16 @@ export const useOrbit = create<Store>((set, get) => ({
       set({ snapshot: structuredClone(demo), loaded: true });
       return () => {};
     }
-    const unlisten = await listen<Snapshot>("orbit-state", (event) =>
-      set({ snapshot: event.payload, loaded: true }),
-    );
+    // Every change is sent as it happens, so once one has arrived the
+    // first snapshot can only be as new as it, or older.
+    let heard = false;
+    const unlisten = await listen<Snapshot>("orbit-state", (event) => {
+      heard = true;
+      set({ snapshot: event.payload, loaded: true });
+    });
     try {
-      set({ snapshot: await invoke<Snapshot>("get_snapshot"), loaded: true });
+      const first = await invoke<Snapshot>("get_snapshot");
+      if (!heard) set({ snapshot: first, loaded: true });
     } catch (e) {
       set({ error: String(e), loaded: true });
     }
@@ -1046,8 +1074,8 @@ export const useOrbit = create<Store>((set, get) => ({
       if (!options.quiet) set({ error: null });
       const result = desktop
         ? await invoke<T>(command, args)
-        : remoteToken !== null
-          ? await remoteAction<T>(remoteToken, command, args)
+        : remote
+          ? await remoteAction<T>(linkToken(), command, args)
           : ((await demoAction(command, args)) as T);
       return { ok: true, data: result };
     } catch (e) {

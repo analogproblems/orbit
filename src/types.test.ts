@@ -4,6 +4,7 @@ import reportLabelCases from "../test-fixtures/report-selection-labels.json";
 import findingCategories from "../test-fixtures/finding-categories.json";
 import { describeRepositoryPatch } from "./describePatch";
 import {
+  editedOver,
   withRepositoryPatch,
   type Repository,
   type RepositoryPatch,
@@ -402,5 +403,36 @@ describe("repository changes from Bit", () => {
     ).toBe(
       "Setup command: None; Approval time limit: Decline after 15 minutes; Keep the copy up to date: Off; Automatic reviews: On; Automatic rounds per pull request: 6",
     );
+  });
+});
+
+describe("editedOver", () => {
+  it("keeps a change made elsewhere while you edited something else", () => {
+    const opened = {
+      setupCommand: "",
+      roundLimit: 4,
+      devContainer: { enabled: false, checkCommand: "" },
+    };
+    // Bit set a setup command and a check command while the dialog was open.
+    const current = {
+      setupCommand: "npm ci",
+      roundLimit: 4,
+      devContainer: { enabled: false, checkCommand: "npm test" },
+    };
+    const edited = {
+      setupCommand: "",
+      roundLimit: 6,
+      devContainer: { enabled: true, checkCommand: "" },
+    };
+    expect(editedOver(current, opened, edited)).toEqual({
+      setupCommand: "npm ci",
+      roundLimit: 6,
+      devContainer: { enabled: true, checkCommand: "npm test" },
+    });
+    // What you changed yourself wins.
+    expect(
+      editedOver(current, opened, { ...edited, setupCommand: "pnpm i" })
+        .setupCommand,
+    ).toBe("pnpm i");
   });
 });

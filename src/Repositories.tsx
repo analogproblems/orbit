@@ -46,6 +46,7 @@ import { desktop, useOrbit } from "./store";
 import {
   buddyOf,
   cliStatus,
+  editedOver,
   providerLabels,
   sameRepo,
   type CloneUpdate,
@@ -274,10 +275,14 @@ export function Repositories({
   const [repoError, setRepoError] = useState<string | null>(null);
   const [editing, setEditing] = useState<Repository | null>(null);
   const [original, setOriginal] = useState<string | null>(null);
+  // The repository as it was when the dialog opened, so Save sends only
+  // what you changed.
+  const [opened, setOpened] = useState<Repository | null>(null);
   const [busy, setBusy] = useState(false);
   const add = () => {
     setRepoError(null);
     setOriginal(null);
+    setOpened(null);
     setEditing({
       name: "",
       path: "",
@@ -298,9 +303,12 @@ export function Repositories({
     }
     setBusy(true);
     setRepoError(null);
+    const current = s.settings.repositories.find((r) => r.name === original);
+    const repository =
+      current && opened ? editedOver(current, opened, editing) : editing;
     const result = await mutate(
       "save_repository",
-      { repository: editing, original },
+      { repository, original },
       `repository:${original ?? editing.name}`,
     );
     setBusy(false);
@@ -356,6 +364,7 @@ export function Repositories({
                   onClick={() => {
                     setRepoError(null);
                     setEditing({ ...repo });
+                    setOpened(repo);
                     setOriginal(repo.name);
                   }}
                 />

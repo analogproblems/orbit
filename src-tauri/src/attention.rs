@@ -265,6 +265,22 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
             continue;
         }
         out.extend(run_item(s, pr));
+        if let Some(f) = s
+            .queue_failures
+            .iter()
+            .find(|f| f.pr_id == pr.id && f.head_sha == pr.head_sha)
+        {
+            out.push(item(
+                format!("unqueued:{}:{}", pr.id, f.head_sha),
+                AttentionKind::Failed,
+                Some(&pr.id),
+                None,
+                format!(
+                    "Orbit couldn't start the automatic review. {} Orbit tries again every minute.",
+                    sentence(&f.error)
+                ),
+            ));
+        }
         let Some(reason) = state
             .filter(|l| l.status == LoopStatus::NeedsYou)
             .and_then(|l| l.reason)

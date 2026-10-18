@@ -170,6 +170,10 @@ pub struct Engine {
     /// The pull-request history is being read; another read skips rather
     /// than waits.
     refreshing_ledger: AtomicBool,
+    /// When Orbit last failed to start each pull request's automatic
+    /// review, so it tries again each `queue::QUEUE_RETRY` rather than on
+    /// every tick.
+    queue_retry: std::sync::Mutex<HashMap<String, std::time::Instant>>,
     /// When each repository's history last read every open pull request,
     /// changed or not, without failing.
     ledger_full_at: std::sync::Mutex<HashMap<String, std::time::Instant>>,
@@ -369,6 +373,7 @@ impl Engine {
             updating_clones: AtomicBool::new(false),
             refreshing_ledger: AtomicBool::new(false),
             ledger_full_at: std::sync::Mutex::new(HashMap::new()),
+            queue_retry: std::sync::Mutex::new(HashMap::new()),
             writing_up: AtomicBool::new(false),
             writing_thread: std::sync::Mutex::new(None),
             write_failed: std::sync::Mutex::new(HashMap::new()),

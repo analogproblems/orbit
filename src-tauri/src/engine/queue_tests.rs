@@ -31,6 +31,42 @@ async fn autopilot_reviews_trusted_prs_in_synced_repositories_once() {
     assert!(reviews[0].automatic);
 }
 #[tokio::test]
+async fn an_automatic_review_that_cant_start_says_why_and_waits_to_try_again() {
+    let (d, e) = autopilot_engine(trusted_pr()).await;
+    e.synced_repos.lock().await.insert("a/b".into());
+    let checkout = d.path().to_string_lossy().into_owned();
+    e.update(|s| s.settings.repositories[0].path = d.path().join("gone").display().to_string())
+        .await;
+    e.schedule().await;
+    let s = e.snapshot().await;
+    assert!(s.reviews.is_empty());
+    let pr = &s.prs[0];
+    let item = crate::attention::items(&s)
+        .into_iter()
+        .find(|a| a.key == format!("unqueued:{}:{}", pr.id, pr.head_sha))
+        .expect("the failure needs you");
+    assert!(
+        item.reason.contains("local checkout no longer exists"),
+        "{}",
+        item.reason
+    );
+    // Fixed now, but not tried again on every tick.
+    e.update(|s| s.settings.repositories[0].path = checkout)
+        .await;
+    e.schedule().await;
+    assert!(e.snapshot().await.reviews.is_empty());
+    assert_eq!(e.snapshot().await.queue_failures.len(), 1);
+    // Once it's time, it is queued and the item goes.
+    e.queue_retry.lock().unwrap().clear();
+    e.schedule().await;
+    let s = e.snapshot().await;
+    assert_eq!(s.reviews.len(), 1);
+    assert!(s.queue_failures.is_empty());
+    assert!(!crate::attention::items(&s)
+        .iter()
+        .any(|a| a.key.starts_with("unqueued:")));
+}
+#[tokio::test]
 async fn autopilot_skips_untrusted_prs() {
     let (_d, e) = autopilot_engine(crate::types::tests::pr()).await;
     e.synced_repos.lock().await.insert("a/b".into());
