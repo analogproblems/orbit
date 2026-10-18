@@ -1174,6 +1174,28 @@ export function latestReview(reviews: Review[], prId: string) {
     .filter((r) => r.prId === prId)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
 }
+const plain = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+/** What was edited since `opened`, applied over `current`, so a change made
+ * elsewhere meanwhile (such as by Bit) is kept rather than undone. Objects
+ * inside are merged the same way. */
+export function editedOver<T extends object>(
+  current: T,
+  opened: T,
+  edited: T,
+): T {
+  const was = opened as Record<string, unknown>;
+  const now = current as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...now };
+  for (const [key, value] of Object.entries(edited)) {
+    if (JSON.stringify(value) === JSON.stringify(was[key])) continue;
+    out[key] =
+      plain(value) && plain(was[key]) && plain(now[key])
+        ? editedOver(now[key], was[key], value)
+        : value;
+  }
+  return out as T;
+}
 // GitHub repository names ignore case.
 export function sameRepo(a: string, b: string) {
   return a.toLowerCase() === b.toLowerCase();

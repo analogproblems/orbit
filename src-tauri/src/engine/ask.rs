@@ -636,10 +636,11 @@ impl Engine {
                 synced
             }
             Action::ChangeSettings => {
-                let patch: SettingsPatch = p
+                let settings = self.state.lock().await.settings.clone();
+                let patch = p
                     .settings
-                    .clone()
-                    .and_then(|v| serde_json::from_value(v).ok())
+                    .as_ref()
+                    .and_then(|v| crate::ask::complete_patch(&settings, v))
                     .ok_or("This settings change isn't valid.")?;
                 if patch.trusted_authors.is_some() {
                     return Err("Change trusted accounts in Settings yourself.".into());

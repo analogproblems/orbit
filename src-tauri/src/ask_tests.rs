@@ -268,10 +268,29 @@ fn bit_can_turn_write_ups_on_and_keeps_the_writer() {
     let mut s = snapshot();
     s.settings.write_ups.writer = Writer::Claude;
     let change = |changes: Value| offered(&s, one("change_settings", None, changes));
+    let on = change(json!([{"setting": "writeUps.enabled", "value": "true"}]))[0]
+        .settings
+        .clone()
+        .unwrap();
+    assert_eq!(on, json!({"writeUps": {"enabled": true}}));
     assert_eq!(
-        change(json!([{"setting": "writeUps.enabled", "value": "true"}]))[0].settings,
-        Some(json!({"writeUps": {"enabled": true, "writer": "claude"}}))
+        complete_patch(&s.settings, &on).unwrap().write_ups,
+        Some(WriteUps {
+            enabled: true,
+            writer: Writer::Claude
+        })
     );
+    // The writer is kept as it is when the button is tapped, so an older
+    // button can't undo a later change.
+    s.settings.write_ups.writer = Writer::Codex;
+    assert_eq!(
+        complete_patch(&s.settings, &on).unwrap().write_ups,
+        Some(WriteUps {
+            enabled: true,
+            writer: Writer::Codex
+        })
+    );
+    let change = |changes: Value| offered(&s, one("change_settings", None, changes));
     assert!(change(json!([{"setting": "writeUps.writer", "value": "milo"}])).is_empty());
 }
 #[test]

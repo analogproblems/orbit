@@ -900,22 +900,29 @@ fn settings_patch(s: &Snapshot, changes: &[RawChange]) -> Option<Value> {
         }
         at.insert(last.to_string(), value);
     }
-    // Write-ups change as a whole, so a change to one of their settings
-    // keeps the other.
-    if let Some(Value::Object(w)) = patch.get_mut("writeUps") {
-        let saved = serde_json::to_value(s.settings.write_ups).ok()?;
-        for (k, v) in saved.as_object()? {
-            w.entry(k.clone()).or_insert_with(|| v.clone());
-        }
-    }
     let patch = Value::Object(patch);
-    let parsed: SettingsPatch = serde_json::from_value(patch.clone()).ok()?;
+    let parsed = complete_patch(&s.settings, &patch)?;
     let mut settings = s.settings.clone();
     parsed.apply(&mut settings);
     settings.validate().ok()?;
     let changed =
         serde_json::to_value(&settings).ok()? != serde_json::to_value(&s.settings).ok()?;
     changed.then_some(patch)
+}
+
+/// A button's settings change as a patch to `settings` as they are when it
+/// is tapped. Write-ups change as a whole, so a change to one of their
+/// settings keeps the other as it is then, not as it was when Bit offered
+/// the button.
+pub fn complete_patch(settings: &Settings, patch: &Value) -> Option<SettingsPatch> {
+    let mut patch = patch.clone();
+    if let Some(Value::Object(w)) = patch.get_mut("writeUps") {
+        let saved = serde_json::to_value(settings.write_ups).ok()?;
+        for (k, v) in saved.as_object()? {
+            w.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+    }
+    serde_json::from_value(patch).ok()
 }
 
 #[cfg(test)]
