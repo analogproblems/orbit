@@ -2,7 +2,7 @@
 //! app counts it in the sidebar and lists it, and each item has a stable key
 //! so it is announced once while it stays open. Where one of Orbit's own
 //! controls resolves an item, the item names it as its fix.
-use crate::{buddy::Fix, types::*};
+use crate::{buddy::Fix, text::sentence, types::*};
 
 /// Consecutive failed syncs before a repository needs the developer.
 pub const SYNC_FAILURES: u32 = 3;
@@ -130,15 +130,6 @@ pub fn count_sync_failures(s: &mut Snapshot, failed: &[(String, String)]) {
             error: error.clone(),
         })
         .collect();
-}
-/// Text as a sentence, ending in a full stop.
-fn sentence(text: &str) -> String {
-    let text = text.trim();
-    if text.ends_with(['.', '!', '?']) {
-        text.to_string()
-    } else {
-        format!("{text}.")
-    }
 }
 /// When Orbit syncs again, such as "Orbit checks again every 2 minutes."
 fn checks_again(s: &Snapshot) -> String {

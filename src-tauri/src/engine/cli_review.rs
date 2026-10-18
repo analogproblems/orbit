@@ -291,18 +291,20 @@ impl Engine {
                 .map_err(|_| format!("{name} stopped before starting a conversation."))??;
             let session = confirmed(provider, &turn, &init)?;
             let mut state = self.state.lock().await;
-            let mut next = state.clone();
-            let r = next
-                .reviews
-                .iter_mut()
-                .find(|r| r.id == id)
-                .ok_or("Review was stopped.")?;
-            confirm(r, &session)?;
-            r.turn_id = Some(turn_id.clone());
-            self.persist(&next).map_err(|e| {
-                format!("Could not save the confirmed {name} run; it was stopped: {e}")
-            })?;
-            *state = next;
+            self.save(
+                &mut state,
+                |next| {
+                    let r = next
+                        .reviews
+                        .iter_mut()
+                        .find(|r| r.id == id)
+                        .ok_or("Review was stopped.")?;
+                    confirm(r, &session)?;
+                    r.turn_id = Some(turn_id.clone());
+                    Ok(())
+                },
+                |e| format!("Could not save the confirmed {name} run; it was stopped: {e}"),
+            )?;
             self.changed.store(true, Ordering::SeqCst);
             Ok(())
         }
@@ -436,7 +438,10 @@ impl Engine {
 }
 
 /// A check's result as the status Settings shows.
-fn status<T>(result: &Result<T, String>, version: impl Fn(&T) -> Option<String>) -> CliStatus {
+pub(super) fn status<T>(
+    result: &Result<T, String>,
+    version: impl Fn(&T) -> Option<String>,
+) -> CliStatus {
     match result {
         Ok(value) => CliStatus {
             ready: true,

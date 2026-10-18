@@ -362,7 +362,7 @@ fn latest_wanted(s: &Snapshot, pr: &PullRequest) -> Option<(String, CommitStatus
     Some((latest.created_at.clone(), status))
 }
 /// The repository a review's PR belongs to.
-fn review_repo<'a>(s: &'a Snapshot, r: &'a Review) -> &'a str {
+pub(crate) fn review_repo<'a>(s: &'a Snapshot, r: &'a Review) -> &'a str {
     s.prs
         .iter()
         .chain(&s.history_prs)

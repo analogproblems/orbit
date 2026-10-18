@@ -219,7 +219,7 @@ pub struct Buddy {
     pub colour: String,
     pub hat: String,
     pub tone: String,
-    /// Saved now, used once Bit can chat.
+    /// Told to whoever answers your questions, with the tone.
     pub personality: String,
     pub rules: Rules,
     /// One of `ANSWERERS`.
@@ -941,7 +941,7 @@ mod say {
             _ => format!("{repo} is connected! Here's what I'd set up next:"),
         }
     }
-    /// A question you typed that Bit couldn't answer.
+    /// A decision waiting on a pull request, from its write-up.
     pub fn decide(tone: &str, pr: &str, text: &str) -> String {
         let text = text.trim();
         match tone {
@@ -950,6 +950,7 @@ mod say {
             _ => format!("Something to decide on {pr}: {text}"),
         }
     }
+    /// A question you typed that Bit couldn't answer.
     pub fn no_answer(tone: &str, error: &str) -> String {
         let error = error.trim();
         match tone {

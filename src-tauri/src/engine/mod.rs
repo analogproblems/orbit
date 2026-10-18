@@ -474,6 +474,22 @@ impl Engine {
         }
         result
     }
+    /// Makes `edit` to a copy of the state and saves the copy before it
+    /// becomes the state, so a change that can't be saved never happens.
+    /// `edit` may refuse with its own error; a failed save is told by
+    /// `failed`. Showing the change is left to the caller.
+    fn save<T>(
+        &self,
+        s: &mut Snapshot,
+        edit: impl FnOnce(&mut Snapshot) -> Result<T, String>,
+        failed: impl FnOnce(String) -> String,
+    ) -> Result<T, String> {
+        let mut next = s.clone();
+        let out = edit(&mut next)?;
+        self.persist(&next).map_err(failed)?;
+        *s = next;
+        Ok(out)
+    }
     fn persist(&self, s: &Snapshot) -> Result<(), String> {
         let mut saved = serde_json::to_value(s).map_err(|e| e.to_string())?;
         // Usage describes the signed-in account right now, so it is shown but

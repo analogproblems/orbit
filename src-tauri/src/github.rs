@@ -329,21 +329,13 @@ fn summarize_repositories(items: &[Value]) -> Vec<RepositorySummary> {
 }
 pub async fn files(repo: &str, number: u64) -> Result<Value, String> {
     validate_repo(repo)?;
-    let mut files = vec![];
-    for page in 1..=30 {
-        let v = api(
-            &format!("repos/{repo}/pulls/{number}/files"),
-            "GET",
-            &[("per_page", "100".into()), ("page", page.to_string())],
-            None,
-        )
-        .await?;
-        let page = v.as_array().ok_or("Invalid file list")?;
-        files.extend(page.iter().cloned());
-        if page.len() < 100 {
-            break;
-        }
-    }
+    let files = pages(
+        &format!("repos/{repo}/pulls/{number}/files"),
+        &[],
+        30,
+        "Invalid file list",
+    )
+    .await?;
     Ok(json!(files))
 }
 /// A repository's 100 most recently updated pull requests in any state,
@@ -369,16 +361,22 @@ pub async fn recent_pulls(repo: &str) -> Result<Vec<Value>, String> {
 }
 /// Every item of a list GitHub pages, up to 1,000.
 async fn every_page(endpoint: &str) -> Result<Vec<Value>, String> {
+    pages(endpoint, &[], 10, "Invalid list").await
+}
+/// The items of a list GitHub pages, 100 at a time with `fields`, up to
+/// `most` pages. A page that isn't a list is `invalid`.
+async fn pages(
+    endpoint: &str,
+    fields: &[(&str, String)],
+    most: u32,
+    invalid: &str,
+) -> Result<Vec<Value>, String> {
     let mut all = vec![];
-    for page in 1..=10 {
-        let v = api(
-            endpoint,
-            "GET",
-            &[("per_page", "100".into()), ("page", page.to_string())],
-            None,
-        )
-        .await?;
-        let items = v.as_array().ok_or("Invalid list")?;
+    for page in 1..=most {
+        let mut query = fields.to_vec();
+        query.extend([("per_page", "100".into()), ("page", page.to_string())]);
+        let v = api(endpoint, "GET", &query, None).await?;
+        let items = v.as_array().ok_or(invalid)?;
         all.extend(items.iter().cloned());
         if items.len() < 100 {
             break;
@@ -430,51 +428,25 @@ pub async fn pull_history(repo: &str, number: u64) -> Result<PullHistory, String
 /// up to 1,000.
 pub async fn comments(pr: &PullRequest, since: &str) -> Result<Vec<Value>, String> {
     validate_repo(&pr.repo)?;
-    let mut all = vec![];
-    for page in 1..=10 {
-        let v = api(
-            &format!("repos/{}/issues/{}/comments", pr.repo, pr.number),
-            "GET",
-            &[
-                ("since", since.to_string()),
-                ("per_page", "100".into()),
-                ("page", page.to_string()),
-            ],
-            None,
-        )
-        .await?;
-        let comments = v.as_array().ok_or("Invalid comment list")?;
-        all.extend(comments.iter().cloned());
-        if comments.len() < 100 {
-            break;
-        }
-    }
-    Ok(all)
+    pages(
+        &format!("repos/{}/issues/{}/comments", pr.repo, pr.number),
+        &[("since", since.to_string())],
+        10,
+        "Invalid comment list",
+    )
+    .await
 }
 /// The PR's comments on the diff updated at or after `since`, up to 1,000.
 /// Replies in a thread carry `in_reply_to_id`, the thread's first comment.
 pub async fn review_comments_since(pr: &PullRequest, since: &str) -> Result<Vec<Value>, String> {
     validate_repo(&pr.repo)?;
-    let mut all = vec![];
-    for page in 1..=10 {
-        let v = api(
-            &format!("repos/{}/pulls/{}/comments", pr.repo, pr.number),
-            "GET",
-            &[
-                ("since", since.to_string()),
-                ("per_page", "100".into()),
-                ("page", page.to_string()),
-            ],
-            None,
-        )
-        .await?;
-        let comments = v.as_array().ok_or("Invalid comment list")?;
-        all.extend(comments.iter().cloned());
-        if comments.len() < 100 {
-            break;
-        }
-    }
-    Ok(all)
+    pages(
+        &format!("repos/{}/pulls/{}/comments", pr.repo, pr.number),
+        &[("since", since.to_string())],
+        10,
+        "Invalid comment list",
+    )
+    .await
 }
 /// A comment or review with a body containing `marker`, by its URL and ID.
 fn find_marker(items: &[Value], marker: &str) -> Result<Option<(String, u64)>, String> {
@@ -611,25 +583,16 @@ pub fn unprocessable(error: &str) -> bool {
 /// The inline comments of one review, up to 3,000.
 pub async fn review_comments(pr: &PullRequest, review_id: u64) -> Result<Vec<Value>, String> {
     validate_repo(&pr.repo)?;
-    let mut all = vec![];
-    for page in 1..=30 {
-        let v = api(
-            &format!(
-                "repos/{}/pulls/{}/reviews/{review_id}/comments",
-                pr.repo, pr.number
-            ),
-            "GET",
-            &[("per_page", "100".into()), ("page", page.to_string())],
-            None,
-        )
-        .await?;
-        let items = v.as_array().ok_or("Invalid comment list")?;
-        all.extend(items.iter().cloned());
-        if items.len() < 100 {
-            break;
-        }
-    }
-    Ok(all)
+    pages(
+        &format!(
+            "repos/{}/pulls/{}/reviews/{review_id}/comments",
+            pr.repo, pr.number
+        ),
+        &[],
+        30,
+        "Invalid comment list",
+    )
+    .await
 }
 /// Sets the `orbit/review` status on a commit.
 pub async fn set_status(repo: &str, sha: &str, status: &CommitStatus) -> Result<(), String> {

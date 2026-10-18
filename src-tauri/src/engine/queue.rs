@@ -150,11 +150,14 @@ impl Engine {
         }
         let r = Review::new(&pr, &s.settings, automatic);
         let id = r.id.clone();
-        let mut next = s.clone();
-        next.reviews.insert(0, r);
-        self.persist(&next)
-            .map_err(|e| format!("Review was not queued: {e}"))?;
-        *s = next;
+        self.save(
+            &mut s,
+            |next| {
+                next.reviews.insert(0, r);
+                Ok(())
+            },
+            |e| format!("Review was not queued: {e}"),
+        )?;
         (self.emit)(&s);
         Ok(id)
     }
@@ -343,18 +346,21 @@ impl Engine {
     pub async fn stop_loop(self: &Arc<Self>, pr_id: &str) -> Result<(), String> {
         let queued: Vec<String> = {
             let mut s = self.state.lock().await;
-            let mut next = s.clone();
-            match next.loops.iter_mut().find(|c| c.pr_id == pr_id) {
-                Some(c) => c.stopped = true,
-                None => next.loops.push(LoopControl {
-                    pr_id: pr_id.into(),
-                    stopped: true,
-                    extra_rounds: 0,
-                }),
-            }
-            self.persist(&next)
-                .map_err(|e| format!("The loop was not stopped: {e}"))?;
-            *s = next;
+            self.save(
+                &mut s,
+                |next| {
+                    match next.loops.iter_mut().find(|c| c.pr_id == pr_id) {
+                        Some(c) => c.stopped = true,
+                        None => next.loops.push(LoopControl {
+                            pr_id: pr_id.into(),
+                            stopped: true,
+                            extra_rounds: 0,
+                        }),
+                    }
+                    Ok(())
+                },
+                |e| format!("The loop was not stopped: {e}"),
+            )?;
             (self.emit)(&s);
             s.reviews
                 .iter()
@@ -395,25 +401,28 @@ impl Engine {
                 .iter()
                 .find(|c| c.pr_id == pr_id)
                 .map_or(0, |c| c.extra_rounds);
-        let mut next = s.clone();
-        let control = match next.loops.iter_mut().find(|c| c.pr_id == pr_id) {
-            Some(c) => c,
-            None => {
-                next.loops.push(LoopControl {
-                    pr_id: pr_id.into(),
-                    ..LoopControl::default()
-                });
-                next.loops.last_mut().unwrap()
-            }
-        };
-        control.stopped = false;
-        // `rounds` more from here, whatever was granted before.
-        control.extra_rounds = (used + rounds)
-            .saturating_sub(base)
-            .max(control.extra_rounds);
-        self.persist(&next)
-            .map_err(|e| format!("The loop was not continued: {e}"))?;
-        *s = next;
+        self.save(
+            &mut s,
+            |next| {
+                let control = match next.loops.iter_mut().find(|c| c.pr_id == pr_id) {
+                    Some(c) => c,
+                    None => {
+                        next.loops.push(LoopControl {
+                            pr_id: pr_id.into(),
+                            ..LoopControl::default()
+                        });
+                        next.loops.last_mut().unwrap()
+                    }
+                };
+                control.stopped = false;
+                // `rounds` more from here, whatever was granted before.
+                control.extra_rounds = (used + rounds)
+                    .saturating_sub(base)
+                    .max(control.extra_rounds);
+                Ok(())
+            },
+            |e| format!("The loop was not continued: {e}"),
+        )?;
         (self.emit)(&s);
         Ok(())
     }
@@ -454,17 +463,13 @@ pub(super) fn reuse_stats(pr: &mut PullRequest, previous: &[PullRequest]) -> boo
 /// Whether a review by `provider` can be queued now, with the workspace's
 /// model and effort for it.
 fn reviewer_ready(s: &Snapshot, provider: Provider) -> Result<(), String> {
-    match provider {
-        Provider::Codex => {
-            if !s.codex_ready {
-                return Err("Connect Codex in Settings before starting a review.".into());
-            }
-            ModelSelection::workspace(&s.settings).validate_execution(s)?;
-            match &s.model_configuration_error {
-                Some(error) => Err(error.clone()),
-                None => Ok(()),
-            }
-        }
-        provider => s.settings.selection(provider).validate_for(provider, s),
+    let codex = provider == Provider::Codex;
+    if codex && !s.codex_ready {
+        return Err("Connect Codex in Settings before starting a review.".into());
+    }
+    s.settings.selection(provider).validate_for(provider, s)?;
+    match &s.model_configuration_error {
+        Some(error) if codex => Err(error.clone()),
+        _ => Ok(()),
     }
 }

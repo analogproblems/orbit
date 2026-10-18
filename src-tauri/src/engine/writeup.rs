@@ -5,7 +5,7 @@
 //! again only when what the writer reads of it changes. Off until you turn
 //! it on in Settings, as each one uses the writer.
 use super::{
-    extras::{self, sentence},
+    extras,
     ledger::{blocking, Reading},
     *,
 };
@@ -17,6 +17,7 @@ use crate::{
         History,
     },
     models::ModelSelection,
+    text::sentence,
 };
 use serde_json::json;
 use std::path::Path;

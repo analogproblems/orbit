@@ -1,6 +1,6 @@
 //! Checks with Codex that a thread runs without the extra tools you've
 //! added to Codex (see `crate::extras`).
-use crate::{boxtool, extras, rpc::Rpc, scans};
+use crate::{boxtool, extras, rpc::Rpc, scans, text::sentence};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 
@@ -120,15 +120,4 @@ async fn list_servers(rpc: &Rpc, thread: Option<&str>) -> Result<Vec<Value>, Str
         }
     }
     Err("Codex listed too many.".into())
-}
-
-/// Text from elsewhere as a sentence, ending in a full stop if it has no
-/// ending of its own.
-pub(super) fn sentence(text: &str) -> String {
-    let text = text.trim();
-    if text.ends_with(['.', '!', '?']) {
-        text.into()
-    } else {
-        format!("{text}.")
-    }
 }

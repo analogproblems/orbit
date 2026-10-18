@@ -470,19 +470,23 @@ impl Engine {
             .map_err(|left| left.message("the findings weren't read"))?;
         {
             let mut state = self.state.lock().await;
-            let mut next = state.clone();
-            let run = next
-                .reviews
-                .iter_mut()
-                .find(|r| r.id == id && r.extracting && active(&r.status))
-                .ok_or("Review was stopped.")?;
-            run.extraction_selection = Some(selection.clone());
-            self.persist(&next).map_err(|e| {
-                format!(
-                    "Could not save confirmed extraction settings; no extraction was started: {e}"
-                )
-            })?;
-            *state = next;
+            self.save(
+                &mut state,
+                |next| {
+                    let run = next
+                        .reviews
+                        .iter_mut()
+                        .find(|r| r.id == id && r.extracting && active(&r.status))
+                        .ok_or("Review was stopped.")?;
+                    run.extraction_selection = Some(selection.clone());
+                    Ok(())
+                },
+                |e| {
+                    format!(
+                        "Could not save confirmed extraction settings; no extraction was started: {e}"
+                    )
+                },
+            )?;
             self.changed.store(true, Ordering::SeqCst);
         }
         self.extracting(id).await?;

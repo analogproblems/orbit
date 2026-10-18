@@ -296,7 +296,7 @@ fn finish(open: Open, findings: &mut Vec<Finding>) {
     let Open { mut f, lines } = open;
     let text = lines.join("\n");
     let paragraph = PARAGRAPH.split(&text).next().unwrap_or("").trim();
-    f.problem = clip(&SPACES.replace_all(paragraph, " "), 1200);
+    f.problem = cut(&SPACES.replace_all(paragraph, " "), 1200);
     if let Some(b) = BREAKS.captures(&text) {
         f.failure_scenario = Some(SPACES.replace_all(&b[1], " ").trim().to_string());
     }
@@ -309,7 +309,7 @@ fn finish(open: Open, findings: &mut Vec<Finding>) {
         f.confirmed = Some(false);
     }
     let mut found = places(lines.first().map_or("", String::as_str));
-    found.extend(places(&clip(&text, 600)));
+    found.extend(places(&cut(&text, 600)));
     let mut seen = std::collections::HashSet::new();
     f.locations = found
         .into_iter()
@@ -328,7 +328,7 @@ pub(super) fn parse_review(c: &CommentRef) -> Option<Round> {
     let mut section = String::new();
     let mut open: Option<Open> = None;
     let mut ordinal = 0;
-    let lead_non_blocking = NON_BLOCKING.is_match(&clip(body, 400));
+    let lead_non_blocking = NON_BLOCKING.is_match(&cut(body, 400));
     for raw in body.split('\n') {
         let line = raw.trim_end();
         if let Some(sec) = SECTION.captures(line) {
@@ -416,12 +416,12 @@ pub(super) fn parse_review(c: &CommentRef) -> Option<Round> {
         .iter()
         .filter(|s| NOT_CHECKED.is_match(s))
         .take(6)
-        .map(|s| clip(SPACES.replace_all(s.trim(), " ").as_ref(), 220))
+        .map(|s| cut(SPACES.replace_all(s.trim(), " ").as_ref(), 220))
         .collect();
     let summary = body
         .lines()
         .find(|l| SUMMARY_LINE.is_match(l.trim()))
-        .map(|l| clip(l.replace("**", "").trim(), 400));
+        .map(|l| cut(l.replace("**", "").trim(), 400));
     let blocking = match verdict {
         RoundVerdict::ChangesRequested => Some(
             findings
@@ -433,7 +433,7 @@ pub(super) fn parse_review(c: &CommentRef) -> Option<Round> {
         RoundVerdict::Unknown => None,
     };
     Some(Round {
-        review_id: MARKER.find(body).map(|m| clip(m.as_str(), 120)),
+        review_id: MARKER.find(body).map(|m| cut(m.as_str(), 120)),
         format: Format::Milo,
         round: None,
         head_sha: first(&HEADS, body),

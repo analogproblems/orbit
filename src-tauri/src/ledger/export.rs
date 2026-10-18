@@ -113,7 +113,7 @@ fn chapter(out: &mut String, h: &History) {
     {
         out.push_str("\nWhat it set out to do:\n\n");
         for l in gist.trim().lines() {
-            out.push_str(&format!("> {}\n", l.trim_end()).replace("> \n", ">\n"));
+            out.push_str(&format!("> {}\n", inert(l.trim_end())).replace("> \n", ">\n"));
         }
     }
     if let Some(w) = &h.writeup {
@@ -247,16 +247,72 @@ fn link(text: &str, url: &str) -> String {
     if url.is_empty() {
         text.to_string()
     } else {
-        format!("[{}]({url})", text.replace(['[', ']'], ""))
+        format!("[{text}]({url})")
     }
 }
-/// Text on one line, for a list item or heading.
+/// Text on one line, for a list item or heading, kept as written.
 fn line(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
+    inert(&text.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+/// Text from a pull request or a writer shown as written: its HTML, images
+/// and links come out as plain text. A code span, a run of backticks up to
+/// the next run of the same length as CommonMark pairs them, is left alone,
+/// since nothing in it renders; a run with no partner is escaped.
+pub(super) fn inert(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let run = |at: usize| chars[at..].iter().take_while(|&&c| c == '`').count();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '`' => {
+                let n = run(i);
+                let mut j = i + n;
+                let close = loop {
+                    match chars.get(j) {
+                        None => break None,
+                        Some('`') => match run(j) {
+                            m if m == n => break Some(j + n),
+                            m => j += m,
+                        },
+                        Some(_) => j += 1,
+                    }
+                };
+                match close {
+                    Some(end) => {
+                        out.extend(&chars[i..end]);
+                        i = end;
+                    }
+                    None => {
+                        out.push_str(&"\\`".repeat(n));
+                        i += n;
+                    }
+                }
+            }
+            c @ ('\\' | '[' | ']') => {
+                out.push('\\');
+                out.push(c);
+                i += 1;
+            }
+            '<' => {
+                out.push_str("&lt;");
+                i += 1;
+            }
+            '&' => {
+                out.push_str("&amp;");
+                i += 1;
+            }
+            c => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
 }
 /// `2026-10-12` from a time.
 fn day(at: &str) -> String {
-    clip(at, 10)
+    cut(at, 10)
 }
 fn plural(n: usize, one: &str) -> String {
     format!("{n} {one}{}", if n == 1 { "" } else { "s" })

@@ -252,6 +252,77 @@ fn serves_every_desktop_command_but_the_desktop_only_ones() {
     assert_eq!(desktop, remote);
 }
 
+/// Each browser command reads the arguments its desktop command takes, by
+/// the names the frontend sends, so the two can't drift apart.
+#[test]
+fn each_browser_command_takes_its_desktop_arguments() {
+    use regex::Regex;
+    use std::collections::BTreeMap;
+    let camel = |name: &str| {
+        let mut out = String::new();
+        let mut upper = false;
+        for c in name.chars() {
+            match c {
+                '_' => upper = true,
+                c if upper => {
+                    out.extend(c.to_uppercase());
+                    upper = false;
+                }
+                c => out.push(c),
+            }
+        }
+        out
+    };
+    // Tauri passes its own State and app handle; the rest come from the page.
+    let param = Regex::new(r"(\w+): ([^,]+)").unwrap();
+    let command = Regex::new(r"#\[tauri::command\]\s*async fn (\w+)\(([^)]*)\)").unwrap();
+    let desktop: BTreeMap<String, Vec<String>> = command
+        .captures_iter(include_str!("lib.rs"))
+        .map(|c| {
+            let mut params: Vec<String> = param
+                .captures_iter(&c[2])
+                .filter(|p| !p[2].starts_with("State<") && !p[2].starts_with("tauri::"))
+                .map(|p| camel(&p[1]))
+                .collect();
+            params.sort_unstable();
+            (c[1].to_string(), params)
+        })
+        .collect();
+    let source = include_str!("remote.rs");
+    let start = source.find("async fn dispatch(").unwrap();
+    let body = &source[start..start + source[start..].find("\n}\n").unwrap()];
+    let arm = Regex::new(r#"\n        "(\w+)" =>"#).unwrap();
+    let key = Regex::new(r#"arg(?:::<.*?>)?\(a, "(\w+)"\)"#).unwrap();
+    let starts: Vec<(usize, String)> = arm
+        .captures_iter(body)
+        .map(|c| (c.get(0).unwrap().start(), c[1].to_string()))
+        .collect();
+    let mut served = BTreeMap::new();
+    for (i, (at, name)) in starts.iter().enumerate() {
+        let end = starts.get(i + 1).map_or(body.len(), |n| n.0);
+        let mut keys: Vec<String> = key
+            .captures_iter(&body[*at..end])
+            .map(|k| k[1].to_string())
+            .collect();
+        keys.sort_unstable();
+        keys.dedup();
+        served.insert(name.clone(), keys);
+    }
+    assert_eq!(desktop.len(), 42, "every desktop command was read");
+    for name in COMMANDS {
+        assert_eq!(
+            served.get(*name),
+            desktop.get(*name),
+            "{name} takes other arguments in the browser"
+        );
+    }
+    assert_eq!(
+        served.len(),
+        COMMANDS.len(),
+        "every arm is a listed command"
+    );
+}
+
 #[test]
 fn keeps_one_access_token() {
     let d = tempfile::tempdir().unwrap();

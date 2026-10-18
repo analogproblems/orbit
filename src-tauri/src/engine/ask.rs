@@ -4,11 +4,7 @@
 //! all, Antigravity in its sandbox, or Ollama or a provider's API with your
 //! key, which only ever write an answer. The answer's buttons run only when
 //! you tap them.
-use super::{
-    extras::{self, sentence},
-    publish::By,
-    Engine,
-};
+use super::{extras, publish::By, Engine};
 use crate::{
     antigravity,
     api::{self, Api},
@@ -17,6 +13,7 @@ use crate::{
     claude,
     cli::{Init, Output, Running, Turn, TurnKind},
     guide,
+    text::sentence,
     types::*,
 };
 use serde_json::{json, Value};
@@ -736,9 +733,5 @@ async fn cli_answer(
 
 /// A check's result as a connection's status.
 fn status<T>(result: &Result<T, String>) -> CliStatus {
-    CliStatus {
-        ready: result.is_ok(),
-        error: result.as_ref().err().cloned(),
-        version: None,
-    }
+    super::cli_review::status(result, |_| None)
 }

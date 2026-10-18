@@ -20,6 +20,9 @@ pub struct Rpc {
     pending: Pending,
     next: AtomicU64,
     pub alive: Arc<AtomicBool>,
+    /// The last line Codex wrote to standard error, to say why it
+    /// disconnected: short, and never one that looks like a credential.
+    pub last_error: Arc<std::sync::Mutex<Option<String>>>,
 }
 impl Rpc {
     /// Starts Codex. `scan_root` is where the Codex Security plugin keeps the
@@ -51,17 +54,30 @@ impl Rpc {
         let stderr = child.stderr.take().ok_or("Missing Codex stderr")?;
         let pending: Pending = Arc::default();
         let alive = Arc::new(AtomicBool::new(true));
+        let last_error = Arc::new(std::sync::Mutex::new(None));
         let rpc = Arc::new(Self {
             child: Mutex::new(child),
             stdin: Mutex::new(stdin),
             pending: pending.clone(),
             next: AtomicU64::new(1),
             alive: alive.clone(),
+            last_error: last_error.clone(),
         });
+        // Closes when Codex's standard error does.
+        let (stderr_open, stderr_closed) = tokio::sync::oneshot::channel::<()>();
         tokio::spawn(async move {
+            let _open = stderr_open;
             let mut lines = crate::cli::Lines::new(stderr);
-            // Drain stderr: model output and credentials are never written to diagnostics.
-            while lines.next().await.is_some() {}
+            // Only the last line is kept, in memory, to explain a disconnect;
+            // nothing Codex writes here is logged.
+            while let Some(line) = lines.next().await {
+                let line = line.trim();
+                if !line.is_empty() {
+                    *last_error.lock().unwrap() = crate::types::credential_kinds(line)
+                        .is_empty()
+                        .then(|| crate::text::shorten(line, 300));
+                }
+            }
         });
         tokio::spawn(async move {
             let mut lines = crate::cli::Lines::new(stdout);
@@ -88,6 +104,9 @@ impl Rpc {
                 }
             }
             alive.store(false, Ordering::SeqCst);
+            // A Codex that exited closes standard error too: wait for its
+            // last line, so the disconnect can say why.
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(1), stderr_closed).await;
             for (_, tx) in pending.lock().await.drain() {
                 let _ = tx.send(Err("Codex app-server disconnected.".into()));
             }
@@ -189,6 +208,10 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
   send({method:'item/agentMessage/delta',params:{delta:'hello'}});
   send({id:m.id,result:{value:2}});send({id:first.id,result:{value:1}});
  }
+ if(m.method==='complain'){
+  process.stderr.write(m.params.lines.join('\n')+'\n');
+  setTimeout(()=>process.exit(1),20);
+ }
  if(m.method==='fail')send({id:m.id,error:{code:42,message:'fixture error'}});
  if(m.method==='crash')process.exit(0);
 });
@@ -232,5 +255,22 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
         assert!(!rpc.alive.load(Ordering::SeqCst));
         assert!(rpc.pending.lock().await.is_empty());
         rpc.shutdown().await;
+    }
+    #[tokio::test]
+    async fn keeps_why_codex_stopped_but_never_a_credential() {
+        let token = format!("ghp_{}", "a1".repeat(18));
+        for (lines, kept) in [
+            (
+                vec!["starting", "error: model is overloaded", ""],
+                Some("error: model is overloaded"),
+            ),
+            (vec!["starting", &format!("bad token {token}")], None),
+        ] {
+            let (rpc, _events) = fixture().await;
+            let _ = rpc.request("complain", json!({"lines": lines})).await;
+            assert!(!rpc.alive.load(Ordering::SeqCst));
+            assert_eq!(rpc.last_error.lock().unwrap().as_deref(), kept);
+            rpc.shutdown().await;
+        }
     }
 }

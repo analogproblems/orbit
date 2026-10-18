@@ -8,6 +8,7 @@
 //!
 //! Comment text is untrusted: it is only parsed here, never run, and the
 //! app shows it as text.
+use crate::text::cut;
 use crate::types::{Category, ClaimKind, PriorStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -509,11 +510,4 @@ fn minutes_between(a: &str, b: &str) -> Option<i64> {
     let b = chrono::DateTime::parse_from_rfc3339(b).ok()?;
     let seconds = (b - a).num_seconds() as f64;
     Some((seconds / 60.0).round() as i64)
-}
-/// `text` cut to at most `max` characters.
-fn clip(text: &str, max: usize) -> String {
-    match text.char_indices().nth(max) {
-        Some((i, _)) => text[..i].to_string(),
-        None => text.to_string(),
-    }
 }

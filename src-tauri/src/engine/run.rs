@@ -344,19 +344,25 @@ impl Engine {
             // Persist confirmation before asking Codex to infer anything.
             {
                 let mut state = self.state.lock().await;
-                let mut next = state.clone();
-                let run = next
-                    .reviews
-                    .iter_mut()
-                    .find(|r| r.id == id && r.status == "preparing")
-                    .ok_or("Review was stopped.")?;
-                run.thread_id = Some(thread_id.clone());
-                run.confirmed_review_selection = Some(selection);
-                run.status = "reviewing".into();
-                self.persist(&next).map_err(|e| {
-                    format!("Could not save confirmed review settings; no review was started: {e}")
-                })?;
-                *state = next;
+                self.save(
+                    &mut state,
+                    |next| {
+                        let run = next
+                            .reviews
+                            .iter_mut()
+                            .find(|r| r.id == id && r.status == "preparing")
+                            .ok_or("Review was stopped.")?;
+                        run.thread_id = Some(thread_id.clone());
+                        run.confirmed_review_selection = Some(selection);
+                        run.status = "reviewing".into();
+                        Ok(())
+                    },
+                    |e| {
+                        format!(
+                            "Could not save confirmed review settings; no review was started: {e}"
+                        )
+                    },
+                )?;
                 self.changed.store(true, Ordering::SeqCst);
             }
             self.live(id).await
@@ -962,12 +968,7 @@ fn approval_limit(s: &Snapshot, a: &Approval) -> Option<u32> {
         .reviews
         .iter()
         .find(|r| r.id == a.review_id && r.automatic && r.before_follow_up.is_none())?;
-    let repo = s
-        .prs
-        .iter()
-        .chain(&s.history_prs)
-        .find(|p| p.id == r.pr_id)
-        .map_or_else(|| r.pr_id.split('#').next().unwrap_or(""), |p| &p.repo);
+    let repo = crate::review_loop::review_repo(s, r);
     s.settings
         .repositories
         .iter()
