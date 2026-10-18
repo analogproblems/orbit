@@ -1,6 +1,6 @@
 // A fake `claude` for tests. Usage: node claude_fixture.cjs <mode>[@log] <claude args...>
-// Modes: ok, signed-out, wrong-model, no-model, crash, slow, denied, schema-fail, incomplete,
-// no-sandbox. A write-up (--no-session-persistence) answers with <log>.answer.
+// Modes: ok, signed-out, wrong-model, no-model, crash, slow, orphan, escaped, denied,
+// schema-fail, incomplete, no-sandbox. A write-up (--no-session-persistence) answers with <log>.answer.
 const fs = require("node:fs");
 const [modeArg, ...args] = process.argv.slice(2);
 const [mode, log] = modeArg.split("@");
@@ -78,6 +78,16 @@ if (mode === "slow") {
   if (log) fs.writeFileSync(`${log}.child`, String(child.pid));
   setTimeout(() => {}, 30000);
   return;
+}
+if (mode === "orphan" || mode === "escaped") {
+  // Exits without a result, leaving a command that holds its output open:
+  // in its process group, or (escaped) in a session of its own.
+  const child = require("node:child_process").spawn("sleep", ["30"], {
+    stdio: ["ignore", "inherit", "ignore"],
+    detached: mode === "escaped",
+  });
+  if (log) fs.writeFileSync(`${log}.child`, String(child.pid));
+  process.exit(0);
 }
 const result = (extra) =>
   send({

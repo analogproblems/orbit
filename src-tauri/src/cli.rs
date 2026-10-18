@@ -209,6 +209,34 @@ impl Drop for Running {
         }
     }
 }
+/// Waits for the process to exit, then ends whatever it left running in its
+/// group before reaping it: until it is reaped, the group's number can't
+/// be given to another process.
+async fn exit(child: &mut Child) -> std::io::Result<std::process::ExitStatus> {
+    #[cfg(unix)]
+    if let Some(id) = child.id() {
+        let exited = tokio::task::spawn_blocking(move || loop {
+            // SAFETY: `info` is a valid place for the result, and WNOWAIT
+            // leaves the process for `child.wait` to reap.
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            let r =
+                unsafe { libc::waitid(libc::P_PID, id, &mut info, libc::WEXITED | libc::WNOWAIT) };
+            if r == 0 {
+                return true;
+            }
+            if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                return false;
+            }
+        })
+        .await;
+        if exited.unwrap_or(false) {
+            unsafe {
+                libc::kill(-(id as i32), libc::SIGKILL);
+            }
+        }
+    }
+    child.wait().await
+}
 /// Owns the process until it exits or is told to stop, so the process
 /// group is only signalled while the process has not been reaped.
 async fn wait(
@@ -223,7 +251,7 @@ async fn wait(
         }
     };
     let status = tokio::select! {
-        status = child.wait() => status,
+        status = exit(&mut child) => status,
         _ = async { tokio::select! { _ = stop => {}, _ = fatal => {} } } => {
             #[cfg(unix)]
             if let Some(id) = child.id() {
@@ -253,7 +281,8 @@ pub type Started = (
 /// start, or the reason it never started; the rest of the turn arrives on
 /// the channel. A turn's result waits for the process to exit, so tool calls
 /// refused on standard error are counted in it. A turn still running after
-/// `limit` is stopped and fails.
+/// `limit` is stopped and fails, as does one whose process exits while
+/// something it started still holds its output open.
 pub fn spawn<D: Dialect>(
     launcher: &Launcher,
     args: Vec<String>,
@@ -313,15 +342,12 @@ pub fn spawn<D: Dialect>(
         }
     };
     let mut exited = tokio::spawn(wait(child, stopped, killed));
-    let timer = limit.map(|limit| {
-        let end = end.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(limit).await;
-            end(format!(
-                "{name} was still working after {} minutes, so Orbit stopped it and the commands it started, and the turn failed.",
-                limit.as_secs() / 60
-            ));
-        })
+    let mut until = limit.map(|limit| {
+        let reason = format!(
+            "{name} was still working after {} minutes, so Orbit stopped it and the commands it started, and the turn failed.",
+            limit.as_secs() / 60
+        );
+        (tokio::time::Instant::now() + limit, reason)
     });
     {
         let (tail, denials, end) = (tail.clone(), denials.clone(), end.clone());
@@ -345,7 +371,38 @@ pub fn spawn<D: Dialect>(
         let mut init = Some(init_tx);
         let mut result = None;
         let mut lines = Lines::new(stdout);
-        'read: while let Some(line) = lines.next().await {
+        let mut status = None;
+        'read: loop {
+            let ends = until.as_ref().map(|(at, _)| *at);
+            let line = tokio::select! {
+                line = lines.next() => line,
+                s = &mut exited, if status.is_none() => {
+                    status = Some(s);
+                    // What it wrote last arrives soon after; output still
+                    // open after that is held by something it started.
+                    let grace = tokio::time::Instant::now() + EXIT_GRACE;
+                    if ends.is_none_or(|at| grace < at) {
+                        until = Some((grace, format!(
+                            "{name} exited but left a command running, so the turn failed."
+                        )));
+                    }
+                    continue;
+                }
+                _ = async {
+                    match ends {
+                        Some(at) => tokio::time::sleep_until(at).await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    if let Some((_, reason)) = until.take() {
+                        end(reason);
+                    }
+                    break 'read;
+                }
+            };
+            let Some(line) = line else {
+                break;
+            };
             let Ok(message) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
@@ -368,21 +425,21 @@ pub fn spawn<D: Dialect>(
                 }
             }
         }
-        let status = match tokio::time::timeout(EXIT_GRACE, &mut exited).await {
-            Ok(status) => status,
-            // A process still running after its result may have left a
-            // command running too, so the turn fails rather than going on.
-            Err(_) => {
-                end(format!(
-                    "{name} did not exit after its answer, so Orbit stopped it and the commands it started, and the turn failed."
-                ));
-                exited.await
-            }
+        let status = match status {
+            Some(status) => status,
+            None => match tokio::time::timeout(EXIT_GRACE, &mut exited).await {
+                Ok(status) => status,
+                // A process still running after its result may have left a
+                // command running too, so the turn fails rather than going on.
+                Err(_) => {
+                    end(format!(
+                        "{name} did not exit after its answer, so Orbit stopped it and the commands it started, and the turn failed."
+                    ));
+                    exited.await
+                }
+            },
         }
         .unwrap_or_else(|e| format!("Orbit lost track of it: {e}"));
-        if let Some(timer) = timer {
-            timer.abort();
-        }
         // Standard error is read to its end once the process is gone.
         tokio::time::sleep(Duration::from_millis(50)).await;
         let fatal = fatal.lock().unwrap().take();
