@@ -81,6 +81,16 @@ fn a_change_takes_only_values_repositories_could_save() {
         ("setupCommand", "npm ci; rm -rf ~"),
         ("checkCommand", "npm run ../../x"),
         ("checkCommand", "make -f other.mk"),
+        // Options must be ones the program is known to take without a value.
+        ("checkCommand", "make --directory .."),
+        ("checkCommand", "make --file other.mk"),
+        ("checkCommand", "make --file=other.mk"),
+        ("setupCommand", "npm ci --prefix"),
+        ("setupCommand", "pnpm install --frozen-lockfile --dir .."),
+        ("setupCommand", "cargo build --manifest-path"),
+        ("setupCommand", "go test ./... --exec"),
+        ("checkCommand", "pytest --rootdir .."),
+        ("checkCommand", "npm run lint --ignore-scripts"),
         ("setupCommand", "npm exec thing"),
         ("setupCommand", "go run ./cmd/x"),
         ("setupCommand", "x"),
@@ -103,6 +113,11 @@ fn a_change_takes_only_values_repositories_could_save() {
         "make check",
         "pip install -r requirements.txt",
         "pytest",
+        "npm ci --ignore-scripts --no-audit --no-fund",
+        "yarn --immutable install",
+        "cargo clippy --workspace --all-targets --locked",
+        "mvn --batch-mode verify",
+        "./gradlew test --no-daemon",
     ] {
         assert!(change("setupCommand", fine).is_some(), "{fine}");
     }

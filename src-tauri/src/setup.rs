@@ -181,9 +181,7 @@ pub fn patch<'a>(changes: impl IntoIterator<Item = (&'a str, &'a str)>) -> Optio
 /// Package managers whose own scripts an answer may run, as `<pm> run <script>`.
 const SCRIPT_RUNNERS: [&str; 4] = ["npm", "pnpm", "yarn", "bun"];
 /// The commands an answer may use besides `SCRIPT_RUNNERS` scripts: each
-/// program with the words that may follow it. Any of them may also take
-/// flags of plain words, such as `--frozen-lockfile`, but never a value, so
-/// none can be pointed at another registry or script.
+/// program with the words that may follow it.
 const KNOWN_COMMANDS: [(&str, &[&str]); 18] = [
     ("npm", &["ci", "install", "test"]),
     ("pnpm", &["install", "test"]),
@@ -207,30 +205,84 @@ const KNOWN_COMMANDS: [(&str, &[&str]); 18] = [
     ("./gradlew", &["test", "build"]),
     ("true", &[""]),
 ];
+/// The `--` options each program may take, wherever they sit. Each one is a
+/// switch that takes no value, so none can point a command at another
+/// registry, file or folder; any other option is refused.
+const KNOWN_FLAGS: [(&str, &[&str]); 12] = [
+    (
+        "npm",
+        &[
+            "--ignore-scripts",
+            "--no-audit",
+            "--no-fund",
+            "--prefer-offline",
+        ],
+    ),
+    (
+        "pnpm",
+        &["--frozen-lockfile", "--ignore-scripts", "--prefer-offline"],
+    ),
+    (
+        "yarn",
+        &[
+            "--frozen-lockfile",
+            "--immutable",
+            "--ignore-scripts",
+            "--prefer-offline",
+        ],
+    ),
+    ("bun", &["--frozen-lockfile", "--ignore-scripts"]),
+    (
+        "cargo",
+        &[
+            "--locked",
+            "--frozen",
+            "--offline",
+            "--workspace",
+            "--all-targets",
+            "--all-features",
+            "--release",
+        ],
+    ),
+    ("uv", &["--frozen", "--locked"]),
+    ("poetry", &["--no-root", "--no-interaction"]),
+    ("composer", &["--no-interaction", "--no-scripts"]),
+    ("mvn", &["--batch-mode", "--quiet", "--offline"]),
+    ("gradle", &["--no-daemon", "--offline"]),
+    ("./gradlew", &["--no-daemon", "--offline"]),
+    ("pytest", &["--quiet"]),
+];
 /// Whether a command is made only of what an answer may set: known install
 /// and test commands, a package manager running one of the repository's own
-/// scripts, or `make` with a target, joined by `&&` or `||`. Anything else
-/// is typed in Repositories, so text in a pull request can't steer Bit into
-/// offering a button that runs it.
+/// scripts, or `make` with a target, joined by `&&` or `||`. Only the known
+/// commands take options, and only their `KNOWN_FLAGS`, since anything after
+/// a script's name goes to the script. Anything else is typed in
+/// Repositories, so text in a pull request can't steer Bit into offering a
+/// button that runs it.
 fn allowed(command: &str) -> bool {
     let name = |w: &str| {
         !w.starts_with('-')
             && w.chars()
                 .all(|c| c.is_ascii_alphanumeric() || "_.:-".contains(c))
     };
-    let flag = |w: &str| {
-        w.len() > 2
-            && w.starts_with("--")
-            && w[2..].chars().all(|c| c.is_ascii_lowercase() || c == '-')
-    };
     let part = |text: &str| {
         let words: Vec<&str> = text.split_whitespace().collect();
         let Some((&program, rest)) = words.split_first() else {
             return false;
         };
-        let plain: Vec<&str> = rest.iter().copied().filter(|w| !flag(w)).collect();
+        let flags = KNOWN_FLAGS
+            .iter()
+            .find(|(known, _)| *known == program)
+            .map_or(&[][..], |(_, flags)| *flags);
+        let (options, plain): (Vec<&str>, Vec<&str>) =
+            rest.iter().copied().partition(|w| w.starts_with("--"));
+        if !options.iter().all(|o| flags.contains(o)) {
+            return false;
+        }
         match plain.as_slice() {
-            ["run", script] if SCRIPT_RUNNERS.contains(&program) => name(script),
+            ["run", script] if SCRIPT_RUNNERS.contains(&program) => {
+                options.is_empty() && name(script)
+            }
             [target] if program == "make" => name(target),
             [] if program == "make" => true,
             _ => KNOWN_COMMANDS.iter().any(|(known, words)| {
