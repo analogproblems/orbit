@@ -125,7 +125,10 @@ pub(crate) async fn serve(fake: Fake) -> String {
                 },
             })).collect::<Vec<_>>()})
         } else {
-            json!({"data": f.models.iter().map(|m| json!({"id": m})).collect::<Vec<_>>()})
+            json!({"data": f.models.iter().map(|m| json!({
+                "id": m,
+                "capabilities": {"structured_outputs": {"supported": !m.starts_with("claude-3")}},
+            })).collect::<Vec<_>>()})
         };
         (StatusCode::OK, Json(body))
     }
@@ -237,19 +240,37 @@ fn a_dated_version_of_a_model_is_that_model() {
 }
 
 #[tokio::test]
-async fn each_provider_lists_the_models_that_can_answer() {
+async fn each_provider_lists_only_the_models_that_can_answer_in_bits_form() {
     let fake = Fake {
         models: [
             "gpt-5",
+            "gpt-5-mini",
             "o3",
+            "o1",
+            "o4-mini",
+            "gpt-4.1",
+            "gpt-4o",
+            "gpt-4o-mini-2024-07-18",
+            // Text models that can't answer in a strict JSON schema.
+            "gpt-3.5-turbo",
+            "gpt-4",
+            "gpt-4-turbo",
+            "gpt-4o-2024-05-13",
+            "o1-mini",
+            "o1-preview",
+            "chatgpt-4o-latest",
+            // Models for other work.
             "text-embedding-3-small",
             "gpt-4o-realtime-preview",
             "dall-e-3",
-            "gpt-4.1",
             "omni-moderation-latest",
             "gpt-image-1",
             "claude-opus-5-5",
+            "claude-3-haiku-20240307",
             "gemini-2.5-flash",
+            "gemini-1.5-pro",
+            "gemma-3-27b-it",
+            "gemini-2.5-flash-preview-tts",
             "gemini-embedding-001",
         ]
         .map(String::from)
@@ -260,14 +281,25 @@ async fn each_provider_lists_the_models_that_can_answer() {
     let base = serve(fake).await;
     assert_eq!(
         models(Api::OpenAi, &base, KEY).await.unwrap(),
-        ["gpt-4.1", "gpt-5", "o3"]
+        [
+            "gpt-4.1",
+            "gpt-4o",
+            "gpt-4o-mini-2024-07-18",
+            "gpt-5",
+            "gpt-5-mini",
+            "o1",
+            "o3",
+            "o4-mini"
+        ]
     );
-    // Anthropic's own order, all of them.
-    assert_eq!(models(Api::Anthropic, &base, KEY).await.unwrap().len(), 11);
-    let google = models(Api::Google, &base, KEY).await.unwrap();
-    assert!(google.contains(&"gemini-2.5-flash".to_string()));
-    assert!(!google.iter().any(|m| m.contains("embedding")));
-    assert!(!google.iter().any(|m| m.starts_with("models/")));
+    // Anthropic says which can answer in a set form; it keeps its order.
+    let anthropic = models(Api::Anthropic, &base, KEY).await.unwrap();
+    assert!(anthropic.contains(&"claude-opus-5-5".to_string()));
+    assert!(!anthropic.contains(&"claude-3-haiku-20240307".to_string()));
+    assert_eq!(
+        models(Api::Google, &base, KEY).await.unwrap(),
+        ["gemini-2.5-flash"]
+    );
     let requests = requests.lock().unwrap();
     assert_eq!(requests[0].0, "/v1/models");
     assert_eq!(requests[1].0, "/v1/models?limit=1000");

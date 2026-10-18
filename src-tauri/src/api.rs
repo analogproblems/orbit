@@ -250,14 +250,16 @@ pub async fn models(api: Api, base: &str, key: &str) -> Result<Vec<String>, Stri
         Api::OpenAi => {
             let mut names: Vec<String> = list(&body["data"])
                 .filter_map(|m| m["id"].as_str())
-                .filter(|id| writes_answers(id))
+                .filter(|id| openai_answers_in_form(id))
                 .map(str::to_owned)
                 .collect();
             names.sort();
             names
         }
-        // Newest first, as Anthropic lists them.
+        // Newest first, as Anthropic lists them, leaving out any it says
+        // can't answer in a set form.
         Api::Anthropic => list(&body["data"])
+            .filter(|m| m["capabilities"]["structured_outputs"]["supported"] != false)
             .filter_map(|m| m["id"].as_str())
             .map(str::to_owned)
             .collect(),
@@ -267,7 +269,9 @@ pub async fn models(api: Api, base: &str, key: &str) -> Result<Vec<String>, Stri
                     .any(|g| g.as_str() == Some("generateContent"))
             })
             .filter_map(|m| m["name"].as_str())
-            .map(|name| name.strip_prefix("models/").unwrap_or(name).to_owned())
+            .map(|name| name.strip_prefix("models/").unwrap_or(name))
+            .filter(|name| gemini_answers_in_form(name))
+            .map(str::to_owned)
             .collect(),
     };
     Ok(names
@@ -278,25 +282,54 @@ pub async fn models(api: Api, base: &str, key: &str) -> Result<Vec<String>, Stri
 fn list(v: &Value) -> impl Iterator<Item = &Value> {
     v.as_array().into_iter().flatten()
 }
-/// Whether an OpenAI model writes text answers: a GPT or o-series model,
-/// and not one for audio, images, search or embeddings.
-fn writes_answers(id: &str) -> bool {
-    let family = id.starts_with("gpt-")
-        || id.starts_with("chatgpt-")
-        || (id.starts_with('o') && id[1..].starts_with(|c: char| c.is_ascii_digit()));
-    family
-        && ![
-            "audio",
-            "realtime",
-            "tts",
-            "transcribe",
-            "image",
-            "search",
-            "instruct",
-            "embedding",
-        ]
-        .iter()
-        .any(|w| id.contains(w))
+/// Words in the names of models made for audio, images, search, embeddings
+/// or other work than writing an answer.
+const NOT_FOR_ANSWERS: [&str; 10] = [
+    "audio",
+    "realtime",
+    "tts",
+    "transcribe",
+    "image",
+    "search",
+    "instruct",
+    "embedding",
+    "live",
+    "moderation",
+];
+/// The leading number in `text`, if it starts with one.
+fn leading_number(text: &str) -> Option<u32> {
+    let digits: String = text.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+/// Whether an OpenAI model can write Bit's answer through the Responses
+/// API in a strict JSON schema: GPT-4o (after its first version), GPT-4.1,
+/// GPT-5 and later, o1, and o3 and later. OpenAI doesn't list what each
+/// model supports, so this goes by name; GPT-3.5, GPT-4 and GPT-4 Turbo,
+/// o1-mini and o1-preview can't.
+fn openai_answers_in_form(id: &str) -> bool {
+    if NOT_FOR_ANSWERS.iter().any(|w| id.contains(w)) || id == "gpt-4o-2024-05-13" {
+        return false;
+    }
+    if let Some(rest) = id.strip_prefix("gpt-") {
+        return rest.starts_with("4o")
+            || rest.starts_with("4.1")
+            || leading_number(rest).is_some_and(|n| n >= 5);
+    }
+    match id.strip_prefix('o').and_then(|rest| {
+        leading_number(rest).map(|n| (n, rest.contains("mini") || rest.contains("preview")))
+    }) {
+        Some((1, older)) => !older,
+        Some((n, _)) => n >= 3,
+        None => false,
+    }
+}
+/// Whether a Google model can write Bit's answer in a JSON schema, with
+/// instructions: Gemini 2 and later, not Gemma.
+fn gemini_answers_in_form(name: &str) -> bool {
+    name.strip_prefix("gemini-")
+        .and_then(leading_number)
+        .is_some_and(|n| n >= 2)
+        && !NOT_FOR_ANSWERS.iter().any(|w| name.contains(w))
 }
 
 /// Whether a provider's `reported` model is `asked`: the same name, or a
