@@ -38,21 +38,21 @@ impl<R: AsyncRead + Unpin> Lines<R> {
             buf: Vec::new(),
         }
     }
-    /// The next line without its line ending, or None at the end.
+    /// The next line without its line ending, or None at the end. Safe to
+    /// cancel: what was read of a line stays for the next call.
     pub async fn next(&mut self) -> Option<String> {
-        self.buf.clear();
-        match self.reader.read_until(b'\n', &mut self.buf).await {
-            Ok(0) | Err(_) => None,
-            Ok(_) => {
-                if self.buf.ends_with(b"\n") {
-                    self.buf.pop();
-                    if self.buf.ends_with(b"\r") {
-                        self.buf.pop();
-                    }
-                }
-                Some(String::from_utf8_lossy(&self.buf).into_owned())
+        let read = self.reader.read_until(b'\n', &mut self.buf).await;
+        if matches!(read, Ok(0) | Err(_)) && self.buf.is_empty() {
+            return None;
+        }
+        let mut line = std::mem::take(&mut self.buf);
+        if line.ends_with(b"\n") {
+            line.pop();
+            if line.ends_with(b"\r") {
+                line.pop();
             }
         }
+        Some(String::from_utf8_lossy(&line).into_owned())
     }
 }
 
@@ -518,6 +518,25 @@ mod tests {
         let mut lines = super::Lines::new(input);
         assert_eq!(lines.next().await.as_deref(), Some("first"));
         assert_eq!(lines.next().await.as_deref(), Some("bad \u{fffd} byte"));
+        assert_eq!(lines.next().await.as_deref(), Some("last"));
+        assert_eq!(lines.next().await, None);
+    }
+
+    #[tokio::test]
+    async fn a_line_read_in_part_survives_a_cancelled_read() {
+        use tokio::io::AsyncWriteExt;
+        let (mut writer, reader) = tokio::io::duplex(64);
+        let mut lines = super::Lines::new(reader);
+        let wait = std::time::Duration::from_millis(20);
+        // The result arrives in pieces, and the read waiting for the rest is
+        // dropped, as when the process's exit wins the select.
+        writer.write_all(br#"{"type":"res"#).await.unwrap();
+        assert!(tokio::time::timeout(wait, lines.next()).await.is_err());
+        writer.write_all(b"ult\"}\nlast").await.unwrap();
+        assert_eq!(lines.next().await.as_deref(), Some(r#"{"type":"result"}"#));
+        // A last line without its ending, cut the same way, still arrives.
+        assert!(tokio::time::timeout(wait, lines.next()).await.is_err());
+        drop(writer);
         assert_eq!(lines.next().await.as_deref(), Some("last"));
         assert_eq!(lines.next().await, None);
     }
