@@ -1138,8 +1138,16 @@ fn append(feed: &mut Feed, notes: Vec<Note>) {
         feed.next_id += 1;
         feed.notes.push(note);
     }
-    let excess = feed.notes.len().saturating_sub(MAX_NOTES);
-    feed.notes.drain(..excess);
+    // The oldest notes go first, but never a question Bit is still
+    // answering, or its answer would have nowhere to land.
+    let mut excess = feed.notes.len().saturating_sub(MAX_NOTES);
+    feed.notes.retain(|n| {
+        let drop = excess > 0 && !n.pending;
+        if drop {
+            excess -= 1;
+        }
+        !drop
+    });
 }
 
 /// Something in a pull request's story that needs a decision: a flag that
@@ -1264,11 +1272,21 @@ pub fn observe_decisions(s: &mut Snapshot, items: &[ToDecide]) -> bool {
 }
 
 /// The fix Bit does on its own for an item that just opened: one whose rule
-/// is Do it, while Bit is on.
+/// is Do it, while Bit is on. A loop is continued on its own only once: a
+/// loop that has been given more rounds and used them up again waits for
+/// you, so a builder and reviewer that never agree can't go round forever.
 pub fn will_fix(s: &Snapshot, item: &Attention) -> Option<Fix> {
     let buddy = &s.settings.buddy;
-    item.fix
-        .filter(|&fix| buddy.enabled && buddy.rules.of(fix) == "do_it")
+    let continued = || {
+        s.loops
+            .iter()
+            .any(|c| Some(&*c.pr_id) == item.pr_id.as_deref() && c.extra_rounds > 0)
+    };
+    item.fix.filter(|&fix| {
+        buddy.enabled
+            && buddy.rules.of(fix) == "do_it"
+            && !(fix == Fix::ContinueLoop && continued())
+    })
 }
 fn pr_or_this(s: &Snapshot, item: &Attention) -> String {
     pr_label(s, item.pr_id.as_deref()).unwrap_or_else(|| "this pull request".into())

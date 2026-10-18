@@ -26,12 +26,28 @@ static REVIEWER_MARKS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 static BUILDER_MARKS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)co-authored-by:\s*claude|claude\.ai/code/session_").unwrap());
 
-pub(super) fn infer(body: &str, login: &str) -> Role {
+/// Whether GitHub says the author can write to the repository (or is an
+/// app installed on it). Comments stored before Orbit kept the association
+/// have none and keep being read by their text.
+pub(super) fn may_review(login: &str, association: &str) -> bool {
+    association.is_empty()
+        || login.ends_with("[bot]")
+        || matches!(association, "OWNER" | "MEMBER" | "COLLABORATOR")
+}
+
+pub(super) fn infer(body: &str, login: &str, association: &str) -> Role {
     if BUILDER_FOOTER.is_match(body) {
         return Role::Builder;
     }
+    // Anyone can paste the reviewer's markers into a comment on a public
+    // repository, so only someone who can write to it counts as the
+    // reviewer.
     if REVIEWER_MARKS.iter().any(|r| r.is_match(body)) {
-        return Role::Reviewer;
+        return if may_review(login, association) {
+            Role::Reviewer
+        } else {
+            Role::Human
+        };
     }
     if BUILDER_MARKS.is_match(body) || !super::replies::exact_lines(body).is_empty() {
         return Role::Builder;

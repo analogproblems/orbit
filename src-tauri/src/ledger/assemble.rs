@@ -98,18 +98,20 @@ pub(super) fn comment_refs(stored: &[StoredComment]) -> Vec<CommentRef> {
         if c.kind == CommentKind::Review && c.body.trim().is_empty() {
             continue;
         }
-        let role = roles::infer(&c.body, &c.author);
+        let role = roles::infer(&c.body, &c.author, &c.association);
         let versions = versions(c, role);
         let last = versions.len() - 1;
+        // Only the reviewer's own inline comments can carry a finding.
+        let may_review = roles::may_review(&c.author, &c.association);
         for (i, (body, created_at)) in versions.into_iter().enumerate() {
-            let finding_marker = (c.kind == CommentKind::ReviewComment)
+            let finding_marker = (c.kind == CommentKind::ReviewComment && may_review)
                 .then(|| orbit::finding_marker(&body).or_else(|| legacy_marker(c, &body)))
                 .flatten();
             out.push(CommentRef {
                 id: c.id,
                 kind: c.kind,
                 author: c.author.clone(),
-                role: roles::infer(&body, &c.author),
+                role: roles::infer(&body, &c.author, &c.association),
                 created_at,
                 url: c.url.clone(),
                 body,

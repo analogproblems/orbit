@@ -30,9 +30,9 @@ async fn copy_facts(path: &str) -> Result<setup::CloneFacts, String> {
 /// How long Bit waits for GitHub to list your repositories.
 const LIST_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Runs `work` in a task of its own, so a download carries on even if the
-/// window or browser waiting for it goes away.
-pub(super) async fn carry_on<T: Send + 'static>(
+/// Runs `work` in a task of its own, so it carries on even if the window
+/// or browser waiting for it goes away.
+pub(crate) async fn carry_on<T: Send + 'static>(
     work: impl Future<Output = Result<T, String>> + Send + 'static,
 ) -> Result<T, String> {
     // Tests reach their stand-in for `gh` from the new task too.

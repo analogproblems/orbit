@@ -164,9 +164,12 @@ pub fn validate_model(model: &str) -> Result<(), String> {
 }
 
 /// Providers are reached through your proxy, if you have one; an address
-/// on this computer is reached directly.
+/// on this computer is reached directly. Redirects aren't followed: the key
+/// travels in a header reqwest would carry on to another site.
 fn client(base: &str, timeout: Duration) -> Result<reqwest::Client, String> {
-    let mut builder = reqwest::Client::builder().timeout(timeout);
+    let mut builder = reqwest::Client::builder()
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none());
     if base.starts_with("http://127.0.0.1:") || base.starts_with("http://localhost:") {
         builder = builder.no_proxy();
     }

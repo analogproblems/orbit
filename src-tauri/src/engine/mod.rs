@@ -37,6 +37,7 @@ mod worktrees;
 mod writeup;
 
 pub use settings::validate_checkout;
+pub(crate) use setup::carry_on;
 
 /// How often the usage meter is read in full while Codex is connected.
 const USAGE_REFRESH: Duration = Duration::from_secs(5 * 60);

@@ -392,11 +392,26 @@ mod desktop {
                 let hub = remote::Hub::default();
                 let browsers = hub.clone();
                 let engine =
-                    engine::Engine::new(root.clone(), move |snapshot: &types::Snapshot| {
+                    match engine::Engine::new(root.clone(), move |snapshot: &types::Snapshot| {
                         let _ = handle.emit("orbit-state", snapshot);
                         browsers.publish(snapshot);
-                    })
-                    .map_err(std::io::Error::other)?;
+                    }) {
+                        Ok(engine) => engine,
+                        Err(error) => {
+                            // Returning the error would end Orbit with nothing
+                            // on screen, so it's shown before Orbit closes.
+                            for window in app.webview_windows().values() {
+                                let _ = window.hide();
+                            }
+                            let exit = app.handle().clone();
+                            app.dialog()
+                                .message(error)
+                                .title("Orbit can't start")
+                                .kind(tauri_plugin_dialog::MessageDialogKind::Error)
+                                .show(move |_| exit.exit(1));
+                            return Ok(());
+                        }
+                    };
                 let resolver = app.handle().clone();
                 let assets: remote::Assets = Arc::new(move |path: &str| {
                     resolver
@@ -491,8 +506,10 @@ mod desktop {
             .expect("Unable to start Orbit")
             .run(|app, event| {
                 if let tauri::RunEvent::ExitRequested { .. } = event {
-                    let engine = app.state::<AppState>();
-                    tauri::async_runtime::block_on(engine.shutdown());
+                    // There is no engine when Orbit couldn't start.
+                    if let Some(engine) = app.try_state::<AppState>() {
+                        tauri::async_runtime::block_on(engine.shutdown());
+                    }
                 }
             });
     }
