@@ -1302,6 +1302,9 @@ pub struct Snapshot {
     pub loop_states: Vec<LoopState>,
     /// Repositories whose latest syncs failed, with how many in a row.
     pub sync_failures: Vec<SyncFailure>,
+    /// Pull requests whose automatic review Orbit couldn't start, and why.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queue_failures: Vec<QueueFailure>,
     /// Polls in a row that failed before any repository could sync, such as
     /// when GitHub rejects the credential. The error is in `github_error`.
     pub poll_failures: u32,
@@ -1451,6 +1454,13 @@ pub struct CloneUpdate {
 pub struct SyncFailure {
     pub repo: String,
     pub count: u32,
+    pub error: String,
+}
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueFailure {
+    pub pr_id: String,
+    pub head_sha: String,
     pub error: String,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -4,7 +4,12 @@ use std::{
     collections::HashSet,
     path::Path,
     sync::{atomic::Ordering, Arc},
+    time::Duration,
 };
+
+/// How long Orbit waits before trying again to start an automatic review it
+/// couldn't start.
+pub(super) const QUEUE_RETRY: Duration = Duration::from_secs(60);
 
 impl Engine {
     /// Syncs with GitHub, unless a sync is already running.
@@ -172,9 +177,7 @@ impl Engine {
                 vec![]
             }
         };
-        for id in candidates {
-            let _ = self.enqueue(&id, true).await;
-        }
+        self.queue_automatic(candidates).await;
         loop {
             let next = {
                 let mut s = self.state.lock().await;
@@ -238,6 +241,60 @@ impl Engine {
     }
 }
 impl Engine {
+    /// Queues automatic reviews. One that can't be queued, such as when its
+    /// checkout is missing, is shown as needing you with the reason, and is
+    /// tried again each `QUEUE_RETRY` rather than on every tick.
+    async fn queue_automatic(&self, candidates: Vec<String>) {
+        let mut waiting = vec![];
+        let mut failed = vec![];
+        for id in &candidates {
+            let recent = self
+                .queue_retry
+                .lock()
+                .unwrap()
+                .get(id)
+                .is_some_and(|at| at.elapsed() < QUEUE_RETRY);
+            if recent {
+                waiting.push(id);
+                continue;
+            }
+            match self.enqueue(id, true).await {
+                Ok(_) => {
+                    self.queue_retry.lock().unwrap().remove(id);
+                }
+                Err(error) => {
+                    let now = std::time::Instant::now();
+                    self.queue_retry.lock().unwrap().insert(id.clone(), now);
+                    failed.push((id, error));
+                }
+            }
+        }
+        self.queue_retry
+            .lock()
+            .unwrap()
+            .retain(|id, _| candidates.contains(id));
+        let failures = {
+            let s = self.state.lock().await;
+            let mut failures: Vec<QueueFailure> = s
+                .queue_failures
+                .iter()
+                .filter(|f| waiting.contains(&&f.pr_id))
+                .cloned()
+                .collect();
+            failures.extend(failed.into_iter().filter_map(|(id, error)| {
+                let pr = s.prs.iter().find(|p| &p.id == id)?;
+                Some(QueueFailure {
+                    pr_id: id.clone(),
+                    head_sha: pr.head_sha.clone(),
+                    error,
+                })
+            }));
+            (failures != s.queue_failures).then_some(failures)
+        };
+        if let Some(failures) = failures {
+            self.update(|s| s.queue_failures = failures).await;
+        }
+    }
     /// Replaces automatic runs whose PR moved to a new head or base. A run
     /// that has not started inference is stopped so the new head can be
     /// queued; one that has keeps running but is marked superseded, so it is
