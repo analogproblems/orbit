@@ -569,12 +569,13 @@ fn require(out: &Output, what: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Removes containers an earlier run of Orbit left behind.
-pub async fn remove_leftovers(tools: &Tools) {
+/// Removes containers an earlier run of Orbit left behind, apart from those
+/// of the reviews in `keep`.
+pub async fn remove_leftovers(tools: &Tools, keep: &[String]) {
     let filter = format!("label={LABEL}");
     let Ok(out) = run(
         &tools.docker,
-        &["ps", "--all", "--quiet", "--filter", &filter],
+        &["ps", "--all", "--filter", &filter, "--format", "{{.Names}}"],
         DOCKER_TIMEOUT,
     )
     .await
@@ -584,8 +585,11 @@ pub async fn remove_leftovers(tools: &Tools) {
     if out.status != Some(0) {
         return;
     }
-    for id in out.output.split_whitespace() {
-        let _ = run(&tools.docker, &["rm", "--force", id], DOCKER_TIMEOUT).await;
+    let keep: Vec<String> = keep.iter().map(|id| container(id)).collect();
+    for name in out.output.split_whitespace() {
+        if !keep.iter().any(|k| k == name) {
+            let _ = run(&tools.docker, &["rm", "--force", name], DOCKER_TIMEOUT).await;
+        }
     }
 }
 
@@ -596,8 +600,28 @@ struct Output {
     timed_out: bool,
     output: String,
 }
+/// Kills a command's process group when dropped, so what it started (the
+/// `docker build` under the Dev Container CLI, say) stops with it when it
+/// times out or the review is stopped. Disarmed once the command has been
+/// waited for, since its group id may then be reused.
+struct Group(Option<u32>);
+impl Group {
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+impl Drop for Group {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(id) = self.0 {
+            unsafe {
+                libc::kill(-(id as i32), libc::SIGKILL);
+            }
+        }
+    }
+}
 /// Runs a command, keeping the end of its standard output and error
-/// together, and stops it after `timeout`.
+/// together, and stops it and what it started after `timeout`.
 async fn run(launcher: &Launcher, args: &[&str], timeout: Duration) -> Result<Output, String> {
     let mut cmd = launcher.command();
     cmd.args(args)
@@ -605,9 +629,14 @@ async fn run(launcher: &Launcher, args: &[&str], timeout: Duration) -> Result<Ou
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    #[cfg(unix)]
+    cmd.process_group(0);
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Cannot start {}: {e}", launcher.program.to_string_lossy()))?;
+    // Declared after the child, so it's dropped first, before the child is
+    // reaped.
+    let mut group = Group(child.id());
     let tail = Arc::new(Mutex::new(Tail::default()));
     let read = |stream: Option<Box<dyn tokio::io::AsyncRead + Unpin + Send>>| {
         let tail = tail.clone();
@@ -625,13 +654,22 @@ async fn run(launcher: &Launcher, args: &[&str], timeout: Duration) -> Result<Ou
     let stdout = child.stdout.take().map(|s| Box::new(s) as _);
     let stderr = child.stderr.take().map(|s| Box::new(s) as _);
     let finished = tokio::time::timeout(timeout, async {
-        let (_, _, status) = tokio::join!(read(stdout), read(stderr), child.wait());
+        let wait = async {
+            let status = child.wait().await;
+            // Reaped, so its group id may be reused from here on, even
+            // while something it started still holds its output open.
+            group.disarm();
+            status
+        };
+        let (_, _, status) = tokio::join!(read(stdout), read(stderr), wait);
         status
     })
     .await;
     let (status, timed_out) = match finished {
         Ok(status) => (status.map_err(|e| e.to_string())?.code(), false),
         Err(_) => {
+            // Signals the group only if the command hasn't been reaped.
+            drop(group);
             let _ = child.kill().await;
             (None, true)
         }

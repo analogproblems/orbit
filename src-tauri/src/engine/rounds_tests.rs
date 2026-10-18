@@ -71,6 +71,19 @@ fn picks_the_latest_finished_structured_review_of_an_earlier_head() {
     assert!(previous_review(&first, &current).is_none());
 }
 #[test]
+fn a_round_after_a_base_change_follows_the_latest_round() {
+    let pr = trusted_pr();
+    let mut current = Review::new(&pr, &Settings::default(), false);
+    current.base_sha = "new-base".into();
+    let older = finished(&pr, "f", "2026-01-01T00:00:00.000Z", &[]);
+    let latest = finished(&pr, &pr.head_sha, "2026-01-03T00:00:00.000Z", &[]);
+    let s = Snapshot {
+        reviews: vec![older, latest.clone(), current.clone()],
+        ..Snapshot::default()
+    };
+    assert_eq!(previous_review(&s, &current).unwrap().id, latest.id);
+}
+#[test]
 fn carries_earlier_findings_until_they_are_fixed() {
     let pr = trusted_pr();
     let mut previous = finished(&pr, "b", "2026-01-02T00:00:00.000Z", &["r2-0"]);

@@ -219,7 +219,15 @@ pub fn state(s: &Snapshot, pr: &PullRequest) -> Option<LoopState> {
         if latest.error.is_some() {
             return make(LoopStatus::NeedsYou, Some("Publication was held."));
         }
-        if !s.settings.auto_post {
+        // Autopilot publishes only while it and the repository's automatic
+        // reviews are on; otherwise the report waits for you.
+        let autopilot = s.settings.automatic
+            && s.settings.auto_post
+            && s.settings
+                .repositories
+                .iter()
+                .any(|r| same_repo(&r.name, &pr.repo) && r.automatic);
+        if !autopilot {
             return make(
                 LoopStatus::NeedsYou,
                 Some("The report is waiting for you to publish it."),

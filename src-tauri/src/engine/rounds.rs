@@ -20,14 +20,16 @@ const MAX_STAT_CHARS: usize = 4000;
 const ORBIT_MARKER: &str = "<!-- orbit-review:";
 const FINDING_MARKER: &str = "<!-- orbit-finding:";
 
-/// The latest finished review of an earlier head that has structured findings.
+/// The latest finished review of an earlier head or base that has structured
+/// findings. A round started because only the base moved still follows on
+/// from the latest round, not the one before it.
 pub(super) fn previous_review<'a>(s: &'a Snapshot, r: &Review) -> Option<&'a Review> {
     s.reviews
         .iter()
         .filter(|p| {
             p.id != r.id
                 && p.pr_id == r.pr_id
-                && p.head_sha != r.head_sha
+                && (p.head_sha != r.head_sha || p.base_sha != r.base_sha)
                 && matches!(p.status.as_str(), "ready" | "posted")
                 && p.findings.is_some()
         })

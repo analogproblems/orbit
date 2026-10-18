@@ -214,6 +214,10 @@ pub struct Review {
     /// The findings-extraction turn is running; its output is not chat.
     #[serde(default)]
     pub extracting: bool,
+    /// Why the extraction turn's latest answer couldn't be read, for the
+    /// error if no answer could be.
+    #[serde(skip)]
+    pub extraction_problem: Option<String>,
     /// Confirmed model and effort of the extraction turn.
     #[serde(default)]
     pub extraction_selection: Option<ModelSelection>,
@@ -733,6 +737,7 @@ impl Review {
             not_checked: vec![],
             completed: None,
             extracting: false,
+            extraction_problem: None,
             extraction_selection: None,
             previous_round: None,
             review_prompt: None,
@@ -817,12 +822,17 @@ impl Review {
             return false;
         }
         self.extracting = false;
+        let problem = self.extraction_problem.take();
         let error = error.or_else(|| {
             self.findings.is_none().then(|| {
-                format!(
+                let mut error = format!(
                     "{} did not restate its findings in the expected format.",
                     self.provider.label()
-                )
+                );
+                if let Some(problem) = problem {
+                    error.push_str(&format!(" The answer was refused: {problem}"));
+                }
+                error
             })
         });
         if let Some(error) = error {

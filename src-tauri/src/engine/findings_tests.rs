@@ -416,6 +416,14 @@ async fn invalid_or_failed_extraction_keeps_a_publishable_report() {
         assert!(r.findings.is_none() && r.verdict.is_none());
         assert!(r.error.as_deref().unwrap().contains("unstructured"));
         assert!(publishable(&r, &e.snapshot().await.prs[0]));
+        // A refused answer says why.
+        if text == "{\"verdict\":1}" {
+            assert!(r
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("The answer was refused:"));
+        }
     }
 }
 #[tokio::test]

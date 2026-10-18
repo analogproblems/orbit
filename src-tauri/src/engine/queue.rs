@@ -265,6 +265,12 @@ impl Engine {
                     if matches!(r.status.as_str(), "queued" | "preparing") {
                         stop.push(r.id.clone());
                     }
+                } else if r.automatic
+                    && r.status == "queued"
+                    && !prs.iter().any(|p| p.id == r.pr_id)
+                {
+                    // Its PR was merged or closed while it waited for a slot.
+                    stop.push(r.id.clone());
                 }
             }
             if changed {

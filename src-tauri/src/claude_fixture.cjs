@@ -4,9 +4,17 @@
 const fs = require("node:fs");
 const [modeArg, ...args] = process.argv.slice(2);
 const [mode, log] = modeArg.split("@");
-if (log) fs.appendFileSync(log, JSON.stringify(args) + "\n");
 const send = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 const after = (flag) => args[args.indexOf(flag) + 1];
+// A prompt after -p is an argument; otherwise it comes on standard input,
+// which the log records after a made-up --stdin flag.
+const piped = args.includes("-p") && after("-p").startsWith("--");
+const stdin = piped ? fs.readFileSync(0, "utf8") : undefined;
+if (log)
+  fs.appendFileSync(
+    log,
+    JSON.stringify(piped ? [...args, "--stdin", stdin] : args) + "\n",
+  );
 if (args[0] === "--version") {
   console.log("2.1.295 (Claude Code)");
   process.exit(0);
@@ -20,7 +28,7 @@ if (args[0] === "auth") {
   );
   process.exit(0);
 }
-const prompt = after("-p");
+const prompt = piped ? stdin : after("-p");
 const session = args.includes("--resume")
   ? after("--resume")
   : after("--session-id");
@@ -92,16 +100,12 @@ const result = (extra) =>
 if (args.includes("--no-session-persistence")) {
   // A write-up: the pull request arrives on standard input, and the answer
   // is the one the test left beside the log, if any.
-  let input = "";
-  process.stdin.on("data", (d) => (input += d));
-  process.stdin.on("end", () => {
-    if (log) fs.writeFileSync(`${log}.stdin`, input);
-    const answer =
-      log && fs.existsSync(`${log}.answer`)
-        ? JSON.parse(fs.readFileSync(`${log}.answer`, "utf8"))
-        : { summary: "A change.", decisions: [], findingNotes: [] };
-    result({ result: JSON.stringify(answer), structured_output: answer });
-  });
+  if (log) fs.writeFileSync(`${log}.stdin`, stdin);
+  const answer =
+    log && fs.existsSync(`${log}.answer`)
+      ? JSON.parse(fs.readFileSync(`${log}.answer`, "utf8"))
+      : { summary: "A change.", decisions: [], findingNotes: [] };
+  result({ result: JSON.stringify(answer), structured_output: answer });
   return;
 }
 if (prompt.startsWith("/code-review")) {

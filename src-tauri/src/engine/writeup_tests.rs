@@ -440,3 +440,26 @@ async fn claude_writes_up_with_no_tools_and_no_settings_from_its_standard_input(
         "Your token never reaches the log."
     );
 }
+#[tokio::test]
+async fn a_codex_disconnect_ends_the_write_up_without_using_a_try() {
+    let (_dir, e, _rpc) = fixture(Writer::Codex).await;
+    let running = tokio::spawn({
+        let e = e.clone();
+        async move { e.write_up_due().await }
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while e.writing_thread.lock().unwrap().is_none() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("never started"));
+    e.event(json!({"method": "orbit/disconnected"})).await;
+    tokio::time::timeout(Duration::from_secs(5), running)
+        .await
+        .expect("the write-up waited out its time limit")
+        .unwrap();
+    assert!(e.write_failed.lock().unwrap().is_empty());
+    let s = e.snapshot().await;
+    assert!(s.ledger.write_error.unwrap().contains("Codex disconnected"));
+}

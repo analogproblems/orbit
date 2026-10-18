@@ -209,7 +209,7 @@ async fn call(spec: &Spec, arguments: &Value) -> Value {
             "{}\nThe dev container is gone now, so this tool can't be used again in this review.",
             result(&ran.step)
         )),
-        Ok(ran) if gone(&ran.step) => {
+        Ok(ran) if gone(&ran.step, &spec.container) => {
             error("The review's dev container is gone: it only runs while the review does.".into())
         }
         Ok(ran) => json!({
@@ -219,9 +219,14 @@ async fn call(spec: &Spec, arguments: &Value) -> Value {
         Err(e) => error(e),
     }
 }
-/// Whether Docker said the container no longer exists.
-fn gone(step: &CheckStep) -> bool {
-    step.exit_code != Some(0) && step.output.contains("No such container")
+/// Whether Docker said the container no longer exists. Its own message
+/// names the container, so a command that prints the words (testing a
+/// project that drives Docker, say) isn't taken for it.
+fn gone(step: &CheckStep, container: &str) -> bool {
+    step.exit_code != Some(0)
+        && step
+            .output
+            .contains(&format!("No such container: {container}"))
 }
 /// A step's outcome and output, as the reviewer reads it.
 pub fn result(step: &CheckStep) -> String {

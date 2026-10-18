@@ -488,19 +488,32 @@ fn confirmed(provider: Provider, turn: &Turn, init: &Init) -> Result<String, Str
 }
 
 /// Orbit's review prompt for the change from `base` to HEAD, with the
-/// change computed by Orbit. Diff drivers the clone configures never run. A
-/// diff too large for the prompt is written whole to a file in the
-/// worktree, so nothing is left out.
+/// change computed by Orbit. Diff drivers the clone configures never run,
+/// and the base's `.gitattributes` decide which files are shown as binary,
+/// so the pull request can't hide a file from the reviewer by marking it
+/// `-diff` (on Git before 2.40, every file is shown as text instead). A
+/// diff too large for the prompt is written whole to a file in
+/// the worktree, so nothing is left out.
 async fn change_prompt(worktree: &Path, base: &str) -> Result<String, String> {
     use review_instructions::{Change, CHANGE_FILE, MAX_DIFF_BYTES};
     let range = format!("{base}...HEAD");
+    let attributes = format!("--attr-source={base}");
     let diff = |extra: Option<&'static str>| {
-        let range = range.clone();
+        let (range, attributes) = (range.clone(), attributes.clone());
         async move {
             let mut args = vec!["diff", "--no-ext-diff", "--no-textconv", "--no-color"];
             args.extend(extra);
             args.push(&range);
-            git(worktree, &args).await
+            let with_base = [&[attributes.as_str()][..], &args].concat();
+            match git(worktree, &with_base).await {
+                // Git before 2.40 has no --attr-source, so every file is
+                // shown as text instead, whatever its attributes say.
+                Err(e) if e.contains("attr-source") => {
+                    args.insert(1, "--text");
+                    git(worktree, &args).await
+                }
+                result => result,
+            }
         }
     };
     let stat = diff(Some("--stat")).await?;

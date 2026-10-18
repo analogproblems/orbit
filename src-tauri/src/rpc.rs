@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::AsyncWriteExt,
     process::{Child, ChildStdin, Command},
     sync::{mpsc, oneshot, Mutex},
 };
@@ -59,13 +59,13 @@ impl Rpc {
             alive: alive.clone(),
         });
         tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
+            let mut lines = crate::cli::Lines::new(stderr);
             // Drain stderr: model output and credentials are never written to diagnostics.
-            while let Ok(Some(_line)) = lines.next_line().await {}
+            while lines.next().await.is_some() {}
         });
         tokio::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
+            let mut lines = crate::cli::Lines::new(stdout);
+            while let Some(line) = lines.next().await {
                 let Ok(msg) = serde_json::from_str::<Value>(&line) else {
                     continue;
                 };

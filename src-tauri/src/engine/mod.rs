@@ -40,6 +40,8 @@ pub use settings::validate_checkout;
 
 /// How often the usage meter is read in full while Codex is connected.
 const USAGE_REFRESH: Duration = Duration::from_secs(5 * 60);
+/// How long to wait before trying again to save state that failed to save.
+const SAVE_RETRY: Duration = Duration::from_secs(5);
 
 #[cfg(test)]
 mod antigravity_tests;
@@ -113,6 +115,8 @@ type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// | `connect_lock` | One `connect` at a time.                                          |
 /// | `poll_lock`    | One sync at a time; `poll` skips a round rather than wait.        |
 /// | `publish_lock` | One publication at a time.                                        |
+/// | `containers`   | Read while a review sets up its dev container; written while     |
+/// |                | leftovers from an earlier run are removed at launch.              |
 /// | `cleanup_lock` | One worktree removal at a time.                                   |
 /// | `cloning`      | One download of a repository for Bit at a time.                   |
 /// | `git_lock`     | Git commands against users' clones (fetch, worktree add/remove,   |
@@ -128,7 +132,7 @@ type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// nesting: `connect_lock` → `rpc`, `items` and `state` (one at a time;
 /// `items` via `retire_dead_connection` → `disconnected`); `poll_lock` →
 /// `state` and `synced_repos` (one at a time); `publish_lock` → `state`;
-/// `cleanup_lock` → `git_lock` → `state`; `cloning` → `state`
+/// `containers` → `git_lock`; `cleanup_lock` → `git_lock` → `state`; `cloning` → `state`
 /// (`set_up_repository`); `state` → `synced_repos`
 /// (`schedule`); `state` → `fixing` (`flush`); `state` → `asking`
 /// (`ask_buddy_anything`); `state` → `using` (`use_proposal`). `preparing`,
@@ -150,6 +154,7 @@ pub struct Engine {
     poll_lock: Mutex<()>,
     publish_lock: Mutex<()>,
     git_lock: Mutex<()>,
+    containers: tokio::sync::RwLock<()>,
     items: Mutex<HashMap<String, Value>>,
     /// State must be written to disk (and shown) on the next flush.
     dirty: AtomicBool,
@@ -349,6 +354,7 @@ impl Engine {
             poll_lock: Mutex::new(()),
             publish_lock: Mutex::new(()),
             git_lock: Mutex::new(()),
+            containers: tokio::sync::RwLock::new(()),
             items: Mutex::new(HashMap::new()),
             dirty: AtomicBool::new(true),
             changed: AtomicBool::new(false),
@@ -527,6 +533,11 @@ impl Engine {
             while !e.stopping.load(Ordering::SeqCst) {
                 tick.tick().await;
                 if e.flush().await.is_err() {
+                    // Automation is paused until state saves again, but
+                    // approvals still expire, kept containers still go and
+                    // GitHub checks still close. Saving is retried less often.
+                    e.housekeeping().await;
+                    tokio::time::sleep(SAVE_RETRY).await;
                     continue;
                 }
                 let (poll_seconds, codex_ready, cli_ready, unread, now_write_ups) = {
@@ -581,6 +592,10 @@ impl Engine {
         if reviewer_ready {
             self.schedule().await;
         }
+        self.housekeeping().await;
+    }
+    /// Work that starts nothing new, so it runs even while state can't be saved.
+    async fn housekeeping(self: &Arc<Self>) {
         self.expire_approvals().await;
         self.close_boxes().await;
         self.sync_commit_statuses().await;

@@ -222,6 +222,14 @@ fn needs_a_person_when_a_round_cannot_continue_on_its_own() {
     assert_eq!(needs(&s), "Publication was held.");
     s.reviews.last_mut().unwrap().error = None;
     assert_eq!(status(&s, &p).0, LoopStatus::Reviewing);
+    // With Autopilot or the repository's automatic reviews off, nothing
+    // will publish it.
+    s.settings.automatic = false;
+    assert_eq!(needs(&s), "The report is waiting for you to publish it.");
+    s.settings.automatic = true;
+    s.settings.repositories[0].automatic = false;
+    assert_eq!(needs(&s), "The report is waiting for you to publish it.");
+    s.settings.repositories[0].automatic = true;
     s.settings.auto_post = false;
     assert_eq!(needs(&s), "The report is waiting for you to publish it.");
 
