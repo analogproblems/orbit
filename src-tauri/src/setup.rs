@@ -178,40 +178,76 @@ pub fn patch<'a>(changes: impl IntoIterator<Item = (&'a str, &'a str)>) -> Optio
     }
     Some(patch)
 }
-/// Words a command from an answer may not use: fetching something from
-/// elsewhere, raising privileges, reaching other machines, or hiding what
-/// it runs. Bit is told the same; this backs it up.
-const DENIED_WORDS: [&str; 8] = ["curl", "wget", "sudo", "ssh", "scp", "nc", "base64", "eval"];
-/// Shells a command from an answer may not pipe into.
-const SHELLS: [&str; 4] = ["sh", "bash", "zsh", "dash"];
-/// Whether a command does something `DENIED_WORDS` names, pipes into a
-/// shell, pushes with Git, or opens a network connection through the shell.
-fn denied(command: &str) -> bool {
-    let lower = command.to_lowercase();
-    let words = |text: &str| -> Vec<String> {
-        text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
-            .filter(|w| !w.is_empty())
-            .map(str::to_owned)
-            .collect()
+/// Package managers whose own scripts an answer may run, as `<pm> run <script>`.
+const SCRIPT_RUNNERS: [&str; 4] = ["npm", "pnpm", "yarn", "bun"];
+/// The commands an answer may use besides `SCRIPT_RUNNERS` scripts: each
+/// program with the words that may follow it. Any of them may also take
+/// flags of plain words, such as `--frozen-lockfile`, but never a value, so
+/// none can be pointed at another registry or script.
+const KNOWN_COMMANDS: [(&str, &[&str]); 18] = [
+    ("npm", &["ci", "install", "test"]),
+    ("pnpm", &["install", "test"]),
+    ("yarn", &["install", "test"]),
+    ("bun", &["install", "test"]),
+    ("cargo", &["fetch", "build", "test", "check", "clippy"]),
+    (
+        "go",
+        &["mod download", "build ./...", "test ./...", "vet ./..."],
+    ),
+    ("uv", &["sync"]),
+    ("poetry", &["install"]),
+    ("pip", &["install -r requirements.txt"]),
+    ("pip3", &["install -r requirements.txt"]),
+    ("bundle", &["install"]),
+    ("composer", &["install"]),
+    ("mix", &["deps.get", "test"]),
+    ("pytest", &[""]),
+    ("mvn", &["test", "verify", "package"]),
+    ("gradle", &["test", "build"]),
+    ("./gradlew", &["test", "build"]),
+    ("true", &[""]),
+];
+/// Whether a command is made only of what an answer may set: known install
+/// and test commands, a package manager running one of the repository's own
+/// scripts, or `make` with a target, joined by `&&` or `||`. Anything else
+/// is typed in Repositories, so text in a pull request can't steer Bit into
+/// offering a button that runs it.
+fn allowed(command: &str) -> bool {
+    let name = |w: &str| {
+        !w.starts_with('-')
+            && w.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "_.:-".contains(c))
     };
-    let all = words(&lower);
-    let piped_to_shell = lower.split('|').skip(1).any(|after| {
-        words(after)
-            .first()
-            .is_some_and(|w| SHELLS.contains(&w.as_str()))
-    });
-    all.iter().any(|w| DENIED_WORDS.contains(&w.as_str()))
-        || all.windows(2).any(|w| w[0] == "git" && w[1] == "push")
-        || piped_to_shell
-        || lower.contains("/dev/tcp")
+    let flag = |w: &str| {
+        w.len() > 2
+            && w.starts_with("--")
+            && w[2..].chars().all(|c| c.is_ascii_lowercase() || c == '-')
+    };
+    let part = |text: &str| {
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let Some((&program, rest)) = words.split_first() else {
+            return false;
+        };
+        let plain: Vec<&str> = rest.iter().copied().filter(|w| !flag(w)).collect();
+        match plain.as_slice() {
+            ["run", script] if SCRIPT_RUNNERS.contains(&program) => name(script),
+            [target] if program == "make" => name(target),
+            [] if program == "make" => true,
+            _ => KNOWN_COMMANDS.iter().any(|(known, words)| {
+                *known == program && words.contains(&plain.join(" ").as_str())
+            }),
+        }
+    };
+    command.split("&&").flat_map(|p| p.split("||")).all(part)
 }
 /// A command an answer may set: one line, short, with nothing that looks
-/// like a credential and nothing `denied`. Empty clears it.
+/// like a credential, and `allowed`. Empty clears it.
 fn command(value: &str) -> Option<String> {
-    let fits = value.chars().count() <= MAX_COMMAND
-        && !value.chars().any(char::is_control)
-        && credential_kinds(value).is_empty()
-        && !denied(value);
+    let fits = value.is_empty()
+        || (value.chars().count() <= MAX_COMMAND
+            && !value.chars().any(char::is_control)
+            && credential_kinds(value).is_empty()
+            && allowed(value));
     fits.then(|| value.to_string())
 }
 

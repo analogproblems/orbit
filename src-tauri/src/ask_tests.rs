@@ -723,7 +723,8 @@ fn bit_is_told_how_to_set_up_a_repository_safely() {
     assert!(text.contains("approvalMinutes (0, 5, 15, 30, 60, 120"));
     assert!(text.contains("package-lock.json means `npm ci --ignore-scripts`"));
     assert!(text.contains("including code from the pull request"));
-    assert!(text.contains("Never offer one that downloads and runs a script"));
+    assert!(text.contains("Orbit refuses anything else"));
+    assert!(text.contains("tell them to type it in Repositories themselves"));
     assert!(text.contains("Turn autopilot on only when the person asks for it, or asks you to get a repository reviewed automatically"));
     assert!(!text.contains("setup command, network access or browser access"));
 }
