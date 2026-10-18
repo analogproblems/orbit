@@ -164,5 +164,42 @@ fn text_from_a_pull_request_is_exported_as_written() {
         "> !\\[x\\](http://example.com/x.png) &amp; \\\\\\[c\\\\\\]\n> &lt;script>no&lt;/script>\n"
     ));
     assert!(!text.contains("<img") && !text.contains("<script"));
-    assert_eq!(inert("one ` tick"), "one \\` tick");
+}
+
+/// What `md` shows once rendered: its text, with each code span's text
+/// in backticks. Panics on any image, link or HTML.
+fn shown(md: &str) -> String {
+    use pulldown_cmark::{Event, Parser, Tag};
+    let mut out = String::new();
+    for event in Parser::new(md) {
+        match event {
+            Event::Text(t) => out.push_str(&t),
+            Event::Code(c) => out.push_str(&format!("`{c}`")),
+            Event::SoftBreak => out.push('\n'),
+            Event::Start(Tag::Paragraph) | Event::End(_) => {}
+            other => panic!("{md:?} renders {other:?}"),
+        }
+    }
+    out
+}
+
+#[test]
+fn exported_text_renders_as_written_and_keeps_its_code_spans() {
+    for written in [
+        "`![x](https://example.com/x.png)```",
+        "` <img src=x onerror=alert(1)> ```",
+        "``x` [a](b) <b>bold</b>",
+        "one ` tick, \\` escaped, \\[c\\] and &amp; as written",
+        "<https://example.com> and ![x](y)",
+    ] {
+        assert_eq!(shown(&inert(written)), written, "{written}");
+    }
+    for (written, code) in [
+        ("in ``Vec<T>`` here", "in `Vec<T>` here"),
+        ("`a``b` then `<i>`", "`a``b` then `<i>`"),
+        // The span holds one backtick.
+        ("``` ` ``` and ` [x](y)", "``` and ` [x](y)"),
+    ] {
+        assert_eq!(shown(&inert(written)), code, "{written}");
+    }
 }

@@ -255,26 +255,57 @@ fn line(text: &str) -> String {
     inert(&text.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 /// Text from a pull request or a writer shown as written: its HTML, images
-/// and links come out as plain text. Code spans are left alone, since
-/// nothing in them renders; an unpaired backtick is shown as one.
+/// and links come out as plain text. A code span, a run of backticks up to
+/// the next run of the same length as CommonMark pairs them, is left alone,
+/// since nothing in it renders; a run with no partner is escaped.
 pub(super) fn inert(text: &str) -> String {
-    let paired = text.matches('`').count().is_multiple_of(2);
+    let chars: Vec<char> = text.chars().collect();
+    let run = |at: usize| chars[at..].iter().take_while(|&&c| c == '`').count();
     let mut out = String::with_capacity(text.len());
-    let mut code = false;
-    for c in text.chars() {
-        match c {
-            '`' if paired => {
-                code = !code;
-                out.push(c);
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '`' => {
+                let n = run(i);
+                let mut j = i + n;
+                let close = loop {
+                    match chars.get(j) {
+                        None => break None,
+                        Some('`') => match run(j) {
+                            m if m == n => break Some(j + n),
+                            m => j += m,
+                        },
+                        Some(_) => j += 1,
+                    }
+                };
+                match close {
+                    Some(end) => {
+                        out.extend(&chars[i..end]);
+                        i = end;
+                    }
+                    None => {
+                        out.push_str(&"\\`".repeat(n));
+                        i += n;
+                    }
+                }
             }
-            _ if code => out.push(c),
-            '`' | '\\' | '[' | ']' => {
+            c @ ('\\' | '[' | ']') => {
                 out.push('\\');
                 out.push(c);
+                i += 1;
             }
-            '<' => out.push_str("&lt;"),
-            '&' => out.push_str("&amp;"),
-            _ => out.push(c),
+            '<' => {
+                out.push_str("&lt;");
+                i += 1;
+            }
+            '&' => {
+                out.push_str("&amp;");
+                i += 1;
+            }
+            c => {
+                out.push(c);
+                i += 1;
+            }
         }
     }
     out

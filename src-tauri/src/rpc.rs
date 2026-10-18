@@ -63,7 +63,10 @@ impl Rpc {
             alive: alive.clone(),
             last_error: last_error.clone(),
         });
+        // Closes when Codex's standard error does.
+        let (stderr_open, stderr_closed) = tokio::sync::oneshot::channel::<()>();
         tokio::spawn(async move {
+            let _open = stderr_open;
             let mut lines = crate::cli::Lines::new(stderr);
             // Only the last line is kept, in memory, to explain a disconnect;
             // nothing Codex writes here is logged.
@@ -101,8 +104,9 @@ impl Rpc {
                 }
             }
             alive.store(false, Ordering::SeqCst);
-            // What it wrote to standard error last arrives soon after.
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            // A Codex that exited closes standard error too: wait for its
+            // last line, so the disconnect can say why.
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(1), stderr_closed).await;
             for (_, tx) in pending.lock().await.drain() {
                 let _ = tx.send(Err("Codex app-server disconnected.".into()));
             }
