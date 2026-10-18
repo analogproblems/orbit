@@ -114,7 +114,7 @@ impl Rpc {
         });
         rpc.request(
             "initialize",
-            json!({"clientInfo":{"name":"orbit","title":"Orbit","version":"0.1.0"}}),
+            json!({"clientInfo":{"name":"orbit","title":"Orbit","version":env!("CARGO_PKG_VERSION")}}),
         )
         .await?;
         rpc.write(json!({"method":"initialized","params":{}}))
