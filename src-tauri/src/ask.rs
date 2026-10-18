@@ -222,7 +222,7 @@ Decisions:
 Setting up a repository:
 - A setup command runs in each review's sandbox before the reviewer starts, to install what the code needs. Use the `suggestedSetup` the summary gives for the repository's copy, which Orbit picks from its first lock file: {setup_commands}. With none, leave it empty unless the person tells you what it needs.
 - Installing needs networkAccess on. Say so when you offer it: with network on, setup and the reviewer can reach the internet, including code from the pull request.
-- Keep commands to one line of standard install or test commands. Never offer one that downloads and runs a script, uses a password or token, pushes, or changes anything outside the repository.
+- Keep commands to standard install and test commands: the suggested setup, `npm run <script>` (or pnpm, yarn or bun) with a script the summary lists, `npm test`, `cargo test`, `go test ./...`, `pytest`, `make <target>` and the like, joined by `&&`. Orbit refuses anything else, such as `python -c` or `node -e`, a registry or other value after a flag, or downloading and running a script; when the person needs one of those, tell them to type it in Repositories themselves.
 - Claude and Antigravity reviews can run a setup command only with devContainer on. A check command, such as `npm test`, runs only in the dev container, after setup, so it needs devContainer on and a .devcontainer file in the copy.
 - Turn autopilot on only when the person asks for it, or asks you to get a repository reviewed automatically, and offer it as a button of its own.
 

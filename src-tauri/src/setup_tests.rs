@@ -73,6 +73,27 @@ fn a_change_takes_only_values_repositories_could_save() {
         ("setupCommand", "npm ci && nc example.com 80"),
         ("setupCommand", "cat setup.txt |  bash"),
         ("setupCommand", "git   push --force"),
+        // Only known commands: nothing else can run code an answer wrote.
+        ("setupCommand", "python3 -c 'import os'"),
+        ("checkCommand", "node -e 'require(\"fs\")'"),
+        ("setupCommand", "npx some-package"),
+        ("setupCommand", "npm ci --registry=https://example.com"),
+        ("setupCommand", "npm ci; rm -rf ~"),
+        ("checkCommand", "npm run ../../x"),
+        ("checkCommand", "make -f other.mk"),
+        // Options must be ones the program is known to take without a value.
+        ("checkCommand", "make --directory .."),
+        ("checkCommand", "make --file other.mk"),
+        ("checkCommand", "make --file=other.mk"),
+        ("setupCommand", "npm ci --prefix"),
+        ("setupCommand", "pnpm install --frozen-lockfile --dir .."),
+        ("setupCommand", "cargo build --manifest-path"),
+        ("setupCommand", "go test ./... --exec"),
+        ("checkCommand", "pytest --rootdir .."),
+        ("checkCommand", "npm run lint --ignore-scripts"),
+        ("setupCommand", "npm exec thing"),
+        ("setupCommand", "go run ./cmd/x"),
+        ("setupCommand", "x"),
     ] {
         assert_eq!(change(setting, value), None, "{setting}: {value}");
     }
@@ -83,10 +104,30 @@ fn a_change_takes_only_values_repositories_could_save() {
         "cargo fetch",
         "npm ci || true",
         "bundle install && yarn install --frozen-lockfile",
+        "npm ci --ignore-scripts && npm run build",
+        "pnpm run test:unit",
+        "npm test",
+        "cargo test --locked",
+        "go test ./...",
+        "make",
+        "make check",
+        "pip install -r requirements.txt",
+        "pytest",
+        "npm ci --ignore-scripts --no-audit --no-fund",
+        "yarn --immutable install",
+        "cargo clippy --workspace --all-targets --locked",
+        "mvn --batch-mode verify",
+        "./gradlew test --no-daemon",
     ] {
         assert!(change("setupCommand", fine).is_some(), "{fine}");
     }
-    assert!(change("setupCommand", &"x".repeat(MAX_COMMAND)).is_some());
+    // Every setup command Orbit suggests is one an answer may set.
+    for (_, suggested) in SETUP_COMMANDS {
+        assert!(change("setupCommand", suggested).is_some(), "{suggested}");
+    }
+    let longest = format!("npm run {}", "a".repeat(MAX_COMMAND - 8));
+    assert!(change("setupCommand", &longest).is_some());
+    assert_eq!(change("setupCommand", &format!("{longest}a")), None);
 }
 
 #[test]

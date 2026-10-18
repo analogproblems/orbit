@@ -24,6 +24,7 @@ mod findings;
 mod fixes;
 mod inline;
 mod ledger;
+mod prune;
 mod publish;
 mod queue;
 mod rounds;
@@ -72,6 +73,8 @@ mod ledger_tests;
 mod model_tests;
 #[cfg(test)]
 mod notice_tests;
+#[cfg(test)]
+mod prune_tests;
 #[cfg(test)]
 mod publish_tests;
 #[cfg(test)]
@@ -167,6 +170,9 @@ pub struct Engine {
     /// The pull-request history is being read; another read skips rather
     /// than waits.
     refreshing_ledger: AtomicBool,
+    /// When each repository's history last read every open pull request,
+    /// changed or not, without failing.
+    ledger_full_at: std::sync::Mutex<HashMap<String, std::time::Instant>>,
     /// Write-ups are being made; another run skips rather than waits.
     writing_up: AtomicBool,
     /// The Codex thread writing a pull request up.
@@ -362,6 +368,7 @@ impl Engine {
             stopping: AtomicBool::new(false),
             updating_clones: AtomicBool::new(false),
             refreshing_ledger: AtomicBool::new(false),
+            ledger_full_at: std::sync::Mutex::new(HashMap::new()),
             writing_up: AtomicBool::new(false),
             writing_thread: std::sync::Mutex::new(None),
             write_failed: std::sync::Mutex::new(HashMap::new()),
@@ -600,6 +607,7 @@ impl Engine {
         self.expire_approvals().await;
         self.close_boxes().await;
         self.sync_commit_statuses().await;
+        self.prune_state().await;
     }
     pub async fn storage_usage(&self) -> Result<storage::StorageUsage, String> {
         let snapshot = self.snapshot().await;

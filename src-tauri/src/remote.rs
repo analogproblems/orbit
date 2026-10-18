@@ -282,7 +282,7 @@ async fn dispatch(e: &Arc<Engine>, name: &str, a: &Value) -> Result<Value, Strin
         }
         "get_decisions" => out(e.decisions().await?),
         "refresh_decisions" => {
-            e.refresh_ledger_soon();
+            e.refresh_ledger_fully();
             out(())
         }
         "export_decisions" => {
@@ -532,7 +532,9 @@ impl Access {
         }
         status
     }
-    /// Turns access on or off, or moves it to another port.
+    /// Turns access on or off, or moves it to another port. Turning it off
+    /// also makes a new link, so the old one never works again, even on a
+    /// lost phone.
     pub async fn set(&self, enabled: bool, port: u16) -> Result<Status, String> {
         if port < 1024 {
             return Err("Choose a port from 1024 to 65535.".into());
@@ -544,9 +546,15 @@ impl Access {
                 &self.root.join(CONFIG_FILE),
                 &serde_json::to_vec(&config).map_err(|e| e.to_string())?,
             )?;
+            let turned_off = inner.config.enabled && !enabled;
             if inner.config != config || inner.running.is_none() == enabled {
                 inner.config = config;
                 self.restart(&mut inner).await;
+            }
+            if turned_off {
+                new_token(&self.root).map_err(|e| {
+                    format!("Browser access is off, but Orbit couldn't make a new link: {e}")
+                })?;
             }
         }
         Ok(self.status().await)

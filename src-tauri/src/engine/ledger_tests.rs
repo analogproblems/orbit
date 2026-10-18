@@ -401,7 +401,12 @@ async fn reads_history_in_the_background_and_only_what_changed() {
         "Guard the empty list"
     );
 
-    // Nothing changed: only the open pull request is read again.
+    // Nothing changed: within the hour, nothing is read again.
+    refresh(&e, &gh).await;
+    assert_eq!(calls(d.path(), "repos/a/b/pulls/1/reviews"), 1);
+    assert_eq!(calls(d.path(), "repos/a/b/pulls/2/reviews"), 1);
+    // The hourly pass, or Refresh, reads the open one too.
+    e.ledger_full_at.lock().unwrap().clear();
     refresh(&e, &gh).await;
     assert_eq!(calls(d.path(), "repos/a/b/pulls/1/reviews"), 1);
     assert_eq!(calls(d.path(), "repos/a/b/pulls/2/reviews"), 2);
@@ -416,6 +421,9 @@ async fn reads_history_in_the_background_and_only_what_changed() {
     );
     edited["updated_at"] = json!("2026-10-11T11:30:00Z");
     answer(d.path(), "repos/a/b/issues/2/comments", json!([edited]));
+    refresh(&e, &gh).await;
+    assert_eq!(e.snapshot().await.ledger.version, 1);
+    e.ledger_full_at.lock().unwrap().clear();
     refresh(&e, &gh).await;
     assert_eq!(e.snapshot().await.ledger.version, 2);
     let pr2 = e
@@ -481,6 +489,55 @@ async fn a_pull_request_that_fails_to_read_is_read_again_next_time() {
         serde_json::from_slice(&std::fs::read(d.path().join("state/ledger/a/b/1.json")).unwrap())
             .unwrap();
     assert_eq!(stored.pr.title, "Change 1");
+}
+
+#[tokio::test]
+async fn an_hourly_read_that_fails_is_tried_again_next_time() {
+    let d = tempfile::tempdir().unwrap();
+    let e = Engine::new(d.path().join("state"), |_| {}).unwrap();
+    e.update(|s| s.settings.repositories = vec![repository("a/b")])
+        .await;
+    let gh = fake_gh(d.path());
+    let milo = "## Milo PR review\n\n**CHANGES REQUESTED**\n\n- Full head: `aaaaaaa`\n\n**F1 · P2 · Guard the empty list**\n\nIt panics.";
+    answer(
+        d.path(),
+        "repos/a/b/pulls",
+        json!([{"number": 1, "state": "open", "updated_at": "2026-10-11T11:00:00Z"}]),
+    );
+    serve_pr(
+        d.path(),
+        1,
+        "open",
+        "2026-10-11T11:00:00Z",
+        json!([issue_comment(1, "2026-10-11T10:00:00Z", milo)]),
+    );
+    refresh(&e, &gh).await;
+    assert_eq!(e.snapshot().await.ledger.version, 1);
+
+    // Milo edits its review without the pull request's time changing, and
+    // the hourly read fails.
+    let mut edited = issue_comment(
+        1,
+        "2026-10-11T10:00:00Z",
+        "## Milo PR review\n\n**CLEAR TO MERGE**\n\n- Full head: `bbbbbbb`\n\n- **F1 fixed:** guarded.",
+    );
+    edited["updated_at"] = json!("2026-10-11T11:30:00Z");
+    std::fs::remove_file(d.path().join("repos_a_b_issues_1_comments.json")).unwrap();
+    e.ledger_full_at.lock().unwrap().clear();
+    refresh(&e, &gh).await;
+    let s = e.snapshot().await;
+    assert!(s.ledger.repos[0].error.is_some());
+    assert_eq!(s.ledger.version, 1);
+
+    // The next pass reads it again rather than waiting another hour.
+    answer(d.path(), "repos/a/b/issues/1/comments", json!([edited]));
+    refresh(&e, &gh).await;
+    let s = e.snapshot().await;
+    assert_eq!(s.ledger.repos[0].error, None);
+    assert_eq!(s.ledger.version, 2);
+    // Once it has succeeded, the hour starts again.
+    refresh(&e, &gh).await;
+    assert_eq!(calls(d.path(), "repos/a/b/issues/1/comments"), 3);
 }
 
 #[tokio::test]

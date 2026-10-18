@@ -35,6 +35,9 @@ const DENIED: [&str; 3] = [
     "Bash(*--textconv*)",
 ];
 const MISSING: &str = "Cannot start Claude. Install Claude Code, then run claude once to sign in.";
+/// How long a turn may run, the same as Antigravity's, so a stalled one
+/// doesn't hold its place until someone presses Stop.
+const TURN_LIMIT: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
 /// How Orbit starts `claude`.
 pub fn launcher() -> Launcher {
@@ -190,7 +193,15 @@ pub fn start_write_up(
     cwd: &std::path::Path,
     input: String,
 ) -> Result<Started, String> {
-    cli::spawn(launcher, args, cwd, Some(input), Reader::default(), MISSING)
+    cli::spawn(
+        launcher,
+        args,
+        cwd,
+        Some(input),
+        Reader::default(),
+        MISSING,
+        None,
+    )
 }
 
 /// Starts a Claude turn; see `cli::spawn`.
@@ -203,6 +214,7 @@ pub fn start(launcher: &Launcher, turn: &Turn) -> Result<Started, String> {
         stdin,
         Reader::default(),
         MISSING,
+        Some(TURN_LIMIT),
     )
 }
 
@@ -604,6 +616,88 @@ pub(crate) mod tests {
         let catalog = catalog();
         crate::models::validate_catalog(&catalog).unwrap();
         assert_eq!(catalog.iter().filter(|m| m["isDefault"] == true).count(), 1);
+    }
+
+    /// Starts a fake turn in `mode`, logging to `log`, and waits for how
+    /// it ended.
+    async fn ended(
+        mode: &str,
+        log: &std::path::Path,
+        limit: Option<std::time::Duration>,
+    ) -> String {
+        let (_running, _init, mut rx) = cli::spawn(
+            &fake(&format!("{mode}@{}", log.display())),
+            ["-p", "--output-format", "stream-json"]
+                .map(String::from)
+                .into(),
+            log.parent().unwrap(),
+            Some("Review this.".into()),
+            Reader::default(),
+            MISSING,
+            limit,
+        )
+        .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if let Some(Output::Exited(reason)) = rx.recv().await {
+                    return reason;
+                }
+            }
+        })
+        .await
+        .expect("the turn never ended")
+    }
+    fn alive(pid: &str) -> bool {
+        std::process::Command::new("kill")
+            .args(["-0", pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    }
+
+    #[tokio::test]
+    async fn a_turn_still_working_at_its_limit_is_stopped() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("calls");
+        let limit = std::time::Duration::from_millis(500);
+        let reason = ended("slow", &log, Some(limit)).await;
+        assert!(reason.contains("was still working after"), "{reason}");
+        // The command it started went with it.
+        let pid = std::fs::read_to_string(log.with_extension("child")).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while alive(&pid) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the turn's command outlived it");
+    }
+
+    #[tokio::test]
+    async fn a_turn_whose_process_exits_ends_even_while_its_output_is_held_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("calls");
+        // What it left running in its own group is stopped with it.
+        let reason = ended("orphan", &log, None).await;
+        assert!(reason.contains("stopped before finishing"), "{reason}");
+        let pid = std::fs::read_to_string(log.with_extension("child")).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while alive(&pid) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the turn's command outlived it");
+        // Something that left its group can't be stopped safely, but the
+        // turn still ends, even before its limit.
+        let reason = ended("escaped", &log, Some(std::time::Duration::from_secs(60))).await;
+        let pid = std::fs::read_to_string(log.with_extension("child")).unwrap();
+        let _ = std::process::Command::new("kill").arg(&pid).status();
+        assert!(
+            reason.contains("exited but left a command running"),
+            "{reason}"
+        );
     }
 
     #[tokio::test]

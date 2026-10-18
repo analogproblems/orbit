@@ -133,9 +133,11 @@ switch (command) {
       fs.rmSync(inside(name, argv[argv.length - 1]), { force: true });
     } else if (program === "chown") {
       // Nothing to change in a folder.
-    } else if (program === "/bin/sh" && argv[1].startsWith("kill -KILL -1")) {
-      // Kills everything started in the container, never on this computer;
-      // `stop-fails` plays a container with no room for another process.
+    } else if (program === "/bin/sh" && /kill -[A-Z]+ -1\b/.test(argv[1])) {
+      // Orbit's stop script signals every process it can, so it must never
+      // run on this computer: this kills everything started in the
+      // container instead. `stop-fails` plays a container with no room for
+      // another process.
       if (has("stop-fails"))
         fail(
           "OCI runtime exec failed: unable to start container process: resource temporarily unavailable",
@@ -144,7 +146,7 @@ switch (command) {
       stopAll(name);
       console.log("stopped");
     } else if (program === "/bin/sh") {
-      // In its own process group, which `docker rm` and `kill -KILL -1`
+      // In its own process group, which `docker rm` and the stop script
       // stop.
       const child = spawn(argv[1], {
         cwd: inside(name, workdir),

@@ -7,6 +7,9 @@ use crate::ledger::{self as store, export, Decisions, StoredPr};
 
 /// How often the history is read again.
 pub(super) const REFRESH: Duration = Duration::from_secs(5 * 60);
+/// How often a read also reads the open pull requests GitHub doesn't say
+/// changed, as an edited comment doesn't always update its pull request.
+pub(super) const FULL_REFRESH: Duration = Duration::from_secs(60 * 60);
 
 /// Whether a connected repository's history has not been read yet.
 pub(super) fn unread(s: &Snapshot) -> bool {
@@ -48,10 +51,17 @@ impl Engine {
         });
         true
     }
+    /// Starts a read that also reads every open pull request, as Refresh on
+    /// the Decisions page asks.
+    pub fn refresh_ledger_fully(self: &Arc<Self>) -> bool {
+        self.ledger_full_at.lock().unwrap().clear();
+        self.refresh_ledger_soon()
+    }
     /// Reads each connected repository's 100 most recently updated pull
-    /// requests: those not stored yet, those updated since, and every open
-    /// one, as an edited comment doesn't always update its pull request.
-    /// The stored history of repositories no longer connected is removed.
+    /// requests: those not stored yet and those updated since, and once an
+    /// hour every open one, as an edited comment doesn't always update its
+    /// pull request. An hourly read that fails is tried again next time. The
+    /// stored history of repositories no longer connected is removed.
     pub(super) async fn refresh_ledger(&self) {
         let repos: Vec<String> = {
             let s = self.state.lock().await;
@@ -67,8 +77,18 @@ impl Engine {
         // A folder that can't be removed now is tried again next time.
         let _ = blocking(move || store::prune(&root, &connected)).await;
         for repo in &repos {
+            let full = self
+                .ledger_full_at
+                .lock()
+                .unwrap()
+                .get(repo)
+                .is_none_or(|t| t.elapsed() >= FULL_REFRESH);
             let mut changed = false;
-            let result = self.refresh_repo(repo, &mut changed).await;
+            let result = self.refresh_repo(repo, full, &mut changed).await;
+            if full && result.is_ok() {
+                let mut stamps = self.ledger_full_at.lock().unwrap();
+                stamps.insert(repo.clone(), std::time::Instant::now());
+            }
             self.update(|s| {
                 let at = result.is_ok().then(now);
                 let error = result.err();
@@ -89,6 +109,10 @@ impl Engine {
             })
             .await;
         }
+        self.ledger_full_at
+            .lock()
+            .unwrap()
+            .retain(|repo, _| repos.contains(repo));
         self.update(|s| {
             s.ledger.refreshing = false;
             s.ledger.progress = None;
@@ -99,10 +123,11 @@ impl Engine {
         })
         .await;
     }
-    /// Reads one repository's pull requests that need it, stopping at the
-    /// first that fails. Sets `changed` when any stored history changed,
-    /// even if a later pull request then fails.
-    async fn refresh_repo(&self, repo: &str, changed: &mut bool) -> Result<(), String> {
+    /// Reads one repository's pull requests that need it, with every open
+    /// one when `full`, stopping at the first that fails. Sets `changed`
+    /// when any stored history changed, even if a later pull request then
+    /// fails.
+    async fn refresh_repo(&self, repo: &str, full: bool, changed: &mut bool) -> Result<(), String> {
         let listed = crate::github::recent_pulls(repo).await?;
         let listed: Vec<(u64, Value)> = listed
             .into_iter()
@@ -123,7 +148,8 @@ impl Engine {
             .zip(stored)
             .filter(|((_, p), previous)| {
                 let current = previous.as_ref().is_some_and(|s| {
-                    p["state"] != "open" && p["updated_at"].as_str() == Some(&s.pr.updated_at)
+                    (!full || p["state"] != "open")
+                        && p["updated_at"].as_str() == Some(&s.pr.updated_at)
                 });
                 !current
             })
