@@ -1,12 +1,35 @@
 # Orbit architecture
 
-How Orbit is built and why it behaves the way it does. For what each control does, see the [user guide](user-guide.md). The code map is in the [README](../README.md#architecture).
+How Orbit is built and why it behaves the way it does. For what each control does, see the [user guide](user-guide.md). Where each part lives is in the [code map](#code-map).
 
 ## Overview
 
 Orbit is a Tauri 2 desktop app. The React frontend renders a snapshot of the engine's state and sends a small set of named commands. The Rust engine does everything else: polling GitHub, scheduling reviews, preparing worktrees, talking to Codex, publishing, and saving state. Polling and review orchestration run in Rust, independent of which view is open. Orbit must remain running; this version does not install a background daemon or GitHub webhook.
 
-Orbit uses the `gh`, `git`, `codex`, and (optionally) `claude` executables installed on your `PATH` rather than bundling a Codex binary. GitHub CLI and Codex manage their own authentication; Orbit does not request or store copies of your tokens.
+Orbit uses the `gh`, `git`, `codex`, and (optionally) `claude`, `agy`, `docker` and `devcontainer` executables installed on your `PATH` rather than bundling a Codex binary. GitHub CLI and Codex manage their own authentication; Orbit does not request or store copies of your tokens.
+
+## Code map
+
+| Area                                                    | Where                                                                                                                                                                                                                                                                  |
+| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| App shell, navigation and theme                         | `src/App.tsx`, `src/main.tsx`, `src/styles.css`                                                                                                                                                                                                                        |
+| Pages                                                   | `src/Inbox.tsx` and `src/Detail.tsx` (pull requests), `src/Chat.tsx`, `src/Files.tsx`, `src/Live.tsx`, `src/Loops.tsx` and `src/Loop.tsx`, `src/FindingsPage.tsx`, `src/Decisions.tsx`, `src/Scans.tsx`, `src/Repositories.tsx`, `src/Settings.tsx`, `src/Storage.tsx` |
+| Bit in the UI                                           | `src/Buddy.tsx` (sidebar card and page), `src/Bit.tsx` (the picture)                                                                                                                                                                                                   |
+| Typed state and the native bridge                       | `src/types.ts`, `src/store.ts`                                                                                                                                                                                                                                         |
+| Browser demo                                            | `src/demo.ts`, `src/demoDecisions.ts` and the demo adapter in `src/store.ts`                                                                                                                                                                                           |
+| Browser access from other devices                       | `src-tauri/src/remote.rs`, `src/remote.ts`, `src/RemoteAccess.tsx`                                                                                                                                                                                                     |
+| Native command allowlist and app lifecycle              | `src-tauri/src/lib.rs`                                                                                                                                                                                                                                                 |
+| Engine: queue, worktrees, runs, publishing, persistence | `src-tauri/src/engine/` (one file per area; see `engine/mod.rs`)                                                                                                                                                                                                       |
+| Shared types and model selection                        | `src-tauri/src/types.rs`, `src-tauri/src/models.rs`                                                                                                                                                                                                                    |
+| Review loop, verdicts and what needs you                | `src-tauri/src/review_loop.rs`, `src-tauri/src/attention.rs`                                                                                                                                                                                                           |
+| Codex app-server process and RPC                        | `src-tauri/src/rpc.rs`, `src-tauri/src/usage.rs`, `src-tauri/src/extras.rs`                                                                                                                                                                                            |
+| Claude and Antigravity reviewers                        | `src-tauri/src/claude.rs`, `src-tauri/src/antigravity.rs`, `src-tauri/src/cli.rs`, `src-tauri/src/review_instructions.rs`, `engine/cli_review.rs`                                                                                                                      |
+| GitHub discovery, details, files and comments           | `src-tauri/src/github.rs`                                                                                                                                                                                                                                              |
+| Dev containers and the box tool                         | `src-tauri/src/devcontainer.rs`, `src-tauri/src/boxtool.rs`, `engine/checks.rs`                                                                                                                                                                                        |
+| Security scans                                          | `src-tauri/src/scans.rs`, `engine/scans.rs`, `src/Scans.tsx`                                                                                                                                                                                                           |
+| Pull-request history and the Decisions page             | `src-tauri/src/ledger/`, `engine/ledger.rs`, `engine/writeup.rs`, `src/decisionData.ts`                                                                                                                                                                                |
+| Bit: notes, mood, fixes, questions and setup help       | `src-tauri/src/buddy.rs`, `ask.rs`, `guide.rs`, `setup.rs`, `ollama.rs`, `api.rs`, `engine/ask.rs`, `engine/setup.rs`, `engine/sign_in.rs`                                                                                                                             |
+| Storage inspection, ownership checks, report export     | `src-tauri/src/storage.rs`, `src/ReviewActions.tsx`                                                                                                                                                                                                                    |
 
 ## Codex app-server protocol
 
@@ -156,7 +179,7 @@ On exit, Orbit closes the app-server's stdin and terminates it. Unix process-gro
 
 The supplied architecture document was used as a recommendation. This implementation corrects the protocol lifecycle and event names, uses existing installed CLIs instead of bundling a Codex binary, and uses Astryx with its neutral theme.
 
-Not included in this version: macOS/Windows installers, signing, auto-update distribution, and container-backed environments. Native prerequisites vary by OS.
+Not included in this version: code signing for the macOS and Windows installers, and automatic updates. Native prerequisites vary by OS.
 
 ## Verification
 
