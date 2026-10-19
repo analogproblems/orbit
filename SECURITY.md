@@ -1,6 +1,6 @@
 # Security
 
-Orbit runs coding agents on pull request code on your computer, so security problems matter. The [README](README.md#safety-at-a-glance) and the [user guide](docs/user-guide.md) describe what Orbit protects against and where its limits are.
+Orbit runs coding agents on pull request code on your computer, so security problems matter. The [README](README.md#built-with-care-for-your-machine), [Isolation and its limits](docs/architecture.md#isolation-and-its-limits) and the [user guide](docs/user-guide.md) describe what Orbit protects against and where its limits are.
 
 ## Reporting a problem
 
