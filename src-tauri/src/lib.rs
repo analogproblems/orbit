@@ -14,6 +14,7 @@ pub mod extras;
 pub mod github;
 pub mod guide;
 pub mod ledger;
+pub mod logs;
 pub mod models;
 pub mod ollama;
 pub mod ops;

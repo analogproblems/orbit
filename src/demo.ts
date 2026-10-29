@@ -8,6 +8,7 @@ import {
   selectionError,
   type BuddyNote,
   type BuddyNoteLine,
+  type CiFailure,
   type Fix,
   type LoopStatus,
   type Proposal,
@@ -825,9 +826,11 @@ const sha = (start: string) => start + "0".repeat(40 - start.length);
  * checks. */
 export function demoCi(
   prs: PullRequest[],
-): Pick<Snapshot, "ci" | "problems" | "ops" | "journal"> {
+): Pick<Snapshot, "ci" | "problems" | "ops" | "journal" | "failures"> {
   const failingPr = prs[2];
-  const check = (name: string) => ({ name, url: "" });
+  const check = (name: string, url = "") => ({ name, url });
+  const rustJob = "https://github.com/acme/orbit/actions/runs/1001/job/2001";
+  const frontendJob = `https://github.com/${failingPr.repo}/actions/runs/1002/job/2002`;
   const ci: RepoCi[] = [
     {
       repo: "acme/orbit",
@@ -835,7 +838,7 @@ export function demoCi(
       head: {
         sha: sha("9f3c2a1"),
         state: "failing",
-        failing: [check("CI / Rust tests")],
+        failing: [check("CI / Rust tests", rustJob)],
         running: 0,
         passing: 3,
       },
@@ -877,7 +880,7 @@ export function demoCi(
     ci: {
       sha: failingPr.headSha,
       state: "failing",
-      failing: [check("CI / Frontend")],
+      failing: [check("CI / Frontend", frontendJob)],
       running: 0,
       passing: 2,
     },
@@ -891,7 +894,7 @@ export function demoCi(
       branch: "main",
       sha: sha("9f3c2a1"),
       sinceSha: sha("7d41e09"),
-      failing: [check("CI / Rust tests")],
+      failing: [check("CI / Rust tests", rustJob)],
       openedAt: ago(45),
       updatedAt: ago(18),
       timeline: [
@@ -909,7 +912,7 @@ export function demoCi(
       branch: failingPr.headRef,
       sha: failingPr.headSha,
       sinceSha: failingPr.headSha,
-      failing: [check("CI / Frontend")],
+      failing: [check("CI / Frontend", frontendJob)],
       openedAt: ago(20),
       updatedAt: ago(20),
       timeline: [
@@ -949,7 +952,8 @@ export function demoCi(
     failing: boolean,
     since: string,
     at: string,
-  ) => ({ number, check, url: "", failing, since, at });
+    url = "",
+  ) => ({ number, check, url, failing, since, at });
   const thread = (
     t: Partial<OpsThread> & Pick<OpsThread, "key" | "kind" | "repo">,
   ): OpsThread => ({
@@ -975,7 +979,14 @@ export function demoCi(
       problemId: "demo-problem-1",
       items: [
         {
-          ...item(1, "CI / Rust tests", true, sha("7d41e09"), sha("9f3c2a1")),
+          ...item(
+            1,
+            "CI / Rust tests",
+            true,
+            sha("7d41e09"),
+            sha("9f3c2a1"),
+            rustJob,
+          ),
           answer: {
             kind: "taking",
             author: "acme-bot",
@@ -1005,6 +1016,7 @@ export function demoCi(
             true,
             failingPr.headSha,
             failingPr.headSha,
+            frontendJob,
           ),
           answer: {
             kind: "fixed",
@@ -1057,7 +1069,45 @@ export function demoCi(
     write("demo-write-6", "post_comment", ops[1], ago(19)),
     write("demo-write-7", "edit_issue", ops[0], ago(18)),
   ];
-  return { ci, problems, ops, journal };
+  const failures: CiFailure[] = [
+    {
+      url: rustJob,
+      check: "CI / Rust tests",
+      step: "Run cargo test",
+      lines: [
+        "running 214 tests",
+        "test review_loop::tests::stops_when_clear ... ok",
+        "test engine::tests::sync_reads_new_heads ... FAILED",
+        "failures:",
+        "---- engine::tests::sync_reads_new_heads stdout ----",
+        "thread 'engine::tests::sync_reads_new_heads' panicked at src/engine/sync_tests.rs:88:5:",
+        "assertion `left == right` failed",
+        "  left: 2",
+        " right: 3",
+        "test result: FAILED. 213 passed; 1 failed; 0 ignored",
+        "Error: Process completed with exit code 101.",
+      ],
+      held: false,
+      readAt: ago(17),
+    },
+    {
+      url: frontendJob,
+      check: "CI / Frontend",
+      step: "Run npm test",
+      lines: [
+        " FAIL  src/Inbox.test.tsx > shows the newest pull request first",
+        "AssertionError: expected 'Fix the login page' to be 'Add dark mode'",
+        " Test Files  1 failed | 14 passed (15)",
+        "Error: Process completed with exit code 1.",
+      ],
+      held: false,
+      readAt: ago(19),
+    },
+  ];
+  for (const t of ops)
+    for (const i of t.items)
+      if (i.failing) i.why = failures.find((f) => f.url === i.url) ?? null;
+  return { ci, problems, ops, journal, failures };
 }
 /** The browser demo: the fresh workspace plus two weeks of history. */
 export function demoWorkspace(): Snapshot {

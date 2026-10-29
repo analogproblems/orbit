@@ -2,7 +2,7 @@
 //! default branch and open pull requests, and the problems they open or
 //! close (see `crate::ci` and `crate::problems`).
 use super::Engine;
-use crate::{ci, problems, types::*};
+use crate::{ci, logs, problems, types::*};
 use std::sync::atomic::Ordering;
 
 impl Engine {
@@ -21,6 +21,7 @@ impl Engine {
             return;
         }
         self.watch_ci_now().await;
+        self.read_failures().await;
         self.watching_ci.store(false, Ordering::SeqCst);
         // Also with Watch CI off, so what Orbit posted is closed.
         self.tell_agents().await;
@@ -95,6 +96,37 @@ impl Engine {
             problems::close_unwatched(&mut s.problems, &connected, false, now);
         })
         .await;
+        let _ = self.flush().await;
+    }
+}
+impl Engine {
+    /// Reads why the jobs failing on open problems failed, a few new ones
+    /// a pass, and forgets the ones no longer failing. A log GitHub didn't
+    /// answer for is tried again on the next pass.
+    async fn read_failures(&self) {
+        let wanted = {
+            let s = self.state.lock().await;
+            logs::wanted(&s.problems, &s.failures)
+        };
+        for (repo, check, url) in wanted {
+            let Ok(failure) = logs::read(&repo, &check, &url).await else {
+                continue;
+            };
+            self.update(|s| {
+                if !s.failures.iter().any(|f| f.url == failure.url) {
+                    s.failures.push(failure);
+                }
+            })
+            .await;
+        }
+        let pruned = {
+            let mut s = self.state.lock().await;
+            let s = &mut *s;
+            logs::prune(&mut s.failures, &s.problems)
+        };
+        if pruned {
+            self.dirty.store(true, Ordering::SeqCst);
+        }
         let _ = self.flush().await;
     }
 }

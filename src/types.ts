@@ -1072,6 +1072,9 @@ export interface Snapshot {
   ops?: OpsThread[];
   /** Each write Orbit made on GitHub for them; the newest last. */
   journal?: OpsWrite[];
+  /** Why the jobs still failing on open problems failed, as Orbit read
+   * them. */
+  failures?: CiFailure[];
 }
 /** Where a commit's checks stand. "none" is no checks, or only ones that
  * were skipped or cancelled. */
@@ -1158,6 +1161,24 @@ export interface OpsItem {
   /** When GitHub first showed it failing this time: only replies from
    * then on are about it. */
   heardFrom?: string;
+  /** Why its job failed, once Orbit has read its log. */
+  why?: CiFailure | null;
+}
+/** Why one failing job failed, as Orbit read it from GitHub Actions. */
+export interface CiFailure {
+  /** The job's page on GitHub, its check's link. */
+  url: string;
+  check: string;
+  /** The step that failed, when GitHub says. */
+  step: string;
+  /** The last lines of that step's log up to its error. */
+  lines: string[];
+  /** The log looked like it held a secret, so Orbit dropped it. */
+  held: boolean;
+  /** Why Orbit can't say, such as a check that isn't a GitHub Actions
+   * job. */
+  error?: string | null;
+  readAt: string;
 }
 /** What an agent says about an item: `Taking I2`, `Fixed I2 in <commit>`,
  * `Declined I2: <reason>` or `Need a person on I2: <question>`. */

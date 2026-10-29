@@ -536,6 +536,9 @@ async fn a_rule_changed_during_the_search_stops_the_post() {
     let d = tempfile::tempdir().unwrap();
     let gh = fake_gh(d.path());
     answer(d.path(), '1', &[("Rust", "FAILURE")], None);
+    // Not a GitHub Actions job, so the first thing Orbit asks for is the
+    // search.
+    links(d.path(), &[("Rust", "https://ci.example.com/build/1")]);
     let e = connected(d.path()).await;
     // GitHub takes its time to answer the search.
     std::fs::write(d.path().join("hold"), "").unwrap();
@@ -1124,4 +1127,155 @@ async fn an_old_answer_on_a_reused_comment_doesnt_carry_over() {
     watch(&e, &gh).await;
     assert!(body().contains("someone is on it"), "{}", body());
     assert!(!body().contains("declined"), "{}", body());
+}
+
+/// Gives the checks GitHub reports these links, by name.
+fn links(dir: &Path, links: &[(&str, &str)]) {
+    let file = dir.join("answer.json");
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    fn walk(v: &mut Value, links: &[(&str, &str)]) {
+        match v {
+            Value::Object(o) => {
+                if let Some((_, url)) = links.iter().find(|(n, _)| o.get("name") == Some(&json!(n)))
+                {
+                    o.insert("detailsUrl".into(), json!(url));
+                }
+                o.values_mut().for_each(|v| walk(v, links));
+            }
+            Value::Array(a) => a.iter_mut().for_each(|v| walk(v, links)),
+            _ => {}
+        }
+    }
+    walk(&mut v, links);
+    std::fs::write(file, v.to_string()).unwrap();
+}
+/// A GitHub Actions job whose step `step` failed, and its log.
+fn job(dir: &Path, id: u32, step: &str, log: &[&str]) {
+    let steps = json!({ "steps": [
+        { "name": "Set up job", "conclusion": "success" },
+        { "name": step, "conclusion": "failure" }
+    ] });
+    std::fs::write(dir.join(format!("job-{id}.json")), steps.to_string()).unwrap();
+    let log: Vec<String> = log
+        .iter()
+        .map(|l| format!("2026-10-29T12:00:00.0000000Z {l}"))
+        .collect();
+    std::fs::write(dir.join(format!("log-{id}.txt")), log.join("\n")).unwrap();
+}
+fn job_url(id: u32) -> String {
+    format!("https://github.com/a/b/actions/runs/1/job/{id}")
+}
+
+/// Orbit reads why each failing job failed, once, and shows the step and
+/// the end of its log on its comment. A check that isn't a GitHub Actions
+/// job, or whose log GitHub no longer has, says so on Operations; a log
+/// that looks like it holds a secret is held back; one GitHub didn't
+/// answer for is read again on the next pass.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_comment_says_why_each_job_failed() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let e = connected(d.path()).await;
+    e.update(|s| s.prs = vec![pr('5')]).await;
+    let failing: &[(&str, &str)] = &[
+        ("Rust", "FAILURE"),
+        ("Lint", "FAILURE"),
+        ("Docs", "FAILURE"),
+    ];
+    answer(d.path(), '1', &[("Rust", "SUCCESS")], Some(('5', failing)));
+    let (rust, lint) = (job_url(2), job_url(3));
+    links(
+        d.path(),
+        &[
+            ("Rust", &rust),
+            ("Lint", &lint),
+            ("Docs", "https://ci.example.com/build/1"),
+        ],
+    );
+    job(
+        d.path(),
+        2,
+        "Run cargo test",
+        &[
+            "##[group]Run cargo test",
+            "cargo test --locked",
+            "##[endgroup]",
+            "test it_works ... FAILED",
+            "##[error]Process completed with exit code 101.",
+        ],
+    );
+    watch(&e, &gh).await;
+    let body = github(d.path())["comments"][0]["body"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(body.contains(&format!(
+        "`CI / Rust` · failing at `5555555` · [details]({rust})\n  Failed at step `Run cargo test`:\n  ```text\n  test it_works ... FAILED\n  Error: Process completed with exit code 101.\n  ```\n"
+    )));
+    assert!(body.contains(&format!(
+        "`CI / Lint` · failing at `5555555` · [details]({lint})\n"
+    )));
+    let read = e.state.lock().await.failures.clone();
+    assert_eq!(read.len(), 3);
+    let of = |url: &str| read.iter().find(|f| f.url == url).unwrap().clone();
+    assert_eq!(of(&rust).step, "Run cargo test");
+    assert_eq!(
+        of(&lint).error.as_deref(),
+        Some("GitHub no longer has this job's log.")
+    );
+    assert_eq!(
+        of("https://ci.example.com/build/1").error.as_deref(),
+        Some("Orbit can only read the logs of GitHub Actions jobs.")
+    );
+    assert_eq!(calls(d.path(), "actions/jobs/2"), 2);
+    assert_eq!(calls(d.path(), "actions/jobs/3"), 1);
+
+    // Each job is read once.
+    watch(&e, &gh).await;
+    assert_eq!(calls(d.path(), "actions/jobs/"), 3);
+
+    // A new head: one log holds a secret, and one GitHub answers badly.
+    e.update(|s| s.prs = vec![pr('6')]).await;
+    let failing: &[(&str, &str)] = &[("Rust", "FAILURE"), ("Lint", "FAILURE")];
+    answer(d.path(), '1', &[("Rust", "SUCCESS")], Some(('6', failing)));
+    let (rust, lint) = (job_url(4), job_url(5));
+    links(d.path(), &[("Rust", &rust), ("Lint", &lint)]);
+    let token = format!("gh{}_{}", 'p', "A1".repeat(18));
+    job(
+        d.path(),
+        4,
+        "Run cargo test",
+        // Far enough along its line that only part of it would be shown.
+        &[&format!("{} {token}", "x".repeat(220)), "##[error]boom"],
+    );
+    job(d.path(), 5, "Run npm test", &["##[error]lint failed"]);
+    std::fs::write(d.path().join("job-5.json"), "not JSON").unwrap();
+    watch(&e, &gh).await;
+    let body = github(d.path())["comments"][0]["body"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(!body.contains(&token[..12]));
+    assert!(body.contains(&format!(
+        "[details]({rust})\n  Orbit held back this job's log: it looks like it holds a secret.\n"
+    )));
+    assert!(body.contains(&format!("[details]({lint})\n")));
+    let read = e.state.lock().await.failures.clone();
+    let urls: Vec<&str> = read.iter().map(|f| f.url.as_str()).collect();
+    assert_eq!(urls, [rust.as_str()], "what no longer fails is forgotten");
+    assert!(read[0].held && read[0].lines.is_empty());
+    let saved = std::fs::read_to_string(d.path().join("state").join("state.json")).unwrap();
+    assert!(!saved.contains(&token[..12]));
+
+    job(d.path(), 5, "Run npm test", &["##[error]lint failed"]);
+    watch(&e, &gh).await;
+    let body = github(d.path())["comments"][0]["body"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(body.contains(&format!(
+        "[details]({lint})\n  Failed at step `Run npm test`:\n  ```text\n  Error: lint failed\n  ```\n"
+    )));
+    assert_eq!(calls(d.path(), "actions/jobs/5"), 3);
 }

@@ -8,11 +8,12 @@ import {
   screen,
   within,
 } from "@testing-library/react";
-import { Operations, answerText, branchSummary } from "./Operations";
+import { Operations, answerText, branchSummary, whyText } from "./Operations";
 import { freshDemo } from "./demo";
 import { useOrbit } from "./store";
 import {
   checkNames,
+  type CiFailure,
   type OpsAnswer,
   type OpsThread,
   type RepoCi,
@@ -237,6 +238,29 @@ describe("operations page", () => {
     );
   });
 
+  it("shows why each job failed, with the end of its log", () => {
+    const s = freshDemo();
+    const [rust, frontend] = s.failures ?? [];
+    s.failures = [
+      rust,
+      // Named as the problem names it.
+      { ...frontend, check: "Something else", held: true, lines: ["hidden"] },
+    ];
+    show(s);
+    const open = screen.getByRole("list", { name: "Open problems" });
+    const [branch, pull] = within(open).getAllByRole("listitem");
+    expect(branch.textContent).toContain(
+      "CI / Rust tests failed at step “Run cargo test”.",
+    );
+    expect(branch.textContent).toContain(
+      "test result: FAILED. 213 passed; 1 failed; 0 ignored",
+    );
+    expect(pull.textContent).toContain(
+      "CI / Frontend: Orbit held back its log, as it looks like it holds a secret.",
+    );
+    expect(pull.textContent).not.toContain("hidden");
+  });
+
   it("lists what Orbit posted, newest first", () => {
     const s = freshDemo();
     s.journal!.push({
@@ -336,6 +360,26 @@ describe("ci sentences", () => {
     expect(fixed("passes")).toContain("abc1234, and it passes there.");
     expect(fixed("not_on_branch")).toContain("abc1234, which isn’t on fix-it.");
     expect(fixed("not_found")).toContain("abc1234, which Orbit can’t find.");
+  });
+  it("say why a job failed", () => {
+    const f: CiFailure = {
+      url: "",
+      check: "CI / Lint",
+      step: "",
+      lines: [],
+      held: false,
+      readAt: "",
+    };
+    expect(whyText({ ...f, step: "Run npm run lint" })).toBe(
+      "CI / Lint failed at step “Run npm run lint”.",
+    );
+    expect(whyText(f)).toBe("CI / Lint failed. Its log ends:");
+    expect(
+      whyText({ ...f, error: "GitHub no longer has this job’s log." }),
+    ).toBe("CI / Lint: GitHub no longer has this job’s log.");
+    expect(whyText({ ...f, held: true, step: "Run it" })).toBe(
+      "CI / Lint: Orbit held back its log, as it looks like it holds a secret.",
+    );
   });
   it("name checks as the engine does", () => {
     const checks = ["A", "B", "C", "D"].map((name) => ({ name, url: "" }));

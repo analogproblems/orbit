@@ -1,6 +1,7 @@
 import {
   Button,
   Card,
+  CodeBlock,
   EmptyState,
   Heading,
   HStack,
@@ -21,6 +22,7 @@ import {
   shortSha,
   trustedSource,
   type AttentionHandlers,
+  type CiFailure,
   type CiState,
   type OpsAction,
   type OpsItem,
@@ -168,6 +170,40 @@ export function answerText(t: OpsThread, item: OpsItem) {
       }
     }
   }
+}
+
+/** Why a failing check failed, as Orbit read its job's log. */
+export function whyText(f: CiFailure) {
+  if (f.held)
+    return `${f.check}: Orbit held back its log, as it looks like it holds a secret.`;
+  if (f.error) return `${f.check}: ${f.error}`;
+  if (f.step) return `${f.check} failed at step “${f.step}”.`;
+  return `${f.check} failed. Its log ends:`;
+}
+
+/** Why each of a problem's failing checks failed, with the end of its log
+ * as plain text. */
+function Why({ s, p }: { s: Snapshot; p: Problem }) {
+  // Named as the problem names it, as checks may share a link.
+  const read = p.failing.flatMap((c) => {
+    const f = c.url && s.failures?.find((f) => f.url === c.url);
+    return f ? [{ ...f, check: c.name }] : [];
+  });
+  return read.map((f) => (
+    <VStack key={`${f.check} ${f.url}`} gap={1}>
+      <Text color="secondary">{whyText(f)}</Text>
+      {!f.held && !f.error && f.lines.length > 0 && (
+        <CodeBlock
+          code={f.lines.join("\n")}
+          isWrapped
+          width="100%"
+          size="sm"
+          hasCopyButton={false}
+          aria-label={`The end of ${f.check}’s log`}
+        />
+      )}
+    </VStack>
+  ));
 }
 
 /** A problem's name: its repository and branch, or its pull request. */
@@ -331,6 +367,7 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
                       ? `Failing: ${checkNames(p.failing)}.`
                       : `Failing: ${checkNames(p.failing)}. Its author’s to fix.`}
                   </Text>
+                  <Why s={s} p={p} />
                   {told && <Text color="secondary">{told}</Text>}
                   {t?.items
                     .filter((i) => i.failing && i.answer)
