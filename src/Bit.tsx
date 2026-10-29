@@ -45,7 +45,7 @@ export const bitColours: Record<string, { label: string; token: string }> = {
   grey: { label: "Grey", token: "--color-icon-gray" },
 };
 /** Each look's name and what it is: the classic ringed planet, then the
- * orbs and shapes first drawn for Lita. */
+ * orbs. */
 export const bitLooks: Record<BuddyLook, { label: string; kind: string }> = {
   classic: { label: "Classic", kind: "the ringed planet" },
   ...(Object.fromEntries(
@@ -875,7 +875,7 @@ function OrbBit({
   useEffect(() => {
     const v = view.current;
     if (!v) return;
-    // A new look or colour morphs from the old one, as the sketches do.
+    // A new look or colour morphs from the old one.
     v.orb.set(look, orbMoods[mood], paletteFor(v.box, look, colour), v.fresh);
     v.fresh = false;
     v.still = calm;

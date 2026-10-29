@@ -1,6 +1,5 @@
-/* Bit's orb looks, ported from the sketches drawn for Lita, LITAgent's
-   companion: little beings of light that show how things are going through
-   shape, colour and motion. Every look is a list of numbers (PARAMS). Each orb
+/* Bit's orb looks: little beings of light that show how things are going
+   through shape, colour and motion. Every look is a list of numbers (PARAMS). Each orb
    springs its numbers toward the target for its being and mood, so every
    change flows smoothly, even when a new one starts halfway through. Nothing
    here touches the page: Bit.tsx owns the canvases and the clock. */
@@ -66,7 +65,7 @@ type Role = "L" | "M" | "D" | "G";
 const ROLES: Role[] = ["L", "M", "D", "G"];
 /** A being's four colours, as #rrggbb. */
 export type Palette = Record<Role, string>;
-/** How Lita's states map onto words: Bit uses four of the six. */
+/** The states an orb can show. Bit uses four of the six. */
 export type OrbMood =
   | "idle"
   | "working"
@@ -168,7 +167,7 @@ export function tint(r: number, g: number, b: number): Palette {
 
 /* Every number an orb can change, grouped by how its spring behaves: shapes overshoot a little like
    jelly, colours glide, faces are quick, and speeds wind up and down gently. The defaults for the
-   round-six shapes (star, ring, friend, cloud lobes) sit where those beings keep them, so another
+   shapes only some beings use (star, ring, friend, cloud lobes) sit where those beings keep them, so another
    being turning into one of them just grows the part in place. */
 type Group = "shape" | "pos" | "motion" | "rate" | "colour" | "face" | "extra";
 const PARAMS: Record<string, { i: number; g: Group; v: number }> = {};
@@ -222,7 +221,7 @@ group("shape", {
       ["lr" + i, r],
     ]),
   ),
-  // Round seven: how much of each regular polygon (3, 4, 5, 6 and 8 sides), its turn and corner rounding, gear
+  // The geometric shapes: how much of each regular polygon (3, 4, 5, 6 and 8 sides), its turn and corner rounding, gear
   // teeth, and the solid shapes (jewel, spinning top, box, paper) with the angles they're seen and folded at.
   tri: 0,
   sq: 0,
@@ -588,7 +587,7 @@ const BEINGS = {
     },
   },
 
-  /* Round six: new shapes, each with its own trick for showing work. */
+  /* Shapes with their own trick for showing work. */
   nova: {
     name: "Nova",
     kind: "the star",
@@ -730,7 +729,7 @@ const BEINGS = {
     },
   },
 
-  /* Round seven: geometric shapes, each with its own signs. */
+  /* Geometric shapes, each with its own signs. */
   poly: {
     name: "Poly",
     kind: "the shape-shifter",
@@ -848,7 +847,7 @@ const BEINGS = {
 
 /** One of the orb looks. */
 export type Look = keyof typeof BEINGS;
-/** Every look, in the order the sketches introduced them. */
+/** Every look, in the order the picker shows them. */
 export const LOOKS = Object.keys(BEINGS) as Look[];
 /** A look's name and what it is, such as Glim, the little planet. */
 export const lookNames = Object.fromEntries(
@@ -1213,7 +1212,7 @@ function radius(c: Vals, ph: Phase, th: number) {
   // Four soft star points (0.34 keeps the average size).
   if (c[I.star])
     r += c[I.star] * (Math.abs(Math.cos(2 * (a - c[I.starRot]))) ** 5 - 0.34);
-  // Round seven: regular polygons, which blend into each other and into the circle, and gear teeth.
+  // Regular polygons, which blend into each other and into the circle, and gear teeth.
   for (const [i, n, ai] of POLY)
     if (c[i]) r += c[i] * (polyR(n, ai, a - c[I.polyRot], c[I.polyK]) - 1);
   if (c[I.cog])
@@ -1801,7 +1800,7 @@ export function drawOrb(
     }
     shX = [a, b];
   }
-  // Round seven's solid shapes (jewel, top, box, paper) blend with the outline; a roll lays the whole body on
+  // The solid shapes (jewel, top, box, paper) blend with the outline; a roll lays the whole body on
   // its side, so its reach is measured after the roll and the lowest point still rests on the floor.
   const G = geoBodies(c, ph, Rs, sx, sy),
     roll = c[I.geoRoll];
@@ -2942,7 +2941,7 @@ function fizzBubbles(
   }
 }
 
-/* ---------- Round seven: geometric shapes ---------- */
+/* ---------- Geometric shapes ---------- */
 
 /* A regular polygon with n sides and rounded corners, standing on one flat side, as a distance from its
    centre. ai is the distance to each side, chosen so every polygon covers the same area as the circle. */

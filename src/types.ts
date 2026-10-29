@@ -407,7 +407,7 @@ export type BuddyHat =
   | "antenna"
   | "space-helmet";
 /** How Bit looks: the classic ringed planet, or one of the orbs and shapes
- * first drawn for Lita (see orbs.ts). */
+ * in orbs.ts. */
 export type BuddyLook =
   | "classic"
   | "pip"
