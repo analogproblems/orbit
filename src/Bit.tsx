@@ -1,13 +1,28 @@
-import { useEffect, useState, type ReactNode } from "react";
-import type { BuddyHat, Mood } from "./types";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import type { BuddyHat, BuddyLook, Mood } from "./types";
+import {
+  drawOrb,
+  lookNames,
+  Orb,
+  ownPalette,
+  tint,
+  type Env,
+  type Look,
+  type OrbMood,
+  type Palette,
+} from "./orbs";
 
-// Bit is an inline SVG: Astryx's Avatar is for people (a photo, initials or
-// an icon), so like the Live chart this is a raw-element exception to
-// AGENTS.md. Every colour comes from a theme token.
+// Bit is hand-drawn: Astryx's Avatar is for people (a photo, initials or an
+// icon), so like the Live chart this is a raw-element exception to
+// AGENTS.md. The classic look is an inline SVG in theme tokens; the orb looks
+// are drawn on a canvas (orbs.ts), in a palette built from a theme token
+// unless you choose a look's own colours, with the hat in SVG on top.
 
 /** Each colour's label and token. Pastel shades use the text tokens, which
- * are light in Orbit's dark theme; bold shades use the icon tokens. */
+ * are light in Orbit's dark theme; bold shades use the icon tokens. "Its own
+ * colours" is each orb look's own palette, and lime for the classic look. */
 export const bitColours: Record<string, { label: string; token: string }> = {
+  own: { label: "Its own colours", token: "--color-text-green" },
   lime: { label: "Lime", token: "--color-text-green" },
   green: { label: "Green", token: "--color-icon-green" },
   aqua: { label: "Aqua", token: "--color-text-teal" },
@@ -28,6 +43,17 @@ export const bitColours: Record<string, { label: string; token: string }> = {
   lemon: { label: "Lemon", token: "--color-icon-yellow" },
   moon: { label: "Moon", token: "--color-text-gray" },
   grey: { label: "Grey", token: "--color-icon-gray" },
+};
+/** Each look's name and what it is: the classic ringed planet, then the
+ * orbs and shapes first drawn for Lita. */
+export const bitLooks: Record<BuddyLook, { label: string; kind: string }> = {
+  classic: { label: "Classic", kind: "the ringed planet" },
+  ...(Object.fromEntries(
+    Object.entries(lookNames).map(([id, { name, kind }]) => [
+      id,
+      { label: name, kind },
+    ]),
+  ) as Record<Look, { label: string; kind: string }>),
 };
 export const bitHats: Record<BuddyHat, string> = {
   none: "No hat",
@@ -57,6 +83,14 @@ export const moodLabels: Record<Mood, string> = {
   busy: "Busy",
   worried: "Worried",
   sleepy: "Sleepy",
+};
+/** Which of the orbs' states shows each of Bit's moods. The orbs also know
+ * thinking and not connected, which Bit doesn't use. */
+export const orbMoods: Record<Mood, OrbMood> = {
+  happy: "idle",
+  busy: "working",
+  worried: "awaiting_input",
+  sleepy: "paused",
 };
 
 const v = (token: string) => `var(${token})`;
@@ -567,21 +601,35 @@ function hat(
 const RING = "M8 60 A52 17 0 0 0 112 60";
 const ORBIT = "M8 60 A52 17 0 1 0 112 60 A52 17 0 1 0 8 60";
 
-/** Bit, drawn in its colour and hat, with a face for its mood. */
-export function Bit({
+type Size = "xs" | "sm" | "md" | "lg";
+interface BitProps {
+  mood: Mood;
+  colour: string;
+  hat?: BuddyHat;
+  /** Classic unless given. */
+  look?: BuddyLook;
+  size?: Size;
+  /** Names the picture; without one it is decoration. */
+  label?: string;
+  /** Holds still, for the small pictures in a list of choices. */
+  still?: boolean;
+}
+
+/** Bit, drawn in its look, colour and hat, with a face for its mood. */
+export function Bit({ look = "classic", ...props }: BitProps) {
+  if (look === "classic") return <ClassicBit {...props} />;
+  // A look from a newer Orbit shows as the one Bit starts with.
+  return <OrbBit look={look in lookNames ? look : "glim"} {...props} />;
+}
+
+/** The ringed planet Bit started as. */
+function ClassicBit({
   mood,
   colour,
   hat: wearing = "none",
   size = "md",
   label,
-}: {
-  mood: Mood;
-  colour: string;
-  hat?: BuddyHat;
-  size?: "xs" | "sm" | "md" | "lg";
-  /** Names the picture; without one it is decoration. */
-  label?: string;
-}) {
+}: Omit<BitProps, "look">) {
   const reduced = useReducedMotion();
   const body = v((bitColours[colour] ?? bitColours.lime).token);
   const layers = hat(wearing, body, mood === "busy" && !reduced);
@@ -637,4 +685,256 @@ export function Bit({
       )}
     </svg>
   );
+}
+
+/* The orb looks. Every orb on screen shares one clock: each frame steps the
+   moving ones and draws those in view, and a picture that holds still (a
+   choice in a list, or any of them when less motion is asked for) is drawn
+   once per change. The canvas reaches a quarter of Bit's size past each edge,
+   like the classic picture's hats, so glows and extras aren't cut off. */
+const SPILL = 0.25;
+const SPAN = 1 + 2 * SPILL;
+
+interface View {
+  orb: Orb;
+  box: HTMLElement;
+  canvas: HTMLCanvasElement;
+  ctx: CanvasRenderingContext2D | null;
+  hats: SVGGElement[];
+  still: boolean;
+  visible: boolean;
+  dirty: boolean;
+  pool: boolean;
+  size: number;
+  /** Not yet set: the first look and colour arrive at once, not sliding in. */
+  fresh: boolean;
+}
+const views = new Set<View>();
+let raf = 0;
+let last = 0;
+
+/** A theme token's colour as red, green and blue, read where the picture
+ * sits so it follows the theme. Null where nothing can read it. */
+const resolved = new Map<string, [number, number, number] | null>();
+function tokenRgb(
+  el: HTMLElement,
+  token: string,
+): [number, number, number] | null {
+  const hit = resolved.get(token);
+  if (hit !== undefined) return hit;
+  const probe = document.createElement("span");
+  probe.style.color = `var(${token})`;
+  el.appendChild(probe);
+  const css = getComputedStyle(probe).color;
+  probe.remove();
+  // Let a canvas read whatever form the browser wrote the colour in.
+  const pixel = document.createElement("canvas").getContext("2d", {
+    willReadFrequently: true,
+  });
+  let rgb: [number, number, number] | null = null;
+  if (pixel && css) {
+    pixel.fillStyle = css;
+    pixel.fillRect(0, 0, 1, 1);
+    const [r, g, b] = pixel.getImageData(0, 0, 1, 1).data;
+    rgb = [r, g, b];
+  }
+  if (rgb) resolved.set(token, rgb);
+  return rgb;
+}
+const rgbaOf = (rgb: [number, number, number] | null, fallback: string) =>
+  rgb ? `rgba(${rgb.join(",")},1)` : fallback;
+
+/** The palette for a look in a colour: its own, or one built from the
+ * colour's token. */
+function paletteFor(el: HTMLElement, look: Look, colour: string): Palette {
+  if (colour === "own") return ownPalette(look);
+  const rgb = tokenRgb(el, (bitColours[colour] ?? bitColours.lime).token);
+  return rgb ? tint(...rgb) : ownPalette(look);
+}
+
+function draw(v: View) {
+  if (v.dirty) {
+    v.size = v.box.getBoundingClientRect().width;
+    const d = Math.min(window.devicePixelRatio || 1, 2.5);
+    const px = Math.round(v.size * SPAN * d);
+    if (v.canvas.width !== px) v.canvas.width = v.canvas.height = px;
+    v.dirty = false;
+  }
+  const { ctx, size } = v;
+  if (!ctx || !size) return;
+  const d = v.canvas.width / (size * SPAN);
+  ctx.setTransform(d, 0, 0, d, 0, 0);
+  ctx.clearRect(0, 0, size * SPAN, size * SPAN);
+  const env: Env = {
+    dark: true,
+    faces: true,
+    pool: v.pool,
+    shadow: "0,0,0",
+    z: rgbaOf(tokenRgb(v.box, "--color-text-secondary"), "rgba(163,170,240,1)"),
+    dash: rgbaOf(
+      tokenRgb(v.box, "--color-text-disabled"),
+      "rgba(140,150,166,1)",
+    ),
+  };
+  const at = (n: number) => (SPILL + n) * size;
+  const head = drawOrb(ctx, v.orb, at(0.47), at(0.9), 0.23 * size, env);
+  // The hat's drawing has the classic Bit's head top at (60, 31) and its
+  // radius at 27, in a picture 120 across; the SVG spans the canvas.
+  const unit = 120 / size;
+  const transform = `translate(${head.x * unit} ${head.y * unit}) rotate(${(head.angle * 180) / Math.PI}) scale(${(head.size * unit) / 27}) translate(-60 -31)`;
+  for (const g of v.hats) {
+    g.setAttribute("transform", transform);
+    g.removeAttribute("visibility");
+  }
+}
+
+function tick(now: number) {
+  raf = 0;
+  const dt = last ? Math.min(0.05, (now - last) / 1000) : 0;
+  last = now;
+  let moving = false;
+  for (const v of views) {
+    if (v.still) continue;
+    moving = true;
+    v.orb.step(dt);
+    if (v.visible) draw(v);
+  }
+  if (moving && !document.hidden) raf = requestAnimationFrame(tick);
+  else last = 0;
+}
+const kick = () => {
+  if (!raf && typeof requestAnimationFrame === "function")
+    raf = requestAnimationFrame(tick);
+};
+if (typeof document !== "undefined")
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) kick();
+  });
+
+/** Bit as one of the orbs, with its hat in SVG over (and, for cat ears and
+ * antennae, under) the canvas, moved to its head as it's drawn. */
+function OrbBit({
+  look,
+  mood,
+  colour,
+  hat: wearing = "none",
+  size = "md",
+  label,
+  still = false,
+}: BitProps & { look: Look }) {
+  const reduced = useReducedMotion();
+  const box = useRef<HTMLSpanElement>(null);
+  const canvas = useRef<HTMLCanvasElement>(null);
+  const back = useRef<SVGGElement>(null);
+  const front = useRef<SVGGElement>(null);
+  const view = useRef<View | null>(null);
+  const calm = still || reduced;
+  const big = size === "md" || size === "lg";
+
+  useEffect(() => {
+    const v: View = {
+      orb: new Orb(look, orbMoods[mood]),
+      box: box.current!,
+      canvas: canvas.current!,
+      ctx: canvas.current!.getContext("2d"),
+      hats: [back.current!, front.current!],
+      still: true,
+      visible: true,
+      dirty: true,
+      pool: big,
+      size: 0,
+      fresh: true,
+    };
+    view.current = v;
+    views.add(v);
+    const resize =
+      typeof ResizeObserver === "function"
+        ? new ResizeObserver(() => {
+            v.dirty = true;
+            if (v.still) draw(v);
+          })
+        : null;
+    resize?.observe(v.box);
+    const seen =
+      typeof IntersectionObserver === "function"
+        ? new IntersectionObserver(([entry]) => {
+            v.visible = entry?.isIntersecting ?? true;
+          })
+        : null;
+    seen?.observe(v.box);
+    return () => {
+      views.delete(v);
+      resize?.disconnect();
+      seen?.disconnect();
+      view.current = null;
+    };
+    // The view lives as long as the picture; the effect below keeps it current.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const v = view.current;
+    if (!v) return;
+    // A new look or colour morphs from the old one, as the sketches do.
+    v.orb.set(look, orbMoods[mood], paletteFor(v.box, look, colour), v.fresh);
+    v.fresh = false;
+    v.still = calm;
+    if (calm) {
+      v.orb.pose();
+      draw(v);
+    } else kick();
+  }, [look, mood, colour, calm]);
+
+  const layers = hat(
+    wearing,
+    bodyColour(look, colour),
+    mood === "busy" && !calm,
+  );
+  const layer = (ref: typeof back, node: ReactNode) => (
+    <svg
+      className="bit-hat"
+      viewBox={`0 0 ${120 * SPAN} ${120 * SPAN}`}
+      aria-hidden
+    >
+      <g ref={ref} visibility="hidden">
+        {node}
+      </g>
+    </svg>
+  );
+  return (
+    <span
+      ref={box}
+      className={`bit bit-orb bit-${size}`}
+      data-mood={mood}
+      data-look={look}
+      role={label ? "img" : undefined}
+      aria-label={label}
+      aria-hidden={label ? undefined : true}
+      onClick={
+        big && !calm
+          ? () => {
+              view.current?.orb.boop();
+              kick();
+            }
+          : undefined
+      }
+    >
+      {layer(back, layers.back)}
+      <canvas ref={canvas} className="bit-canvas" />
+      {layer(
+        front,
+        <>
+          {layers.head}
+          {layers.top}
+        </>,
+      )}
+    </span>
+  );
+}
+
+/** The colour a hat's cat ears and antennae take: the body's own. */
+function bodyColour(look: Look, colour: string) {
+  return colour === "own"
+    ? ownPalette(look).M
+    : v((bitColours[colour] ?? bitColours.lime).token);
 }

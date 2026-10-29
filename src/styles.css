@@ -172,6 +172,20 @@ body {
   width: calc(var(--spacing-12) * 3);
   height: calc(var(--spacing-12) * 3);
 }
+/* The orb looks: a canvas and the hat's SVG reach a quarter of Bit's size
+   past each edge (SPILL in Bit.tsx). */
+.bit-orb {
+  position: relative;
+}
+.bit-canvas,
+.bit-hat {
+  position: absolute;
+  inset: -25%;
+  width: 150%;
+  height: 150%;
+  overflow: visible;
+  pointer-events: none;
+}
 .bit-ring {
   fill: none;
   stroke: var(--color-text-secondary);

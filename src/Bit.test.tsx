@@ -3,7 +3,15 @@ import "./test-setup";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import options from "../test-fixtures/buddy-options.json";
-import { Bit, bitColours, bitHats, moodLabels } from "./Bit";
+import {
+  Bit,
+  bitColours,
+  bitHats,
+  bitLooks,
+  moodLabels,
+  orbMoods,
+} from "./Bit";
+import { ORB_MOODS } from "./orbs";
 import { describePatch } from "./describePatch";
 import {
   actionLabels,
@@ -15,11 +23,13 @@ import {
   memoryLimits,
   questionLabels,
   type BuddyHat,
+  type BuddyLook,
   type Mood,
 } from "./types";
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 const moods = Object.keys(moodLabels) as Mood[];
@@ -37,6 +47,14 @@ describe("Bit", () => {
     expect(
       describePatch({ buddy: { ollamaUrl: "http://jupiter:11434" } }, []),
     ).toBe("Ollama address: http://jupiter:11434");
+    expect(
+      describePatch(
+        { buddy: { look: "fizz", colour: "own", hat: "top-hat" } },
+        [],
+      ),
+    ).toBe(
+      "Buddy's look: Fizz; Buddy's colour: Its own colours; Buddy's hat: Top hat",
+    );
     expect(Object.keys(fixRuleLabels)).toEqual(options.rules);
     expect(Object.keys(fixLabels)).toEqual(options.fixes);
     expect(Object.keys(questionLabels)).toEqual(options.questions);
@@ -119,5 +137,70 @@ describe("Bit", () => {
     };
     expect(motion(false)).toBe(2);
     expect(motion(true)).toBe(0);
+  });
+
+  it("offers the same looks as the engine, with an orb mood for each of Bit's", () => {
+    expect(Object.keys(bitLooks)).toEqual(options.looks);
+    expect(defaultBuddy.look).toBe("glim");
+    expect(Object.keys(orbMoods)).toEqual(moods);
+    const used = Object.values(orbMoods);
+    expect(new Set(used).size).toBe(moods.length);
+    for (const m of used) expect(ORB_MOODS).toContain(m);
+  });
+
+  it("draws an orb on a canvas, with its hat in a picture over it", () => {
+    render(
+      <Bit
+        mood="busy"
+        colour="pink"
+        hat="crown"
+        look="fizz"
+        label="Bit, busy"
+      />,
+    );
+    const box = screen.getByRole("img", { name: "Bit, busy" });
+    expect(box.dataset.look).toBe("fizz");
+    expect(box.dataset.mood).toBe("busy");
+    expect(box.querySelector("canvas")).toBeTruthy();
+    const layers = box.querySelectorAll(".bit-hat > g");
+    expect(layers).toHaveLength(2);
+    expect(layers[1].children.length).toBeGreaterThan(0);
+    // With nothing drawn, nothing says where its head is, so the hat waits.
+    for (const g of layers) expect(g.getAttribute("visibility")).toBe("hidden");
+    cleanup();
+    const { container } = render(
+      <Bit mood="happy" colour="lime" look={"blob" as BuddyLook} />,
+    );
+    expect(container.querySelector<HTMLElement>(".bit")!.dataset.look).toBe(
+      "glim",
+    );
+  });
+
+  it("puts the hat on the orb's head once it's drawn", () => {
+    const fake = new Proxy({} as Record<string, unknown>, {
+      get: (held, key: string) =>
+        key in held
+          ? held[key]
+          : () =>
+              key === "getImageData"
+                ? { data: [220, 90, 160, 255] }
+                : { addColorStop() {} },
+      set: (held, key: string, value) => ((held[key] = value), true),
+    });
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(
+      () => fake as unknown as CanvasRenderingContext2D,
+    );
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      width: 80,
+    } as DOMRect);
+    const { container } = render(
+      <Bit mood="worried" colour="own" hat="wizard" look="pip" still />,
+    );
+    for (const g of container.querySelectorAll(".bit-hat > g")) {
+      expect(g.hasAttribute("visibility")).toBe(false);
+      expect(g.getAttribute("transform")).toMatch(
+        /^translate\([\d.-]+ [\d.-]+\) rotate\([\d.e-]+\) scale\([\d.]+\) translate\(-60 -31\)$/,
+      );
+    }
   });
 });

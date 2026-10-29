@@ -1,5 +1,6 @@
 {
   "colours": [
+    "own",
     "lime",
     "green",
     "aqua",
@@ -43,6 +44,25 @@
     "cat-ears",
     "antenna",
     "space-helmet"
+  ],
+  "looks": [
+    "classic",
+    "pip",
+    "tide",
+    "bloom",
+    "moss",
+    "glim",
+    "nova",
+    "duo",
+    "puff",
+    "jelly",
+    "fizz",
+    "poly",
+    "prism",
+    "gem",
+    "twirl",
+    "cubby",
+    "fold"
   ],
   "tones": ["cheerful", "calm", "dry"],
   "answerers": [
