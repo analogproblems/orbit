@@ -608,6 +608,7 @@ fn posted(v: &Value, marker: &str) -> Result<crate::ops::Posted, String> {
         id,
         number: v["number"].as_u64(),
         url: url.to_string(),
+        created_at: v["created_at"].as_str().unwrap_or_default().to_string(),
     })
 }
 fn by(v: &Value, login: &str) -> bool {

@@ -102,9 +102,13 @@ pub struct Thread {
     /// The newest reply Orbit has read on its comment or issue, by GitHub
     /// comment ID, so each reply is read once.
     pub read_to: u64,
-    /// When that reply was posted, by GitHub's clock, so Orbit only asks
-    /// for newer ones.
+    /// When that reply, or Orbit's own comment or issue, was posted, by
+    /// GitHub's clock, so Orbit only asks for newer ones.
     pub read_since: String,
+    /// Whether Orbit read replies on its last pass. It doesn't while the
+    /// problem is closed, so when a failure comes back, the replies it
+    /// missed are about the one before and are skipped.
+    pub reading: bool,
 }
 impl Thread {
     /// Whether it is on GitHub.
@@ -214,6 +218,9 @@ pub struct Answer {
     pub check: Option<FixCheck>,
     /// The commit the branch was at when Orbit last checked.
     pub head: String,
+    /// When Orbit last tried to check it, so the fixes it checks take
+    /// turns.
+    pub checked_at: String,
 }
 /// An answer Orbit just heard or checked, for Bit's notes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -310,6 +317,8 @@ pub struct Posted {
     pub id: u64,
     pub number: Option<u64>,
     pub url: String,
+    /// When GitHub made it, by GitHub's clock.
+    pub created_at: String,
 }
 
 /// Whether a rule lets Bit post: it is on, and the rule is Do it, or Ask
@@ -448,17 +457,40 @@ fn items_from(t: &mut Thread, p: &Problem) {
     }
 }
 
+/// Stops reading replies on threads whose problem isn't open. Returns
+/// whether any stopped.
+pub fn pause_reading(threads: &mut [Thread], problems: &[Problem]) -> bool {
+    let mut changed = false;
+    for t in threads.iter_mut().filter(|t| t.reading) {
+        if !problems.iter().any(|p| p.id == t.problem_id && p.is_open()) {
+            t.reading = false;
+            changed = true;
+        }
+    }
+    changed
+}
 /// Reads the replies on a thread Orbit hasn't read yet, oldest first: each
 /// line about a failing item becomes its answer, the latest counting. An
 /// item that isn't failing, or doesn't exist yet, is left alone. Returns
 /// the answers that changed.
 pub fn hear(t: &mut Thread, replies: &[Reply]) -> Vec<Heard> {
+    // Pages of replies Orbit has already passed move the next read on too.
+    if let Some(newest) = replies.iter().map(|r| &r.created_at).max() {
+        if *newest > t.read_since {
+            t.read_since = newest.clone();
+        }
+    }
     let mut replies: Vec<&Reply> = replies.iter().filter(|r| r.id > t.read_to).collect();
     replies.sort_by_key(|r| r.id);
+    if !t.reading {
+        // Left while the problem was closed: about an earlier failure.
+        t.reading = true;
+        t.read_to = replies.last().map_or(t.read_to, |r| r.id);
+        return vec![];
+    }
     let mut heard: Vec<Heard> = vec![];
     for r in replies {
         t.read_to = r.id;
-        t.read_since = r.created_at.clone();
         for said in &r.said {
             for &number in &said.numbers {
                 let Some(item) = t.items.iter_mut().find(|i| i.number == number && i.failing)
@@ -478,6 +510,7 @@ pub fn hear(t: &mut Thread, replies: &[Reply]) -> Vec<Heard> {
                         .map(|t| t.chars().take(MAX_ANSWER).collect()),
                     check: said.commit.as_ref().map(|_| FixCheck::Waiting),
                     head: String::new(),
+                    checked_at: String::new(),
                 };
                 item.answer = Some(answer.clone());
                 heard.retain(|h| h.number != number);
@@ -493,8 +526,9 @@ pub fn hear(t: &mut Thread, replies: &[Reply]) -> Vec<Heard> {
     heard
 }
 /// The fixes to check against CI now: failing items an agent says a commit
-/// fixes, on open problems, whose check hasn't settled. One that wasn't on
-/// the branch is checked again once the branch moves.
+/// fixes, on open problems, whose check hasn't settled, the one Orbit
+/// tried longest ago first. One that wasn't on the branch is checked again
+/// once the branch moves.
 pub fn to_verify(threads: &[Thread], problems: &[Problem]) -> Vec<Verify> {
     let mut out = vec![];
     for t in threads.iter().filter(|t| !t.gone) {
@@ -515,28 +549,40 @@ pub fn to_verify(threads: &[Thread], problems: &[Problem]) -> Vec<Verify> {
                 _ => false,
             };
             if again {
-                out.push(Verify {
-                    thread: t.key.clone(),
-                    number: item.number,
-                    repo: t.repo.clone(),
-                    commit: commit.clone(),
-                    head: p.sha.clone(),
-                    check: item.check.clone(),
-                });
+                out.push((
+                    a.checked_at.clone(),
+                    Verify {
+                        thread: t.key.clone(),
+                        number: item.number,
+                        repo: t.repo.clone(),
+                        commit: commit.clone(),
+                        head: p.sha.clone(),
+                        check: item.check.clone(),
+                    },
+                ));
             }
         }
     }
-    out
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out.into_iter().map(|(_, v)| v).collect()
 }
-/// Records what CI says at a fix's commit, if the answer is still the one
-/// checked. Returns it when it has just settled, for Bit's notes.
-pub fn verified(threads: &mut [Thread], v: &Verify, check: FixCheck) -> Option<Heard> {
+/// Records a try to check a fix's commit and, when GitHub answered, what
+/// CI says there, if the answer is still the one checked. Returns it when
+/// it has just settled, for Bit's notes.
+pub fn verified(
+    threads: &mut [Thread],
+    v: &Verify,
+    result: Result<FixCheck, String>,
+    now: DateTime<Utc>,
+) -> Option<Heard> {
     let t = threads.iter_mut().find(|t| t.key == v.thread)?;
     let item = t.items.iter_mut().find(|i| i.number == v.number)?;
     let a = item
         .answer
         .as_mut()
         .filter(|a| a.commit.as_deref() == Some(v.commit.as_str()))?;
+    a.checked_at = stamp(now);
+    let check = result.ok()?;
     let was = a.check;
     a.check = Some(check);
     a.head = v.head.clone();
@@ -982,7 +1028,16 @@ pub fn looked(
                 }
                 ThreadKind::Issue => t.number = found.number.or(t.number),
             }
+            start_reading(t, &found.created_at);
         }
+    }
+}
+/// Replies count from Orbit's own comment or issue on: Orbit asks GitHub
+/// only for those from when it was posted.
+fn start_reading(t: &mut Thread, created_at: &str) {
+    t.reading = true;
+    if created_at > t.read_since.as_str() {
+        t.read_since = created_at.to_string();
     }
 }
 fn wait(t: &mut Thread, error: String, now: DateTime<Utc>) {
@@ -1047,12 +1102,18 @@ pub fn settle(
                     t.posted = planned.body.clone();
                     // Replies before Orbit's comment aren't about its items.
                     t.read_to = t.read_to.max(posted.id);
+                    if planned.action == Action::PostComment {
+                        start_reading(t, &posted.created_at);
+                    }
                 }
                 Action::OpenIssue | Action::EditIssue | Action::ReopenIssue => {
                     t.number = posted.number.or(t.number);
                     t.url = posted.url;
                     t.posted = planned.body.clone();
                     t.closed = false;
+                    if planned.action == Action::OpenIssue {
+                        start_reading(t, &posted.created_at);
+                    }
                 }
                 Action::CloseIssue => {
                     t.posted = planned.body.clone();
@@ -1100,7 +1161,7 @@ pub enum Event {
     /// Orbit closed a thread's issue.
     Closed(String),
     /// An agent answered, or Orbit checked a fix.
-    Heard(Heard),
+    Heard(Box<Heard>),
 }
 /// Where a thread is, in plain words: `acme/api #12` for a pull request's
 /// comment, `main in acme/api` for a default branch's issue.

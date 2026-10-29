@@ -71,6 +71,7 @@ fn send(
             },
         ),
         url: "https://github.com/a/b/issues/45".into(),
+        created_at: "2026-10-29T12:00:00Z".into(),
     };
     settle(threads, journal, &id, &planned, Ok(posted), now);
     Some(planned)
@@ -416,6 +417,7 @@ fn a_cut_off_post_is_looked_for_whatever_happens_next() {
         id: 9,
         number: Some(45),
         url: "https://github.com/a/b/issues/45".into(),
+        created_at: String::new(),
     };
     looked(&mut threads, &find, Ok(Some(found)), t0());
     assert!(!threads[0].unsure);
@@ -613,6 +615,7 @@ fn answers_count_while_their_item_fails() {
     let t = &mut threads[0];
     // Orbit's comment is reply 10; older replies aren't about its items.
     t.read_to = 10;
+    t.reading = true;
     let long = "x".repeat(MAX_ANSWER + 100);
     let heard = hear(
         t,
@@ -674,6 +677,7 @@ fn fixes_are_checked_until_ci_settles_them() {
     let p = pull("p1", &["A"], '1', t0());
     let mut threads = vec![];
     refresh(&mut threads, std::slice::from_ref(&p), t0());
+    threads[0].reading = true;
     hear(&mut threads[0], &[reply(1, "Fixed I1 in abc1234")]);
     let v = to_verify(&threads, std::slice::from_ref(&p));
     assert_eq!(
@@ -687,9 +691,12 @@ fn fixes_are_checked_until_ci_settles_them() {
             check: "A".into(),
         }]
     );
-    assert_eq!(verified(&mut threads, &v[0], FixCheck::Waiting), None);
+    assert_eq!(
+        verified(&mut threads, &v[0], Ok(FixCheck::Waiting), t0()),
+        None
+    );
     assert_eq!(to_verify(&threads, std::slice::from_ref(&p)).len(), 1);
-    let told = verified(&mut threads, &v[0], FixCheck::NotOnBranch).unwrap();
+    let told = verified(&mut threads, &v[0], Ok(FixCheck::NotOnBranch), t0()).unwrap();
     assert_eq!(told.answer.check, Some(FixCheck::NotOnBranch));
     assert!(to_verify(&threads, std::slice::from_ref(&p)).is_empty());
 
@@ -699,18 +706,21 @@ fn fixes_are_checked_until_ci_settles_them() {
     let v = to_verify(&threads, std::slice::from_ref(&moved));
     assert_eq!(v[0].head, sha('2'));
     assert_eq!(
-        verified(&mut threads, &v[0], FixCheck::NotOnBranch),
+        verified(&mut threads, &v[0], Ok(FixCheck::NotOnBranch), t0()),
         None,
         "already told"
     );
     assert!(to_verify(&threads, std::slice::from_ref(&moved)).is_empty());
-    let told = verified(&mut threads, &v[0], FixCheck::Fails).unwrap();
+    let told = verified(&mut threads, &v[0], Ok(FixCheck::Fails), t0()).unwrap();
     assert_eq!(told.answer.head, sha('2'));
     assert!(to_verify(&threads, std::slice::from_ref(&moved)).is_empty());
 
     // A newer answer replaces it, and the old one's check is dropped.
     hear(&mut threads[0], &[reply(2, "Fixed I1 in def5678")]);
-    assert_eq!(verified(&mut threads, &v[0], FixCheck::Passes), None);
+    assert_eq!(
+        verified(&mut threads, &v[0], Ok(FixCheck::Passes), t0()),
+        None
+    );
     let a = threads[0].items[0].answer.clone().unwrap();
     assert_eq!(a.check, Some(FixCheck::Waiting));
     // Nothing is checked on a problem that closed.
@@ -727,6 +737,7 @@ fn bodies_say_what_agents_answered_without_repeating_them() {
     let mut p = pull("p1", &["A", "B"], '1', t0());
     let mut threads = vec![];
     refresh(&mut threads, std::slice::from_ref(&p), t0());
+    threads[0].reading = true;
     hear(
         &mut threads[0],
         &[reply(1, "Declined I1: ask @someone <b>now</b>\nFixed I2")],
@@ -777,11 +788,14 @@ fn bit_hears_what_matters() {
     );
     assert_eq!(heard.len(), 1);
     assert_eq!(
-        text(&Event::Heard(heard[0].clone()), &threads, &p).as_deref(),
+        text(&Event::Heard(Box::new(heard[0].clone())), &threads, &p).as_deref(),
         Some("The agent on main in a/b declined I1 (A): the runner")
     );
     let taking = hear(&mut threads[0], &[reply(3, "Taking I1")]);
-    assert_eq!(text(&Event::Heard(taking[0].clone()), &threads, &p), None);
+    assert_eq!(
+        text(&Event::Heard(Box::new(taking[0].clone())), &threads, &p),
+        None
+    );
     pass(&mut p, '2', t0());
     assert_eq!(
         text(&Event::Closed(key.clone()), &threads, &p).as_deref(),
@@ -792,4 +806,88 @@ fn bit_hears_what_matters() {
         text(&Event::Closed(key), &threads, &p).as_deref(),
         Some("Orbit closed issue #45, as it stopped watching main in a/b.")
     );
+}
+
+/// Replies count from Orbit's own post on: Orbit asks GitHub only for
+/// newer ones, and pages it passed move the next read on even when none
+/// of them is new.
+#[test]
+fn replies_are_read_from_orbits_post_on() {
+    let p = pull("p1", &["A"], '1', t0());
+    let mut threads = vec![];
+    let mut journal = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    send(&mut threads, &mut journal, &p, true, t0());
+    let t = &mut threads[0];
+    assert!(t.reading);
+    assert_eq!(
+        (t.read_to, t.read_since.as_str()),
+        (7, "2026-10-29T12:00:00Z")
+    );
+    // Older comments that GitHub sends again, as edited ones are, only move
+    // the time on.
+    let mut old = reply(5, "Taking I1");
+    old.created_at = "2026-10-29T12:30:00Z".into();
+    assert!(hear(t, &[old]).is_empty());
+    assert_eq!(
+        (t.read_to, t.read_since.as_str()),
+        (7, "2026-10-29T12:30:00Z")
+    );
+}
+
+/// While a problem is closed Orbit doesn't read replies, so the ones it
+/// missed are about the failure before and are skipped when it comes back.
+#[test]
+fn replies_from_before_a_failure_came_back_are_skipped() {
+    let mut p = pull("p1", &["A"], '1', t0());
+    let mut threads = vec![];
+    let mut journal = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    send(&mut threads, &mut journal, &p, true, t0());
+    assert!(!pause_reading(&mut threads, std::slice::from_ref(&p)));
+    pass(&mut p, '2', t0());
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    assert!(pause_reading(&mut threads, std::slice::from_ref(&p)));
+    assert!(!threads[0].reading);
+    // It fails again, with a reply left while it was green still unread.
+    let again = pull("p2", &["A"], '3', t0());
+    refresh(&mut threads, &[p, again.clone()], t0());
+    assert!(threads[0].items[0].failing);
+    assert!(hear(&mut threads[0], &[reply(20, "Fixed I1 in abc1234")]).is_empty());
+    assert_eq!(threads[0].items[0].answer, None);
+    assert_eq!(threads[0].read_to, 20);
+    // Replies after that are about this failure.
+    let heard = hear(&mut threads[0], &[reply(21, "Taking I1")]);
+    assert_eq!(heard.len(), 1);
+}
+
+/// Fixes take turns: the one tried longest ago is checked first, so fixes
+/// whose checks never finish don't keep another from being checked.
+#[test]
+fn fixes_are_checked_in_turn() {
+    let names = ["A", "B", "C", "D", "E", "F"];
+    let p = pull("p1", &names, '1', t0());
+    let mut threads = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    threads[0].reading = true;
+    hear(
+        &mut threads[0],
+        &[reply(1, "Fixed I1, I2, I3, I4, I5, I6 in abc1234")],
+    );
+    let first = to_verify(&threads, std::slice::from_ref(&p));
+    assert_eq!(first.len(), 6);
+    for (i, v) in first.iter().take(CHECKS_PER_PASS).enumerate() {
+        let result = if i == 0 {
+            Err("HTTP 502".to_string())
+        } else {
+            Ok(FixCheck::Waiting)
+        };
+        verified(&mut threads, v, result, t0());
+    }
+    let next: Vec<u32> = to_verify(&threads, std::slice::from_ref(&p))
+        .iter()
+        .map(|v| v.number)
+        .collect();
+    assert_eq!(next[0], 6, "never tried, so first");
+    assert_eq!(next.len(), 6, "a failed try leaves it to check again");
 }

@@ -1174,6 +1174,8 @@ export interface OpsAnswer {
   text?: string | null;
   check?: FixCheck | null;
   head: string;
+  /** When Orbit last tried to check the fix. */
+  checkedAt?: string;
 }
 /** Where Orbit tells an agent about failing CI: its one comment on a pull
  * request, or its issue about a default branch. */
@@ -1206,6 +1208,8 @@ export interface OpsThread {
   /** The newest reply Orbit has read, by GitHub comment ID. */
   readTo?: number;
   readSince?: string;
+  /** Whether Orbit read replies on its last pass. */
+  reading?: boolean;
 }
 export type OpsAction =
   | "post_comment"

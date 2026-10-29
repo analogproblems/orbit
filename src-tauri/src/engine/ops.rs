@@ -136,7 +136,11 @@ impl Engine {
             author: Option<String>,
         }
         let (asks, me, trusted) = {
-            let s = self.state.lock().await;
+            let mut s = self.state.lock().await;
+            let s = &mut *s;
+            if ops::pause_reading(&mut s.ops, &s.problems) {
+                self.dirty.store(true, Ordering::SeqCst);
+            }
             let open = |t: &ops::Thread| {
                 s.problems
                     .iter()
@@ -198,14 +202,16 @@ impl Engine {
             let s = self.state.lock().await;
             ops::to_verify(&s.ops, &s.problems)
         };
+        // The ones tried longest ago first, so none waits on the others.
         for v in checks.into_iter().take(ops::CHECKS_PER_PASS) {
-            let Ok(check) = verify(&v).await else {
-                continue;
-            };
-            self.update(|s| heard.extend(ops::verified(&mut s.ops, &v, check)))
+            let check = verify(&v).await;
+            self.update(|s| heard.extend(ops::verified(&mut s.ops, &v, check, chrono::Utc::now())))
                 .await;
         }
-        heard.into_iter().map(Event::Heard).collect()
+        heard
+            .into_iter()
+            .map(|h| Event::Heard(Box::new(h)))
+            .collect()
     }
     /// Lets Bit post a comment or issue it asks about first, and posts it.
     pub async fn tell_agent(self: &Arc<Self>, key: &str) -> Result<(), String> {

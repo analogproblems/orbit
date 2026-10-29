@@ -3,6 +3,7 @@
 use super::Engine;
 use crate::ops::{ThreadKind, WriteState};
 use crate::types::*;
+use chrono::TimeZone;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -610,6 +611,14 @@ async fn a_search_too_big_to_finish_finds_nothing_it_can_trust() {
     assert_eq!(issue().await.unwrap(), None);
 }
 
+/// When the fake GitHub made comment or issue `id`: a second apart.
+fn made(id: u64) -> String {
+    let at = chrono::Utc
+        .with_ymd_and_hms(2026, 10, 29, 12, 0, 0)
+        .unwrap()
+        + chrono::Duration::seconds(id as i64);
+    at.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
 /// A reply on GitHub from `who` on pull request 12.
 fn say(dir: &Path, who: &str, body: &str) {
     let file = dir.join("github.json");
@@ -621,7 +630,7 @@ fn say(dir: &Path, who: &str, body: &str) {
         "issue": 12,
         "user": { "login": who },
         "body": body,
-        "created_at": "2026-10-29T12:00:00Z",
+        "created_at": made(id),
         "html_url": format!("https://github.com/a/b/issues/12#issuecomment-{id}"),
     }));
     std::fs::write(file, db.to_string()).unwrap();
@@ -826,4 +835,100 @@ async fn a_fix_is_checked_against_ci_where_it_was_made() {
     assert!(texts.contains(
         &"The agent on a/b #12 said I1 (CI / Lint) is fixed in abcdef0, but Orbit can't find that commit. Worth a look."
     ), "{texts:?}");
+}
+
+/// Orbit reads replies from its own comment on, however many comments came
+/// before it.
+#[cfg(unix)]
+#[tokio::test]
+async fn replies_are_read_after_orbits_comment_on_a_busy_pull_request() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let comments: Vec<Value> = (1..=1050u64)
+        .map(|id| {
+            json!({
+                "id": id,
+                "issue": 12,
+                "user": { "login": "someone" },
+                "body": "Looks good.",
+                "created_at": made(id),
+                "html_url": format!("https://github.com/a/b/issues/12#issuecomment-{id}"),
+            })
+        })
+        .collect();
+    let db = json!({ "next": 2000, "issues": [], "comments": comments });
+    std::fs::write(d.path().join("github.json"), db.to_string()).unwrap();
+    let e = connected(d.path()).await;
+    e.update(|s| s.prs = vec![pr('5')]).await;
+    answer(d.path(), '1', &[], Some(('5', &[("Lint", "FAILURE")])));
+    watch(&e, &gh).await;
+    say(d.path(), "agent", "Taking I1");
+    watch(&e, &gh).await;
+    let body = github(d.path())["comments"][1050]["body"].to_string();
+    assert!(body.contains("someone is on it"), "{body}");
+}
+
+/// A check's runs at a commit count only once every page of the commit's
+/// checks was read, but a failure counts at once.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_check_is_not_passing_until_every_page_is_read() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let at = |checks: &[(&str, &str)], more: bool| {
+        let mut rollup = rollup(checks);
+        rollup["contexts"]["pageInfo"] = json!({ "hasNextPage": more, "endCursor": "next" });
+        let v = json!({ "data": { "repository": { "object": { "statusCheckRollup": rollup } } } });
+        std::fs::write(
+            d.path().join(format!("commit-{}.json", sha('6'))),
+            v.to_string(),
+        )
+        .unwrap();
+    };
+    let six = sha('6');
+    let check = || {
+        crate::github::GH.scope(
+            gh.clone(),
+            crate::ci::check_at_within("a/b", &six, "CI / Lint", 2),
+        )
+    };
+    use crate::ci::CiState;
+    at(&[("Lint", "SUCCESS")], true);
+    assert_eq!(check().await.unwrap(), CiState::Running);
+    at(&[("Lint", "FAILURE")], true);
+    assert_eq!(check().await.unwrap(), CiState::Failing);
+    at(&[("Lint", "SUCCESS")], false);
+    assert_eq!(check().await.unwrap(), CiState::Passing);
+    at(&[("Rust", "SUCCESS")], false);
+    assert_eq!(check().await.unwrap(), CiState::None);
+}
+
+/// A reply left while the pull request was green, when Orbit wasn't
+/// reading, is about the failure before: it doesn't carry over when the
+/// check fails again.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_reply_from_a_green_spell_doesnt_carry_over() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let e = connected(d.path()).await;
+    let ci = |head: char, lint: &str| {
+        answer(d.path(), '1', &[], Some((head, &[("Lint", lint)])));
+    };
+    e.update(|s| s.prs = vec![pr('5')]).await;
+    ci('5', "FAILURE");
+    watch(&e, &gh).await;
+    e.update(|s| s.prs = vec![pr('6')]).await;
+    ci('6', "SUCCESS");
+    watch(&e, &gh).await;
+    say(d.path(), "agent", "Declined I1: the runner was down");
+    e.update(|s| s.prs = vec![pr('7')]).await;
+    ci('7', "FAILURE");
+    watch(&e, &gh).await;
+    let body = || github(d.path())["comments"][0]["body"].to_string();
+    assert!(body().contains("failing at `7777777`"), "{}", body());
+    assert!(!body().contains("declined"), "{}", body());
+    say(d.path(), "agent", "Taking I1");
+    watch(&e, &gh).await;
+    assert!(body().contains("someone is on it"), "{}", body());
 }

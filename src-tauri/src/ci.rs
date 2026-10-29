@@ -175,10 +175,19 @@ statusCheckRollup {{ contexts(first: {CHECKS}, after: $cursor) {{ {NODES} }} }} 
     )
 }
 /// Where the check named `name` stands at commit `oid`: failing if any run
-/// of it failed, running while one runs, passing once one passed, and None
-/// when it didn't run there, or wasn't found in the first `MORE_PAGES`
-/// pages.
+/// of it failed, running while one runs or while some of the commit's
+/// checks are still to read, passing once one passed, and None when it
+/// didn't run there.
 pub async fn check_at(repo: &str, oid: &str, name: &str) -> Result<CiState, String> {
+    check_at_within(repo, oid, name, MORE_PAGES + 1).await
+}
+/// `check_at`, reading at most `most` pages of the commit's checks.
+pub(crate) async fn check_at_within(
+    repo: &str,
+    oid: &str,
+    name: &str,
+    most: usize,
+) -> Result<CiState, String> {
     validate_repo(repo)?;
     if !valid_sha(oid) {
         return Err("Invalid commit".into());
@@ -186,7 +195,9 @@ pub async fn check_at(repo: &str, oid: &str, name: &str) -> Result<CiState, Stri
     let (owner, name_of_repo) = repo.split_once('/').ok_or("Invalid repository")?;
     let mut states = vec![];
     let mut cursor: Option<String> = None;
-    for _ in 0..=MORE_PAGES {
+    // Only a last page proves there are no more runs of it.
+    let mut unread = true;
+    for _ in 0..most {
         let mut fields = vec![
             ("query", commit_query()),
             ("owner", owner.to_string()),
@@ -206,16 +217,19 @@ pub async fn check_at(repo: &str, oid: &str, name: &str) -> Result<CiState, Stri
                 }
             }
         }
+        if contexts["pageInfo"]["hasNextPage"] != true {
+            unread = false;
+            break;
+        }
         match contexts["pageInfo"]["endCursor"].as_str() {
-            Some(c) if contexts["pageInfo"]["hasNextPage"] == true && !c.is_empty() => {
-                cursor = Some(c.to_string())
-            }
+            Some(c) if !c.is_empty() => cursor = Some(c.to_string()),
+            // More checks, but nowhere to read them from.
             _ => break,
         }
     }
     Ok(if states.contains(&CiState::Failing) {
         CiState::Failing
-    } else if states.contains(&CiState::Running) {
+    } else if states.contains(&CiState::Running) || unread {
         CiState::Running
     } else if states.contains(&CiState::Passing) {
         CiState::Passing
