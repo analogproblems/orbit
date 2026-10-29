@@ -68,20 +68,40 @@ describe("operations page", () => {
     expect(closed.textContent).toContain("Passed at 4be81aa.");
   });
 
-  it("says all clear only once every repository's CI was read", () => {
+  it("says all clear only once every check it follows was read", () => {
     const s = freshDemo();
     s.problems = s.problems!.filter((p) => p.closedAt);
+    const notAll = (n: string) =>
+      `No problems found so far, but Orbit couldn’t read every check on ${n}.`;
     show(s);
     // The demo can't read acme/dashboard.
-    expect(
-      screen.getByText(
-        "No problems found so far. Orbit couldn’t read CI on 1 repository yet.",
-      ),
-    ).toBeTruthy();
+    expect(screen.getByText(notAll("1 repository"))).toBeTruthy();
     cleanup();
     s.ci = s.ci!.filter((c) => c.repo !== "acme/dashboard");
     s.settings.repositories = s.settings.repositories.filter(
       (r) => r.name !== "acme/dashboard",
+    );
+    show(s);
+    expect(screen.getByText("All clear. Nothing is failing.")).toBeTruthy();
+    cleanup();
+
+    // Checks left to read on a default branch, or on a pull request Orbit
+    // follows, keep it from saying all clear.
+    const [orbit, api] = s.ci!;
+    orbit.head.incomplete = true;
+    api.pulls[0].ci.incomplete = true;
+    show(s);
+    expect(screen.getByText(notAll("2 repositories"))).toBeTruthy();
+    cleanup();
+    orbit.head.incomplete = false;
+    show(s);
+    expect(screen.getByText(notAll("1 repository"))).toBeTruthy();
+    cleanup();
+    // A draft isn't followed, so its unread checks don't count.
+    s.prs = s.prs.map((pr) =>
+      pr.number === api.pulls[0].number && pr.repo === api.repo
+        ? { ...pr, draft: true }
+        : pr,
     );
     show(s);
     expect(screen.getByText("All clear. Nothing is failing.")).toBeTruthy();

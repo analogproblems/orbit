@@ -18,6 +18,7 @@ import {
   checkNames,
   sameRepo,
   shortSha,
+  trustedSource,
   type AttentionHandlers,
   type CiState,
   type Problem,
@@ -57,6 +58,26 @@ export function branchSummary(ci: RepoCi) {
     default:
       return `No checks ran on ${branch} at ${at}.`;
   }
+}
+
+/** Whether some of a repository's checks that Orbit follows are unread: it
+ * wasn't read, its last read failed, or its default branch or a pull
+ * request Orbit follows has more checks than Orbit read. */
+function partlyRead(s: Snapshot, repo: string) {
+  const ci = s.ci?.find((c) => sameRepo(c.repo, repo));
+  if (!ci?.checkedAt || ci.error || ci.head.incomplete) return true;
+  return ci.pulls.some(
+    (pull) =>
+      pull.ci.incomplete &&
+      s.prs.some(
+        (pr) =>
+          sameRepo(pr.repo, repo) &&
+          pr.number === pull.number &&
+          pr.headSha === pull.ci.sha &&
+          !pr.draft &&
+          trustedSource(pr, s.settings.trustedAuthors),
+      ),
+  );
 }
 
 /** A problem's name: its repository and branch, or its pull request. */
@@ -166,19 +187,18 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
           Number(b.kind !== "default_branch") ||
         b.openedAt.localeCompare(a.openedAt),
     );
-  // All clear only once every repository's CI was read.
-  const unread = s.settings.repositories.filter((r) => {
-    const ci = s.ci?.find((c) => sameRepo(c.repo, r.name));
-    return !ci?.checkedAt || !!ci.error;
-  }).length;
+  // All clear only once every check Orbit follows was read.
+  const unread = s.settings.repositories.filter((r) =>
+    partlyRead(s, r.name),
+  ).length;
   if (!open.length && unread)
     return (
       <Card padding={3}>
         <HStack gap={3} vAlign="center">
           <StatusDot variant="neutral" label="Not all read" />
           <Text weight="medium">
-            No problems found so far. Orbit couldn’t read CI on {unread}{" "}
-            {unread === 1 ? "repository" : "repositories"} yet.
+            No problems found so far, but Orbit couldn’t read every check on{" "}
+            {unread} {unread === 1 ? "repository" : "repositories"}.
           </Text>
         </HStack>
       </Card>
