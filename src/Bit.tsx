@@ -629,8 +629,9 @@ function ClassicBit({
   hat: wearing = "none",
   size = "md",
   label,
+  still = false,
 }: Omit<BitProps, "look">) {
-  const reduced = useReducedMotion();
+  const reduced = useReducedMotion() || still;
   const body = v((bitColours[colour] ?? bitColours.lime).token);
   const layers = hat(wearing, body, mood === "busy" && !reduced);
   return (
@@ -864,6 +865,12 @@ function OrbBit({
     seen?.observe(v.box);
     return () => {
       views.delete(v);
+      // The last picture gone stops the clock at once, not a frame later.
+      if (!views.size && raf) {
+        cancelAnimationFrame(raf);
+        raf = 0;
+        last = 0;
+      }
       resize?.disconnect();
       seen?.disconnect();
       view.current = null;

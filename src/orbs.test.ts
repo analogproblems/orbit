@@ -92,31 +92,50 @@ describe("orbs", () => {
     }
   });
 
-  it("draws every look in every mood, held still and moving between them", () => {
-    const pals = [undefined, tint(212, 96, 160)];
-    for (const look of LOOKS)
+  it.each(LOOKS)(
+    "draws %s in every mood, held still and moving between them",
+    (look) => {
+      const pals = [undefined, tint(212, 96, 160)];
+      const moving = (
+        orb: Orb,
+        ctx: CanvasRenderingContext2D,
+        frames: number,
+      ) => {
+        for (let f = 0; f < frames; f++) {
+          orb.step(1 / 60);
+          if (f % 4 === 0) drawOrb(ctx, orb, 100, 190, 48, env);
+        }
+      };
+      const n = LOOKS.indexOf(look);
       for (const pal of pals) {
         const { ctx, problems, calls } = fakeCanvas();
-        const orb = new Orb(look, "idle", pal ?? ownPalette(look));
+        const own = () => pal ?? ownPalette(look);
+        // Arriving from the look before it, as when you pick a new one.
+        const before = LOOKS[(n + LOOKS.length - 1) % LOOKS.length];
+        const orb = new Orb(before, "working", pal ?? ownPalette(before));
+        moving(orb, ctx, 30);
+        orb.set(look, "idle", own());
+        moving(orb, ctx, 90);
         for (const mood of ORB_MOODS) {
-          orb.set(look, mood, pal ?? ownPalette(look));
+          // Two seconds of arriving in the mood, overshoot and all, without
+          // snapping first.
+          orb.set(look, mood, own());
+          moving(orb, ctx, 120);
+          // A tap, and its squish.
+          orb.boop();
+          moving(orb, ctx, 20);
+          // Then the still picture.
           orb.pose();
           const head = drawOrb(ctx, orb, 100, 190, 48, env);
-          for (const n of [head.x, head.y, head.angle, head.size])
-            expect(Number.isFinite(n), `${look} ${mood} head`).toBe(true);
+          for (const x of [head.x, head.y, head.angle, head.size])
+            expect(Number.isFinite(x), `${look} ${mood} head`).toBe(true);
           expect(head.size).toBeGreaterThan(0);
-          // A couple of seconds of motion, including the spring's overshoot
-          // on arrival, and a tap.
-          if (mood === "idle") orb.boop();
-          for (let f = 0; f < 120; f++) {
-            orb.step(1 / 60);
-            if (f % 10 === 0) drawOrb(ctx, orb, 100, 190, 48, env);
-          }
         }
         expect([...problems], `${look} ${pal ? "tinted" : "own"}`).toEqual([]);
         expect(calls()).toBeGreaterThan(0);
       }
-  });
+    },
+  );
 
   it("keeps its head above its body", () => {
     const { ctx } = fakeCanvas();
