@@ -1344,6 +1344,12 @@ pub struct Snapshot {
     /// What Orbit saw go wrong, open or closed lately (see
     /// `crate::problems`).
     pub problems: Vec<crate::problems::Problem>,
+    /// Orbit's comments and issues that tell agents about failing CI (see
+    /// `crate::ops`).
+    pub ops: Vec<crate::ops::Thread>,
+    /// Each write Orbit made on GitHub for them, recorded before it was
+    /// sent; the newest last.
+    pub journal: Vec<crate::ops::Write>,
 }
 /// How reading the pull-request history is going.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

@@ -62,7 +62,9 @@ pub(super) fn prune(s: &mut Snapshot, now: chrono::DateTime<chrono::Utc>) -> boo
             changed = true;
         }
     }
-    changed |= crate::problems::prune(&mut s.problems, now);
+    let pinned = crate::ops::pinned(&s.ops, &s.prs);
+    changed |= crate::problems::prune(&mut s.problems, &pinned, now);
+    changed |= crate::ops::prune(&mut s.ops, &mut s.journal, &s.problems, &s.prs, now);
     changed
 }
 

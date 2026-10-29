@@ -594,6 +594,198 @@ pub async fn review_comments(pr: &PullRequest, review_id: u64) -> Result<Vec<Val
     )
     .await
 }
+/// Where GitHub put a comment or issue, after checking its answer holds
+/// `marker`: what Orbit wrote is what GitHub has.
+fn posted(v: &Value, marker: &str) -> Result<crate::ops::Posted, String> {
+    let body = v["body"].as_str().unwrap_or_default();
+    let (Some(id), Some(url)) = (v["id"].as_u64(), v["html_url"].as_str()) else {
+        return Err("GitHub's answer didn't say where it put Orbit's text.".into());
+    };
+    if !body.contains(marker) {
+        return Err("GitHub's answer didn't hold Orbit's text.".into());
+    }
+    Ok(crate::ops::Posted {
+        id,
+        number: v["number"].as_u64(),
+        url: url.to_string(),
+    })
+}
+fn by(v: &Value, login: &str) -> bool {
+    v["user"]["login"]
+        .as_str()
+        .is_some_and(|l| l.eq_ignore_ascii_case(login))
+}
+/// Pages up to which Orbit looks for its own comment or issue before
+/// posting one: 10,000 items.
+const FIND_PAGES: u32 = 100;
+/// The first item on any of the pages of `endpoint` that `matches`. Only a
+/// last page that isn't full proves there is none: past `most` full pages
+/// it's an error, so a capped search never passes for an empty one.
+async fn first_match(
+    endpoint: &str,
+    fields: &[(&str, String)],
+    most: u32,
+    matches: impl Fn(&Value) -> bool,
+) -> Result<Option<Value>, String> {
+    for page in 1..=most {
+        let mut query = fields.to_vec();
+        query.extend([("per_page", "100".into()), ("page", page.to_string())]);
+        let v = api(endpoint, "GET", &query, None).await?;
+        let items = v.as_array().ok_or("Invalid list from GitHub")?;
+        if let Some(found) = items.iter().find(|i| matches(i)) {
+            return Ok(Some(found.clone()));
+        }
+        if items.len() < 100 {
+            return Ok(None);
+        }
+    }
+    Err("Too many to check for what Orbit posted before, so Orbit didn't post again.".into())
+}
+/// The comment `login` left on an issue or pull request that holds
+/// `marker`, if there is one.
+pub async fn find_comment(
+    repo: &str,
+    number: u64,
+    marker: &str,
+    login: &str,
+) -> Result<Option<crate::ops::Posted>, String> {
+    find_comment_within(repo, number, marker, login, FIND_PAGES).await
+}
+pub(crate) async fn find_comment_within(
+    repo: &str,
+    number: u64,
+    marker: &str,
+    login: &str,
+    most: u32,
+) -> Result<Option<crate::ops::Posted>, String> {
+    validate_repo(repo)?;
+    first_match(
+        &format!("repos/{repo}/issues/{number}/comments"),
+        &[],
+        most,
+        |c| by(c, login) && c["body"].as_str().is_some_and(|b| b.contains(marker)),
+    )
+    .await?
+    .map(|c| posted(&c, marker))
+    .transpose()
+}
+/// The issue `login` opened that holds `marker`, if there is one.
+pub async fn find_issue(
+    repo: &str,
+    marker: &str,
+    login: &str,
+) -> Result<Option<crate::ops::Posted>, String> {
+    find_issue_within(repo, marker, login, FIND_PAGES).await
+}
+pub(crate) async fn find_issue_within(
+    repo: &str,
+    marker: &str,
+    login: &str,
+    most: u32,
+) -> Result<Option<crate::ops::Posted>, String> {
+    validate_repo(repo)?;
+    first_match(
+        &format!("repos/{repo}/issues"),
+        &[
+            ("state", "all".into()),
+            ("creator", login.to_string()),
+            ("sort", "created".into()),
+            ("direction", "desc".into()),
+        ],
+        most,
+        |i| {
+            i.get("pull_request").is_none()
+                && by(i, login)
+                && i["body"].as_str().is_some_and(|b| b.contains(marker))
+        },
+    )
+    .await?
+    .map(|i| posted(&i, marker))
+    .transpose()
+}
+/// Posts a comment on an issue or pull request.
+pub async fn post_comment(
+    repo: &str,
+    number: u64,
+    body: &str,
+    marker: &str,
+) -> Result<crate::ops::Posted, String> {
+    validate_repo(repo)?;
+    let v = api(
+        &format!("repos/{repo}/issues/{number}/comments"),
+        "POST",
+        &[],
+        Some(json!({ "body": body })),
+    )
+    .await?;
+    posted(&v, marker)
+}
+/// Replaces the text of a comment.
+pub async fn edit_comment(
+    repo: &str,
+    id: u64,
+    body: &str,
+    marker: &str,
+) -> Result<crate::ops::Posted, String> {
+    validate_repo(repo)?;
+    let v = api(
+        &format!("repos/{repo}/issues/comments/{id}"),
+        "PATCH",
+        &[],
+        Some(json!({ "body": body })),
+    )
+    .await?;
+    posted(&v, marker)
+}
+/// Opens an issue with a label. GitHub adds the label only for accounts
+/// that can push, and makes it if the repository has none by that name.
+pub async fn open_issue(
+    repo: &str,
+    title: &str,
+    body: &str,
+    label: &str,
+    marker: &str,
+) -> Result<crate::ops::Posted, String> {
+    validate_repo(repo)?;
+    let v = api(
+        &format!("repos/{repo}/issues"),
+        "POST",
+        &[],
+        Some(json!({ "title": title, "body": body, "labels": [label] })),
+    )
+    .await?;
+    posted(&v, marker)
+}
+/// Replaces an issue's text, and opens or closes it when `state` says so:
+/// `("closed", "completed")`, `("closed", "not_planned")` or
+/// `("open", "reopened")`.
+pub async fn edit_issue(
+    repo: &str,
+    number: u64,
+    body: &str,
+    marker: &str,
+    state: Option<(&str, &str)>,
+) -> Result<crate::ops::Posted, String> {
+    validate_repo(repo)?;
+    let mut change = json!({ "body": body });
+    if let Some((state, reason)) = state {
+        change["state"] = json!(state);
+        change["state_reason"] = json!(reason);
+    }
+    let v = api(
+        &format!("repos/{repo}/issues/{number}"),
+        "PATCH",
+        &[],
+        Some(change),
+    )
+    .await?;
+    if let Some((state, _)) = state {
+        if v["state"].as_str() != Some(state) {
+            return Err(format!("GitHub didn't mark the issue {state}."));
+        }
+    }
+    posted(&v, marker)
+}
 /// Sets the `orbit/review` status on a commit.
 pub async fn set_status(repo: &str, sha: &str, status: &CommitStatus) -> Result<(), String> {
     api(

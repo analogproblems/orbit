@@ -137,6 +137,114 @@ describe("operations page", () => {
     useOrbit.setState({ saves: {} });
   });
 
+  it("says where Orbit told each agent", () => {
+    const s = freshDemo();
+    show(s);
+    const open = screen.getByRole("list", { name: "Open problems" });
+    const [branch, pull] = within(open).getAllByRole("listitem");
+    expect(branch.textContent).toContain(
+      "Orbit told the repository’s agent in issue #212.",
+    );
+    expect(pull.textContent).toContain(
+      "Orbit told the agent in a comment on the pull request.",
+    );
+    expect(
+      within(branch).getByRole("button", { name: "Open on GitHub" }),
+    ).toBeTruthy();
+  });
+
+  it("asks first with a button, or says why it posts nothing", () => {
+    const action = vi.fn().mockResolvedValue({ ok: true });
+    useOrbit.setState({ action });
+    const s = freshDemo();
+    const issue = s.ops![0];
+    issue.url = "";
+    issue.number = null;
+    s.settings.buddy = {
+      ...s.settings.buddy!,
+      rules: { ...s.settings.buddy!.rules, open_issues: "ask_first" },
+    };
+    show(s);
+    const row = () =>
+      within(screen.getByRole("list", { name: "Open problems" })).getAllByRole(
+        "listitem",
+      )[0];
+    expect(row().textContent).toContain(
+      "Bit asks before opening an issue for the repository’s agent.",
+    );
+    fireEvent.click(within(row()).getByRole("button", { name: "Open issue" }));
+    expect(action).toHaveBeenCalledWith("tell_agent", {
+      key: "issue:demo-problem-1",
+    });
+    cleanup();
+    s.settings.buddy.rules.open_issues = "leave_it";
+    show(s);
+    expect(row().textContent).toContain(
+      "Your rule is Leave it to me, so Orbit doesn’t tell the agent.",
+    );
+    expect(within(row()).queryByRole("button")).toBeNull();
+    cleanup();
+    s.settings.buddy.rules.open_issues = "do_it";
+    s.settings.buddy.enabled = false;
+    show(s);
+    expect(row().textContent).toContain(
+      "Bit is off, so Orbit doesn’t tell the agent.",
+    );
+    cleanup();
+    // A post that may have gone is looked for, whatever the rule says.
+    s.settings.buddy.enabled = true;
+    s.settings.buddy.rules.open_issues = "ask_first";
+    issue.unsure = true;
+    show(s);
+    expect(row().textContent).toContain(
+      "Orbit stopped before GitHub answered its post, so it looks on GitHub for it before posting again.",
+    );
+    expect(within(row()).queryByRole("button")).toBeNull();
+    cleanup();
+    s.settings.buddy.rules.open_issues = "do_it";
+    issue.unsure = false;
+    issue.error = "HTTP 502: Bad Gateway";
+    show(s);
+    expect(row().textContent).toContain(
+      "Orbit couldn’t tell the agent yet: HTTP 502: Bad Gateway",
+    );
+    cleanup();
+    issue.gone = true;
+    issue.error =
+      "Orbit's issue is gone from GitHub, so Orbit stopped updating it.";
+    show(s);
+    expect(row().textContent).toContain(
+      "Orbit's issue is gone from GitHub, so Orbit stopped updating it.",
+    );
+  });
+
+  it("lists what Orbit posted, newest first", () => {
+    const s = freshDemo();
+    s.journal!.push({
+      ...s.journal![0],
+      id: "late",
+      action: "edit_comment",
+      repo: "acme/api",
+      number: 7,
+      state: "failed",
+      url: "",
+      error: "HTTP 502: Bad Gateway",
+    });
+    show(s);
+    const posted = screen.getByRole("list", { name: "What Orbit posted" });
+    const items = within(posted).getAllByRole("listitem");
+    expect(items[0].textContent).toContain(
+      "Updated its comment on acme/api #7.HTTP 502: Bad Gateway",
+    );
+    expect(within(items[0]).getByLabelText("Didn’t go through")).toBeTruthy();
+    expect(items[1].textContent).toContain(
+      "Updated its issue on acme/orbit #212.",
+    );
+    expect(items.map((i) => i.textContent)).toContainEqual(
+      expect.stringContaining("Closed its issue on acme/api #88."),
+    );
+  });
+
   it("asks you to connect a repository first", () => {
     const s = freshDemo();
     s.settings.repositories = [];

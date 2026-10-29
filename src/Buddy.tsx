@@ -54,7 +54,9 @@ import {
   moodReason,
   needsSetup,
   offeredFix,
+  postDescriptions,
   questionLabels,
+  ruleLabel,
   withPatch,
   type ApiProvider,
   type Buddy,
@@ -67,7 +69,9 @@ import {
   type Mood,
   type Proposal,
   type Question,
+  type RuledAction,
   type RuledFix,
+  type RuledPost,
   type SettingsPatch,
   type Snapshot,
 } from "./types";
@@ -1167,12 +1171,45 @@ function BuddyMemory() {
 }
 
 const ruledFixes = Object.keys(fixDescriptions) as RuledFix[];
+const ruledPosts = Object.keys(postDescriptions) as RuledPost[];
 
-/** What the buddy does about each fix it can do on its own. */
-function BuddyRules() {
+/** A rule's selector, saved on its own. */
+function RuleSelector({
+  rule,
+  description,
+}: {
+  rule: RuledAction;
+  description: string;
+}) {
   const { updateSettings, saves } = useOrbit();
   const buddy = useBuddy();
-  const key = (fix: RuledFix) => `buddy.rules.${fix}`;
+  const key = `buddy.rules.${rule}`;
+  return (
+    <VStack gap={2}>
+      <Selector
+        label={ruleLabel(rule)}
+        description={description}
+        value={buddy.rules[rule]}
+        isDisabled={saves[key]?.state === "saving"}
+        options={(Object.entries(fixRuleLabels) as [FixRule, string][]).map(
+          ([value, label]) => ({ value, label }),
+        )}
+        onChange={(value) =>
+          void updateSettings(
+            { buddy: { rules: { [rule]: value as FixRule } } },
+            key,
+          )
+        }
+      />
+      <SaveFeedback saveKey={key} />
+    </VStack>
+  );
+}
+
+/** What the buddy does about each fix it can do on its own, and what it
+ * posts to tell agents about failing CI. */
+function BuddyRules() {
+  const buddy = useBuddy();
   return (
     <VStack gap={4}>
       <VStack gap={2}>
@@ -1192,24 +1229,25 @@ function BuddyRules() {
         </Text>
       </VStack>
       {ruledFixes.map((fix) => (
-        <VStack key={fix} gap={2}>
-          <Selector
-            label={fixLabels[fix]}
-            description={fixDescriptions[fix]}
-            value={buddy.rules[fix]}
-            isDisabled={saves[key(fix)]?.state === "saving"}
-            options={(Object.entries(fixRuleLabels) as [FixRule, string][]).map(
-              ([value, label]) => ({ value, label }),
-            )}
-            onChange={(rule) =>
-              void updateSettings(
-                { buddy: { rules: { [fix]: rule as FixRule } } },
-                key(fix),
-              )
-            }
-          />
-          <SaveFeedback saveKey={key(fix)} />
-        </VStack>
+        <RuleSelector key={fix} rule={fix} description={fixDescriptions[fix]} />
+      ))}
+      <VStack gap={2}>
+        <Heading level={4}>Telling agents about failing CI</Heading>
+        <Text color="secondary">
+          While Watch CI is on, {buddy.name} tells each project’s agent on
+          GitHub when its checks fail, so it can fix them. With{" "}
+          <Text weight="semibold">Ask first</Text>, Operations shows a button
+          for each one. Once something is posted, {buddy.name} keeps it up to
+          date whatever the rule, so it never says something that stopped being
+          true.
+        </Text>
+      </VStack>
+      {ruledPosts.map((post) => (
+        <RuleSelector
+          key={post}
+          rule={post}
+          description={postDescriptions[post]}
+        />
       ))}
     </VStack>
   );

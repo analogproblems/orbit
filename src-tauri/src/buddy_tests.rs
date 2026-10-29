@@ -219,6 +219,8 @@ fn bit_never_does_a_settings_change_on_its_own() {
             review_again: rule.into(),
             publish: rule.into(),
             sync_now: rule.into(),
+            comment_on_prs: rule.into(),
+            open_issues: rule.into(),
         };
         assert_eq!(will_fix(&s, &item), None, "{rule}");
     }
@@ -632,6 +634,27 @@ fn rules_use_the_names_the_app_sends() {
         let loaded: Buddy = serde_json::from_value(saved).unwrap();
         assert_eq!(loaded.rules.of(fix), "do_it", "{name}");
     }
+    // So are the rules for posts that tell agents about failing CI.
+    let posts = fixture["posts"].as_array().unwrap();
+    assert_eq!(posts.len(), 2);
+    for name in posts {
+        let name = name.as_str().unwrap();
+        assert!(defaults.get(name).is_some(), "{name} has no rule");
+        let mut b = Buddy::default();
+        let patch: BuddyPatch =
+            serde_json::from_value(json!({"rules": {name: "leave_it"}})).unwrap();
+        patch.apply(&mut b);
+        let saved = serde_json::to_value(&b).unwrap();
+        assert_eq!(saved["rules"][name], "leave_it", "{name}");
+    }
+    let b = Buddy::default();
+    assert_eq!(
+        (
+            b.rules.comment_on_prs.as_str(),
+            b.rules.open_issues.as_str()
+        ),
+        ("do_it", "do_it")
+    );
 }
 
 fn ask_and_read(

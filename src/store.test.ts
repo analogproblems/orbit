@@ -180,6 +180,32 @@ describe("demo ci", () => {
   });
 });
 
+describe("demo agents", () => {
+  it("posts what Bit asked about once you say yes", async () => {
+    const saved = structuredClone(useOrbit.getState().snapshot);
+    saved.ops![1].url = "";
+    saved.ops![1].commentId = null;
+    localStorage.setItem("orbit-demo-v3", JSON.stringify(saved));
+    await useOrbit.getState().init();
+    const key = saved.ops![1].key;
+    const result = await useOrbit.getState().action("tell_agent", { key });
+    expect(result.ok).toBe(true);
+    const s = useOrbit.getState().snapshot;
+    const t = s.ops!.find((t) => t.key === key)!;
+    expect(t.allowed).toBe(true);
+    expect(t.url).toContain("#issuecomment-");
+    expect(s.journal!.at(-1)).toMatchObject({
+      thread: key,
+      action: "post_comment",
+      state: "done",
+    });
+    const gone = await useOrbit
+      .getState()
+      .action("tell_agent", { key: "pr:acme/none#1" }, { quiet: true });
+    expect(gone.ok).toBe(false);
+  });
+});
+
 describe("demo buddy", () => {
   it("gives older demos Bit and saves one buddy field at a time", async () => {
     const old = structuredClone(useOrbit.getState().snapshot);

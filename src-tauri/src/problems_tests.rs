@@ -285,8 +285,12 @@ fn closed_problems_are_kept_for_two_weeks_and_open_ones_always() {
     let mut later = failing(C, &["Test"]);
     later.repo = "a/c".into();
     observe(&mut problems, &later, &[], at(2));
-    assert!(!prune(&mut problems, at(14 * 24 * 60)));
-    assert!(prune(&mut problems, at(14 * 24 * 60 + 1)));
+    assert!(!prune(&mut problems, &Default::default(), at(14 * 24 * 60)));
+    assert!(prune(
+        &mut problems,
+        &Default::default(),
+        at(14 * 24 * 60 + 1)
+    ));
     assert_eq!(problems.len(), 1);
     assert!(problems[0].is_open());
 }
@@ -304,11 +308,14 @@ fn at_most_a_hundred_closed_problems_are_kept_even_when_they_closed_together() {
     let mut open = failing(B, &["Test"]);
     open.repo = "a/still-red".into();
     observe(&mut problems, &open, &[], at(2));
-    assert!(prune(&mut problems, at(3)));
+    assert!(prune(&mut problems, &Default::default(), at(3)));
     assert_eq!(problems.iter().filter(|p| !p.is_open()).count(), MAX_CLOSED);
     assert_eq!(problems.iter().filter(|p| p.is_open()).count(), 1);
     let kept: Vec<String> = problems.iter().map(|p| p.id.clone()).collect();
-    assert!(!prune(&mut problems, at(4)), "the same ones are kept");
+    assert!(
+        !prune(&mut problems, &Default::default(), at(4)),
+        "the same ones are kept"
+    );
     assert_eq!(
         problems.iter().map(|p| p.id.clone()).collect::<Vec<_>>(),
         kept

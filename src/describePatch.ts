@@ -1,7 +1,6 @@
 import { bitColours, bitHats, bitLooks } from "./Bit";
 import {
   buddyAnswerers,
-  fixLabels,
   fixRuleLabels,
   providerLabels,
   type Buddy,
@@ -11,7 +10,8 @@ import {
   type FixRule,
   type Model,
   type RepositoryPatch,
-  type RuledFix,
+  type RuledAction,
+  ruleLabel,
   type SettingsPatch,
   type WriteUps,
   writerLabels,
@@ -76,11 +76,11 @@ function buddyEntries(
 ): [string, unknown, string][] {
   return Object.entries(buddy).flatMap(([field, v]) =>
     field === "rules"
-      ? Object.entries(v as Record<RuledFix, FixRule>).map(
+      ? Object.entries(v as Record<RuledAction, FixRule>).map(
           ([fix, rule]): [string, unknown, string] => [
             fix,
             fixRuleLabels[rule],
-            `${fixLabels[fix as RuledFix]} rule`,
+            `${ruleLabel(fix as RuledAction)} rule`,
           ],
         )
       : [[field, buddyValue(field, v), buddyLabels[field as keyof Buddy]]],
