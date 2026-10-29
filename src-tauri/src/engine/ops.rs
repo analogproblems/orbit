@@ -5,9 +5,18 @@
 use super::Engine;
 use crate::{
     github,
-    ops::{self, Action, Planned, Posted, ThreadKind},
+    ops::{self, Action, Planned, Posted},
+    types::Snapshot,
 };
 use std::sync::{atomic::Ordering, Arc};
+
+/// The next thing any thread needs, as things stand now.
+fn plan(s: &Snapshot, now: chrono::DateTime<chrono::Utc>) -> Option<Planned> {
+    s.ops.iter().find_map(|t| {
+        let problem = s.problems.iter().find(|p| p.id == t.problem_id);
+        ops::next(t, problem, ops::may_post(s, t), now)
+    })
+}
 
 impl Engine {
     /// Brings Orbit's comments and issues up to date, one write at a time,
@@ -26,7 +35,7 @@ impl Engine {
             let now = chrono::Utc::now();
             // Nothing is on its way while this runs, so a write still marked
             // as sending was cut off when Orbit stopped.
-            let mut changed = ops::interrupted(&mut s.journal, now);
+            let mut changed = ops::interrupted(&mut s.journal, &mut s.ops, now);
             changed |= ops::refresh(&mut s.ops, &s.problems, now);
             if changed {
                 self.dirty.store(true, Ordering::SeqCst);
@@ -34,39 +43,48 @@ impl Engine {
         }
         for _ in 0..ops::WRITES_PER_PASS {
             let next = {
-                let mut s = self.state.lock().await;
-                let s = &mut *s;
-                let now = chrono::Utc::now();
+                let s = self.state.lock().await;
                 // Orbit's sign-in is how it finds its own comments again.
-                let Some(login) = s.github_user.clone() else {
-                    break;
-                };
-                let rules = &s.settings.buddy.rules;
-                let planned = s.ops.iter().find_map(|t| {
-                    let rule = match t.kind {
-                        ThreadKind::Comment => &rules.comment_on_prs,
-                        ThreadKind::Issue => &rules.open_issues,
-                    };
-                    let may = ops::may_post(rule, t.allowed, s.settings.buddy.enabled);
-                    let problem = s.problems.iter().find(|p| p.id == t.problem_id);
-                    ops::next(t, problem, may, now)
-                });
-                planned.map(|planned| {
-                    let id = ops::record(&mut s.journal, &planned, now);
-                    self.dirty.store(true, Ordering::SeqCst);
-                    (planned, id, login)
-                })
+                let login = s.github_user.clone();
+                plan(&s, chrono::Utc::now()).zip(login)
             };
-            let Some((planned, id, login)) = next else {
+            let Some((planned, login)) = next else {
                 break;
             };
+            if ops::looks_first(planned.action) {
+                // An earlier try may have got there before Orbit heard back.
+                let found = find(&planned, &login).await;
+                if !matches!(found, Ok(None)) || planned.action == Action::Find {
+                    let failed = found.is_err();
+                    self.update(|s| ops::looked(&mut s.ops, &planned, found, chrono::Utc::now()))
+                        .await;
+                    if self.flush().await.is_err() || failed {
+                        break;
+                    }
+                    continue;
+                }
+                // Nothing there: post it only if it is still wanted now the
+                // search is done, as rules and settings may have changed.
+                let wanted = {
+                    let s = self.state.lock().await;
+                    plan(&s, chrono::Utc::now()).as_ref() == Some(&planned)
+                };
+                if !wanted {
+                    continue;
+                }
+            }
+            let id = {
+                let mut s = self.state.lock().await;
+                ops::record(&mut s.journal, &planned, chrono::Utc::now())
+            };
+            self.dirty.store(true, Ordering::SeqCst);
             // Saved before it is sent, so after a restart Orbit knows it may
             // have gone, and looks before sending it again.
             let result = match self.flush().await {
-                Ok(()) => send(&planned, &login).await,
+                Ok(()) => send(&planned).await,
                 Err(_) => Err("Orbit couldn't save its journal, so it didn't send this.".into()),
             };
-            let saved = result.is_ok();
+            let sent = result.is_ok();
             self.update(|s| {
                 ops::settle(
                     &mut s.ops,
@@ -78,7 +96,7 @@ impl Engine {
                 )
             })
             .await;
-            if self.flush().await.is_err() || !saved {
+            if self.flush().await.is_err() || !sent {
                 break;
             }
         }
@@ -109,27 +127,36 @@ impl Engine {
     }
 }
 
-/// Sends one write. Before posting something new, Orbit looks for it on
-/// GitHub, in case an earlier try got there before Orbit heard back.
-async fn send(p: &Planned, login: &str) -> Result<Posted, String> {
+/// Looks on GitHub for what a write would make: the thread's comment or
+/// issue, or an issue's closing note.
+async fn find(p: &Planned, login: &str) -> Result<Option<Posted>, String> {
+    let comment = match p.action {
+        Action::Find => p.thread.starts_with("pr:"),
+        action => matches!(action, Action::PostComment | Action::NoteOnIssue),
+    };
+    if comment {
+        let number = p
+            .number
+            .ok_or("Orbit doesn't know where this is on GitHub.")?;
+        github::find_comment(&p.repo, number, &p.marker, login).await
+    } else {
+        github::find_issue(&p.repo, &p.marker, login).await
+    }
+}
+
+/// Sends one write.
+async fn send(p: &Planned) -> Result<Posted, String> {
     let known =
         |n: Option<u64>| n.ok_or_else(|| "Orbit doesn't know where this is on GitHub.".to_string());
     match p.action {
-        Action::PostComment => {
-            let number = known(p.number)?;
-            if let Some(found) = github::find_comment(&p.repo, number, &p.marker, login).await? {
-                return github::edit_comment(&p.repo, found.id, &p.body, &p.marker).await;
-            }
-            github::post_comment(&p.repo, number, &p.body, &p.marker).await
+        Action::Find => Err("Looking isn't a write.".into()),
+        Action::PostComment | Action::NoteOnIssue => {
+            github::post_comment(&p.repo, known(p.number)?, &p.body, &p.marker).await
         }
         Action::EditComment => {
             github::edit_comment(&p.repo, known(p.comment_id)?, &p.body, &p.marker).await
         }
         Action::OpenIssue => {
-            if let Some(found) = github::find_issue(&p.repo, &p.marker, login).await? {
-                let number = known(found.number)?;
-                return github::edit_issue(&p.repo, number, &p.body, &p.marker, None).await;
-            }
             github::open_issue(&p.repo, &p.title, &p.body, ops::LABEL, &p.marker).await
         }
         Action::EditIssue => {
@@ -147,13 +174,6 @@ async fn send(p: &Planned, login: &str) -> Result<Posted, String> {
             };
             let state = Some(("closed", reason));
             github::edit_issue(&p.repo, known(p.number)?, &p.body, &p.marker, state).await
-        }
-        Action::NoteOnIssue => {
-            let number = known(p.number)?;
-            if let Some(found) = github::find_comment(&p.repo, number, &p.marker, login).await? {
-                return Ok(found);
-            }
-            github::post_comment(&p.repo, number, &p.body, &p.marker).await
         }
     }
 }

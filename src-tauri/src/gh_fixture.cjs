@@ -2,7 +2,8 @@
 // <dir>/github.json. Usage: node gh_fixture.cjs <dir> api --hostname github.com
 // --method <METHOD> <endpoint> [-f key=value ...] [--input -]
 // GraphQL answers with <dir>/answer.json. While <dir>/down exists every call
-// fails. Each call is logged to <dir>/calls as "METHOD endpoint".
+// fails. While <dir>/hold exists a GET waits, after writing <dir>/held. Each
+// call is logged to <dir>/calls as "METHOD endpoint".
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -48,6 +49,11 @@ const page = (list) => {
 if (endpoint === "graphql") {
   process.stdout.write(fs.readFileSync(path.join(dir, "answer.json"), "utf8"));
   process.exit(0);
+}
+if (method === "GET" && fs.existsSync(path.join(dir, "hold"))) {
+  fs.writeFileSync(path.join(dir, "held"), "");
+  const nap = new Int32Array(new SharedArrayBuffer(4));
+  while (fs.existsSync(path.join(dir, "hold"))) Atomics.wait(nap, 0, 0, 20);
 }
 const db = load();
 let m;

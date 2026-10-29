@@ -35,7 +35,7 @@ Declined F4: the caller in src/api.rs rejects an empty list, so this path can't 
 
 ## Orbit's CI comments and issues
 
-Orbit also watches CI. When a pull request's checks fail, it posts one comment headed `## Orbit · CI` and edits that same comment as CI changes. When a default branch's checks fail, it opens an issue labelled `orbit`, such as "CI is failing on main". Each failing check is an item, such as **I1** · `CI / Rust tests` · failing at `9f3c2a1`, and the hidden `<!-- orbit-ops thread=... {json} -->` line at the end holds the same items (`id`, `check`, `failing`, `since`, `at`).
+Orbit also watches CI. When a pull request's checks fail, it posts one comment headed `## Orbit · CI` and edits that same comment as CI changes. When a default branch's checks fail, it opens an issue labelled `orbit`, such as "CI is failing on main". Each failing check is an item, such as **I1** · `CI / Rust tests` · failing at `9f3c2a1`, and the hidden `<!-- orbit-ops thread=... {json} -->` line at the end holds the same items (`id`, `check`, `failing`, `since`, `at`), and whether the problem is still `open` and whether it `passed`. An item still marked failing on a problem that is no longer open is what Orbit last saw before it stopped watching, not a fresh result.
 
 - Fix the failing checks and push. Orbit reads CI after each sync and updates the comment or issue itself: it says when every check passes, and closes its issue once the branch has stayed green for an hour.
 - Orbit only reads CI. It never pushes to your branch.

@@ -191,6 +191,18 @@ describe("operations page", () => {
       "Bit is off, so Orbit doesn’t tell the agent.",
     );
     cleanup();
+    // A post that may have gone is looked for, whatever the rule says.
+    s.settings.buddy.enabled = true;
+    s.settings.buddy.rules.open_issues = "ask_first";
+    issue.unsure = true;
+    show(s);
+    expect(row().textContent).toContain(
+      "Orbit stopped before GitHub answered its post, so it looks on GitHub for it before posting again.",
+    );
+    expect(within(row()).queryByRole("button")).toBeNull();
+    cleanup();
+    s.settings.buddy.rules.open_issues = "do_it";
+    issue.unsure = false;
     issue.error = "HTTP 502: Bad Gateway";
     show(s);
     expect(row().textContent).toContain(

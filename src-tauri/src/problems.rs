@@ -375,17 +375,25 @@ pub fn quiet_keys(problems: &[Problem], now: DateTime<Utc>) -> Vec<String> {
 
 /// Drops closed problems older than `KEEP_CLOSED`, keeping the newest
 /// `MAX_CLOSED` of the rest; problems that closed together are kept by ID.
-/// Returns whether any went.
-pub fn prune(problems: &mut Vec<Problem>, now: DateTime<Utc>) -> bool {
+/// Problems in `pinned` stay whatever their age, as Orbit still has a
+/// comment or issue to finish for them (see `crate::ops::pinned`). Returns
+/// whether any went.
+pub fn prune(
+    problems: &mut Vec<Problem>,
+    pinned: &std::collections::HashSet<String>,
+    now: DateTime<Utc>,
+) -> bool {
     let before = problems.len();
     problems.retain(|p| {
-        p.closed_at
-            .as_deref()
-            .and_then(time)
-            .is_none_or(|closed| now - closed < KEEP_CLOSED)
+        pinned.contains(&p.id)
+            || p.closed_at
+                .as_deref()
+                .and_then(time)
+                .is_none_or(|closed| now - closed < KEEP_CLOSED)
     });
     let mut closed: Vec<(String, String)> = problems
         .iter()
+        .filter(|p| !pinned.contains(&p.id))
         .filter_map(|p| p.closed_at.clone().map(|at| (at, p.id.clone())))
         .collect();
     if closed.len() > MAX_CLOSED {
@@ -395,7 +403,8 @@ pub fn prune(problems: &mut Vec<Problem>, now: DateTime<Utc>) -> bool {
             .take(MAX_CLOSED)
             .map(|(_, id)| id)
             .collect();
-        problems.retain(|p| p.closed_at.is_none() || keep.contains(&p.id));
+        problems
+            .retain(|p| p.closed_at.is_none() || pinned.contains(&p.id) || keep.contains(&p.id));
     }
     problems.len() != before
 }

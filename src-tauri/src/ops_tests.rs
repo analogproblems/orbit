@@ -1,5 +1,6 @@
 use super::*;
 use crate::ci::Check;
+use crate::types::{PullRequest, Snapshot};
 use chrono::TimeZone;
 
 fn t0() -> DateTime<Utc> {
@@ -217,10 +218,10 @@ fn the_rule_decides_what_is_posted_but_not_what_is_kept_true() {
     let mut threads = vec![];
     let mut journal = vec![];
     refresh(&mut threads, std::slice::from_ref(&p), t0());
-    assert!(!may_post("leave_it", true, true));
-    assert!(!may_post("ask_first", false, true));
-    assert!(!may_post("do_it", true, false), "Bit is off");
-    assert!(may_post("ask_first", true, true));
+    assert!(!rule_allows("leave_it", true, true));
+    assert!(!rule_allows("ask_first", false, true));
+    assert!(!rule_allows("do_it", true, false), "Bit is off");
+    assert!(rule_allows("ask_first", true, true));
     assert_eq!(next(&threads[0], Some(&p), false, t0()), None);
     let post = send(&mut threads, &mut journal, &p, true, t0()).unwrap();
     assert_eq!(post.action, Action::PostComment);
@@ -286,20 +287,14 @@ fn names_and_links_from_github_stay_plain() {
     assert!(hidden.ends_with(" -->"));
 }
 
-/// A write left on its way when Orbit stopped is marked as unsure; a failed
-/// write waits longer after each failure, up to an hour; something deleted
-/// from GitHub is left alone.
+/// A failed write waits longer after each failure, up to an hour;
+/// something deleted from GitHub is left alone.
 #[test]
 fn failed_writes_wait_and_deleted_ones_are_left_alone() {
     let p = pull("p1", &["A"], '1', t0());
     let mut threads = vec![];
     let mut journal = vec![];
     refresh(&mut threads, std::slice::from_ref(&p), t0());
-    let planned = next(&threads[0], Some(&p), true, t0()).unwrap();
-    record(&mut journal, &planned, t0());
-    assert!(interrupted(&mut journal, t0()));
-    assert_eq!(journal[0].state, WriteState::Failed);
-    assert!(!interrupted(&mut journal, t0()));
     let mut now = t0();
     let mut waits = vec![];
     for _ in 0..8 {
@@ -313,6 +308,8 @@ fn failed_writes_wait_and_deleted_ones_are_left_alone() {
             Err("HTTP 502".into()),
             now,
         );
+        // As if Orbit had looked and found nothing.
+        threads[0].unsure = false;
         let retry = time(threads[0].retry_at.as_deref().unwrap()).unwrap();
         waits.push((retry - now).num_minutes());
         assert_eq!(
@@ -357,10 +354,10 @@ fn prune_keeps_open_issues_and_the_newest_journal() {
     let q = pull("p2", &["A"], '1', t0());
     refresh(&mut threads, &[p.clone(), q], t0());
     assert_eq!(threads.len(), 2);
-    assert!(prune(&mut threads, &mut journal, &[], t0()));
+    assert!(prune(&mut threads, &mut journal, &[], &[], t0()));
     assert_eq!(threads.len(), 1, "the open issue stays");
     threads[0].closed = true;
-    prune(&mut threads, &mut journal, &[], t0());
+    prune(&mut threads, &mut journal, &[], &[], t0());
     assert!(threads.is_empty());
 
     for i in 0..(MAX_JOURNAL + 5) {
@@ -368,9 +365,211 @@ fn prune_keeps_open_issues_and_the_newest_journal() {
         w.id = i.to_string();
         journal.push(w);
     }
-    prune(&mut threads, &mut journal, &[], t0());
+    prune(&mut threads, &mut journal, &[], &[], t0());
     assert_eq!(journal.len(), MAX_JOURNAL);
     assert_eq!(journal.last().unwrap().id, (MAX_JOURNAL + 4).to_string());
-    prune(&mut threads, &mut journal, &[], t0() + KEEP_CLOSED);
+    prune(&mut threads, &mut journal, &[], &[], t0() + KEEP_CLOSED);
     assert!(journal.is_empty());
+}
+
+/// A post cut off when Orbit stopped leaves its thread unsure, and the
+/// thread looks for it on GitHub before anything else, even once CI passes
+/// or Bit may no longer post; what it finds is brought up to date.
+#[test]
+fn a_cut_off_post_is_looked_for_whatever_happens_next() {
+    let mut p = branch(&["A"], '1');
+    let mut threads = vec![];
+    let mut journal = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    let planned = next(&threads[0], Some(&p), true, t0()).unwrap();
+    assert_eq!(planned.action, Action::OpenIssue);
+    record(&mut journal, &planned, t0());
+    assert!(interrupted(&mut journal, &mut threads, t0()));
+    assert_eq!(journal[0].state, WriteState::Failed);
+    assert!(threads[0].unsure);
+    assert!(!interrupted(&mut journal, &mut threads, t0()));
+    // CI passes, and posting is off.
+    pass(&mut p, '2', t0());
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    let find = next(&threads[0], Some(&p), false, t0()).unwrap();
+    assert_eq!(find.action, Action::Find);
+    assert!(looks_first(find.action));
+    let found = Posted {
+        id: 9,
+        number: Some(45),
+        url: "https://github.com/a/b/issues/45".into(),
+    };
+    looked(&mut threads, &find, Ok(Some(found)), t0());
+    assert!(!threads[0].unsure);
+    assert_eq!(threads[0].number, Some(45));
+    let edit = next(&threads[0], Some(&p), false, t0()).unwrap();
+    assert_eq!(edit.action, Action::EditIssue);
+    assert!(edit
+        .body
+        .contains("Every check passes on `main` at `2222222`."));
+    // Found nothing: nothing got there, and nothing new is posted.
+    threads[0].number = None;
+    threads[0].unsure = true;
+    let find = next(&threads[0], Some(&p), false, t0()).unwrap();
+    looked(&mut threads, &find, Ok(None), t0());
+    assert!(!threads[0].unsure);
+    assert_eq!(next(&threads[0], Some(&p), true, t0()), None);
+    // A failed search waits like a failed write.
+    threads[0].unsure = true;
+    looked(&mut threads, &find, Err("HTTP 502".into()), t0());
+    assert!(threads[0].unsure);
+    assert_eq!(next(&threads[0], Some(&p), true, t0()), None);
+    // And a post GitHub didn't answer may have got there too.
+    let mut threads = vec![];
+    let mut q = branch(&["A"], '1');
+    q.id = "p2".into();
+    refresh(&mut threads, std::slice::from_ref(&q), t0());
+    let open = next(&threads[0], Some(&q), true, t0()).unwrap();
+    let id = record(&mut journal, &open, t0());
+    let timeout = Err("timed out".into());
+    settle(&mut threads, &mut journal, &id, &open, timeout, t0());
+    assert!(threads[0].unsure);
+}
+
+fn open_pr() -> PullRequest {
+    PullRequest {
+        id: "a/b#12".into(),
+        repo: "a/b".into(),
+        number: 12,
+        title: String::new(),
+        author: "agent".into(),
+        body: String::new(),
+        url: String::new(),
+        head_sha: sha('1'),
+        base_sha: sha('0'),
+        head_ref: "fix-it".into(),
+        base_ref: "main".into(),
+        updated_at: String::new(),
+        draft: false,
+        additions: 0,
+        deletions: 0,
+        changed_files: 0,
+        review_requested: false,
+        labels: vec![],
+        head_repo: "a/b".into(),
+        author_association: "MEMBER".into(),
+        base_repo: "a/b".into(),
+        head_seen_at: String::new(),
+    }
+}
+
+/// An open pull request keeps its comment and item numbers however long it
+/// stays green, and problems an unclosed issue needs are kept, even when
+/// many close at once; once Orbit is done with them, both go as usual.
+#[test]
+fn threads_keep_what_they_still_need() {
+    let mut p = pull("p1", &["A"], '1', t0());
+    let mut threads = vec![];
+    let mut journal = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    send(&mut threads, &mut journal, &p, true, t0());
+    pass(&mut p, '2', t0());
+    let mut problems = vec![p];
+    let later = t0() + KEEP_CLOSED + Duration::days(1);
+    let prs = [open_pr()];
+    let pins = pinned(&threads, &prs);
+    assert!(pins.contains("p1"));
+    assert!(!crate::problems::prune(&mut problems, &pins, later));
+    prune(&mut threads, &mut journal, &problems, &prs, later);
+    assert_eq!(threads.len(), 1, "kept while the pull request is open");
+    // It fails again: the next check is I2.
+    problems.push(pull("p2", &["B"], '3', later));
+    refresh(&mut threads, &problems, later);
+    assert_eq!(threads.len(), 1);
+    let numbers: Vec<u32> = threads[0].items.iter().map(|i| i.number).collect();
+    assert_eq!(numbers, [1, 2]);
+    // Once the pull request closes, it goes with its problems.
+    assert!(pinned(&threads, &[]).is_empty());
+    prune(&mut threads, &mut journal, &[], &[], later);
+    assert!(threads.is_empty());
+
+    // 150 default branches pass together, each with an issue to close.
+    let mut problems = vec![];
+    let mut threads = vec![];
+    for i in 0..150 {
+        let mut p = branch(&["A"], '1');
+        p.id = format!("b{i:03}");
+        p.repo = format!("a/b{i}");
+        problems.push(p);
+    }
+    refresh(&mut threads, &problems, t0());
+    for t in &mut threads {
+        t.number = Some(1);
+    }
+    for p in &mut problems {
+        pass(p, '2', t0());
+    }
+    let pins = pinned(&threads, &[]);
+    assert_eq!(pins.len(), 150);
+    crate::problems::prune(&mut problems, &pins, t0() + Duration::minutes(5));
+    assert_eq!(problems.len(), 150, "all kept until their issues close");
+    for t in &mut threads {
+        t.closed = true;
+    }
+    let pins = pinned(&threads, &[]);
+    crate::problems::prune(&mut problems, &pins, t0() + CLOSE_AFTER);
+    assert_eq!(problems.len(), crate::problems::MAX_CLOSED);
+}
+
+/// When Orbit stops watching for a reason other than a pass, what it last
+/// saw still stands, in the text and the hidden line.
+#[test]
+fn stopping_watching_keeps_what_was_last_seen() {
+    let mut p = branch(&["A"], '1');
+    let mut threads = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    p.closed_at = Some(stamp(t0()));
+    p.closed_reason = Some("Orbit stopped watching CI.".into());
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    assert!(threads[0].items[0].failing);
+    let body = issue_body(&threads[0], &p, true);
+    assert!(body.contains("Orbit has stopped watching CI here. Orbit stopped watching CI."));
+    assert!(body.contains("- **I1** · `A` · failing at `1111111` when Orbit stopped watching"));
+    let hidden = body.lines().last().unwrap();
+    assert!(hidden.contains("\"failing\":true"));
+    assert!(hidden.contains("\"open\":false"));
+    assert!(hidden.contains("\"passed\":false"));
+    assert!(!comment_body(&threads[0], &p).contains("not failing"));
+}
+
+/// Bit posts something new only while Watch CI is on, the repository is
+/// connected, and for a comment, Orbit follows the pull request.
+#[test]
+fn may_post_checks_where_things_stand_now() {
+    let p = pull("p1", &["A"], '1', t0());
+    let mut threads = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    let t = threads[0].clone();
+    let mut s = Snapshot::default();
+    s.settings.watch_ci = true;
+    s.settings.repositories.push(crate::types::Repository {
+        name: "a/b".into(),
+        path: String::new(),
+        automatic: false,
+        setup_command: String::new(),
+        network_access: false,
+        round_limit: 4,
+        approval_minutes: 0,
+        keep_updated: false,
+        provider: Default::default(),
+        dev_container: Default::default(),
+    });
+    s.prs = vec![open_pr()];
+    assert!(may_post(&s, &t));
+    s.prs[0].draft = true;
+    assert!(!may_post(&s, &t), "a draft");
+    s.prs[0].draft = false;
+    s.prs[0].author_association = "NONE".into();
+    assert!(!may_post(&s, &t), "not trusted");
+    s.prs[0].author_association = "MEMBER".into();
+    s.settings.watch_ci = false;
+    assert!(!may_post(&s, &t), "Watch CI is off");
+    s.settings.watch_ci = true;
+    s.settings.repositories.clear();
+    assert!(!may_post(&s, &t), "disconnected");
 }

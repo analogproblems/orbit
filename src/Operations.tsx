@@ -96,7 +96,14 @@ function asksFirst(s: Snapshot, p: Problem, t: OpsThread | undefined) {
     p.kind === "default_branch"
       ? buddy.rules.open_issues
       : buddy.rules.comment_on_prs;
-  return !!t && !t.url && buddy.enabled && rule === "ask_first" && !t.allowed;
+  return (
+    !!t &&
+    !t.url &&
+    !t.unsure &&
+    buddy.enabled &&
+    rule === "ask_first" &&
+    !t.allowed
+  );
 }
 
 /** Where Orbit told the problem's agent, or why it hasn't. */
@@ -113,6 +120,8 @@ export function toldText(s: Snapshot, p: Problem, t: OpsThread | undefined) {
       : where;
   }
   if (t?.error) return `Orbit couldn’t tell the agent yet: ${t.error}`;
+  if (t?.unsure)
+    return "Orbit stopped before GitHub answered its post, so it looks on GitHub for it before posting again.";
   const rule = issue ? buddy.rules.open_issues : buddy.rules.comment_on_prs;
   if (!buddy.enabled)
     return `${buddy.name} is off, so Orbit doesn’t tell the agent.`;

@@ -1171,6 +1171,9 @@ export interface OpsThread {
   allowed: boolean;
   /** It is gone from GitHub, so Orbit leaves it be. */
   gone: boolean;
+  /** A post may have reached GitHub without Orbit hearing back, so Orbit
+   * looks for it before anything else. */
+  unsure?: boolean;
   error?: string | null;
   tries: number;
   retryAt?: string | null;

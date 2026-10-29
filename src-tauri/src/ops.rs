@@ -8,14 +8,17 @@
 //! (`crate::problems`). The engine sends each write (`engine::ops`) after
 //! recording it in the journal. A write is never sent twice: before Orbit
 //! posts something new, it looks on GitHub for that thing's marker, in case
-//! an earlier try reached GitHub just before Orbit stopped.
+//! an earlier try reached GitHub just before Orbit stopped, and a thread
+//! whose post may have got there looks for it before anything else.
 use crate::{
     ci::short,
     problems::{stamp, time, Problem, ProblemKind, FLAP_QUIET, KEEP_CLOSED},
+    types::{same_repo, trusted_source, PullRequest, Snapshot},
 };
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::HashSet;
 
 /// The label on Orbit's issues.
 pub const LABEL: &str = "orbit";
@@ -78,6 +81,9 @@ pub struct Thread {
     pub allowed: bool,
     /// The comment or issue is gone from GitHub, so Orbit leaves it be.
     pub gone: bool,
+    /// A try to post it may have reached GitHub without Orbit hearing
+    /// back, so Orbit looks for it before anything else.
+    pub unsure: bool,
     /// Why the latest write failed, how many in a row have, and when Orbit
     /// tries again.
     pub error: Option<String>,
@@ -128,6 +134,9 @@ pub struct Item {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
+    /// Looks on GitHub for what an earlier try may have posted. Only reads,
+    /// so it isn't in the journal.
+    Find,
     PostComment,
     EditComment,
     OpenIssue,
@@ -198,10 +207,34 @@ pub struct Posted {
     pub url: String,
 }
 
-/// Whether Bit may post something new for a thread: it is on, and its rule
-/// is Do it, or Ask first and you said yes.
-pub fn may_post(rule: &str, allowed: bool, bit_on: bool) -> bool {
+/// Whether a rule lets Bit post: it is on, and the rule is Do it, or Ask
+/// first and you said yes.
+pub fn rule_allows(rule: &str, allowed: bool, bit_on: bool) -> bool {
     bit_on && (rule == "do_it" || (rule == "ask_first" && allowed))
+}
+/// Whether Bit may post something new for a thread now: its rule allows it,
+/// Watch CI is on, its repository is connected, and for a comment, Orbit
+/// still follows the pull request. Checked again right before each post.
+pub fn may_post(s: &Snapshot, t: &Thread) -> bool {
+    let buddy = &s.settings.buddy;
+    let rule = match t.kind {
+        ThreadKind::Comment => &buddy.rules.comment_on_prs,
+        ThreadKind::Issue => &buddy.rules.open_issues,
+    };
+    let watched = s.settings.watch_ci
+        && s.settings
+            .repositories
+            .iter()
+            .any(|r| same_repo(&r.name, &t.repo));
+    let followed = match t.kind {
+        ThreadKind::Issue => true,
+        ThreadKind::Comment => s.prs.iter().any(|p| {
+            t.pr_id.as_deref() == Some(p.id.as_str())
+                && !p.draft
+                && trusted_source(p, &s.settings.trusted_authors)
+        }),
+    };
+    rule_allows(rule, t.allowed, buddy.enabled) && watched && followed
 }
 
 /// Brings each thread up to date with its problem, and starts one for each
@@ -270,10 +303,12 @@ fn pr_number(id: &str) -> Option<u64> {
 /// Marks each item failing or not as the problem stands now, adding one for
 /// each check that fails for the first time.
 fn items_from(t: &mut Thread, p: &Problem) {
+    // Only a passing commit says a check stopped failing; when Orbit stops
+    // watching for another reason, items stay as it last saw them.
     if !p.is_open() {
-        for item in &mut t.items {
-            item.failing = false;
-            if p.passed() {
+        if p.passed() {
+            for item in &mut t.items {
+                item.failing = false;
                 item.at = p.closed_sha.clone();
             }
         }
@@ -322,6 +357,20 @@ pub fn next(
             .is_some_and(|at| now < at)
     {
         return None;
+    }
+    if t.unsure && !t.is_posted() {
+        return Some(Planned {
+            thread: t.key.clone(),
+            action: Action::Find,
+            repo: t.repo.clone(),
+            number: t.number,
+            comment_id: None,
+            title: String::new(),
+            body: String::new(),
+            marker: t.tag(),
+            completed: false,
+            closed_at: None,
+        });
     }
     let p = problem?;
     let plan = |action: Action, body: String| Planned {
@@ -416,7 +465,12 @@ fn details(url: &str) -> String {
     }
 }
 fn item_line(item: &Item, p: &Problem) -> String {
-    let state = if item.failing {
+    let state = if item.failing && !p.is_open() {
+        format!(
+            "failing at {} when Orbit stopped watching",
+            code(short(&item.at))
+        )
+    } else if item.failing {
         if item.since == item.at {
             format!("failing at {}", code(short(&item.at)))
         } else {
@@ -481,6 +535,7 @@ fn data(t: &Thread, p: &Problem) -> String {
         },
         "repo": t.repo,
         "open": p.is_open(),
+        "passed": p.passed(),
         "items": items,
     });
     let text = v
@@ -599,7 +654,7 @@ pub fn closing_note(t: &Thread, p: &Problem) -> String {
 /// Writes left on their way to GitHub when Orbit stopped: GitHub may or may
 /// not have them. Run before a pass sends anything. Returns whether any
 /// were left.
-pub fn interrupted(journal: &mut [Write], now: DateTime<Utc>) -> bool {
+pub fn interrupted(journal: &mut [Write], threads: &mut [Thread], now: DateTime<Utc>) -> bool {
     let mut any = false;
     for w in journal
         .iter_mut()
@@ -610,9 +665,75 @@ pub fn interrupted(journal: &mut [Write], now: DateTime<Utc>) -> bool {
         w.error = Some(
             "Orbit stopped before GitHub answered. It looks on GitHub before trying again, so nothing is posted twice.".into(),
         );
+        if creates(w.action) {
+            if let Some(t) = threads.iter_mut().find(|t| t.key == w.thread) {
+                t.unsure = true;
+            }
+        }
         any = true;
     }
     any
+}
+/// Whether an action makes the thread's comment or issue.
+fn creates(action: Action) -> bool {
+    matches!(action, Action::PostComment | Action::OpenIssue)
+}
+/// Whether an action makes something new on GitHub, so Orbit looks for it
+/// first.
+pub fn looks_first(action: Action) -> bool {
+    matches!(
+        action,
+        Action::Find | Action::PostComment | Action::OpenIssue | Action::NoteOnIssue
+    )
+}
+/// Records what Orbit found on GitHub before making something: a comment
+/// or issue an earlier try posted becomes the thread's, to be brought up to
+/// date, and a closing note already there counts as posted. Found nothing
+/// means nothing earlier got there. A search that failed waits like a
+/// failed write.
+pub fn looked(
+    threads: &mut [Thread],
+    planned: &Planned,
+    result: Result<Option<Posted>, String>,
+    now: DateTime<Utc>,
+) {
+    let Some(t) = threads.iter_mut().find(|t| t.key == planned.thread) else {
+        return;
+    };
+    t.updated_at = stamp(now);
+    let found = match result {
+        Ok(found) => found,
+        Err(error) => {
+            wait(t, error, now);
+            return;
+        }
+    };
+    t.error = None;
+    t.tries = 0;
+    t.retry_at = None;
+    let Some(found) = found else {
+        t.unsure = false;
+        return;
+    };
+    match planned.action {
+        Action::NoteOnIssue => t.noted = planned.closed_at.clone(),
+        _ => {
+            t.unsure = false;
+            t.url = found.url;
+            // What it says now is unknown, so it is brought up to date.
+            t.posted.clear();
+            match t.kind {
+                ThreadKind::Comment => t.comment_id = Some(found.id),
+                ThreadKind::Issue => t.number = found.number.or(t.number),
+            }
+        }
+    }
+}
+fn wait(t: &mut Thread, error: String, now: DateTime<Utc>) {
+    t.tries += 1;
+    let wait = Duration::minutes(1i64 << (t.tries - 1).min(6)).min(MAX_RETRY);
+    t.retry_at = Some(stamp(now + wait));
+    t.error = Some(error);
 }
 /// Records a write before it is sent.
 pub fn record(journal: &mut Vec<Write>, planned: &Planned, now: DateTime<Utc>) -> String {
@@ -659,8 +780,11 @@ pub fn settle(
             t.error = None;
             t.tries = 0;
             t.retry_at = None;
+            t.unsure = false;
             t.updated_at = at;
             match planned.action {
+                // Never sent as a write; see `looked`.
+                Action::Find => {}
                 Action::PostComment | Action::EditComment => {
                     t.comment_id = Some(posted.id);
                     t.url = posted.url;
@@ -687,6 +811,10 @@ pub fn settle(
             }
             let Some(t) = thread else { return };
             t.updated_at = at;
+            // GitHub may have taken a post it didn't answer for.
+            if creates(planned.action) {
+                t.unsure = true;
+            }
             // Something already posted that GitHub no longer has was
             // deleted by someone; Orbit doesn't post it again.
             if t.is_posted() && is_gone(&error) {
@@ -701,28 +829,44 @@ pub fn settle(
                 });
                 return;
             }
-            t.tries += 1;
-            let wait = Duration::minutes(1i64 << (t.tries - 1).min(6)).min(MAX_RETRY);
-            t.retry_at = Some(stamp(now + wait));
-            t.error = Some(error);
+            wait(t, error, now);
         }
     }
 }
 
-/// Drops threads whose problem is gone, except an issue Orbit hasn't
-/// closed yet, and journal entries older than closed problems are kept or
-/// past the newest `MAX_JOURNAL`. Returns whether any went.
+/// Whether Orbit still has work for a thread: an issue it hasn't closed, a
+/// post it may have to find, or a comment on a pull request that is still
+/// open and may fail again, which keeps its item numbers.
+fn in_use(t: &Thread, prs: &[PullRequest]) -> bool {
+    !t.gone
+        && (t.unsure
+            || (t.kind == ThreadKind::Issue && t.is_posted() && !t.closed)
+            || (t.kind == ThreadKind::Comment
+                && prs
+                    .iter()
+                    .any(|p| t.pr_id.as_deref() == Some(p.id.as_str()))))
+}
+/// The problems that threads still need, which pruning keeps.
+pub fn pinned(threads: &[Thread], prs: &[PullRequest]) -> HashSet<String> {
+    threads
+        .iter()
+        .filter(|t| in_use(t, prs))
+        .map(|t| t.problem_id.clone())
+        .collect()
+}
+
+/// Drops threads whose problem is gone and that Orbit has no more work
+/// for, and journal entries older than closed problems are kept or past the
+/// newest `MAX_JOURNAL`. Returns whether any went.
 pub fn prune(
     threads: &mut Vec<Thread>,
     journal: &mut Vec<Write>,
     problems: &[Problem],
+    prs: &[PullRequest],
     now: DateTime<Utc>,
 ) -> bool {
     let before = (threads.len(), journal.len());
-    threads.retain(|t| {
-        problems.iter().any(|p| p.id == t.problem_id)
-            || (t.kind == ThreadKind::Issue && t.is_posted() && !t.closed && !t.gone)
-    });
+    threads.retain(|t| problems.iter().any(|p| p.id == t.problem_id) || in_use(t, prs));
     journal.retain(|w| time(&w.at).is_none_or(|at| now - at < KEEP_CLOSED));
     let excess = journal.len().saturating_sub(MAX_JOURNAL);
     journal.drain(..excess);

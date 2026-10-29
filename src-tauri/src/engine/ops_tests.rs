@@ -136,6 +136,25 @@ async fn watch(e: &Engine, gh: &Path) {
         .scope(gh.to_path_buf(), e.watch_ci())
         .await;
 }
+/// As if Orbit stopped once its first post reached GitHub, before GitHub
+/// answered.
+async fn cut_off(e: &Engine) {
+    e.update(|s| {
+        let t = &mut s.ops[0];
+        if t.kind == ThreadKind::Issue {
+            t.number = None;
+        }
+        t.comment_id = None;
+        t.url.clear();
+        t.posted.clear();
+        let w = &mut s.journal[0];
+        w.state = WriteState::Sending;
+        w.url.clear();
+        w.done_at = None;
+    })
+    .await;
+    e.flush().await.unwrap();
+}
 
 /// A broken default branch opens one problem, one issue and one Needs you
 /// item; a restart posts nothing again; green says so on the issue, and an
@@ -222,19 +241,7 @@ async fn a_write_cut_off_by_a_restart_is_not_sent_twice() {
     answer(d.path(), '1', &[("Rust", "FAILURE")], None);
     let e = connected(d.path()).await;
     watch(&e, &gh).await;
-    // As if Orbit stopped once the issue was posted, before it heard back.
-    e.update(|s| {
-        let t = &mut s.ops[0];
-        t.number = None;
-        t.url.clear();
-        t.posted.clear();
-        let w = &mut s.journal[0];
-        w.state = WriteState::Sending;
-        w.url.clear();
-        w.done_at = None;
-    })
-    .await;
-    e.flush().await.unwrap();
+    cut_off(&e).await;
     drop(e);
     let e = connected(d.path()).await;
     watch(&e, &gh).await;
@@ -387,4 +394,218 @@ async fn a_failed_write_is_tried_again_later() {
     let tried = writes(d.path()).len();
     crate::github::GH.scope(gh.clone(), e.tell_agents()).await;
     assert_eq!(writes(d.path()).len(), tried, "not again straight away");
+}
+
+/// A post cut off by a restart is looked for first, whatever changed while
+/// Orbit was stopped: CI went green, or the rule became Leave it to me.
+/// What it finds is kept true, and an issue still closes when it should.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_cut_off_post_is_found_whatever_changed_meanwhile() {
+    // CI went green.
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    answer(d.path(), '1', &[("Rust", "FAILURE")], None);
+    let e = connected(d.path()).await;
+    watch(&e, &gh).await;
+    cut_off(&e).await;
+    drop(e);
+    answer(d.path(), '2', &[("Rust", "SUCCESS")], None);
+    let e = connected(d.path()).await;
+    watch(&e, &gh).await;
+    let g = github(d.path());
+    assert_eq!(g["issues"].as_array().unwrap().len(), 1);
+    let number = g["issues"][0]["number"].as_u64().unwrap();
+    assert!(g["issues"][0]["body"]
+        .as_str()
+        .unwrap()
+        .contains("Every check passes on `main` at `2222222`."));
+    assert_eq!(
+        writes(d.path()),
+        [
+            "POST repos/a/b/issues".to_string(),
+            format!("PATCH repos/a/b/issues/{number}")
+        ]
+    );
+    let s = e.snapshot().await;
+    assert_eq!(s.ops[0].number, Some(number));
+    assert!(!s.ops[0].unsure);
+    // An hour of green closes it, as if nothing had been cut off.
+    e.update(|s| {
+        let an_hour_ago = chrono::Utc::now() - crate::ops::CLOSE_AFTER;
+        s.problems[0].closed_at = Some(crate::problems::stamp(an_hour_ago));
+    })
+    .await;
+    watch(&e, &gh).await;
+    assert_eq!(github(d.path())["issues"][0]["state"], "closed");
+
+    // The rule became Leave it to me, and the pull request failed again.
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let e = connected(d.path()).await;
+    e.update(|s| s.prs = vec![pr('5')]).await;
+    answer(
+        d.path(),
+        '1',
+        &[("Rust", "SUCCESS")],
+        Some(('5', &[("Rust", "FAILURE")])),
+    );
+    watch(&e, &gh).await;
+    cut_off(&e).await;
+    drop(e);
+    let e = connected(d.path()).await;
+    e.update(|s| {
+        s.prs = vec![pr('6')];
+        s.settings.buddy.rules.comment_on_prs = "leave_it".into();
+    })
+    .await;
+    answer(
+        d.path(),
+        '1',
+        &[("Rust", "SUCCESS")],
+        Some(('6', &[("Rust", "FAILURE")])),
+    );
+    watch(&e, &gh).await;
+    let g = github(d.path());
+    assert_eq!(g["comments"].as_array().unwrap().len(), 1);
+    assert!(g["comments"][0]["body"]
+        .as_str()
+        .unwrap()
+        .contains("1 check fails on this pull request at `6666666`."));
+    let id = &g["comments"][0]["id"];
+    assert_eq!(
+        writes(d.path()),
+        [
+            "POST repos/a/b/issues/12/comments".to_string(),
+            format!("PATCH repos/a/b/issues/comments/{id}")
+        ]
+    );
+    assert_eq!(e.snapshot().await.ops[0].comment_id, id.as_u64());
+}
+
+/// Saying yes to Ask first posts nothing once Orbit stopped watching the
+/// repository, even before the next CI read: it was disconnected, or Watch
+/// CI was turned off.
+#[cfg(unix)]
+#[tokio::test]
+async fn saying_yes_posts_nothing_once_orbit_stopped_watching() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    answer(d.path(), '1', &[("Rust", "FAILURE")], None);
+    let e = connected(d.path()).await;
+    e.update(|s| s.settings.buddy.rules.open_issues = "ask_first".into())
+        .await;
+    watch(&e, &gh).await;
+    assert!(writes(d.path()).is_empty());
+    let s = e.snapshot().await;
+    let key = s.ops[0].key.clone();
+    let repositories = s.settings.repositories.clone();
+
+    e.update(|s| s.settings.repositories.clear()).await;
+    e.allow_telling(&key).await.unwrap();
+    crate::github::GH.scope(gh.clone(), e.tell_agents()).await;
+    assert!(
+        writes(d.path()).is_empty(),
+        "the repository was disconnected"
+    );
+
+    e.update(|s| {
+        s.settings.repositories = repositories;
+        s.settings.watch_ci = false;
+    })
+    .await;
+    crate::github::GH.scope(gh.clone(), e.tell_agents()).await;
+    assert!(writes(d.path()).is_empty(), "Watch CI is off");
+
+    e.update(|s| s.settings.watch_ci = true).await;
+    crate::github::GH.scope(gh.clone(), e.tell_agents()).await;
+    assert_eq!(writes(d.path()), ["POST repos/a/b/issues"]);
+}
+
+/// A rule changed while Orbit looks on GitHub before posting stops the post.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_rule_changed_during_the_search_stops_the_post() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    answer(d.path(), '1', &[("Rust", "FAILURE")], None);
+    let e = connected(d.path()).await;
+    // GitHub takes its time to answer the search.
+    std::fs::write(d.path().join("hold"), "").unwrap();
+    let watching = tokio::spawn(crate::github::GH.scope(gh.clone(), {
+        let e = e.clone();
+        async move { e.watch_ci().await }
+    }));
+    let held = d.path().join("held");
+    for _ in 0..500 {
+        if held.exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(held.exists(), "Orbit looks before posting");
+    e.update(|s| s.settings.buddy.rules.open_issues = "leave_it".into())
+        .await;
+    std::fs::remove_file(d.path().join("hold")).unwrap();
+    watching.await.unwrap();
+    assert!(writes(d.path()).is_empty());
+    let calls = std::fs::read_to_string(d.path().join("calls")).unwrap();
+    assert!(calls.contains("GET repos/a/b/issues\n"));
+}
+
+/// Looking for Orbit's earlier post fails when there are more full pages
+/// than it checks, rather than passing for finding nothing.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_search_too_big_to_finish_finds_nothing_it_can_trust() {
+    use crate::github::{find_comment_within, find_issue_within};
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let marker = crate::ops::tag("pr:a/b#12");
+    // `total` comments by Orbit on pull request 12, the one at `found`
+    // holding the marker; or as many issues.
+    let seed = |total: u64, found: Option<u64>| {
+        let items: Vec<Value> = (1..=total)
+            .map(|n| {
+                let body = if Some(n) == found {
+                    marker.as_str()
+                } else {
+                    "Something else."
+                };
+                json!({
+                    "id": n,
+                    "number": n,
+                    "issue": 12,
+                    "user": { "login": "me" },
+                    "body": body,
+                    "html_url": format!("https://github.com/a/b/issues/{n}"),
+                })
+            })
+            .collect();
+        let db = json!({ "next": 1000, "issues": items, "comments": items });
+        std::fs::write(d.path().join("github.json"), db.to_string()).unwrap();
+    };
+    let comment =
+        || crate::github::GH.scope(gh.clone(), find_comment_within("a/b", 12, &marker, "me", 2));
+    let issue = || crate::github::GH.scope(gh.clone(), find_issue_within("a/b", &marker, "me", 2));
+
+    seed(201, Some(201));
+    assert!(comment()
+        .await
+        .unwrap_err()
+        .starts_with("Too many to check"));
+    seed(200, None);
+    assert!(comment().await.is_err(), "two full pages may not be all");
+    seed(200, Some(150));
+    assert_eq!(comment().await.unwrap().unwrap().id, 150);
+    seed(150, None);
+    assert_eq!(comment().await.unwrap(), None);
+
+    // Issues come newest first, so the oldest is on the last page.
+    seed(250, Some(1));
+    assert!(issue().await.unwrap_err().starts_with("Too many to check"));
+    seed(150, Some(1));
+    assert_eq!(issue().await.unwrap().unwrap().number, Some(1));
+    seed(150, None);
+    assert_eq!(issue().await.unwrap(), None);
 }
