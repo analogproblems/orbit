@@ -306,9 +306,19 @@ In Settings, **Replies from coding agents** shows the skill with **Copy skill**.
 
 The sidebar's **Live** item shows a pulsing dot while reviews are running. Animations stop when your system asks for reduced motion.
 
+### Operations
+
+**Operations**, below **Live** in the sidebar, shows CI on every connected repository. After each sync, and after **Sync now**, Orbit reads the checks on each repository's default branch and on the latest commit of each open pull request, one repository at a time. It reads only; nothing is posted to GitHub. Orbit's own `orbit/review` check is left out, and skipped or cancelled checks count neither way. A commit with more checks than Orbit reads in one sync (100 per commit, and up to 2,000 more per repository) is never counted as passing: its row says Orbit couldn't read every check. The page lists:
+
+- **Open problems**: each thing failing now, with the checks that fail and its latest events, such as "Failing on main at 7d41e09: CI / Rust tests." and "Still failing at 9f3c2a1.". A failing default branch comes first and **needs you**. A failing pull request is its author's to fix, so it is only listed, and only for pull requests Orbit follows: open, not drafts, and from a source Autopilot trusts. Select one to open the pull request. With nothing failing, it reads **All clear** once Orbit has read every check on each repository's default branch and on the pull requests it follows, and otherwise says on how many repositories it couldn't;
+- **CI by repository**: where each default branch stands (passing, failing, running, or no checks), how many followed pull requests fail, and when Orbit last read it. When GitHub doesn't answer, the row says why and keeps what Orbit read before; a problem never closes because a read failed;
+- **Recently closed**: problems from the last two weeks, with why each closed.
+
+A problem closes when its commit passes ("Passed at 4be81aa."), when its pull request closes, goes back to draft or is no longer followed, when its repository is disconnected, or when **Watch CI** is turned off. A failing default branch tells you once, on the **Needs you** list, by notification and in a note from Bit. While it stays red, it tells you again only when a newer commit fails more checks, or a day later. If it passes and fails again within an hour of telling you, it is the same problem back, so it stays quiet and tells you again only if it is still failing an hour after the last time. A default branch that fails again later is a new problem. The sidebar's **Operations** item shows a red dot while a default branch fails. Turn off **Watch CI** in Settings to stop reading CI; the page then offers **Turn on**.
+
 ### Review loops
 
-**Review loops** sits below **Live** in the sidebar. While Autopilot is on, the header reads, for example, "Autopilot · 3 loops running · 1 needs you". The **Review loops** page lists:
+**Review loops** sits below **Operations** in the sidebar. While Autopilot is on, the header reads, for example, "Autopilot · 3 loops running · 1 needs you". The **Review loops** page lists:
 
 - **Needs you** at the top (see below);
 - **Loops**: one row per PR that has had at least one automatic round, with its state, "Round 3 of 4", its blocking findings round by round such as "4 → 1 → 0", and when it last changed;
@@ -373,7 +383,7 @@ If Orbit closes or Codex disconnects during a scan, the scan is marked **Interru
 
 ### What needs you
 
-When something can only move forward with you, the sidebar shows **Needs you** with a count, and the **Review loops** page lists each item at the top with its reason and one main action: **Approve or deny** for an approval, **Publish** for a held report or one waiting for you, **Continue loop** when the round limit is reached, **Check again** for a connection, **Open repositories** or **Open settings** for sync and save problems, and **Open chat** otherwise. Selecting the item itself opens where it is resolved: the review's chat, the PR, **Repositories**, or **Settings**. An approval item opens that exact request. An item appears when:
+When something can only move forward with you, the sidebar shows **Needs you** with a count, and the **Review loops** page lists each item at the top with its reason and one main action: **Approve or deny** for an approval, **Publish** for a held report or one waiting for you, **Continue loop** when the round limit is reached, **Check again** for a connection, **Open repositories** or **Open settings** for sync and save problems, **Open operations** for failing CI, and **Open chat** otherwise. Selecting the item itself opens where it is resolved: the review's chat, the PR, **Repositories**, **Operations**, or **Settings**. An approval item opens that exact request. An item appears when:
 
 - a review is waiting for your approval;
 - an automatic report was held instead of published, with the reason;
@@ -382,7 +392,8 @@ When something can only move forward with you, the sidebar shows **Needs you** w
 - the loop needs you for another reason from the list above;
 - Autopilot was turned off because Orbit could not save its state (turn Autopilot back on once saving works);
 - a repository has failed to sync 3 times in a row, or Orbit could not sync with GitHub at all 3 times in a row (for example, when the GitHub sign-in expired). When the GitHub CLI isn't installed or isn't signed in, this shows after the first sync, and Orbit doesn't try to start `gh` until it is installed. The item says what is wrong and how often Orbit checks again;
-- Codex, Claude, Antigravity, or Docker and the Dev Container CLI isn't connected while a connected repository uses it, for example after its sign-in expired. Sign in again, then tap **Check again**.
+- Codex, Claude, Antigravity, or Docker and the Dev Container CLI isn't connected while a connected repository uses it, for example after its sign-in expired. Sign in again, then tap **Check again**;
+- a connected repository's default branch fails its CI checks, with the checks that fail and since which commit (see [Operations](#operations) for when it tells you again).
 
 An item disappears once it is resolved. A stopped loop lists only its approvals, since you have already taken it over.
 
@@ -399,7 +410,7 @@ Bit is Orbit's buddy: a little character with a face, at the bottom of the sideb
 - a repository gets connected, from **Repositories** or one of Bit's buttons, with what it still needs and a button for each (see [Help me set up](#ask-bit));
 - a pull request on [Decisions](#decisions) has something to decide: it merged while a finding was still open, the reviewer disputes a finding the builder declined, or its write-up marks a decision as needing one. Bit notes each once, with the writer's reason, and only what turns up after it started watching that repository, so connecting one doesn't retell its history.
 
-**Open decisions** under a note opens that pull request's chapter on Decisions; **Open loop** opens that pull request's loop; **Open repositories** opens Repositories for a repository's sync problem, and **Open settings** opens Settings for anything else. Bit keeps its last 50 notes, answers included, and they survive a restart. When Orbit starts for the first time with Bit, it looks at the loops already running and starts noting from there, rather than retelling their history.
+**Open decisions** under a note opens that pull request's chapter on Decisions; **Open loop** opens that pull request's loop; **Open operations** opens Operations for failing CI; **Open repositories** opens Repositories for a repository's sync problem, and **Open settings** opens Settings for anything else. Bit keeps its last 50 notes, answers included, and they survive a restart. When Orbit starts for the first time with Bit, it looks at the loops already running and starts noting from there, rather than retelling their history.
 
 #### Ask Bit
 
@@ -408,7 +419,7 @@ The buttons under the conversation ask Bit a question. It answers straight away 
 - **What needs me?** lists the **Needs you** items.
 - **What's running?** lists reviews, syncs and security scans in progress.
 - **How are my loops?** lists each open loop with its round and state.
-- **How are my repositories?** lists each repository with its open pull requests, whether Autopilot reviews it, and any failed syncs.
+- **How are my repositories?** lists each repository with its open pull requests, whether Autopilot reviews it, any failed syncs, and whether CI passes on its default branch.
 - **Help me set up** walks you through getting reviews going, with a button for each step. It stands out until GitHub and Codex are connected and you have a repository.
 
 **Help me set up** starts with what Bit answers your questions with, since it can't help much without it. When that's ready, Bit just says which it is. When it isn't, Bit says why, with a button that fixes it, and:
@@ -518,6 +529,7 @@ Settings has seven pages: **Connections**, **Reviewers** (Codex, Claude and Anti
 | Blocking priorities                    | P0 to P1                           | P0 only, or P0 to P1, P2 or P3.                                                                                   |
 | Wait for pushes to settle              | On                                 | On/off.                                                                                                           |
 | GitHub status check                    | On                                 | On/off; applies while automatic publication is on.                                                                |
+| Watch CI                               | On                                 | On/off; off stops reading CI and closes what was open on Operations.                                              |
 | Keep security scan working files       | Off                                | On/off; when off, a scan's `artifacts/` folder is deleted once its findings are imported.                         |
 | Allow access from a browser            | Off                                | On/off and a port from 1024 to 65535; changed from the desktop app only.                                          |
 | Write up each pull request             | Off                                | On/off; writes up merged and closed pull requests for the Decisions page.                                         |

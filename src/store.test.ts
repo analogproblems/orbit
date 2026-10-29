@@ -164,6 +164,22 @@ describe("older demo storage", () => {
   });
 });
 
+describe("demo ci", () => {
+  it("lets an older demo turn Watch CI off, which closes what was open", async () => {
+    const old = structuredClone(useOrbit.getState().snapshot);
+    delete old.settings.watchCi;
+    localStorage.setItem("orbit-demo-v3", JSON.stringify(old));
+    await useOrbit.getState().init();
+    const result = await useOrbit.getState().updateSettings({ watchCi: false });
+    expect(result.ok).toBe(true);
+    const s = useOrbit.getState().snapshot;
+    expect(s.settings.watchCi).toBe(false);
+    expect(s.ci).toEqual([]);
+    expect(s.problems?.every((p) => p.closedAt)).toBe(true);
+    expect(s.attention?.some((a) => a.kind === "ci_failing")).toBe(false);
+  });
+});
+
 describe("demo buddy", () => {
   it("gives older demos Bit and saves one buddy field at a time", async () => {
     const old = structuredClone(useOrbit.getState().snapshot);

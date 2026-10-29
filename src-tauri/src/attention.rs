@@ -229,6 +229,26 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
             )
         });
     }
+    for p in s.problems.iter().filter(|p| p.is_open() && p.needs_you()) {
+        let mut reason = format!(
+            "CI is failing on {} in {} since {}: {}.",
+            if p.branch.is_empty() {
+                "the default branch"
+            } else {
+                &p.branch
+            },
+            p.repo,
+            crate::ci::short(&p.since_sha),
+            crate::problems::names(&p.failing)
+        );
+        if p.sha != p.since_sha {
+            reason.push_str(&format!(" It still fails at {}.", crate::ci::short(&p.sha)));
+        }
+        out.push(Attention {
+            repo: Some(p.repo.clone()),
+            ..item(p.item_key(), AttentionKind::CiFailing, None, None, reason)
+        });
+    }
     for a in &s.approvals {
         let pr_id = s
             .reviews
@@ -316,6 +336,7 @@ pub fn notice(s: &Snapshot, a: Attention) -> Notice {
         AttentionKind::AutopilotPaused => "Autopilot was turned off",
         AttentionKind::SyncFailing => "Orbit can't sync",
         AttentionKind::Disconnected => "A connection needs you",
+        AttentionKind::CiFailing => "CI is failing",
     };
     let pr = s.prs.iter().find(|p| Some(&p.id) == a.pr_id.as_ref());
     let body = match pr {
@@ -352,12 +373,20 @@ fn settled(s: &Snapshot) -> std::borrow::Cow<'_, Snapshot> {
 }
 /// Records which open items have been announced and returns a notice for
 /// each one that is new, with whether the record changed. A resolved item
-/// leaves the record, so it is announced again if it opens again later. An
+/// leaves the record, so it is announced again if it opens again later,
+/// except a problem that comes back within `crate::problems::FLAP_QUIET`. An
 /// item a follow-up chat or a publication hides only while it runs stays in
 /// the record, so a publication that fails doesn't announce it again.
 pub fn announce(s: &mut Snapshot) -> (Vec<Notice>, bool) {
     let open = items(&settled(s));
-    let keys: Vec<String> = open.iter().map(|a| a.key.clone()).collect();
+    let mut keys: Vec<String> = open.iter().map(|a| a.key.clone()).collect();
+    // A problem that cleared a moment ago stays announced, so one that comes
+    // straight back isn't announced again (see `crate::problems`).
+    for key in crate::problems::quiet_keys(&s.problems, chrono::Utc::now()) {
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
     let changed = keys != s.announced;
     let fresh: Vec<Attention> = open
         .into_iter()

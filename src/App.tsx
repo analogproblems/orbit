@@ -43,6 +43,7 @@ import {
   Settings2,
   ShieldCheck,
   SlidersHorizontal,
+  Workflow,
 } from "lucide-react";
 import { useOrbit, desktop, live } from "./store";
 import { listen } from "@tauri-apps/api/event";
@@ -77,6 +78,9 @@ const Loops = lazy(() => import("./Loops").then((m) => ({ default: m.Loops })));
 const DecisionsPage = lazy(() =>
   import("./Decisions").then((m) => ({ default: m.DecisionsPage })),
 );
+const Operations = lazy(() =>
+  import("./Operations").then((m) => ({ default: m.Operations })),
+);
 const ScansPage = lazy(() =>
   import("./Scans").then((m) => ({ default: m.ScansPage })),
 );
@@ -90,6 +94,7 @@ const Repositories = lazy(() =>
 type Page =
   | "inbox"
   | "live"
+  | "operations"
   | "loops"
   | "findings"
   | "decisions"
@@ -241,6 +246,9 @@ export default function App() {
     setApprovalOpen(true);
   };
   const needsYou = s.attention?.length ?? 0;
+  const ciFailing = (s.attention ?? []).filter(
+    (a) => a.kind === "ci_failing",
+  ).length;
   const choose = (p: PullRequest, r?: Review) => {
     setSelected(p.id);
     setSelectedReview(r?.id ?? null);
@@ -261,6 +269,7 @@ export default function App() {
     onSettings: () => openSettings("connections"),
     onApproval: openApproval,
     onPublish: setPublish,
+    onOperations: () => setPage("operations"),
   };
   useEffect(() => {
     openNotified.current = (item) => {
@@ -292,6 +301,7 @@ export default function App() {
   const titles: Record<Page, string> = {
     inbox: "All pull requests",
     live: "Live",
+    operations: "Operations",
     loops: "Review loops",
     findings: "Findings",
     decisions: "Decisions",
@@ -450,6 +460,17 @@ export default function App() {
                   ) : undefined
                 }
                 onClick={() => setPage("live")}
+              />
+              <SideNavItem
+                label="Operations"
+                icon={<Workflow />}
+                isSelected={page === "operations"}
+                endContent={
+                  ciFailing > 0 ? (
+                    <StatusDot variant="error" label="CI failing" />
+                  ) : undefined
+                }
+                onClick={() => setPage("operations")}
               />
               <SideNavItem
                 label="Review loops"
@@ -661,6 +682,8 @@ export default function App() {
                 <Suspense fallback={<Spinner label="Loading page…" />}>
                   {page === "live" ? (
                     <Live {...handlers} />
+                  ) : page === "operations" ? (
+                    <Operations {...handlers} />
                   ) : page === "loops" ? (
                     <Loops {...handlers} selected={loop} onSelect={setLoop} />
                   ) : page === "findings" ? (
@@ -690,6 +713,8 @@ export default function App() {
                         if (note.kind === "decide") {
                           setChapter(note.prId ?? null);
                           setPage("decisions");
+                        } else if (note.key?.startsWith("problem:")) {
+                          setPage("operations");
                         } else if (note.prId) {
                           setLoop(note.prId);
                           setPage("loops");

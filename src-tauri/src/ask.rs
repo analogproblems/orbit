@@ -158,7 +158,7 @@ impl Proposal {
 /// Trusted accounts aren't among them: they decide which pull requests are
 /// published automatically. A repository's own settings are changed with
 /// Set up repository instead.
-pub const SETTINGS: [&str; 29] = [
+pub const SETTINGS: [&str; 30] = [
     "automatic",
     "autoPost",
     "pollSeconds",
@@ -175,6 +175,7 @@ pub const SETTINGS: [&str; 29] = [
     "commitStatus",
     "notify",
     "keepScanArtifacts",
+    "watchCi",
     "writeUps.enabled",
     "writeUps.writer",
     "buddy.enabled",

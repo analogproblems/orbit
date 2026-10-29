@@ -1,5 +1,6 @@
 import {
   activeStatuses,
+  checkNames,
   defaults,
   loopStatusLabels,
   sameRepo,
@@ -15,7 +16,9 @@ import {
   type Model,
   type ModelSelection,
   type Snapshot,
+  type Problem,
   type PullRequest,
+  type RepoCi,
   type Review,
   type RepositorySummary,
   type SecurityScan,
@@ -594,8 +597,12 @@ export function freshDemo(): Snapshot {
   const limited = demoLoop(prs[1], [3, 2, 2, 1], 15);
   const ids = (rounds: Review[]) => rounds.map((r) => r.id).reverse();
   const label = (p: PullRequest) => `${p.repo.split("/")[1]}#${p.number}`;
+  const ci = demoCi(prs);
+  const red = ci.problems![0];
+  const redReason = `CI is failing on main in acme/orbit since ${red.sinceSha.slice(0, 7)}: ${checkNames(red.failing)}.`;
   return {
     prs,
+    ...ci,
     reviews: [review, ...limited, ...waiting, ...clean],
     // The browser demo has no engine to derive these, so they are fixed.
     attention: [
@@ -619,6 +626,15 @@ export function freshDemo(): Snapshot {
         reason:
           "acme/dashboard can't sync. GitHub returned 404 Not Found. Orbit checks again every 2 minutes.",
         fix: "sync_now",
+      },
+      {
+        key: `problem:${red.id}:${red.alerts}`,
+        kind: "ci_failing",
+        prId: null,
+        reviewId: null,
+        approvalId: null,
+        repo: red.repo,
+        reason: `${redReason} It still fails at ${red.sha.slice(0, 7)}.`,
       },
     ],
     loopStates: [
@@ -650,6 +666,16 @@ export function freshDemo(): Snapshot {
     // Bit's notes, as the engine would have written them.
     buddyFeed: {
       notes: [
+        {
+          id: 6,
+          at: ago(45),
+          kind: "needs_you",
+          prId: null,
+          reviewId: null,
+          repo: red.repo,
+          text: `Heads up! ${redReason}`,
+          key: `problem:${red.id}:${red.alerts}`,
+        },
         {
           id: 1,
           at: ago(30),
@@ -791,6 +817,130 @@ export function freshDemo(): Snapshot {
     scans: [demoScan("acme/api", 26 * 60)],
   };
 }
+const sha = (start: string) => start + "0".repeat(40 - start.length);
+/** CI as Orbit last read it: orbit's main fails, api's passes after failing
+ * yesterday, dashboard can't be read, and one pull request fails its own
+ * checks. */
+export function demoCi(prs: PullRequest[]): Pick<Snapshot, "ci" | "problems"> {
+  const failingPr = prs[2];
+  const check = (name: string) => ({ name, url: "" });
+  const ci: RepoCi[] = [
+    {
+      repo: "acme/orbit",
+      branch: "main",
+      head: {
+        sha: sha("9f3c2a1"),
+        state: "failing",
+        failing: [check("CI / Rust tests")],
+        running: 0,
+        passing: 3,
+      },
+      title: "Merge pull request #146 from acme/bump-tokio",
+      pulls: [],
+      complete: true,
+      checkedAt: ago(1),
+    },
+    {
+      repo: "acme/api",
+      branch: "main",
+      head: {
+        sha: sha("4be81aa"),
+        state: "passing",
+        failing: [],
+        running: 0,
+        passing: 5,
+      },
+      title: "Rotate the signing keys",
+      pulls: [],
+      complete: true,
+      checkedAt: ago(1),
+    },
+    {
+      repo: "acme/dashboard",
+      branch: "",
+      head: { sha: "", state: "none", failing: [], running: 0, passing: 0 },
+      title: "",
+      pulls: [],
+      complete: false,
+      checkedAt: "",
+      error:
+        "Could not resolve to a Repository with the name 'acme/dashboard'.",
+    },
+  ];
+  ci.find((c) => sameRepo(c.repo, failingPr.repo))?.pulls.push({
+    number: failingPr.number,
+    draft: false,
+    ci: {
+      sha: failingPr.headSha,
+      state: "failing",
+      failing: [check("CI / Frontend")],
+      running: 0,
+      passing: 2,
+    },
+  });
+  const problems: Problem[] = [
+    {
+      id: "demo-problem-1",
+      key: "ci:acme/orbit",
+      kind: "default_branch",
+      repo: "acme/orbit",
+      branch: "main",
+      sha: sha("9f3c2a1"),
+      sinceSha: sha("7d41e09"),
+      failing: [check("CI / Rust tests")],
+      openedAt: ago(45),
+      updatedAt: ago(18),
+      timeline: [
+        { at: ago(45), text: "Failing on main at 7d41e09: CI / Rust tests." },
+        { at: ago(18), text: "Still failing at 9f3c2a1." },
+      ],
+      alerts: 1,
+    },
+    {
+      id: "demo-problem-2",
+      key: `ci:${failingPr.id}`,
+      kind: "pull_request",
+      repo: failingPr.repo,
+      prId: failingPr.id,
+      branch: failingPr.headRef,
+      sha: failingPr.headSha,
+      sinceSha: failingPr.headSha,
+      failing: [check("CI / Frontend")],
+      openedAt: ago(20),
+      updatedAt: ago(20),
+      timeline: [
+        {
+          at: ago(20),
+          text: `Failing on ${failingPr.headRef} at ${failingPr.headSha.slice(0, 7)}: CI / Frontend.`,
+        },
+      ],
+      alerts: 0,
+    },
+    {
+      id: "demo-problem-3",
+      key: "ci:acme/api",
+      kind: "default_branch",
+      repo: "acme/api",
+      branch: "main",
+      sha: sha("c19e4d2"),
+      sinceSha: sha("c19e4d2"),
+      failing: [check("CI / Lint")],
+      openedAt: ago(26 * 60 + 40),
+      updatedAt: ago(26 * 60),
+      closedAt: ago(26 * 60),
+      closedReason: "Passed at 4be81aa.",
+      timeline: [
+        {
+          at: ago(26 * 60 + 40),
+          text: "Failing on main at c19e4d2: CI / Lint.",
+        },
+        { at: ago(26 * 60), text: "Passed at 4be81aa." },
+      ],
+      alerts: 1,
+    },
+  ];
+  return { ci, problems };
+}
 /** The browser demo: the fresh workspace plus two weeks of history. */
 export function demoWorkspace(): Snapshot {
   const s = freshDemo();
@@ -921,13 +1071,28 @@ export function demoAnswer(
   const repositories = s.settings.repositories;
   const lines = repositories.map((repo) => {
     const open = s.prs.filter((p) => sameRepo(p.repo, repo.name)).length;
-    const item = items.find(
-      (a) =>
-        a.kind === "sync_failing" && !!a.repo && sameRepo(a.repo, repo.name),
-    );
-    const failing = item ? ` ${item.reason}` : "";
+    const about = (kind: string) =>
+      items.find(
+        (a) => a.kind === kind && !!a.repo && sameRepo(a.repo, repo.name),
+      );
+    const sync = about("sync_failing");
+    const item = sync ?? about("ci_failing");
+    const failing = sync ? ` ${sync.reason}` : "";
+    const ci =
+      (s.settings.watchCi ?? true)
+        ? s.ci?.find((c) => sameRepo(c.repo, repo.name))
+        : undefined;
+    const branch = ci?.branch || "the default branch";
+    const checks = !ci?.head.sha
+      ? ""
+      : {
+          failing: ` CI is failing on ${branch}: ${checkNames(ci.head.failing)}.`,
+          running: ` CI is running on ${branch}.`,
+          passing: ` CI is passing on ${branch}.`,
+          none: "",
+        }[ci.head.state];
     return line(
-      `${repo.name}: ${plural(open, "open pull request", "open pull requests")}, autopilot ${repo.automatic ? "on" : "off"}.${failing}`,
+      `${repo.name}: ${plural(open, "open pull request", "open pull requests")}, autopilot ${repo.automatic ? "on" : "off"}.${failing}${checks}`,
       null,
       item?.key ?? null,
     );

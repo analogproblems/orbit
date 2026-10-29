@@ -482,9 +482,11 @@ async function demoAction(
     ].includes(command)
   ) {
     const next = structuredClone(demo.settings);
-    // Demos saved before Bit or write-ups have no settings for them yet.
+    // Demos saved before Bit, write-ups or Watch CI have no settings for
+    // them yet.
     next.buddy = buddyOf(next);
     next.writeUps ??= { ...defaultWriteUps };
+    next.watchCi ??= true;
     if (command === "update_settings") {
       const patch = args.patch as SettingsPatch;
       if (
@@ -576,6 +578,24 @@ async function demoAction(
     )
       throw Error("Enter a valid GitHub account name (at most 50 accounts).");
     demo.settings = next;
+    // As Orbit does on its next sync, watching CI off forgets what was read
+    // and closes what was open.
+    if (next.watchCi === false) {
+      const at = new Date().toISOString();
+      const text = "Orbit stopped watching CI.";
+      demo.ci = [];
+      demo.problems = demo.problems?.map((p) =>
+        p.closedAt
+          ? p
+          : {
+              ...p,
+              closedAt: at,
+              closedReason: text,
+              timeline: [...p.timeline, { at, text }],
+            },
+      );
+      demo.attention = demo.attention?.filter((a) => a.kind !== "ci_failing");
+    }
     demo.modelConfigurationError = selectionError(demo.models, next);
     if (
       command === "update_settings" &&

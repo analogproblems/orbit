@@ -1,9 +1,11 @@
+pub mod alerts;
 pub mod antigravity;
 pub mod api;
 pub mod ask;
 pub mod attention;
 pub mod boxtool;
 pub mod buddy;
+pub mod ci;
 pub mod claude;
 pub mod cli;
 pub mod devcontainer;
@@ -14,6 +16,7 @@ pub mod guide;
 pub mod ledger;
 pub mod models;
 pub mod ollama;
+pub mod problems;
 pub mod remote;
 pub mod review_instructions;
 pub mod review_loop;
@@ -149,6 +152,7 @@ mod desktop {
     #[tauri::command]
     async fn poll_now(engine: State<'_, AppState>) -> Result<(), String> {
         engine.poll().await?;
+        engine.watch_ci_soon();
         engine.update_clones_soon();
         Ok(())
     }

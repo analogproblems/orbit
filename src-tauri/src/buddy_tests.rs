@@ -1065,3 +1065,51 @@ fn bit_continues_a_loop_on_its_own_only_once() {
     });
     assert_eq!(will_fix(&s, &item), None);
 }
+#[test]
+fn a_failing_default_branch_is_one_heads_up_and_shows_in_how_are_my_repositories() {
+    let (mut s, _) = seeded();
+    let ci = crate::ci::RepoCi {
+        repo: "a/b".into(),
+        branch: "main".into(),
+        head: crate::ci::CommitCi {
+            sha: "1".repeat(40),
+            state: crate::ci::CiState::Failing,
+            failing: vec![crate::ci::Check {
+                name: "CI / Rust".into(),
+                url: String::new(),
+            }],
+            ..Default::default()
+        },
+        complete: true,
+        ..Default::default()
+    };
+    crate::problems::observe(&mut s.problems, &ci, &[], chrono::Utc::now());
+    s.ci.push(ci);
+    assert_eq!(
+        step(&mut s),
+        [(
+            NoteKind::NeedsYou,
+            "Heads up! CI is failing on main in a/b since 1111111: CI / Rust.".to_string()
+        )]
+    );
+    assert!(step(&mut s).is_empty(), "told once");
+    let (_, lines, keys) = ask_and_read(&mut s, Question::Repositories);
+    assert!(
+        lines[0].ends_with("autopilot on. CI is failing on main: CI / Rust."),
+        "{lines:?}"
+    );
+    assert_eq!(keys, [Some(s.problems[0].item_key())]);
+    // Checks it couldn't all read: neither passing nor failing.
+    s.ci[0].head.state = crate::ci::CiState::Running;
+    s.ci[0].head.failing.clear();
+    s.ci[0].head.incomplete = true;
+    let (_, lines, _) = ask_and_read(&mut s, Question::Repositories);
+    assert!(
+        lines[0].ends_with("Orbit couldn't read every check on main."),
+        "{lines:?}"
+    );
+    // With Watch CI off, the answer says nothing about it.
+    s.settings.watch_ci = false;
+    let (_, lines, _) = ask_and_read(&mut s, Question::Repositories);
+    assert!(lines[0].ends_with("autopilot on."), "{lines:?}");
+}

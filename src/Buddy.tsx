@@ -275,6 +275,7 @@ function noteLink(note: BuddyNote) {
   if (note.kind === "answer" || note.kind === "sign_in") return undefined;
   if (note.kind === "decide") return "Open decisions";
   if (note.prId) return "Open loop";
+  if (note.key?.startsWith("problem:")) return "Open operations";
   if (note.repo) return "Open repositories";
   if (note.key || note.kind === "fixing" || note.kind === "fixed")
     return "Open settings";

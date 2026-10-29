@@ -533,6 +533,19 @@ function AutomationSettings() {
         </VStack>
         <VStack gap={2}>
           <Switch
+            label="Watch CI"
+            labelPosition="start"
+            labelSpacing="spread"
+            width="100%"
+            value={draft.watchCi ?? true}
+            isDisabled={pending("watchCi")}
+            onChange={(watchCi) => void updateSettings({ watchCi })}
+            description="After each sync, read the checks on each repository’s default branch and on the pull requests Orbit follows, and list what fails on the Operations page. A failing default branch needs you; a failing pull request is its author’s to fix."
+          />
+          <SaveFeedback saveKey="watchCi" />
+        </VStack>
+        <VStack gap={2}>
+          <Switch
             label="Notify me when a review needs attention"
             labelPosition="start"
             labelSpacing="spread"

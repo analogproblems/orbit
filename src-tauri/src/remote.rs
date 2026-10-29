@@ -279,6 +279,7 @@ async fn dispatch(e: &Arc<Engine>, name: &str, a: &Value) -> Result<Value, Strin
         }
         "poll_now" => {
             e.poll().await?;
+            e.watch_ci_soon();
             e.update_clones_soon();
             out(())
         }
