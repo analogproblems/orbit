@@ -1770,6 +1770,9 @@ fn ci_sentence(ci: &crate::ci::RepoCi) -> String {
     };
     match ci.head.state {
         _ if ci.head.sha.is_empty() => String::new(),
+        CiState::Running if ci.head.incomplete => {
+            format!(" Orbit couldn't read every check on {branch}.")
+        }
         CiState::Failing => format!(
             " CI is failing on {branch}: {}.",
             crate::problems::names(&ci.head.failing)

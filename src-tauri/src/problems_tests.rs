@@ -156,6 +156,21 @@ fn a_flaky_branch_comes_back_quietly_and_tells_you_an_hour_after_its_alert() {
 }
 
 #[test]
+fn a_flaky_branch_that_comes_back_worse_tells_you_at_once_and_only_once() {
+    let mut problems = vec![];
+    observe(&mut problems, &failing(A, &["Test"]), &[], at(0));
+    observe(&mut problems, &passing(B), &[], at(10));
+    observe(&mut problems, &failing(C, &["Test", "Lint"]), &[], at(20));
+    assert_eq!(problems.len(), 1);
+    assert_eq!(problems[0].alerts, 2, "worse tells you now");
+    assert!(problems[0].alert_due.is_none());
+    // The next check finds it the same: nothing new to tell.
+    observe(&mut problems, &failing(C, &["Test", "Lint"]), &[], at(25));
+    observe(&mut problems, &failing(C, &["Test", "Lint"]), &[], at(61));
+    assert_eq!(problems[0].alerts, 2);
+}
+
+#[test]
 fn a_branch_that_breaks_again_later_is_a_new_problem() {
     let mut problems = vec![];
     observe(&mut problems, &failing(A, &["Test"]), &[], at(0));
@@ -274,6 +289,30 @@ fn closed_problems_are_kept_for_two_weeks_and_open_ones_always() {
     assert!(prune(&mut problems, at(14 * 24 * 60 + 1)));
     assert_eq!(problems.len(), 1);
     assert!(problems[0].is_open());
+}
+
+#[test]
+fn at_most_a_hundred_closed_problems_are_kept_even_when_they_closed_together() {
+    let mut problems = vec![];
+    for i in 0..150 {
+        let mut ci = failing(A, &["Test"]);
+        ci.repo = format!("a/r{i}");
+        observe(&mut problems, &ci, &[], at(0));
+    }
+    // Watch CI goes off: every one closes at the same moment.
+    close_unwatched(&mut problems, &[], true, at(1));
+    let mut open = failing(B, &["Test"]);
+    open.repo = "a/still-red".into();
+    observe(&mut problems, &open, &[], at(2));
+    assert!(prune(&mut problems, at(3)));
+    assert_eq!(problems.iter().filter(|p| !p.is_open()).count(), MAX_CLOSED);
+    assert_eq!(problems.iter().filter(|p| p.is_open()).count(), 1);
+    let kept: Vec<String> = problems.iter().map(|p| p.id.clone()).collect();
+    assert!(!prune(&mut problems, at(4)), "the same ones are kept");
+    assert_eq!(
+        problems.iter().map(|p| p.id.clone()).collect::<Vec<_>>(),
+        kept
+    );
 }
 
 #[test]

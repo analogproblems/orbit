@@ -107,6 +107,10 @@ impl Problem {
         self.alerted_failing = self.failing.len() as u32;
         self.alert_due = None;
     }
+    /// A newer commit fails more checks than when it last told you.
+    fn worse(&self) -> bool {
+        self.sha != self.alerted_sha && self.failing.len() as u32 > self.alerted_failing
+    }
     fn close(&mut self, at: &str, reason: String) {
         self.note(at, reason.clone());
         self.closed_at = Some(at.into());
@@ -239,7 +243,7 @@ fn see(problems: &mut Vec<Problem>, seen: Seen, now: DateTime<Utc>) {
             p.failing = seen.ci.failing.clone();
             if p.needs_you() {
                 let due = p.alert_due.as_deref().and_then(time);
-                let worse = p.sha != p.alerted_sha && p.failing.len() as u32 > p.alerted_failing;
+                let worse = p.worse();
                 let standing = match p.last_alert_at.as_deref().and_then(time) {
                     Some(last_alert) => Standing::Alerted { last_alert },
                     None => Standing::New,
@@ -275,7 +279,8 @@ fn see(problems: &mut Vec<Problem>, seen: Seen, now: DateTime<Utc>) {
                             Some(last_alert) => Standing::Returned { last_alert },
                             None => Standing::New,
                         };
-                        match raise(standing, false, now, FLAP_QUIET) {
+                        // Back worse tells you now, as it would while open.
+                        match raise(standing, p.worse(), now, FLAP_QUIET) {
                             Raise::Alert => p.alert(&at),
                             Raise::AlertAfter(due) => p.alert_due = Some(stamp(due)),
                             Raise::Quiet => {}
@@ -357,8 +362,9 @@ pub fn quiet_keys(problems: &[Problem], now: DateTime<Utc>) -> Vec<String> {
         .collect()
 }
 
-/// Drops closed problems older than `KEEP_CLOSED`, keeping at most
-/// `MAX_CLOSED` of the rest. Returns whether any went.
+/// Drops closed problems older than `KEEP_CLOSED`, keeping the newest
+/// `MAX_CLOSED` of the rest; problems that closed together are kept by ID.
+/// Returns whether any went.
 pub fn prune(problems: &mut Vec<Problem>, now: DateTime<Utc>) -> bool {
     let before = problems.len();
     problems.retain(|p| {
@@ -367,14 +373,18 @@ pub fn prune(problems: &mut Vec<Problem>, now: DateTime<Utc>) -> bool {
             .and_then(time)
             .is_none_or(|closed| now - closed < KEEP_CLOSED)
     });
-    let mut closed: Vec<String> = problems
+    let mut closed: Vec<(String, String)> = problems
         .iter()
-        .filter_map(|p| p.closed_at.clone())
+        .filter_map(|p| p.closed_at.clone().map(|at| (at, p.id.clone())))
         .collect();
     if closed.len() > MAX_CLOSED {
-        closed.sort();
-        let cutoff = closed[closed.len() - MAX_CLOSED].clone();
-        problems.retain(|p| p.closed_at.as_ref().is_none_or(|c| *c >= cutoff));
+        closed.sort_by(|a, b| b.cmp(a));
+        let keep: std::collections::HashSet<String> = closed
+            .into_iter()
+            .take(MAX_CLOSED)
+            .map(|(_, id)| id)
+            .collect();
+        problems.retain(|p| p.closed_at.is_none() || keep.contains(&p.id));
     }
     problems.len() != before
 }

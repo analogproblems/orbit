@@ -1099,6 +1099,15 @@ fn a_failing_default_branch_is_one_heads_up_and_shows_in_how_are_my_repositories
         "{lines:?}"
     );
     assert_eq!(keys, [Some(s.problems[0].item_key())]);
+    // Checks it couldn't all read: neither passing nor failing.
+    s.ci[0].head.state = crate::ci::CiState::Running;
+    s.ci[0].head.failing.clear();
+    s.ci[0].head.incomplete = true;
+    let (_, lines, _) = ask_and_read(&mut s, Question::Repositories);
+    assert!(
+        lines[0].ends_with("Orbit couldn't read every check on main."),
+        "{lines:?}"
+    );
     // With Watch CI off, the answer says nothing about it.
     s.settings.watch_ci = false;
     let (_, lines, _) = ask_and_read(&mut s, Question::Repositories);

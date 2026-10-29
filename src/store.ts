@@ -482,9 +482,11 @@ async function demoAction(
     ].includes(command)
   ) {
     const next = structuredClone(demo.settings);
-    // Demos saved before Bit or write-ups have no settings for them yet.
+    // Demos saved before Bit, write-ups or Watch CI have no settings for
+    // them yet.
     next.buddy = buddyOf(next);
     next.writeUps ??= { ...defaultWriteUps };
+    next.watchCi ??= true;
     if (command === "update_settings") {
       const patch = args.patch as SettingsPatch;
       if (

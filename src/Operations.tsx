@@ -13,6 +13,7 @@ import {
 } from "@astryxdesign/core";
 import { FolderGit2, Workflow } from "lucide-react";
 import { useOrbit } from "./store";
+import { SaveFeedback } from "./SaveFeedback";
 import {
   checkNames,
   sameRepo,
@@ -44,6 +45,8 @@ export function branchSummary(ci: RepoCi) {
   const branch = ci.branch || "the default branch";
   if (!ci.head.sha) return "No commits to check yet.";
   const at = shortSha(ci.head.sha);
+  if (ci.head.incomplete && ci.head.state !== "failing")
+    return `Orbit couldn’t read every check on ${branch} at ${at}, so it can’t say it passes.`;
   switch (ci.head.state) {
     case "failing":
       return `Failing on ${branch} at ${at}: ${checkNames(ci.head.failing)}.`;
@@ -163,6 +166,23 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
           Number(b.kind !== "default_branch") ||
         b.openedAt.localeCompare(a.openedAt),
     );
+  // All clear only once every repository's CI was read.
+  const unread = s.settings.repositories.filter((r) => {
+    const ci = s.ci?.find((c) => sameRepo(c.repo, r.name));
+    return !ci?.checkedAt || !!ci.error;
+  }).length;
+  if (!open.length && unread)
+    return (
+      <Card padding={3}>
+        <HStack gap={3} vAlign="center">
+          <StatusDot variant="neutral" label="Not all read" />
+          <Text weight="medium">
+            No problems found so far. Orbit couldn’t read CI on {unread}{" "}
+            {unread === 1 ? "repository" : "repositories"} yet.
+          </Text>
+        </HStack>
+      </Card>
+    );
   if (!open.length)
     return (
       <Card variant="green" padding={3}>
@@ -263,18 +283,21 @@ export function Operations(go: AttentionHandlers) {
         </Text>
       </VStack>
       {!watching ? (
-        <EmptyState
-          icon={<Workflow />}
-          title="Watching CI is off"
-          description="Turn it on to see each repository’s checks here and hear when a default branch fails."
-          actions={
-            <Button
-              label="Turn on"
-              variant="primary"
-              onClick={() => void updateSettings({ watchCi: true })}
-            />
-          }
-        />
+        <>
+          <EmptyState
+            icon={<Workflow />}
+            title="Watching CI is off"
+            description="Turn it on to see each repository’s checks here and hear when a default branch fails."
+            actions={
+              <Button
+                label="Turn on"
+                variant="primary"
+                onClick={() => void updateSettings({ watchCi: true })}
+              />
+            }
+          />
+          <SaveFeedback saveKey="watchCi" />
+        </>
       ) : (
         <>
           <VStack gap={3}>

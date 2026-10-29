@@ -68,9 +68,21 @@ describe("operations page", () => {
     expect(closed.textContent).toContain("Passed at 4be81aa.");
   });
 
-  it("says all clear when nothing fails", () => {
+  it("says all clear only once every repository's CI was read", () => {
     const s = freshDemo();
     s.problems = s.problems!.filter((p) => p.closedAt);
+    show(s);
+    // The demo can't read acme/dashboard.
+    expect(
+      screen.getByText(
+        "No problems found so far. Orbit couldn’t read CI on 1 repository yet.",
+      ),
+    ).toBeTruthy();
+    cleanup();
+    s.ci = s.ci!.filter((c) => c.repo !== "acme/dashboard");
+    s.settings.repositories = s.settings.repositories.filter(
+      (r) => r.name !== "acme/dashboard",
+    );
     show(s);
     expect(screen.getByText("All clear. Nothing is failing.")).toBeTruthy();
   });
@@ -84,6 +96,25 @@ describe("operations page", () => {
     fireEvent.click(screen.getByRole("button", { name: "Turn on" }));
     expect(updateSettings).toHaveBeenCalledWith({ watchCi: true });
     expect(screen.queryByRole("list", { name: "Open problems" })).toBeNull();
+  });
+
+  it("says when turning watching on didn't save", () => {
+    const s = freshDemo();
+    s.settings.watchCi = false;
+    useOrbit.setState({
+      saves: {
+        watchCi: {
+          state: "error",
+          error: "Could not save local state.",
+          command: "update_settings",
+          args: { patch: { watchCi: true } },
+        },
+      },
+    });
+    show(s);
+    expect(screen.getByText("Could not save local state.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry saving" })).toBeTruthy();
+    useOrbit.setState({ saves: {} });
   });
 
   it("asks you to connect a repository first", () => {
@@ -115,6 +146,11 @@ describe("ci sentences", () => {
     );
     expect(branchSummary(ci("none"))).toBe("No checks ran on main at aaaaaaa.");
     expect(branchSummary(ci("passing", ""))).toBe("No commits to check yet.");
+    const unread = ci("running");
+    unread.head.incomplete = true;
+    expect(branchSummary(unread)).toBe(
+      "Orbit couldn’t read every check on main at aaaaaaa, so it can’t say it passes.",
+    );
   });
   it("name checks as the engine does", () => {
     const checks = ["A", "B", "C", "D"].map((name) => ({ name, url: "" }));

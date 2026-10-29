@@ -1060,6 +1060,8 @@ export interface CommitCi {
   failing: CiCheck[];
   running: number;
   passing: number;
+  /** Orbit couldn't read all of its checks, so it can fail but not pass. */
+  incomplete?: boolean;
 }
 export interface PullCi {
   number: number;

@@ -12,6 +12,11 @@ pub const OWN_STATUS: &str = "orbit/review";
 /// incomplete, and a problem isn't closed because its pull request is
 /// missing from it.
 const PULLS: u32 = 100;
+/// Checks read per page of a commit's checks.
+const CHECKS: u32 = 100;
+/// Further pages of checks read per repository, for commits with more than
+/// `CHECKS`. A commit whose checks aren't all read never counts as passing.
+pub const MORE_PAGES: usize = 20;
 
 /// Where a commit's checks, or one check, stand.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,11 +44,17 @@ pub struct Check {
 #[serde(rename_all = "camelCase", default)]
 pub struct CommitCi {
     pub sha: String,
+    /// Running while some checks weren't read: it can fail, but not pass.
     pub state: CiState,
     /// The checks that failed, by name.
     pub failing: Vec<Check>,
     pub running: u32,
     pub passing: u32,
+    /// Orbit couldn't read all of its checks.
+    pub incomplete: bool,
+    /// Where the next page of its checks starts, while one is still to read.
+    #[serde(skip)]
+    pub cursor: Option<String>,
 }
 /// An open pull request's latest commit and its checks.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,22 +89,32 @@ impl RepoCi {
     }
 }
 
-const CONTEXTS: &str = "statusCheckRollup { contexts(first: 100) { nodes { __typename \
+const NODES: &str = "pageInfo { hasNextPage endCursor } nodes { __typename \
 ... on CheckRun { name status conclusion detailsUrl checkSuite { workflowRun { workflow { name } } } } \
-... on StatusContext { context state targetUrl } } } }";
+... on StatusContext { context state targetUrl } }";
 
 /// The GraphQL query for one repository's CI.
 pub fn query() -> String {
+    let contexts = format!("statusCheckRollup {{ contexts(first: {CHECKS}) {{ {NODES} }} }}");
     format!(
         "query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ \
-defaultBranchRef {{ name target {{ ... on Commit {{ oid messageHeadline {CONTEXTS} }} }} }} \
+defaultBranchRef {{ name target {{ ... on Commit {{ oid messageHeadline {contexts} }} }} }} \
 pullRequests(states: OPEN, first: {PULLS}, orderBy: {{ field: UPDATED_AT, direction: DESC }}) {{ \
 pageInfo {{ hasNextPage }} nodes {{ number isDraft headRefOid \
-commits(last: 1) {{ nodes {{ commit {{ oid {CONTEXTS} }} }} }} }} }} }} }}"
+commits(last: 1) {{ nodes {{ commit {{ oid {contexts} }} }} }} }} }} }} }}"
+    )
+}
+/// The GraphQL query for the next page of one commit's checks.
+pub fn more_query() -> String {
+    format!(
+        "query($owner: String!, $name: String!, $oid: GitObjectID!, $cursor: String!) {{ \
+repository(owner: $owner, name: $name) {{ object(oid: $oid) {{ ... on Commit {{ \
+statusCheckRollup {{ contexts(first: {CHECKS}, after: $cursor) {{ {NODES} }} }} }} }} }} }}"
     )
 }
 
-/// Reads one repository's CI from GitHub.
+/// Reads one repository's CI from GitHub, with every page of each commit's
+/// checks up to `MORE_PAGES` more.
 pub async fn read(repo: &str) -> Result<RepoCi, String> {
     validate_repo(repo)?;
     let (owner, name) = repo.split_once('/').ok_or("Invalid repository")?;
@@ -108,17 +129,58 @@ pub async fn read(repo: &str) -> Result<RepoCi, String> {
         None,
     )
     .await?;
-    parse(repo, &v)
+    let mut ci = parse(repo, &v)?;
+    let mut pages = MORE_PAGES;
+    let commits = std::iter::once(&mut ci.head).chain(ci.pulls.iter_mut().map(|p| &mut p.ci));
+    for commit in commits {
+        while let Some(cursor) = commit.cursor.take() {
+            if pages == 0 {
+                commit.incomplete = true;
+                break;
+            }
+            pages -= 1;
+            let v = crate::github::api(
+                "graphql",
+                "POST",
+                &[
+                    ("query", more_query()),
+                    ("owner", owner.to_string()),
+                    ("name", name.to_string()),
+                    ("oid", commit.sha.clone()),
+                    ("cursor", cursor),
+                ],
+                None,
+            )
+            .await?;
+            refused(&v)?;
+            let contexts = &v["data"]["repository"]["object"]["statusCheckRollup"]["contexts"];
+            if contexts.is_null() {
+                // The rest of its checks can't be read now.
+                commit.incomplete = true;
+                break;
+            }
+            add_checks(commit, contexts);
+        }
+        settle(commit);
+    }
+    Ok(ci)
 }
 
-/// A repository's CI from GitHub's answer to `query`.
-pub fn parse(repo: &str, v: &Value) -> Result<RepoCi, String> {
-    if let Some(error) = v["errors"].as_array().and_then(|e| e.first()) {
-        return Err(error["message"]
+/// What GitHub refused, from a GraphQL answer.
+fn refused(v: &Value) -> Result<(), String> {
+    match v["errors"].as_array().and_then(|e| e.first()) {
+        Some(error) => Err(error["message"]
             .as_str()
             .unwrap_or("GitHub returned an error.")
-            .to_string());
+            .to_string()),
+        None => Ok(()),
     }
+}
+
+/// A repository's CI from GitHub's answer to `query`. A commit with more
+/// checks than one page keeps a `cursor` for `read` to follow.
+pub fn parse(repo: &str, v: &Value) -> Result<RepoCi, String> {
+    refused(v)?;
     let r = &v["data"]["repository"];
     if r.is_null() {
         return Err("GitHub didn't return the repository.".into());
@@ -167,7 +229,8 @@ pub fn parse(repo: &str, v: &Value) -> Result<RepoCi, String> {
     })
 }
 
-/// A commit's checks, from its `oid` and `statusCheckRollup`.
+/// A commit's checks, from its `oid` and the first page of its
+/// `statusCheckRollup`.
 fn commit(v: &Value) -> Result<CommitCi, String> {
     let sha = v["oid"].as_str().unwrap_or("").to_string();
     if !valid_sha(&sha) {
@@ -177,11 +240,14 @@ fn commit(v: &Value) -> Result<CommitCi, String> {
         sha,
         ..Default::default()
     };
-    let nodes = v["statusCheckRollup"]["contexts"]["nodes"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    for node in &nodes {
+    add_checks(&mut ci, &v["statusCheckRollup"]["contexts"]);
+    settle(&mut ci);
+    Ok(ci)
+}
+
+/// Adds one page of a commit's checks, and where the next page starts.
+pub fn add_checks(ci: &mut CommitCi, contexts: &Value) {
+    for node in contexts["nodes"].as_array().into_iter().flatten() {
         let Some((check, state)) = check(node) else {
             continue;
         };
@@ -196,16 +262,30 @@ fn commit(v: &Value) -> Result<CommitCi, String> {
             CiState::None => {}
         }
     }
+    let more = contexts["pageInfo"]["hasNextPage"].as_bool() == Some(true);
+    ci.cursor = None;
+    if more {
+        match contexts["pageInfo"]["endCursor"].as_str() {
+            Some(cursor) if !cursor.is_empty() => ci.cursor = Some(cursor.to_string()),
+            // More checks, but nowhere to read them from.
+            _ => ci.incomplete = true,
+        }
+    }
+}
+
+/// Where a commit's checks stand from what was read. Checks still to read
+/// keep it from passing: one failure fails it, otherwise it is running.
+pub fn settle(ci: &mut CommitCi) {
+    let unread = ci.incomplete || ci.cursor.is_some();
     ci.state = if !ci.failing.is_empty() {
         CiState::Failing
-    } else if ci.running > 0 {
+    } else if ci.running > 0 || unread {
         CiState::Running
     } else if ci.passing > 0 {
         CiState::Passing
     } else {
         CiState::None
     };
-    Ok(ci)
 }
 
 /// One check and where it stands, or None for Orbit's own status and

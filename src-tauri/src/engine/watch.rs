@@ -34,14 +34,7 @@ impl Engine {
             (s.settings.watch_ci, repos)
         };
         if !watch {
-            self.update(|s| {
-                if s.ci.is_empty() && !s.problems.iter().any(|p| p.is_open()) {
-                    return;
-                }
-                s.ci.clear();
-                problems::close_unwatched(&mut s.problems, &[], true, chrono::Utc::now());
-            })
-            .await;
+            self.update(stop_watching).await;
             return;
         }
         let mut read = vec![];
@@ -50,6 +43,11 @@ impl Engine {
             read.push((repo.clone(), ci::read(repo).await));
         }
         self.update(|s| {
+            // Watch CI went off while CI was read: what came back is dropped.
+            if !s.settings.watch_ci {
+                stop_watching(s);
+                return;
+            }
             let now = chrono::Utc::now();
             for (repo, result) in read {
                 // A repository disconnected while CI was read is left out.
@@ -96,6 +94,14 @@ impl Engine {
         .await;
         let _ = self.flush().await;
     }
+}
+/// With Watch CI off, Orbit forgets what it read and closes what was open.
+fn stop_watching(s: &mut Snapshot) {
+    if s.ci.is_empty() && !s.problems.iter().any(|p| p.is_open()) {
+        return;
+    }
+    s.ci.clear();
+    problems::close_unwatched(&mut s.problems, &[], true, chrono::Utc::now());
 }
 fn repos_of(s: &Snapshot) -> Vec<String> {
     s.settings
