@@ -1496,6 +1496,8 @@ pub enum AttentionKind {
     Disconnected,
     /// CI fails on a repository's default branch.
     CiFailing,
+    /// An agent asks for a person about a failing check.
+    CiQuestion,
 }
 /// Something only the developer can resolve.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

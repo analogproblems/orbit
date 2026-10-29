@@ -1,7 +1,10 @@
 // A fake `gh api` for tests, holding a repository's issues and comments in
 // <dir>/github.json. Usage: node gh_fixture.cjs <dir> api --hostname github.com
 // --method <METHOD> <endpoint> [-f key=value ...] [--input -]
-// GraphQL answers with <dir>/answer.json. While <dir>/down exists every call
+// GraphQL answers with <dir>/answer.json, <dir>/commit-<oid>.json for a
+// query about one commit, or when a comment or issue was made and last
+// edited for a query about one by its node ID. Compare answers from <dir>/compare.json, keyed by
+// "base...head", or 404. While <dir>/down exists every call
 // fails. While <dir>/hold exists a GET waits, after writing <dir>/held. Each
 // call is logged to <dir>/calls as "METHOD endpoint".
 const fs = require("node:fs");
@@ -40,14 +43,38 @@ const missing = () => {
 const me = { login: "me" };
 const url = (n, id) =>
   `https://github.com/a/b/issues/${n}${id ? `#issuecomment-${id}` : ""}`;
+// Comments and issues are made a second apart, by ID, and an edit takes the
+// next second too. A list with `since` holds those posted or edited then or
+// later, by ID.
+const made = (id) =>
+  new Date(Date.UTC(2026, 9, 29, 12) + id * 1000)
+    .toISOString()
+    .replace(".000Z", "Z");
 const page = (list) => {
   const per = Number(fields.per_page || 30);
   const p = Number(fields.page || 1);
   return list.slice((p - 1) * per, p * per);
 };
 
+if (endpoint === "graphql" && fields.id) {
+  const db = load();
+  const node = [...db.comments, ...db.issues].find(
+    (n) => n.node_id === fields.id,
+  );
+  answer({
+    data: {
+      node: node && {
+        createdAt: node.created_at,
+        lastEditedAt: node.last_edited_at || null,
+      },
+    },
+  });
+  process.exit(0);
+}
 if (endpoint === "graphql") {
-  process.stdout.write(fs.readFileSync(path.join(dir, "answer.json"), "utf8"));
+  const commit = path.join(dir, `commit-${fields.oid}.json`);
+  const file = fields.oid && fs.existsSync(commit) ? commit : "answer.json";
+  process.stdout.write(fs.readFileSync(path.resolve(dir, file), "utf8"));
   process.exit(0);
 }
 if (method === "GET" && fs.existsSync(path.join(dir, "hold"))) {
@@ -57,9 +84,25 @@ if (method === "GET" && fs.existsSync(path.join(dir, "hold"))) {
 }
 const db = load();
 let m;
-if ((m = endpoint.match(/^repos\/a\/b\/issues\/(\d+)\/comments$/))) {
+if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
+  const compare = path.join(dir, "compare.json");
+  const known = fs.existsSync(compare)
+    ? JSON.parse(fs.readFileSync(compare, "utf8"))
+    : {};
+  if (!known[m[1]]) missing();
+  answer(known[m[1]]);
+} else if ((m = endpoint.match(/^repos\/a\/b\/issues\/(\d+)\/comments$/))) {
   const n = Number(m[1]);
-  if (method === "GET") answer(page(db.comments.filter((c) => c.issue === n)));
+  if (method === "GET")
+    answer(
+      page(
+        db.comments.filter(
+          (c) =>
+            c.issue === n &&
+            (!fields.since || (c.updated_at || c.created_at) >= fields.since),
+        ),
+      ),
+    );
   else {
     const c = {
       id: db.next++,
@@ -68,7 +111,9 @@ if ((m = endpoint.match(/^repos\/a\/b\/issues\/(\d+)\/comments$/))) {
       body: input.body,
       html_url: "",
     };
+    c.created_at = c.updated_at = made(c.id);
     c.html_url = url(n, c.id);
+    c.node_id = `IC_${c.id}`;
     db.comments.push(c);
     save(db);
     answer(c);
@@ -76,8 +121,12 @@ if ((m = endpoint.match(/^repos\/a\/b\/issues\/(\d+)\/comments$/))) {
 } else if ((m = endpoint.match(/^repos\/a\/b\/issues\/comments\/(\d+)$/))) {
   const c = db.comments.find((c) => c.id === Number(m[1]));
   if (!c) missing();
-  c.body = input.body;
-  save(db);
+  if (method !== "GET") {
+    c.updated_at = made(db.next++);
+    if (input.body !== c.body) c.last_edited_at = c.updated_at;
+    c.body = input.body;
+    save(db);
+  }
   answer(c);
 } else if (endpoint === "repos/a/b/issues") {
   if (method === "GET") {
@@ -97,7 +146,9 @@ if ((m = endpoint.match(/^repos\/a\/b\/issues\/(\d+)\/comments$/))) {
       state_reason: null,
       html_url: "",
     };
+    i.created_at = i.updated_at = made(i.number);
     i.html_url = url(i.number);
+    i.node_id = `I_${i.number}`;
     db.issues.push(i);
     save(db);
     answer(i);
@@ -105,8 +156,12 @@ if ((m = endpoint.match(/^repos\/a\/b\/issues\/(\d+)\/comments$/))) {
 } else if ((m = endpoint.match(/^repos\/a\/b\/issues\/(\d+)$/))) {
   const i = db.issues.find((i) => i.number === Number(m[1]));
   if (!i) missing();
-  Object.assign(i, input);
-  save(db);
+  if (method !== "GET") {
+    i.updated_at = made(db.next++);
+    if (input.body !== i.body) i.last_edited_at = i.updated_at;
+    Object.assign(i, input);
+    save(db);
+  }
   answer(i);
 } else {
   answer([]);

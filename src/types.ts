@@ -586,7 +586,8 @@ export type NoteKind =
   | "answer"
   | "connected"
   | "decide"
-  | "sign_in";
+  | "sign_in"
+  | "ci";
 /** A question Bit answers straight from Orbit's state. */
 export type Question =
   "needs_you" | "running" | "loops" | "repositories" | "setup";
@@ -921,7 +922,8 @@ export type AttentionKind =
   | "autopilot_paused"
   | "sync_failing"
   | "disconnected"
-  | "ci_failing";
+  | "ci_failing"
+  | "ci_question";
 /** Something only the developer can resolve. */
 export interface Attention {
   /** Stays the same while the item is open. */
@@ -945,6 +947,7 @@ export const attentionLabels: Record<AttentionKind, string> = {
   sync_failing: "Sync failing",
   disconnected: "Not connected",
   ci_failing: "CI failing",
+  ci_question: "An agent needs a person",
 };
 export interface AttentionHandlers {
   onChoose: (p: PullRequest, r?: Review) => void;
@@ -961,7 +964,8 @@ export function attentionAction(
   go: AttentionHandlers,
 ): (() => void) | undefined {
   if (a.kind === "sync_failing" && a.repo) return go.onRepositories;
-  if (a.kind === "ci_failing") return go.onOperations;
+  if (a.kind === "ci_failing" || a.kind === "ci_question")
+    return go.onOperations;
   if (
     a.kind === "autopilot_paused" ||
     a.kind === "sync_failing" ||
@@ -1149,6 +1153,32 @@ export interface OpsItem {
   failing: boolean;
   since: string;
   at: string;
+  /** What an agent last said about it since it started failing. */
+  answer?: OpsAnswer | null;
+  /** When GitHub first showed it failing this time: only replies from
+   * then on are about it. */
+  heardFrom?: string;
+}
+/** What an agent says about an item: `Taking I2`, `Fixed I2 in <commit>`,
+ * `Declined I2: <reason>` or `Need a person on I2: <question>`. */
+export type AnswerKind = "taking" | "fixed" | "declined" | "question";
+/** What CI says at the commit an agent says fixes an item. */
+export type FixCheck =
+  "waiting" | "passes" | "fails" | "not_on_branch" | "not_found";
+export interface OpsAnswer {
+  kind: AnswerKind;
+  author: string;
+  at: string;
+  /** The reply on GitHub. */
+  url: string;
+  replyId: number;
+  commit?: string | null;
+  /** The reason or question, in the agent's words. */
+  text?: string | null;
+  check?: FixCheck | null;
+  head: string;
+  /** When Orbit last tried to check the fix. */
+  checkedAt?: string;
 }
 /** Where Orbit tells an agent about failing CI: its one comment on a pull
  * request, or its issue about a default branch. */
@@ -1178,6 +1208,15 @@ export interface OpsThread {
   tries: number;
   retryAt?: string | null;
   updatedAt: string;
+  /** The newest reply Orbit has read, by GitHub comment ID. */
+  readTo?: number;
+  /** Orbit reads the comments posted or edited from this time on, going
+   * on from `readPage` while part way through them. */
+  readSince?: string;
+  readPage?: number;
+  readNewest?: string;
+  /** When GitHub last took Orbit's text. */
+  shownAt?: string;
 }
 export type OpsAction =
   | "post_comment"

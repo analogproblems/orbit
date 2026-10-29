@@ -3,6 +3,7 @@
 use super::Engine;
 use crate::ops::{ThreadKind, WriteState};
 use crate::types::*;
+use chrono::TimeZone;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -147,6 +148,12 @@ async fn cut_off(e: &Engine) {
         t.comment_id = None;
         t.url.clear();
         t.posted.clear();
+        t.shown_at.clear();
+        t.read_to = 0;
+        t.read_since.clear();
+        for item in &mut t.items {
+            item.heard_from.clear();
+        }
         let w = &mut s.journal[0];
         w.state = WriteState::Sending;
         w.url.clear();
@@ -575,9 +582,11 @@ async fn a_search_too_big_to_finish_finds_nothing_it_can_trust() {
                 json!({
                     "id": n,
                     "number": n,
+                    "node_id": format!("N_{n}"),
                     "issue": 12,
                     "user": { "login": "me" },
                     "body": body,
+                    "created_at": made(n),
                     "html_url": format!("https://github.com/a/b/issues/{n}"),
                 })
             })
@@ -608,4 +617,511 @@ async fn a_search_too_big_to_finish_finds_nothing_it_can_trust() {
     assert_eq!(issue().await.unwrap().unwrap().number, Some(1));
     seed(150, None);
     assert_eq!(issue().await.unwrap(), None);
+}
+
+/// When the fake GitHub made comment or issue `id`: a second apart.
+fn made(id: u64) -> String {
+    let at = chrono::Utc
+        .with_ymd_and_hms(2026, 10, 29, 12, 0, 0)
+        .unwrap()
+        + chrono::Duration::seconds(id as i64);
+    at.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+/// A reply on GitHub from `who` on pull request 12.
+fn say(dir: &Path, who: &str, body: &str) {
+    chat(dir, who, body, 1);
+}
+/// `n` replies on GitHub from `who` on pull request 12, a second apart.
+fn chat(dir: &Path, who: &str, body: &str, n: u64) {
+    let mut db = github(dir);
+    let first = db["next"].as_u64().unwrap_or(100);
+    db["next"] = json!(first + n);
+    for id in first..first + n {
+        db["comments"].as_array_mut().unwrap().push(json!({
+            "id": id,
+            "issue": 12,
+            "user": { "login": who },
+            "body": body,
+            "created_at": made(id),
+            "updated_at": made(id),
+            "html_url": format!("https://github.com/a/b/issues/12#issuecomment-{id}"),
+        }));
+    }
+    std::fs::write(dir.join("github.json"), db.to_string()).unwrap();
+}
+/// Edits the comments `which` picks, in turn, a second apart, as GitHub
+/// would: when each was posted stays the same.
+fn edit(dir: &Path, which: impl Fn(&Value) -> bool) {
+    let mut db = github(dir);
+    let mut next = db["next"].as_u64().unwrap();
+    for c in db["comments"].as_array_mut().unwrap() {
+        if which(c) {
+            c["updated_at"] = json!(made(next));
+            next += 1;
+        }
+    }
+    db["next"] = json!(next);
+    std::fs::write(dir.join("github.json"), db.to_string()).unwrap();
+}
+/// GitHub's checks at one commit, for checking a fix there.
+fn checks_at(dir: &Path, at: char, checks: &[(&str, &str)]) {
+    let v = json!({ "data": { "repository": { "object": {
+        "statusCheckRollup": rollup(checks)
+    } } } });
+    std::fs::write(dir.join(format!("commit-{}.json", sha(at))), v.to_string()).unwrap();
+}
+/// Where commit `at`, named by its first seven characters, stands against
+/// `head`.
+fn compared(dir: &Path, at: char, head: char, status: &str) {
+    let file = dir.join("compare.json");
+    let mut v: Value = std::fs::read_to_string(&file)
+        .map(|t| serde_json::from_str(&t).unwrap())
+        .unwrap_or(json!({}));
+    let key = format!("{}...{}", &sha(at)[..7], sha(head));
+    v[key] = json!({ "status": status, "base_commit": { "sha": sha(at) } });
+    std::fs::write(file, v.to_string()).unwrap();
+}
+fn calls(dir: &Path, what: &str) -> usize {
+    std::fs::read_to_string(dir.join("calls"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.contains(what))
+        .count()
+}
+
+/// The agent answers on Orbit's comment: a fix that CI doesn't bear out
+/// is said so on the comment and in a note from Bit, a question for a
+/// person is a Needs you item until the agent takes it back, and replies
+/// from accounts Orbit doesn't trust are left out.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_agent_answers_on_orbits_comment() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let e = connected(d.path()).await;
+    e.update(|s| s.prs = vec![pr('5')]).await;
+    let both = [("Rust", "FAILURE"), ("Lint", "FAILURE")];
+    answer(d.path(), '1', &[("Rust", "SUCCESS")], Some(('5', &both)));
+    // From before Orbit's comment, so not about its items.
+    say(d.path(), "agent", "Declined I1: an older reply");
+    watch(&e, &gh).await;
+    let notes = e.snapshot().await.buddy_feed.notes;
+    assert_eq!(
+        notes.last().unwrap().text,
+        "Orbit told the agent on a/b #12 that CI / Rust and CI / Lint fail. 📮"
+    );
+    watch(&e, &gh).await;
+    let body = github(d.path())["comments"][1]["body"].to_string();
+    assert!(!body.contains("declined"), "{body}");
+
+    say(
+        d.path(),
+        "agent",
+        "Thanks!\n- Fixed I2 in 7777777\n- Need a person on I1: the runner is out of disk.",
+    );
+    say(d.path(), "stranger", "Declined I1: not mine");
+    // The agent pushed 7777777, where Lint still fails.
+    e.update(|s| s.prs = vec![pr('7')]).await;
+    answer(d.path(), '1', &[("Rust", "SUCCESS")], Some(('7', &both)));
+    compared(d.path(), '7', '7', "identical");
+    checks_at(d.path(), '7', &both);
+    watch(&e, &gh).await;
+    let body = github(d.path())["comments"][1]["body"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(body.contains(
+        "- **I2** · `CI / Lint` · failing since `5555555`, still at `7777777` · [details](https://github.com/a/b/actions/runs/1/job/2) · said to be fixed in `7777777`, but it still fails there ([reply](https://github.com/a/b/issues/12#issuecomment-"
+    ), "{body}");
+    assert!(body.contains("· waiting for a person ([reply]("), "{body}");
+    assert!(!body.contains("declined"), "{body}");
+    assert!(
+        !body.contains("out of disk"),
+        "an agent's words aren't posted"
+    );
+    assert!(body.contains(r#""answer":{"check":"fails","commit":"7777777","kind":"fixed"}"#));
+    let shown = e.shown_snapshot().await;
+    let asks: Vec<&Attention> = shown
+        .attention
+        .iter()
+        .filter(|a| a.kind == AttentionKind::CiQuestion)
+        .collect();
+    assert_eq!(asks.len(), 1);
+    assert_eq!(
+        asks[0].reason,
+        "The agent on a/b #12 needs a person for I1 (CI / Rust): the runner is out of disk."
+    );
+    let notes = e.snapshot().await.buddy_feed.notes;
+    assert!(notes.iter().any(|n| n.text
+        == "The agent on a/b #12 said I2 (CI / Lint) is fixed in 7777777, but it still fails there. Worth a look."));
+    assert_eq!(calls(d.path(), "compare/"), 1);
+
+    // The agent takes I1 itself: nobody is needed any more, and a settled
+    // fix isn't checked again.
+    say(d.path(), "agent", "Taking I1");
+    watch(&e, &gh).await;
+    let body = github(d.path())["comments"][1]["body"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(body.contains("· someone is on it ([reply]("), "{body}");
+    let asks = |s: Snapshot| {
+        s.attention
+            .iter()
+            .filter(|a| a.kind == AttentionKind::CiQuestion)
+            .count()
+    };
+    assert_eq!(asks(e.shown_snapshot().await), 0);
+    assert_eq!(calls(d.path(), "compare/"), 1);
+
+    // A question about a check that then passes needs nobody.
+    say(
+        d.path(),
+        "agent",
+        "Need a person on I2: who owns the linter?",
+    );
+    watch(&e, &gh).await;
+    assert_eq!(asks(e.shown_snapshot().await), 1);
+    e.update(|s| s.prs = vec![pr('8')]).await;
+    answer(
+        d.path(),
+        '1',
+        &[("Rust", "SUCCESS")],
+        Some(('8', &[("Rust", "FAILURE"), ("Lint", "SUCCESS")])),
+    );
+    watch(&e, &gh).await;
+    assert_eq!(asks(e.shown_snapshot().await), 0);
+}
+
+/// A fix in a commit newer than the one Orbit read waits until Orbit reads
+/// a commit it leads to; then CI there decides. A commit that isn't on the
+/// branch, or that GitHub doesn't know, is said so.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_fix_is_checked_against_ci_where_it_was_made() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let e = connected(d.path()).await;
+    e.update(|s| s.prs = vec![pr('5')]).await;
+    let lint = |r| [("Rust", "SUCCESS"), ("Lint", r)];
+    answer(d.path(), '1', &[], Some(('5', &lint("FAILURE"))));
+    watch(&e, &gh).await;
+    let body = || {
+        github(d.path())["comments"][0]["body"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    say(d.path(), "agent", "Fixed I1 in 6666666");
+    compared(d.path(), '6', '5', "behind");
+    watch(&e, &gh).await;
+    assert!(
+        body().contains("said to be fixed in `6666666`; Orbit is waiting for its checks there"),
+        "{}",
+        body()
+    );
+
+    // The agent pushed 6666666, where Lint passed, then 7777777, where it
+    // fails again.
+    e.update(|s| s.prs = vec![pr('7')]).await;
+    answer(d.path(), '1', &[], Some(('7', &lint("FAILURE"))));
+    compared(d.path(), '6', '7', "ahead");
+    checks_at(d.path(), '6', &lint("SUCCESS"));
+    let notes = e.snapshot().await.buddy_feed.notes.len();
+    watch(&e, &gh).await;
+    assert!(
+        body().contains("said to be fixed in `6666666`, and it passes there"),
+        "{}",
+        body()
+    );
+    assert_eq!(
+        e.snapshot().await.buddy_feed.notes.len(),
+        notes,
+        "a fix that holds needs no note"
+    );
+
+    say(d.path(), "agent", "Fixed I1 in 8888888");
+    compared(d.path(), '8', '7', "diverged");
+    watch(&e, &gh).await;
+    assert!(
+        body().contains("said to be fixed in `8888888`, which isn't on `fix-it`"),
+        "{}",
+        body()
+    );
+    say(d.path(), "agent", "Fixed I1 in abcdef0");
+    watch(&e, &gh).await;
+    assert!(
+        body().contains("said to be fixed in `abcdef0`, which Orbit can't find"),
+        "{}",
+        body()
+    );
+    let notes = e.snapshot().await.buddy_feed.notes;
+    let texts: Vec<&str> = notes.iter().map(|n| n.text.as_str()).collect();
+    assert!(texts.contains(
+        &"The agent on a/b #12 said I1 (CI / Lint) is fixed in 8888888, but that commit isn't on fix-it. Worth a look."
+    ), "{texts:?}");
+    assert!(texts.contains(
+        &"The agent on a/b #12 said I1 (CI / Lint) is fixed in abcdef0, but Orbit can't find that commit. Worth a look."
+    ), "{texts:?}");
+}
+
+/// Orbit reads replies from its own comment on, however many comments came
+/// before it.
+#[cfg(unix)]
+#[tokio::test]
+async fn replies_are_read_after_orbits_comment_on_a_busy_pull_request() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    chat(d.path(), "someone", "Looks good.", 1050);
+    let e = connected(d.path()).await;
+    e.update(|s| s.prs = vec![pr('5')]).await;
+    answer(d.path(), '1', &[], Some(('5', &[("Lint", "FAILURE")])));
+    watch(&e, &gh).await;
+    say(d.path(), "agent", "Taking I1");
+    watch(&e, &gh).await;
+    let body = github(d.path())["comments"][1050]["body"].to_string();
+    assert!(body.contains("someone is on it"), "{body}");
+}
+
+/// GitHub lists the comments edited since Orbit last read by when they
+/// were posted, so a long run of old ones edited later comes before a new
+/// reply. Orbit goes on through the list a page at a time until it reaches
+/// the end, never past a reply it hasn't read, and reads the last page
+/// again in case a comment was deleted meanwhile.
+#[cfg(unix)]
+#[tokio::test]
+async fn edited_old_comments_dont_hide_new_replies() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    chat(d.path(), "someone", "Looks good.", 1050);
+    let e = connected(d.path()).await;
+    e.update(|s| s.prs = vec![pr('5')]).await;
+    answer(d.path(), '1', &[], Some(('5', &[("Lint", "FAILURE")])));
+    watch(&e, &gh).await;
+    let id = |c: &Value| c["id"].as_u64().unwrap();
+    let first = id(&github(d.path())["comments"][0]);
+    // 999 old comments are edited in turn, and the agent answers halfway.
+    // After them and Orbit's comment, the reply is 1,001st on the list.
+    edit(d.path(), |c| id(c) < first + 600);
+    say(d.path(), "agent", "Taking I1");
+    edit(d.path(), |c| (first + 600..first + 999).contains(&id(c)));
+    let body = || {
+        let db = github(d.path());
+        let mine = db["comments"].as_array().unwrap().iter();
+        mine.filter(|c| c["user"]["login"] == "me")
+            .map(|c| c["body"].to_string())
+            .collect::<String>()
+    };
+    let read = |e: &Arc<Engine>| {
+        let e = e.clone();
+        async move {
+            let s = e.snapshot().await;
+            (s.ops[0].read_page, s.ops[0].read_since.clone())
+        }
+    };
+    let since = read(&e).await.1;
+    watch(&e, &gh).await;
+    assert!(!body().contains("someone is on it"), "{}", body());
+    assert_eq!(read(&e).await, (10, since), "part way through the list");
+    // An old comment is deleted, so the reply moves back onto page 10.
+    let mut db = github(d.path());
+    db["comments"].as_array_mut().unwrap().remove(0);
+    std::fs::write(d.path().join("github.json"), db.to_string()).unwrap();
+    watch(&e, &gh).await;
+    assert!(body().contains("someone is on it"), "{}", body());
+    let last = github(d.path())["comments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| id(c) == first + 998)
+        .unwrap()["updated_at"]
+        .clone();
+    assert_eq!(read(&e).await, (0, last.as_str().unwrap().to_string()));
+}
+
+/// A check's runs at a commit count only once every page of the commit's
+/// checks was read, but a failure counts at once.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_check_is_not_passing_until_every_page_is_read() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let at = |checks: &[(&str, &str)], more: bool| {
+        let mut rollup = rollup(checks);
+        rollup["contexts"]["pageInfo"] = json!({ "hasNextPage": more, "endCursor": "next" });
+        let v = json!({ "data": { "repository": { "object": { "statusCheckRollup": rollup } } } });
+        std::fs::write(
+            d.path().join(format!("commit-{}.json", sha('6'))),
+            v.to_string(),
+        )
+        .unwrap();
+    };
+    let six = sha('6');
+    let check = || {
+        crate::github::GH.scope(
+            gh.clone(),
+            crate::ci::check_at_within("a/b", &six, "CI / Lint", 2),
+        )
+    };
+    use crate::ci::CiState;
+    at(&[("Lint", "SUCCESS")], true);
+    assert_eq!(check().await.unwrap(), CiState::Running);
+    at(&[("Lint", "FAILURE")], true);
+    assert_eq!(check().await.unwrap(), CiState::Failing);
+    at(&[("Lint", "SUCCESS")], false);
+    assert_eq!(check().await.unwrap(), CiState::Passing);
+    at(&[("Rust", "SUCCESS")], false);
+    assert_eq!(check().await.unwrap(), CiState::None);
+}
+
+/// A check that fails again hears only replies from when Orbit's comment
+/// shows it failing again. An answer left while the pull request was green
+/// is about the failure before, even behind a long talk, and even edited
+/// since, so that it comes on the same page as an answer about this one.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_reply_from_a_green_spell_doesnt_carry_over() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let e = connected(d.path()).await;
+    let ci = |head: char, result: &str| {
+        let checks = [("Rust", result), ("Lint", result)];
+        answer(d.path(), '1', &[], Some((head, &checks)));
+    };
+    e.update(|s| s.prs = vec![pr('5')]).await;
+    ci('5', "FAILURE");
+    watch(&e, &gh).await;
+    e.update(|s| s.prs = vec![pr('6')]).await;
+    ci('6', "SUCCESS");
+    watch(&e, &gh).await;
+    chat(d.path(), "someone", "Looks good.", 1050);
+    say(d.path(), "agent", "Declined I1: the runner was down");
+    e.update(|s| s.prs = vec![pr('7')]).await;
+    ci('7', "FAILURE");
+    watch(&e, &gh).await;
+    let body = || github(d.path())["comments"][0]["body"].to_string();
+    assert!(body().contains("failing at `7777777`"), "{}", body());
+    // Everything said while it was green is edited, then the agent takes
+    // I2.
+    edit(d.path(), |c| c["user"]["login"] != "me");
+    say(d.path(), "agent", "Taking I2");
+    watch(&e, &gh).await;
+    watch(&e, &gh).await;
+    assert!(body().contains("someone is on it"), "{}", body());
+    assert!(!body().contains("declined"), "{}", body());
+}
+
+/// A comment that reached GitHub without Orbit hearing back is found
+/// again. Its items have been on GitHub since it was posted, not since the
+/// edit that brings it up to date, so an answer left before Orbit found it
+/// counts, and one from before the comment doesn't.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_post_orbit_didnt_hear_back_about_keeps_its_time() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    say(d.path(), "agent", "Declined I1: from before the comment");
+    let e = connected(d.path()).await;
+    e.update(|s| s.prs = vec![pr('5')]).await;
+    answer(d.path(), '1', &[], Some(('5', &[("Lint", "FAILURE")])));
+    watch(&e, &gh).await;
+    cut_off(&e).await;
+    say(d.path(), "agent", "Taking I1");
+    watch(&e, &gh).await;
+    assert!(
+        e.snapshot().await.ops[0].comment_id.is_some(),
+        "found again"
+    );
+    watch(&e, &gh).await;
+    let body = github(d.path())["comments"][1]["body"].to_string();
+    assert!(body.contains("someone is on it"), "{body}");
+    assert!(!body.contains("declined"), "{body}");
+}
+
+/// Rewrites Orbit's saved state as a version that didn't read answers
+/// saved it.
+fn saved_before_answers(dir: &Path) {
+    let file = dir.join("state").join("state.json");
+    let mut state: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    for t in state["ops"].as_array_mut().unwrap() {
+        let t = t.as_object_mut().unwrap();
+        for key in ["readTo", "readSince", "readPage", "readNewest", "shownAt"] {
+            assert!(t.remove(key).is_some(), "{key}");
+        }
+        for item in t["items"].as_array_mut().unwrap() {
+            let item = item.as_object_mut().unwrap();
+            assert!(item.remove("heardFrom").is_some());
+            item.remove("answer");
+        }
+    }
+    std::fs::write(&file, state.to_string()).unwrap();
+}
+/// State saved by a version of Orbit that didn't read answers has no time
+/// for the items on its comments and issues. Orbit takes it from its copy
+/// on GitHub before reading, so an answer after the comment counts though
+/// the comment doesn't change, and one from before it doesn't.
+#[cfg(unix)]
+#[tokio::test]
+async fn comments_from_before_orbit_read_answers_hear_them() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    say(d.path(), "agent", "Declined I1: from before the comment");
+    let e = connected(d.path()).await;
+    e.update(|s| s.prs = vec![pr('5')]).await;
+    let lint = [("Lint", "FAILURE")];
+    answer(d.path(), '1', &[("Rust", "FAILURE")], Some(('5', &lint)));
+    watch(&e, &gh).await;
+    drop(e);
+    saved_before_answers(d.path());
+    say(d.path(), "agent", "Taking I1");
+    let e = connected(d.path()).await;
+    let before = writes(d.path()).len();
+    watch(&e, &gh).await;
+    let body = github(d.path())["comments"][1]["body"].to_string();
+    assert!(body.contains("someone is on it"), "{body}");
+    assert!(!body.contains("declined"), "{body}");
+    assert_eq!(writes(d.path()).len(), before + 1, "only that edit");
+    let issue = github(d.path())["issues"][0].clone();
+    let s = e.snapshot().await;
+    let t = s.ops.iter().find(|t| t.kind == ThreadKind::Issue).unwrap();
+    assert_eq!(t.items[0].heard_from, issue["created_at"].as_str().unwrap());
+}
+
+/// A comment saved by a version of Orbit that didn't read answers may have
+/// been posted for an earlier failure of the same check and edited since.
+/// GitHub can't say when the failure now showed first, so answers count
+/// from Orbit's last edit: one from the earlier failure doesn't carry over.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_old_answer_on_a_reused_comment_doesnt_carry_over() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let e = connected(d.path()).await;
+    let ci = |head: char, rust: &str, lint: &str| {
+        let checks = [("Rust", rust), ("Lint", lint)];
+        answer(d.path(), '1', &[], Some((head, &checks)));
+    };
+    e.update(|s| s.prs = vec![pr('5')]).await;
+    ci('5', "FAILURE", "SUCCESS");
+    watch(&e, &gh).await;
+    say(d.path(), "agent", "Declined I1: the runner was down");
+    e.update(|s| s.prs = vec![pr('6')]).await;
+    ci('6', "SUCCESS", "SUCCESS");
+    watch(&e, &gh).await;
+    e.update(|s| s.prs = vec![pr('7')]).await;
+    ci('7', "FAILURE", "FAILURE");
+    watch(&e, &gh).await;
+    let body = || github(d.path())["comments"][0]["body"].to_string();
+    assert!(
+        body().contains("- **I2** · `CI / Lint` · failing at `7777777`"),
+        "{}",
+        body()
+    );
+    say(d.path(), "agent", "Taking I2");
+    drop(e);
+    saved_before_answers(d.path());
+    let e = connected(d.path()).await;
+    watch(&e, &gh).await;
+    assert!(body().contains("someone is on it"), "{}", body());
+    assert!(!body().contains("declined"), "{}", body());
 }

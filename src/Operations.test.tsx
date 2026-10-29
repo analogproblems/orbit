@@ -8,10 +8,16 @@ import {
   screen,
   within,
 } from "@testing-library/react";
-import { Operations, branchSummary } from "./Operations";
+import { Operations, answerText, branchSummary } from "./Operations";
 import { freshDemo } from "./demo";
 import { useOrbit } from "./store";
-import { checkNames, type RepoCi, type Snapshot } from "./types";
+import {
+  checkNames,
+  type OpsAnswer,
+  type OpsThread,
+  type RepoCi,
+  type Snapshot,
+} from "./types";
 
 afterEach(cleanup);
 
@@ -218,6 +224,19 @@ describe("operations page", () => {
     );
   });
 
+  it("shows what each agent answered", () => {
+    const s = freshDemo();
+    show(s);
+    const open = screen.getByRole("list", { name: "Open problems" });
+    const [branch, pull] = within(open).getAllByRole("listitem");
+    expect(branch.textContent).toContain(
+      "I1 · CI / Rust tests: acme-bot is on it.",
+    );
+    expect(pull.textContent).toContain(
+      `I1 · CI / Frontend: ${s.prs[2].author} says it’s fixed in ${s.prs[2].headSha.slice(0, 7)}, but it still fails there.`,
+    );
+  });
+
   it("lists what Orbit posted, newest first", () => {
     const s = freshDemo();
     s.journal!.push({
@@ -279,6 +298,44 @@ describe("ci sentences", () => {
     expect(branchSummary(unread)).toBe(
       "Orbit couldn’t read every check on main at aaaaaaa, so it can’t say it passes.",
     );
+  });
+  it("say what an agent answered", () => {
+    const t = { branch: "fix-it" } as OpsThread;
+    const said = (answer: Partial<OpsAnswer>) =>
+      answerText(t, {
+        number: 2,
+        check: "CI / Lint",
+        url: "",
+        failing: true,
+        since: "",
+        at: "",
+        answer: {
+          kind: "fixed",
+          author: "agent",
+          at: "",
+          url: "",
+          replyId: 1,
+          head: "",
+          ...answer,
+        },
+      });
+    expect(said({ kind: "declined", text: "the runner is broken" })).toBe(
+      "I2 · CI / Lint: agent declined it: the runner is broken",
+    );
+    expect(said({ kind: "question" })).toBe(
+      "I2 · CI / Lint: agent needs a person.",
+    );
+    expect(said({})).toBe(
+      "I2 · CI / Lint: agent says it’s fixed. Orbit is waiting to see it pass.",
+    );
+    const fixed = (check: OpsAnswer["check"]) =>
+      said({ commit: "abc1234def", check });
+    expect(fixed("waiting")).toBe(
+      "I2 · CI / Lint: agent says it’s fixed in abc1234. Orbit is waiting for its checks there.",
+    );
+    expect(fixed("passes")).toContain("abc1234, and it passes there.");
+    expect(fixed("not_on_branch")).toContain("abc1234, which isn’t on fix-it.");
+    expect(fixed("not_found")).toContain("abc1234, which Orbit can’t find.");
   });
   it("name checks as the engine does", () => {
     const checks = ["A", "B", "C", "D"].map((name) => ({ name, url: "" }));

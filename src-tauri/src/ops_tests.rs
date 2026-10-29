@@ -71,6 +71,8 @@ fn send(
             },
         ),
         url: "https://github.com/a/b/issues/45".into(),
+        updated_at: "2026-10-29T12:00:00Z".into(),
+        body: planned.body.clone(),
     };
     settle(threads, journal, &id, &planned, Ok(posted), now);
     Some(planned)
@@ -416,6 +418,8 @@ fn a_cut_off_post_is_looked_for_whatever_happens_next() {
         id: 9,
         number: Some(45),
         url: "https://github.com/a/b/issues/45".into(),
+        updated_at: String::new(),
+        body: String::new(),
     };
     looked(&mut threads, &find, Ok(Some(found)), t0());
     assert!(!threads[0].unsure);
@@ -590,4 +594,444 @@ fn may_post_checks_where_things_stand_now() {
     s.settings.watch_ci = true;
     s.settings.repositories.clear();
     assert!(!may_post(&s, &t), "disconnected");
+}
+
+/// A reply from the agent, as the engine reads it, posted `id` seconds
+/// after noon.
+fn reply(id: u64, body: &str) -> Reply {
+    let at = format!("2026-10-29T12:00:{:02}Z", id % 60);
+    Reply {
+        id,
+        author: "agent".into(),
+        created_at: at.clone(),
+        updated_at: at,
+        url: format!("https://github.com/a/b/issues/12#issuecomment-{id}"),
+        said: crate::engine::claims::ci_lines(body),
+    }
+}
+/// GitHub has Orbit's text, showing the items as they are now, from noon.
+fn on_github(t: &mut Thread) {
+    shown(t, "2026-10-29T12:00:00Z");
+}
+
+/// Each reply is read once, the latest answer about a failing item counts,
+/// and an item that fails again starts without one.
+#[test]
+fn answers_count_while_their_item_fails() {
+    let p = pull("p1", &["A", "B"], '1', t0());
+    let mut threads = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    let t = &mut threads[0];
+    // Orbit's comment is reply 10; older replies aren't about its items.
+    t.read_to = 10;
+    on_github(t);
+    let long = "x".repeat(MAX_ANSWER + 100);
+    let heard = hear(
+        t,
+        &[
+            reply(9, "Taking I2"),
+            reply(11, &format!("Taking I1\nDeclined I2: {long}")),
+            reply(12, "Fixed I1 in abc1234\nTaking I9"),
+        ],
+        None,
+    );
+    let numbers: Vec<u32> = heard.iter().map(|h| h.number).collect();
+    assert_eq!(numbers, [2, 1]);
+    let a = t.items[0].answer.clone().unwrap();
+    assert_eq!(
+        (a.kind, a.commit.as_deref(), a.check, a.reply_id),
+        (
+            AnswerKind::Fixed,
+            Some("abc1234"),
+            Some(FixCheck::Waiting),
+            12
+        )
+    );
+    let declined = t.items[1].answer.clone().unwrap();
+    assert_eq!(declined.kind, AnswerKind::Declined);
+    assert_eq!(declined.text.unwrap().chars().count(), MAX_ANSWER);
+    assert_eq!(
+        (t.read_to, t.read_since.as_str()),
+        (12, "2026-10-29T12:00:12Z")
+    );
+    assert!(
+        hear(t, &[reply(12, "Declined I1: no")], None).is_empty(),
+        "read once"
+    );
+    assert!(hear(t, &[reply(13, "Thanks")], None).is_empty());
+    assert_eq!(t.read_to, 13);
+
+    // B passes: an answer about it now is left alone. It fails again: what
+    // was said before is over.
+    let mut q = p.clone();
+    q.failing = vec![check("A")];
+    q.sha = sha('2');
+    refresh(&mut threads, std::slice::from_ref(&q), t0());
+    assert!(hear(&mut threads[0], &[reply(14, "Taking I2")], None).is_empty());
+    assert_eq!(threads[0].items[1].answer.as_ref().unwrap().reply_id, 11);
+    q.failing = vec![check("A"), check("B")];
+    q.sha = sha('3');
+    refresh(&mut threads, std::slice::from_ref(&q), t0());
+    assert_eq!(threads[0].items[1].answer, None);
+    assert_eq!(threads[0].items[1].heard_from, "", "until Orbit says so");
+    assert!(
+        threads[0].items[0].answer.is_some(),
+        "A never stopped failing"
+    );
+    assert_eq!(threads[0].items[0].heard_from, "2026-10-29T12:00:00Z");
+}
+
+/// A fix in a named commit is checked against CI until CI settles it; one
+/// not on the branch is checked again once the branch moves. Bit hears of
+/// each settled check once.
+#[test]
+fn fixes_are_checked_until_ci_settles_them() {
+    let p = pull("p1", &["A"], '1', t0());
+    let mut threads = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    on_github(&mut threads[0]);
+    hear(&mut threads[0], &[reply(1, "Fixed I1 in abc1234")], None);
+    let v = to_verify(&threads, std::slice::from_ref(&p));
+    assert_eq!(
+        v,
+        [Verify {
+            thread: "pr:a/b#12".into(),
+            number: 1,
+            repo: "a/b".into(),
+            commit: "abc1234".into(),
+            head: sha('1'),
+            check: "A".into(),
+        }]
+    );
+    assert_eq!(
+        verified(&mut threads, &v[0], Ok(FixCheck::Waiting), t0()),
+        None
+    );
+    assert_eq!(to_verify(&threads, std::slice::from_ref(&p)).len(), 1);
+    let told = verified(&mut threads, &v[0], Ok(FixCheck::NotOnBranch), t0()).unwrap();
+    assert_eq!(told.answer.check, Some(FixCheck::NotOnBranch));
+    assert!(to_verify(&threads, std::slice::from_ref(&p)).is_empty());
+
+    let mut moved = p.clone();
+    moved.sha = sha('2');
+    refresh(&mut threads, std::slice::from_ref(&moved), t0());
+    let v = to_verify(&threads, std::slice::from_ref(&moved));
+    assert_eq!(v[0].head, sha('2'));
+    assert_eq!(
+        verified(&mut threads, &v[0], Ok(FixCheck::NotOnBranch), t0()),
+        None,
+        "already told"
+    );
+    assert!(to_verify(&threads, std::slice::from_ref(&moved)).is_empty());
+    let told = verified(&mut threads, &v[0], Ok(FixCheck::Fails), t0()).unwrap();
+    assert_eq!(told.answer.head, sha('2'));
+    assert!(to_verify(&threads, std::slice::from_ref(&moved)).is_empty());
+
+    // A newer answer replaces it, and the old one's check is dropped.
+    hear(&mut threads[0], &[reply(2, "Fixed I1 in def5678")], None);
+    assert_eq!(
+        verified(&mut threads, &v[0], Ok(FixCheck::Passes), t0()),
+        None
+    );
+    let a = threads[0].items[0].answer.clone().unwrap();
+    assert_eq!(a.check, Some(FixCheck::Waiting));
+    // Nothing is checked on a problem that closed.
+    let mut passed = moved.clone();
+    pass(&mut passed, '3', t0());
+    assert!(to_verify(&threads, std::slice::from_ref(&passed)).is_empty());
+}
+
+/// Orbit's comment says what the agent answered and links the reply, but
+/// never repeats a reason or question, or links anywhere but GitHub. Once
+/// Orbit stops watching, answers aren't shown.
+#[test]
+fn bodies_say_what_agents_answered_without_repeating_them() {
+    let mut p = pull("p1", &["A", "B"], '1', t0());
+    let mut threads = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    on_github(&mut threads[0]);
+    hear(
+        &mut threads[0],
+        &[reply(1, "Declined I1: ask @someone <b>now</b>\nFixed I2")],
+        None,
+    );
+    let body = comment_body(&threads[0], &p);
+    assert!(body.contains(
+        "- **I1** · `A` · failing at `1111111` · [details](https://github.com/a/b/actions/runs/1/job/2) · declined ([reply](https://github.com/a/b/issues/12#issuecomment-1))\n"
+    ), "{body}");
+    assert!(body.contains("· said to be fixed; Orbit is waiting to see it pass ([reply]("));
+    assert!(!body.contains("someone") && !body.contains("<b>"));
+    let hidden = body.lines().last().unwrap();
+    assert!(hidden.contains(r#""answer":{"check":null,"commit":null,"kind":"declined"}"#));
+    assert_eq!(hidden.matches("\"answer\"").count(), 2, "{hidden}");
+    threads[0].items[1].answer = None;
+    let hidden = comment_body(&threads[0], &p);
+    assert_eq!(hidden.matches("\"answer\"").count(), 1, "none without one");
+    threads[0].items[0].answer.as_mut().unwrap().url = "https://example.com/x".into();
+    assert!(comment_body(&threads[0], &p).contains("job/2) · declined\n"));
+
+    p.closed_at = Some(stamp(t0()));
+    p.closed_reason = Some("Orbit stopped watching CI.".into());
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    let body = comment_body(&threads[0], &p);
+    let shown = body.rsplit_once('\n').unwrap().0;
+    assert!(!shown.contains("declined") && !shown.contains("said to be fixed"));
+}
+
+/// Bit tells you what Orbit posted and closed, and the answers worth your
+/// attention: a declined item, or a fix CI doesn't bear out.
+#[test]
+fn bit_hears_what_matters() {
+    let mut p = branch(&["A"], '1');
+    let mut threads = vec![];
+    let mut journal = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    send(&mut threads, &mut journal, &p, true, t0());
+    let key = threads[0].key.clone();
+    let text = |e: &Event, threads: &[Thread], p: &Problem| {
+        event_text(threads, std::slice::from_ref(p), e).map(|(_, _, text)| text)
+    };
+    assert_eq!(
+        text(&Event::Posted(key.clone()), &threads, &p).as_deref(),
+        Some("Orbit opened issue #45 to tell the agent that A fails on main in a/b.")
+    );
+    let heard = hear(
+        &mut threads[0],
+        &[reply(1, "Taking I1"), reply(2, "Declined I1: the runner")],
+        None,
+    );
+    assert_eq!(heard.len(), 1);
+    assert_eq!(
+        text(&Event::Heard(Box::new(heard[0].clone())), &threads, &p).as_deref(),
+        Some("The agent on main in a/b declined I1 (A): the runner")
+    );
+    let taking = hear(&mut threads[0], &[reply(3, "Taking I1")], None);
+    assert_eq!(
+        text(&Event::Heard(Box::new(taking[0].clone())), &threads, &p),
+        None
+    );
+    pass(&mut p, '2', t0());
+    assert_eq!(
+        text(&Event::Closed(key.clone()), &threads, &p).as_deref(),
+        Some("Orbit closed issue #45: main in a/b stayed green for an hour.")
+    );
+    p.closed_sha.clear();
+    assert_eq!(
+        text(&Event::Closed(key), &threads, &p).as_deref(),
+        Some("Orbit closed issue #45, as it stopped watching main in a/b.")
+    );
+}
+
+/// Replies count from Orbit's own post on. GitHub lists comments by when
+/// they were posted, so one edited later comes before a newer reply: Orbit
+/// goes on through the list a page at a time, and asks only for comments
+/// from after the latest it saw once it has read the list to the end.
+#[test]
+fn replies_are_read_from_orbits_post_on() {
+    let p = pull("p1", &["A"], '1', t0());
+    let mut threads = vec![];
+    let mut journal = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    send(&mut threads, &mut journal, &p, true, t0());
+    let t = &mut threads[0];
+    assert_eq!(
+        (t.read_to, t.read_since.as_str(), t.read_page),
+        (7, "2026-10-29T12:00:00Z", 0)
+    );
+    // An old comment edited at 12:30, on a list GitHub has more of.
+    let mut old = reply(5, "Taking I1");
+    old.created_at = "2026-10-29T11:00:00Z".into();
+    old.updated_at = "2026-10-29T12:30:00Z".into();
+    assert!(hear(t, &[old], Some(10)).is_empty());
+    assert_eq!(
+        (t.read_since.as_str(), t.read_page),
+        ("2026-10-29T12:00:00Z", 10),
+        "nothing on the rest of the list is skipped"
+    );
+    // The rest of it holds a reply posted before that edit.
+    let heard = hear(t, &[reply(8, "Taking I1")], None);
+    assert_eq!(heard.len(), 1);
+    assert_eq!(
+        (t.read_to, t.read_since.as_str(), t.read_page),
+        (8, "2026-10-29T12:30:00Z", 0)
+    );
+}
+
+/// A check that fails again hears only replies from when Orbit's text
+/// shows it failing again: one left while it was green, even edited since,
+/// is about the failure before, though it comes on the same page as one
+/// about this failure.
+#[test]
+fn replies_from_before_a_failure_came_back_are_skipped() {
+    let mut p = pull("p1", &["A", "B"], '1', t0());
+    let mut threads = vec![];
+    let mut journal = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    send(&mut threads, &mut journal, &p, true, t0());
+    pass(&mut p, '2', t0());
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    // Both fail again, before Orbit's comment says so.
+    let again = pull("p2", &["A", "B"], '3', t0());
+    refresh(&mut threads, &[p, again.clone()], t0());
+    let t = &mut threads[0];
+    assert!(t.items.iter().all(|i| i.failing && i.heard_from.is_empty()));
+    assert!(hear(t, &[reply(20, "Fixed I1 in abc1234")], None).is_empty());
+    // Orbit's edit is on GitHub at 12:00:30, so it reads on from there.
+    shown(t, "2026-10-29T12:00:30Z");
+    assert_eq!(
+        (t.read_since.as_str(), t.read_page),
+        ("2026-10-29T12:00:30Z", 0)
+    );
+    // The first page after it: a reply from the green spell, edited since,
+    // and one about this failure.
+    let mut edited = reply(25, "Declined I1: the runner was down");
+    edited.updated_at = "2026-10-29T12:00:40Z".into();
+    let heard = hear(t, &[edited, reply(35, "Taking I2")], Some(10));
+    let numbers: Vec<u32> = heard.iter().map(|h| h.number).collect();
+    assert_eq!(numbers, [2]);
+    assert_eq!(t.items[0].answer, None);
+    // The next page goes on from there.
+    let heard = hear(t, &[reply(36, "Declined I1: still down")], None);
+    assert_eq!(heard.len(), 1);
+    assert_eq!(t.items[0].answer.as_ref().unwrap().reply_id, 36);
+}
+
+/// A failure that comes back without changing Orbit's text, as when a check
+/// is run again at the same commit before Orbit could say it passed, has
+/// been on GitHub since Orbit's last write, so it hears replies from then.
+#[test]
+fn a_failure_back_without_new_text_counts_from_orbits_last_write() {
+    let p = pull("p1", &["A"], '1', t0());
+    let mut threads = vec![];
+    let mut journal = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    send(&mut threads, &mut journal, &p, true, t0());
+    let mut green = p.clone();
+    pass(&mut green, '1', t0());
+    refresh(&mut threads, std::slice::from_ref(&green), t0());
+    let again = pull("p2", &["A"], '1', t0());
+    refresh(&mut threads, &[green, again.clone()], t0());
+    assert_eq!(next(&threads[0], Some(&again), true, t0()), None);
+    assert_eq!(threads[0].items[0].heard_from, "2026-10-29T12:00:00Z");
+    assert_eq!(
+        hear(&mut threads[0], &[reply(9, "Taking I1")], None).len(),
+        1
+    );
+}
+
+/// Fixes take turns: the one tried longest ago is checked first, so fixes
+/// whose checks never finish don't keep another from being checked.
+#[test]
+fn fixes_are_checked_in_turn() {
+    let names = ["A", "B", "C", "D", "E", "F"];
+    let p = pull("p1", &names, '1', t0());
+    let mut threads = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    on_github(&mut threads[0]);
+    hear(
+        &mut threads[0],
+        &[reply(1, "Fixed I1, I2, I3, I4, I5, I6 in abc1234")],
+        None,
+    );
+    let first = to_verify(&threads, std::slice::from_ref(&p));
+    assert_eq!(first.len(), 6);
+    for (i, v) in first.iter().take(CHECKS_PER_PASS).enumerate() {
+        let result = if i == 0 {
+            Err("HTTP 502".to_string())
+        } else {
+            Ok(FixCheck::Waiting)
+        };
+        verified(&mut threads, v, result, t0());
+    }
+    let next: Vec<u32> = to_verify(&threads, std::slice::from_ref(&p))
+        .iter()
+        .map(|v| v.number)
+        .collect();
+    assert_eq!(next[0], 6, "never tried, so first");
+    assert_eq!(next.len(), 6, "a failed try leaves it to check again");
+}
+
+/// A post that reached GitHub without Orbit hearing back is found again,
+/// and its items have been on GitHub since it was posted, not since the
+/// edit that brings it up to date: a reply in between counts, and one from
+/// before it doesn't. An item the copy shows from an earlier failure waits
+/// for Orbit's text about this one.
+#[test]
+fn a_post_found_again_hears_from_when_it_was_posted() {
+    let mut p = pull("p1", &["A", "B"], '1', t0());
+    let mut threads = vec![];
+    let mut journal = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    let post = next(&threads[0], Some(&p), true, t0()).unwrap();
+    let id = record(&mut journal, &post, t0());
+    settle(
+        &mut threads,
+        &mut journal,
+        &id,
+        &post,
+        Err("timed out".into()),
+        t0(),
+    );
+    // B passes and fails again at 2 before Orbit finds it.
+    p.failing = vec![check("A")];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    p.failing = vec![check("A"), check("B")];
+    p.sha = sha('2');
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    let later = t0() + Duration::hours(1);
+    let find = next(&threads[0], Some(&p), true, later).unwrap();
+    assert_eq!(find.action, Action::Find);
+    let copy = Posted {
+        id: 7,
+        number: Some(12),
+        url: "https://github.com/a/b/issues/12#issuecomment-7".into(),
+        updated_at: "2026-10-29T12:00:05Z".into(),
+        body: post.body.clone(),
+    };
+    looked(&mut threads, &find, Ok(Some(copy)), later);
+    let t = &mut threads[0];
+    assert_eq!(t.items[0].heard_from, "2026-10-29T12:00:05Z");
+    assert_eq!(t.items[1].heard_from, "", "failing since 2 now, not 1");
+    assert_eq!(t.read_since, "2026-10-29T12:00:05Z");
+    let heard = hear(
+        t,
+        &[
+            reply(3, "Declined I1: before the post"),
+            reply(8, "Taking I1\nTaking I2"),
+        ],
+        None,
+    );
+    let numbers: Vec<u32> = heard.iter().map(|h| h.number).collect();
+    assert_eq!(numbers, [1]);
+    assert_eq!(t.items[0].answer.as_ref().unwrap().kind, AnswerKind::Taking);
+}
+
+/// A comment posted before Orbit read answers has no time for its items,
+/// so Orbit takes when GitHub last took its text from its copy there; a
+/// copy that doesn't hold the thread's hidden line gives none.
+#[test]
+fn a_copy_from_before_answers_were_read_gives_their_start() {
+    let p = pull("p1", &["A"], '1', t0());
+    let mut threads = vec![];
+    let mut journal = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    send(&mut threads, &mut journal, &p, true, t0());
+    let t = &mut threads[0];
+    // As an earlier version saved it.
+    t.shown_at.clear();
+    t.items[0].heard_from.clear();
+    t.read_since.clear();
+    let copy = |body: &str| Posted {
+        id: 7,
+        number: Some(12),
+        url: String::new(),
+        updated_at: "2026-10-29T11:30:00Z".into(),
+        body: body.into(),
+    };
+    recover(t, &copy("Someone else's words"));
+    assert_eq!(t.items[0].heard_from, "");
+    let posted = t.posted.clone();
+    recover(t, &copy(&posted));
+    assert_eq!(t.items[0].heard_from, "2026-10-29T11:30:00Z");
+    assert_eq!(t.read_since, "2026-10-29T11:30:00Z");
 }

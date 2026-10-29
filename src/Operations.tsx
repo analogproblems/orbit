@@ -23,6 +23,7 @@ import {
   type AttentionHandlers,
   type CiState,
   type OpsAction,
+  type OpsItem,
   type OpsThread,
   type OpsWrite,
   type Problem,
@@ -132,6 +133,41 @@ export function toldText(s: Snapshot, p: Problem, t: OpsThread | undefined) {
       ? `${buddy.name} asks before opening an issue for the repository’s agent.`
       : `${buddy.name} asks before commenting for the pull request’s agent.`;
   return "Orbit tells the agent on GitHub after this sync.";
+}
+
+/** What an agent said about a failing item, and for a fix, what Orbit
+ * found. The agent's words are shown as plain text. */
+export function answerText(t: OpsThread, item: OpsItem) {
+  const a = item.answer;
+  if (!a) return undefined;
+  const who = a.author || "The agent";
+  const about = `I${item.number} · ${item.check}:`;
+  const said = (text?: string | null) => (text ? `: ${text}` : ".");
+  switch (a.kind) {
+    case "taking":
+      return `${about} ${who} is on it.`;
+    case "declined":
+      return `${about} ${who} declined it${said(a.text)}`;
+    case "question":
+      return `${about} ${who} needs a person${said(a.text)}`;
+    case "fixed": {
+      if (!a.commit)
+        return `${about} ${who} says it’s fixed. Orbit is waiting to see it pass.`;
+      const fixed = `${about} ${who} says it’s fixed in ${a.commit.slice(0, 7)}`;
+      switch (a.check) {
+        case "passes":
+          return `${fixed}, and it passes there.`;
+        case "fails":
+          return `${fixed}, but it still fails there.`;
+        case "not_on_branch":
+          return `${fixed}, which isn’t on ${t.branch || "the branch"}.`;
+        case "not_found":
+          return `${fixed}, which Orbit can’t find.`;
+        default:
+          return `${fixed}. Orbit is waiting for its checks there.`;
+      }
+    }
+  }
 }
 
 /** A problem's name: its repository and branch, or its pull request. */
@@ -296,6 +332,13 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
                       : `Failing: ${checkNames(p.failing)}. Its author’s to fix.`}
                   </Text>
                   {told && <Text color="secondary">{told}</Text>}
+                  {t?.items
+                    .filter((i) => i.failing && i.answer)
+                    .map((i) => (
+                      <Text key={i.number} color="secondary">
+                        {answerText(t, i)}
+                      </Text>
+                    ))}
                   <Timeline p={p} />
                 </VStack>
               }
