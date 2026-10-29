@@ -329,8 +329,8 @@ pub struct Posted {
     pub id: u64,
     pub number: Option<u64>,
     pub url: String,
-    /// When GitHub made it, and when it took this write, by GitHub's clock.
-    pub created_at: String,
+    /// When GitHub took this write, or for a copy Orbit read back, when it
+    /// last took Orbit's text in it, by GitHub's clock.
     pub updated_at: String,
     /// The text GitHub has.
     pub body: String,
@@ -497,24 +497,24 @@ fn shown(t: &mut Thread, at: &str) {
     read_on(t);
 }
 /// Takes from Orbit's copy on GitHub of a comment or issue it found again,
-/// or posted before it read answers, when GitHub first showed each failing
-/// item: one the copy shows failing since the same commit has been on
-/// GitHub since the copy was posted. That is as early as GitHub can tell,
-/// and versions of Orbit before it read answers never asked for any, so
-/// nothing from an earlier failure is taken for one.
+/// or posted before it read answers, when each failing item was on GitHub:
+/// one the copy shows failing since the same commit has been there since
+/// GitHub last took that text. It may have been there longer, but the
+/// copy can't say since when, so a reply from before then doesn't count:
+/// it may be about an earlier failure of the same check.
 pub fn recover(t: &mut Thread, copy: &Posted) {
-    if copy.created_at.is_empty() {
+    if copy.updated_at.is_empty() {
         return;
     }
     let on_github = failing_in(&copy.body, &t.key);
     let failing = t.items.iter_mut().filter(|i| i.failing);
     for item in failing.filter(|i| i.heard_from.is_empty()) {
         if on_github.contains(&(item.number, item.since.clone())) {
-            item.heard_from = copy.created_at.clone();
+            item.heard_from = copy.updated_at.clone();
         }
     }
     if t.shown_at.is_empty() {
-        t.shown_at = copy.created_at.clone();
+        t.shown_at = copy.updated_at.clone();
     }
     read_on(t);
 }
@@ -1121,7 +1121,7 @@ pub fn looked(
         Action::NoteOnIssue => t.noted = planned.closed_at.clone(),
         _ => {
             t.unsure = false;
-            // The items it shows have been on GitHub since it was posted.
+            // The items it shows have been on GitHub since it was written.
             recover(t, &found);
             t.url = found.url;
             // What it says now is unknown, so it is brought up to date.

@@ -608,10 +608,29 @@ fn posted(v: &Value, marker: &str) -> Result<crate::ops::Posted, String> {
         id,
         number: v["number"].as_u64(),
         url: url.to_string(),
-        created_at: v["created_at"].as_str().unwrap_or_default().to_string(),
         updated_at: v["updated_at"].as_str().unwrap_or_default().to_string(),
         body: body.to_string(),
     })
+}
+/// Orbit's comment or issue as GitHub has it, read back: like `posted`,
+/// but its time is when GitHub last took Orbit's text in it, its last edit
+/// or when it was made, as GitHub moves an issue's `updated_at` for every
+/// comment.
+async fn copy(v: &Value, marker: &str) -> Result<crate::ops::Posted, String> {
+    let mut copy = posted(v, marker)?;
+    let id = v["node_id"]
+        .as_str()
+        .ok_or("GitHub didn't say which comment this is.")?;
+    let query = "query($id: ID!) { node(id: $id) { ... on Comment { createdAt lastEditedAt } } }";
+    let fields = [("query", query.to_string()), ("id", id.to_string())];
+    let answer = api("graphql", "POST", &fields, None).await?;
+    let node = &answer["data"]["node"];
+    copy.updated_at = node["lastEditedAt"]
+        .as_str()
+        .or(node["createdAt"].as_str())
+        .ok_or("GitHub didn't say when Orbit's text was written.")?
+        .to_string();
+    Ok(copy)
 }
 fn by(v: &Value, login: &str) -> bool {
     v["user"]["login"]
@@ -662,15 +681,17 @@ pub(crate) async fn find_comment_within(
     most: u32,
 ) -> Result<Option<crate::ops::Posted>, String> {
     validate_repo(repo)?;
-    first_match(
+    let found = first_match(
         &format!("repos/{repo}/issues/{number}/comments"),
         &[],
         most,
         |c| by(c, login) && c["body"].as_str().is_some_and(|b| b.contains(marker)),
     )
-    .await?
-    .map(|c| posted(&c, marker))
-    .transpose()
+    .await?;
+    match found {
+        Some(c) => Ok(Some(copy(&c, marker).await?)),
+        None => Ok(None),
+    }
 }
 /// The issue `login` opened that holds `marker`, if there is one.
 pub async fn find_issue(
@@ -687,7 +708,7 @@ pub(crate) async fn find_issue_within(
     most: u32,
 ) -> Result<Option<crate::ops::Posted>, String> {
     validate_repo(repo)?;
-    first_match(
+    let found = first_match(
         &format!("repos/{repo}/issues"),
         &[
             ("state", "all".into()),
@@ -702,9 +723,11 @@ pub(crate) async fn find_issue_within(
                 && i["body"].as_str().is_some_and(|b| b.contains(marker))
         },
     )
-    .await?
-    .map(|i| posted(&i, marker))
-    .transpose()
+    .await?;
+    match found {
+        Some(i) => Ok(Some(copy(&i, marker).await?)),
+        None => Ok(None),
+    }
 }
 /// Pages of replies Orbit reads on its comment or issue in one pass.
 const REPLY_PAGES: u32 = 10;
@@ -801,7 +824,7 @@ pub async fn get_comment(repo: &str, id: u64, marker: &str) -> Result<crate::ops
         None,
     )
     .await?;
-    posted(&v, marker)
+    copy(&v, marker).await
 }
 /// Orbit's issue as GitHub has it, after checking it holds `marker`.
 pub async fn get_issue(
@@ -811,7 +834,7 @@ pub async fn get_issue(
 ) -> Result<crate::ops::Posted, String> {
     validate_repo(repo)?;
     let v = api(&format!("repos/{repo}/issues/{number}"), "GET", &[], None).await?;
-    posted(&v, marker)
+    copy(&v, marker).await
 }
 /// Replaces the text of a comment.
 pub async fn edit_comment(

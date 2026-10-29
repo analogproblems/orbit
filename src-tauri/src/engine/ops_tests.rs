@@ -582,9 +582,11 @@ async fn a_search_too_big_to_finish_finds_nothing_it_can_trust() {
                 json!({
                     "id": n,
                     "number": n,
+                    "node_id": format!("N_{n}"),
                     "issue": 12,
                     "user": { "login": "me" },
                     "body": body,
+                    "created_at": made(n),
                     "html_url": format!("https://github.com/a/b/issues/{n}"),
                 })
             })
@@ -1036,6 +1038,24 @@ async fn a_post_orbit_didnt_hear_back_about_keeps_its_time() {
     assert!(!body.contains("declined"), "{body}");
 }
 
+/// Rewrites Orbit's saved state as a version that didn't read answers
+/// saved it.
+fn saved_before_answers(dir: &Path) {
+    let file = dir.join("state").join("state.json");
+    let mut state: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    for t in state["ops"].as_array_mut().unwrap() {
+        let t = t.as_object_mut().unwrap();
+        for key in ["readTo", "readSince", "readPage", "readNewest", "shownAt"] {
+            assert!(t.remove(key).is_some(), "{key}");
+        }
+        for item in t["items"].as_array_mut().unwrap() {
+            let item = item.as_object_mut().unwrap();
+            assert!(item.remove("heardFrom").is_some());
+            item.remove("answer");
+        }
+    }
+    std::fs::write(&file, state.to_string()).unwrap();
+}
 /// State saved by a version of Orbit that didn't read answers has no time
 /// for the items on its comments and issues. Orbit takes it from its copy
 /// on GitHub before reading, so an answer after the comment counts though
@@ -1052,19 +1072,7 @@ async fn comments_from_before_orbit_read_answers_hear_them() {
     answer(d.path(), '1', &[("Rust", "FAILURE")], Some(('5', &lint)));
     watch(&e, &gh).await;
     drop(e);
-    // As the earlier version saved it.
-    let file = d.path().join("state").join("state.json");
-    let mut state: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
-    for t in state["ops"].as_array_mut().unwrap() {
-        let t = t.as_object_mut().unwrap();
-        for key in ["readTo", "readSince", "readPage", "readNewest", "shownAt"] {
-            assert!(t.remove(key).is_some(), "{key}");
-        }
-        for item in t["items"].as_array_mut().unwrap() {
-            assert!(item.as_object_mut().unwrap().remove("heardFrom").is_some());
-        }
-    }
-    std::fs::write(&file, state.to_string()).unwrap();
+    saved_before_answers(d.path());
     say(d.path(), "agent", "Taking I1");
     let e = connected(d.path()).await;
     let before = writes(d.path()).len();
@@ -1077,4 +1085,43 @@ async fn comments_from_before_orbit_read_answers_hear_them() {
     let s = e.snapshot().await;
     let t = s.ops.iter().find(|t| t.kind == ThreadKind::Issue).unwrap();
     assert_eq!(t.items[0].heard_from, issue["created_at"].as_str().unwrap());
+}
+
+/// A comment saved by a version of Orbit that didn't read answers may have
+/// been posted for an earlier failure of the same check and edited since.
+/// GitHub can't say when the failure now showed first, so answers count
+/// from Orbit's last edit: one from the earlier failure doesn't carry over.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_old_answer_on_a_reused_comment_doesnt_carry_over() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let e = connected(d.path()).await;
+    let ci = |head: char, rust: &str, lint: &str| {
+        let checks = [("Rust", rust), ("Lint", lint)];
+        answer(d.path(), '1', &[], Some((head, &checks)));
+    };
+    e.update(|s| s.prs = vec![pr('5')]).await;
+    ci('5', "FAILURE", "SUCCESS");
+    watch(&e, &gh).await;
+    say(d.path(), "agent", "Declined I1: the runner was down");
+    e.update(|s| s.prs = vec![pr('6')]).await;
+    ci('6', "SUCCESS", "SUCCESS");
+    watch(&e, &gh).await;
+    e.update(|s| s.prs = vec![pr('7')]).await;
+    ci('7', "FAILURE", "FAILURE");
+    watch(&e, &gh).await;
+    let body = || github(d.path())["comments"][0]["body"].to_string();
+    assert!(
+        body().contains("- **I2** · `CI / Lint` · failing at `7777777`"),
+        "{}",
+        body()
+    );
+    say(d.path(), "agent", "Taking I2");
+    drop(e);
+    saved_before_answers(d.path());
+    let e = connected(d.path()).await;
+    watch(&e, &gh).await;
+    assert!(body().contains("someone is on it"), "{}", body());
+    assert!(!body().contains("declined"), "{}", body());
 }

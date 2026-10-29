@@ -71,7 +71,6 @@ fn send(
             },
         ),
         url: "https://github.com/a/b/issues/45".into(),
-        created_at: "2026-10-29T12:00:00Z".into(),
         updated_at: "2026-10-29T12:00:00Z".into(),
         body: planned.body.clone(),
     };
@@ -419,7 +418,6 @@ fn a_cut_off_post_is_looked_for_whatever_happens_next() {
         id: 9,
         number: Some(45),
         url: "https://github.com/a/b/issues/45".into(),
-        created_at: String::new(),
         updated_at: String::new(),
         body: String::new(),
     };
@@ -987,7 +985,6 @@ fn a_post_found_again_hears_from_when_it_was_posted() {
         id: 7,
         number: Some(12),
         url: "https://github.com/a/b/issues/12#issuecomment-7".into(),
-        created_at: "2026-10-29T12:00:05Z".into(),
         updated_at: "2026-10-29T12:00:05Z".into(),
         body: post.body.clone(),
     };
@@ -1010,8 +1007,8 @@ fn a_post_found_again_hears_from_when_it_was_posted() {
 }
 
 /// A comment posted before Orbit read answers has no time for its items,
-/// so Orbit takes it from its copy on GitHub; a copy that doesn't hold the
-/// thread's hidden line gives none.
+/// so Orbit takes when GitHub last took its text from its copy there; a
+/// copy that doesn't hold the thread's hidden line gives none.
 #[test]
 fn a_copy_from_before_answers_were_read_gives_their_start() {
     let p = pull("p1", &["A"], '1', t0());
@@ -1028,7 +1025,6 @@ fn a_copy_from_before_answers_were_read_gives_their_start() {
         id: 7,
         number: Some(12),
         url: String::new(),
-        created_at: "2026-10-29T11:00:00Z".into(),
         updated_at: "2026-10-29T11:30:00Z".into(),
         body: body.into(),
     };
@@ -1036,6 +1032,6 @@ fn a_copy_from_before_answers_were_read_gives_their_start() {
     assert_eq!(t.items[0].heard_from, "");
     let posted = t.posted.clone();
     recover(t, &copy(&posted));
-    assert_eq!(t.items[0].heard_from, "2026-10-29T11:00:00Z");
-    assert_eq!(t.read_since, "2026-10-29T11:00:00Z");
+    assert_eq!(t.items[0].heard_from, "2026-10-29T11:30:00Z");
+    assert_eq!(t.read_since, "2026-10-29T11:30:00Z");
 }
