@@ -104,9 +104,11 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
 } else if ((m = endpoint.match(/^repos\/a\/b\/issues\/comments\/(\d+)$/))) {
   const c = db.comments.find((c) => c.id === Number(m[1]));
   if (!c) missing();
-  c.body = input.body;
-  c.updated_at = made(db.next++);
-  save(db);
+  if (method !== "GET") {
+    c.body = input.body;
+    c.updated_at = made(db.next++);
+    save(db);
+  }
   answer(c);
 } else if (endpoint === "repos/a/b/issues") {
   if (method === "GET") {
@@ -135,9 +137,11 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
 } else if ((m = endpoint.match(/^repos\/a\/b\/issues\/(\d+)$/))) {
   const i = db.issues.find((i) => i.number === Number(m[1]));
   if (!i) missing();
-  Object.assign(i, input);
-  i.updated_at = made(db.next++);
-  save(db);
+  if (method !== "GET") {
+    Object.assign(i, input);
+    i.updated_at = made(db.next++);
+    save(db);
+  }
   answer(i);
 } else {
   answer([]);

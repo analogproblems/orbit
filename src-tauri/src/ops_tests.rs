@@ -71,7 +71,9 @@ fn send(
             },
         ),
         url: "https://github.com/a/b/issues/45".into(),
+        created_at: "2026-10-29T12:00:00Z".into(),
         updated_at: "2026-10-29T12:00:00Z".into(),
+        body: planned.body.clone(),
     };
     settle(threads, journal, &id, &planned, Ok(posted), now);
     Some(planned)
@@ -417,7 +419,9 @@ fn a_cut_off_post_is_looked_for_whatever_happens_next() {
         id: 9,
         number: Some(45),
         url: "https://github.com/a/b/issues/45".into(),
+        created_at: String::new(),
         updated_at: String::new(),
+        body: String::new(),
     };
     looked(&mut threads, &find, Ok(Some(found)), t0());
     assert!(!threads[0].unsure);
@@ -947,4 +951,91 @@ fn fixes_are_checked_in_turn() {
         .collect();
     assert_eq!(next[0], 6, "never tried, so first");
     assert_eq!(next.len(), 6, "a failed try leaves it to check again");
+}
+
+/// A post that reached GitHub without Orbit hearing back is found again,
+/// and its items have been on GitHub since it was posted, not since the
+/// edit that brings it up to date: a reply in between counts, and one from
+/// before it doesn't. An item the copy shows from an earlier failure waits
+/// for Orbit's text about this one.
+#[test]
+fn a_post_found_again_hears_from_when_it_was_posted() {
+    let mut p = pull("p1", &["A", "B"], '1', t0());
+    let mut threads = vec![];
+    let mut journal = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    let post = next(&threads[0], Some(&p), true, t0()).unwrap();
+    let id = record(&mut journal, &post, t0());
+    settle(
+        &mut threads,
+        &mut journal,
+        &id,
+        &post,
+        Err("timed out".into()),
+        t0(),
+    );
+    // B passes and fails again at 2 before Orbit finds it.
+    p.failing = vec![check("A")];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    p.failing = vec![check("A"), check("B")];
+    p.sha = sha('2');
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    let later = t0() + Duration::hours(1);
+    let find = next(&threads[0], Some(&p), true, later).unwrap();
+    assert_eq!(find.action, Action::Find);
+    let copy = Posted {
+        id: 7,
+        number: Some(12),
+        url: "https://github.com/a/b/issues/12#issuecomment-7".into(),
+        created_at: "2026-10-29T12:00:05Z".into(),
+        updated_at: "2026-10-29T12:00:05Z".into(),
+        body: post.body.clone(),
+    };
+    looked(&mut threads, &find, Ok(Some(copy)), later);
+    let t = &mut threads[0];
+    assert_eq!(t.items[0].heard_from, "2026-10-29T12:00:05Z");
+    assert_eq!(t.items[1].heard_from, "", "failing since 2 now, not 1");
+    assert_eq!(t.read_since, "2026-10-29T12:00:05Z");
+    let heard = hear(
+        t,
+        &[
+            reply(3, "Declined I1: before the post"),
+            reply(8, "Taking I1\nTaking I2"),
+        ],
+        None,
+    );
+    let numbers: Vec<u32> = heard.iter().map(|h| h.number).collect();
+    assert_eq!(numbers, [1]);
+    assert_eq!(t.items[0].answer.as_ref().unwrap().kind, AnswerKind::Taking);
+}
+
+/// A comment posted before Orbit read answers has no time for its items,
+/// so Orbit takes it from its copy on GitHub; a copy that doesn't hold the
+/// thread's hidden line gives none.
+#[test]
+fn a_copy_from_before_answers_were_read_gives_their_start() {
+    let p = pull("p1", &["A"], '1', t0());
+    let mut threads = vec![];
+    let mut journal = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    send(&mut threads, &mut journal, &p, true, t0());
+    let t = &mut threads[0];
+    // As an earlier version saved it.
+    t.shown_at.clear();
+    t.items[0].heard_from.clear();
+    t.read_since.clear();
+    let copy = |body: &str| Posted {
+        id: 7,
+        number: Some(12),
+        url: String::new(),
+        created_at: "2026-10-29T11:00:00Z".into(),
+        updated_at: "2026-10-29T11:30:00Z".into(),
+        body: body.into(),
+    };
+    recover(t, &copy("Someone else's words"));
+    assert_eq!(t.items[0].heard_from, "");
+    let posted = t.posted.clone();
+    recover(t, &copy(&posted));
+    assert_eq!(t.items[0].heard_from, "2026-10-29T11:00:00Z");
+    assert_eq!(t.read_since, "2026-10-29T11:00:00Z");
 }

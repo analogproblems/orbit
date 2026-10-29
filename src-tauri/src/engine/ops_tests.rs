@@ -148,6 +148,12 @@ async fn cut_off(e: &Engine) {
         t.comment_id = None;
         t.url.clear();
         t.posted.clear();
+        t.shown_at.clear();
+        t.read_to = 0;
+        t.read_since.clear();
+        for item in &mut t.items {
+            item.heard_from.clear();
+        }
         let w = &mut s.journal[0];
         w.state = WriteState::Sending;
         w.url.clear();
@@ -1001,4 +1007,74 @@ async fn a_reply_from_a_green_spell_doesnt_carry_over() {
     watch(&e, &gh).await;
     assert!(body().contains("someone is on it"), "{}", body());
     assert!(!body().contains("declined"), "{}", body());
+}
+
+/// A comment that reached GitHub without Orbit hearing back is found
+/// again. Its items have been on GitHub since it was posted, not since the
+/// edit that brings it up to date, so an answer left before Orbit found it
+/// counts, and one from before the comment doesn't.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_post_orbit_didnt_hear_back_about_keeps_its_time() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    say(d.path(), "agent", "Declined I1: from before the comment");
+    let e = connected(d.path()).await;
+    e.update(|s| s.prs = vec![pr('5')]).await;
+    answer(d.path(), '1', &[], Some(('5', &[("Lint", "FAILURE")])));
+    watch(&e, &gh).await;
+    cut_off(&e).await;
+    say(d.path(), "agent", "Taking I1");
+    watch(&e, &gh).await;
+    assert!(
+        e.snapshot().await.ops[0].comment_id.is_some(),
+        "found again"
+    );
+    watch(&e, &gh).await;
+    let body = github(d.path())["comments"][1]["body"].to_string();
+    assert!(body.contains("someone is on it"), "{body}");
+    assert!(!body.contains("declined"), "{body}");
+}
+
+/// State saved by a version of Orbit that didn't read answers has no time
+/// for the items on its comments and issues. Orbit takes it from its copy
+/// on GitHub before reading, so an answer after the comment counts though
+/// the comment doesn't change, and one from before it doesn't.
+#[cfg(unix)]
+#[tokio::test]
+async fn comments_from_before_orbit_read_answers_hear_them() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    say(d.path(), "agent", "Declined I1: from before the comment");
+    let e = connected(d.path()).await;
+    e.update(|s| s.prs = vec![pr('5')]).await;
+    let lint = [("Lint", "FAILURE")];
+    answer(d.path(), '1', &[("Rust", "FAILURE")], Some(('5', &lint)));
+    watch(&e, &gh).await;
+    drop(e);
+    // As the earlier version saved it.
+    let file = d.path().join("state").join("state.json");
+    let mut state: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    for t in state["ops"].as_array_mut().unwrap() {
+        let t = t.as_object_mut().unwrap();
+        for key in ["readTo", "readSince", "readPage", "readNewest", "shownAt"] {
+            assert!(t.remove(key).is_some(), "{key}");
+        }
+        for item in t["items"].as_array_mut().unwrap() {
+            assert!(item.as_object_mut().unwrap().remove("heardFrom").is_some());
+        }
+    }
+    std::fs::write(&file, state.to_string()).unwrap();
+    say(d.path(), "agent", "Taking I1");
+    let e = connected(d.path()).await;
+    let before = writes(d.path()).len();
+    watch(&e, &gh).await;
+    let body = github(d.path())["comments"][1]["body"].to_string();
+    assert!(body.contains("someone is on it"), "{body}");
+    assert!(!body.contains("declined"), "{body}");
+    assert_eq!(writes(d.path()).len(), before + 1, "only that edit");
+    let issue = github(d.path())["issues"][0].clone();
+    let s = e.snapshot().await;
+    let t = s.ops.iter().find(|t| t.kind == ThreadKind::Issue).unwrap();
+    assert_eq!(t.items[0].heard_from, issue["created_at"].as_str().unwrap());
 }

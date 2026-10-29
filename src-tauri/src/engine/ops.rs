@@ -135,6 +135,11 @@ impl Engine {
             page: u32,
             /// The pull request's author, when Orbit trusts its source.
             author: Option<String>,
+            /// Posted before Orbit read answers, so when GitHub showed its
+            /// items is read from its copy there first.
+            unshown: bool,
+            comment: Option<u64>,
+            marker: String,
         }
         let (asks, me, trusted) = {
             let s = self.state.lock().await;
@@ -160,6 +165,9 @@ impl Engine {
                             .and_then(|id| s.prs.iter().find(|p| p.id == id))
                             .filter(|p| trusted_source(p, &s.settings.trusted_authors))
                             .map(|p| p.author.clone()),
+                        unshown: t.shown_at.is_empty(),
+                        comment: t.comment_id,
+                        marker: t.tag(),
                     })
                 })
                 .collect();
@@ -174,6 +182,22 @@ impl Engine {
         };
         let mut heard = vec![];
         for ask in asks {
+            if ask.unshown {
+                // No answer is read until Orbit knows which ones count.
+                let copy = match ask.comment {
+                    Some(id) => github::get_comment(&ask.repo, id, &ask.marker).await,
+                    None => github::get_issue(&ask.repo, ask.number, &ask.marker).await,
+                };
+                let Ok(copy) = copy else {
+                    continue;
+                };
+                self.update(|s| {
+                    if let Some(t) = s.ops.iter_mut().find(|t| t.key == ask.key) {
+                        ops::recover(t, &copy);
+                    }
+                })
+                .await;
+            }
             let read = github::replies(&ask.repo, ask.number, &ask.since, ask.page).await;
             let Ok((comments, more)) = read else {
                 continue;

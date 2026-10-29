@@ -329,8 +329,11 @@ pub struct Posted {
     pub id: u64,
     pub number: Option<u64>,
     pub url: String,
-    /// When GitHub took this write, by GitHub's clock.
+    /// When GitHub made it, and when it took this write, by GitHub's clock.
+    pub created_at: String,
     pub updated_at: String,
+    /// The text GitHub has.
+    pub body: String,
 }
 
 /// Whether a rule lets Bit post: it is on, and the rule is Do it, or Ask
@@ -491,10 +494,57 @@ fn shown(t: &mut Thread, at: &str) {
     for item in failing.filter(|i| i.heard_from.is_empty()) {
         item.heard_from = at.to_string();
     }
+    read_on(t);
+}
+/// Takes from Orbit's copy on GitHub of a comment or issue it found again,
+/// or posted before it read answers, when GitHub first showed each failing
+/// item: one the copy shows failing since the same commit has been on
+/// GitHub since the copy was posted. That is as early as GitHub can tell,
+/// and versions of Orbit before it read answers never asked for any, so
+/// nothing from an earlier failure is taken for one.
+pub fn recover(t: &mut Thread, copy: &Posted) {
+    if copy.created_at.is_empty() {
+        return;
+    }
+    let on_github = failing_in(&copy.body, &t.key);
+    let failing = t.items.iter_mut().filter(|i| i.failing);
+    for item in failing.filter(|i| i.heard_from.is_empty()) {
+        if on_github.contains(&(item.number, item.since.clone())) {
+            item.heard_from = copy.created_at.clone();
+        }
+    }
+    if t.shown_at.is_empty() {
+        t.shown_at = copy.created_at.clone();
+    }
+    read_on(t);
+}
+/// The items a copy of Orbit's text shows failing, from its hidden line:
+/// each one's number and the commit it started failing at.
+fn failing_in(body: &str, key: &str) -> Vec<(u32, String)> {
+    let Some((_, rest)) = body.split_once(&tag(key)) else {
+        return vec![];
+    };
+    let json = rest.split_once(" -->").map_or(rest, |(json, _)| json);
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
+        return vec![];
+    };
+    let items = v["items"].as_array().into_iter().flatten();
+    items
+        .filter(|i| i["failing"] == true)
+        .filter_map(|i| {
+            let number = i["id"].as_str()?.strip_prefix('I')?.parse().ok()?;
+            Some((number, i["since"].as_str()?.to_string()))
+        })
+        .collect()
+}
+/// Reads on from the earliest time GitHub first showed a failing item, as
+/// no reply from before it is about one. One GitHub doesn't show yet hears
+/// only replies from later still.
+fn read_on(t: &mut Thread) {
     let floor = t
         .items
         .iter()
-        .filter(|i| i.failing)
+        .filter(|i| i.failing && !i.heard_from.is_empty())
         .map(|i| &i.heard_from)
         .min();
     if let Some(floor) = floor.filter(|f| **f > t.read_since) {
@@ -1071,6 +1121,8 @@ pub fn looked(
         Action::NoteOnIssue => t.noted = planned.closed_at.clone(),
         _ => {
             t.unsure = false;
+            // The items it shows have been on GitHub since it was posted.
+            recover(t, &found);
             t.url = found.url;
             // What it says now is unknown, so it is brought up to date.
             t.posted.clear();

@@ -608,7 +608,9 @@ fn posted(v: &Value, marker: &str) -> Result<crate::ops::Posted, String> {
         id,
         number: v["number"].as_u64(),
         url: url.to_string(),
+        created_at: v["created_at"].as_str().unwrap_or_default().to_string(),
         updated_at: v["updated_at"].as_str().unwrap_or_default().to_string(),
+        body: body.to_string(),
     })
 }
 fn by(v: &Value, login: &str) -> bool {
@@ -787,6 +789,28 @@ pub async fn post_comment(
         Some(json!({ "body": body })),
     )
     .await?;
+    posted(&v, marker)
+}
+/// Orbit's comment as GitHub has it, after checking it holds `marker`.
+pub async fn get_comment(repo: &str, id: u64, marker: &str) -> Result<crate::ops::Posted, String> {
+    validate_repo(repo)?;
+    let v = api(
+        &format!("repos/{repo}/issues/comments/{id}"),
+        "GET",
+        &[],
+        None,
+    )
+    .await?;
+    posted(&v, marker)
+}
+/// Orbit's issue as GitHub has it, after checking it holds `marker`.
+pub async fn get_issue(
+    repo: &str,
+    number: u64,
+    marker: &str,
+) -> Result<crate::ops::Posted, String> {
+    validate_repo(repo)?;
+    let v = api(&format!("repos/{repo}/issues/{number}"), "GET", &[], None).await?;
     posted(&v, marker)
 }
 /// Replaces the text of a comment.
