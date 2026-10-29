@@ -59,6 +59,7 @@ import {
   type ApiProvider,
   type Buddy,
   type BuddyHat,
+  type BuddyLook,
   type BuddyNote,
   type BuddyAnswerer,
   type BuddyTone,
@@ -70,7 +71,7 @@ import {
   type SettingsPatch,
   type Snapshot,
 } from "./types";
-import { Bit, bitColours, bitHats, moodLabels } from "./Bit";
+import { Bit, bitColours, bitHats, bitLooks, moodLabels } from "./Bit";
 import { SaveFeedback } from "./SaveFeedback";
 import { useReconnect } from "./CliReviewers";
 import { SafeMarkdown } from "./SafeMarkdown";
@@ -110,7 +111,13 @@ export function BuddyCard({
       <SideNavItem
         label={buddy.name}
         icon={
-          <Bit mood={mood} colour={buddy.colour} hat={buddy.hat} size="xs" />
+          <Bit
+            mood={mood}
+            colour={buddy.colour}
+            hat={buddy.hat}
+            look={buddy.look}
+            size="xs"
+          />
         }
         isSelected={isSelected}
         onClick={onOpen}
@@ -124,7 +131,13 @@ export function BuddyCard({
       variant={isSelected ? "muted" : "default"}
     >
       <HStack gap={2} vAlign="center">
-        <Bit mood={mood} colour={buddy.colour} hat={buddy.hat} size="sm" />
+        <Bit
+          mood={mood}
+          colour={buddy.colour}
+          hat={buddy.hat}
+          look={buddy.look}
+          size="sm"
+        />
         <VStack gap={0.5}>
           <Text weight="semibold">{buddy.name}</Text>
           <Text type="supporting" color="secondary" maxLines={2}>
@@ -290,7 +303,9 @@ function NoteMessage({
           mood={buddyMood(s)}
           colour={buddy.colour}
           hat={buddy.hat}
+          look={buddy.look}
           size="xs"
+          still
         />
       }
     >
@@ -418,6 +433,7 @@ export function BuddyPage({
             mood={mood}
             colour={buddy.colour}
             hat={buddy.hat}
+            look={buddy.look}
             size="lg"
             label={`${buddy.name}, ${moodLabels[mood].toLowerCase()}`}
           />
@@ -826,6 +842,7 @@ export function BuddySettings() {
             mood={preview}
             colour={buddy.colour}
             hat={buddy.hat}
+            look={buddy.look}
             size="md"
             label={`${buddy.name}, ${moodLabels[preview].toLowerCase()}`}
           />
@@ -889,6 +906,39 @@ export function BuddySettings() {
           <SaveFeedback saveKey="buddy.name" />
         </VStack>
         <VStack gap={2}>
+          <Text weight="semibold">Look</Text>
+          <Grid columns={{ minWidth: 88 }} gap={2}>
+            {(
+              Object.entries(bitLooks) as [
+                BuddyLook,
+                (typeof bitLooks)[BuddyLook],
+              ][]
+            ).map(([id, look]) => (
+              <SelectableCard
+                key={id}
+                label={`${look.label}, ${look.kind}`}
+                padding={2}
+                isSelected={buddy.look === id}
+                isDisabled={pending("look")}
+                onChange={() => void save({ look: id }, "look")}
+              >
+                <VStack gap={1} hAlign="center">
+                  <Bit
+                    mood={preview}
+                    colour={buddy.colour}
+                    hat={buddy.hat}
+                    look={id}
+                    size="sm"
+                    still
+                  />
+                  <Text type="supporting">{look.label}</Text>
+                </VStack>
+              </SelectableCard>
+            ))}
+          </Grid>
+          <SaveFeedback saveKey="buddy.look" />
+        </VStack>
+        <VStack gap={2}>
           <Text weight="semibold">Colour</Text>
           <Grid columns={{ minWidth: 88 }} gap={2}>
             {Object.entries(bitColours).map(([id, colour]) => (
@@ -901,7 +951,14 @@ export function BuddySettings() {
                 onChange={() => void save({ colour: id }, "colour")}
               >
                 <VStack gap={1} hAlign="center">
-                  <Bit mood={preview} colour={id} hat={buddy.hat} size="sm" />
+                  <Bit
+                    mood={preview}
+                    colour={id}
+                    hat={buddy.hat}
+                    look={buddy.look}
+                    size="sm"
+                    still
+                  />
                   <Text type="supporting">{colour.label}</Text>
                 </VStack>
               </SelectableCard>
@@ -927,7 +984,9 @@ export function BuddySettings() {
                       mood={preview}
                       colour={buddy.colour}
                       hat={id}
+                      look={buddy.look}
                       size="sm"
+                      still
                     />
                     <Text type="supporting">{label}</Text>
                   </VStack>

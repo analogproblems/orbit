@@ -8,8 +8,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// The colours Bit can be, as the app names them. The app maps each to a
-/// theme token.
-pub const COLOURS: [&str; 20] = [
+/// theme token, except "own": the look's own colours.
+pub const COLOURS: [&str; 21] = [
+    "own",
     "lime",
     "green",
     "aqua",
@@ -54,6 +55,11 @@ pub const HATS: [&str; 21] = [
     "cat-ears",
     "antenna",
     "space-helmet",
+];
+/// What Bit looks like: the ringed planet it started as, or one of the orbs.
+pub const LOOKS: [&str; 17] = [
+    "classic", "pip", "tide", "bloom", "moss", "glim", "nova", "duo", "puff", "jelly", "fizz",
+    "poly", "prism", "gem", "twirl", "cubby", "fold",
 ];
 /// How Bit's notes sound.
 pub const TONES: [&str; 3] = ["cheerful", "calm", "dry"];
@@ -218,6 +224,8 @@ pub struct Buddy {
     pub name: String,
     pub colour: String,
     pub hat: String,
+    /// One of `LOOKS`.
+    pub look: String,
     pub tone: String,
     /// Told to whoever answers your questions, with the tone.
     pub personality: String,
@@ -242,6 +250,7 @@ impl Default for Buddy {
             name: "Bit".into(),
             colour: "lime".into(),
             hat: "none".into(),
+            look: "glim".into(),
             tone: "cheerful".into(),
             personality: String::new(),
             rules: Rules::default(),
@@ -274,6 +283,9 @@ impl Buddy {
         }
         if !HATS.contains(&self.hat.as_str()) {
             return Err(format!("'{}' isn't one of the buddy's hats.", self.hat));
+        }
+        if !LOOKS.contains(&self.look.as_str()) {
+            return Err(format!("'{}' isn't one of the buddy's looks.", self.look));
         }
         if !TONES.contains(&self.tone.as_str()) {
             return Err(format!("'{}' isn't one of the buddy's tones.", self.tone));
@@ -340,6 +352,9 @@ impl Buddy {
         if !HATS.contains(&self.hat.as_str()) {
             self.hat = default.hat;
         }
+        if !LOOKS.contains(&self.look.as_str()) {
+            self.look = default.look;
+        }
         if !TONES.contains(&self.tone.as_str()) {
             self.tone = default.tone;
         }
@@ -375,6 +390,7 @@ pub struct BuddyPatch {
     pub name: Option<String>,
     pub colour: Option<String>,
     pub hat: Option<String>,
+    pub look: Option<String>,
     pub tone: Option<String>,
     pub personality: Option<String>,
     pub rules: Option<RulesPatch>,
@@ -398,6 +414,9 @@ impl BuddyPatch {
         }
         if let Some(v) = self.hat {
             buddy.hat = v;
+        }
+        if let Some(v) = self.look {
+            buddy.look = v;
         }
         if let Some(v) = self.tone {
             buddy.tone = v;

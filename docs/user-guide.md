@@ -401,7 +401,7 @@ Orbit also shows a desktop notification once when an item first appears, and not
 
 ### Bit, your buddy
 
-Bit is Orbit's buddy: a small planet with a face, at the bottom of the sidebar. It shows its latest note, or just its face when the sidebar is collapsed. Select it to open its page: one conversation with Bit, newest at the bottom, that the desktop window and every browser [using Orbit from your phone or laptop](#use-orbit-from-your-phone-or-laptop) share. Bit writes a note when:
+Bit is Orbit's buddy: a little character with a face, at the bottom of the sidebar. It shows its latest note, or just its face when the sidebar is collapsed. Select it to open its page: one conversation with Bit, newest at the bottom, that the desktop window and every browser [using Orbit from your phone or laptop](#use-orbit-from-your-phone-or-laptop) share. Bit writes a note when:
 
 - a round starts, and when it finishes, with how many blocking findings it found, or that it failed or had no findings list;
 - a loop comes out clean, with its blocking findings round by round, such as `4 → 1 → 0`;
@@ -494,14 +494,15 @@ In **Settings → Buddy** you can preview each mood and change:
 
 - **Show**: off hides Bit and stops new notes; turning it back on doesn't replay what happened while it was off.
 - **Name**: up to 24 characters, saved with **Rename** or Enter. The default is Bit, short for Orbit.
-- **Colour**: one of 20, from Lime (the default) to Grey. Each is a colour of Orbit's theme.
-- **Hat**: one of 20, or none: party hat, top hat, beanie, crown, propeller cap, wizard hat, cowboy hat, chef's hat, baseball cap, graduation cap, beret, flower, bow, halo, headphones, Santa hat, Viking helmet, cat ears, antennae, or space helmet.
+- **Look**: one of 16 orbs, or **Classic**, the ringed planet Bit started as. The orbs are Pip the bubble, Tide the drop, Bloom the flower, Moss the pebble, Glim the little planet (the default), Nova the star, Duo the two friends, Puff the cloud, Jelly the jellyfish, Fizz the soda bubble, Poly the shape-shifter, Prism the glass prism, Gem the jewel, Twirl the spinning top, Cubby the box and Fold the folded paper. Each orb acts out Bit's mood in its own way: it rests when happy, gets to work when busy, perks up and waits when worried, and dozes when sleepy.
+- **Colour**: **Its own colours**, the ones the look was designed in, or one of 20 colours of Orbit's theme, from Lime (the default) to Grey. An orb takes on lighter and darker shades of the colour. Classic in its own colours is lime.
+- **Hat**: one of 20, or none: party hat, top hat, beanie, crown, propeller cap, wizard hat, cowboy hat, chef's hat, baseball cap, graduation cap, beret, flower, bow, halo, headphones, Santa hat, Viking helmet, cat ears, antennae, or space helmet. Every look can wear one: on an orb it sits on top and moves with it.
 - **Tone**: how the notes sound: **Cheerful** ("On it! Round 2 of orbit#41 is underway."), **Calm**, or **Dry**.
 - **Personality**: your own description of Bit, up to 4000 characters, saved with **Save personality**. It shapes how Bit answers the questions you type, never what Bit may do.
 - **What Bit can do**: the rule for each of Bit's buttons, as above.
 - **What Bit remembers**: Bit's memory, as above, with a button to forget each line.
 
-Bit moves only while it is busy: its moon circles and a propeller cap spins. With your system set to reduce motion, both stay still.
+An orb is always gently moving: it breathes, blinks and acts out its mood, such as Fizz's bubbles swirling while it's busy, making a question mark when it's worried and a "z" when it's sleepy. Tap it on Bit's page or in Settings for a squish. The small pictures beside Bit's notes and in the lists of looks, colours and hats hold still. Classic moves only while it is busy: its moon circles and a propeller cap spins. With your system set to reduce motion, every look holds still.
 
 ### Approval time limit
 
@@ -535,7 +536,8 @@ Settings has seven pages: **Connections**, **Reviewers** (Codex, Claude and Anti
 | Write-up writer                        | Codex                              | Codex or Claude, with the model and effort chosen for that reviewer.                                              |
 | Buddy: show                            | On                                 | On/off; off hides Bit and stops new notes.                                                                        |
 | Buddy: name                            | Bit                                | 1–24 characters, without line breaks or tabs.                                                                     |
-| Buddy: colour                          | Lime                               | 20 theme colours.                                                                                                 |
+| Buddy: look                            | Glim                               | Classic or one of 16 orbs.                                                                                        |
+| Buddy: colour                          | Lime                               | Its own colours or one of 20 theme colours.                                                                       |
 | Buddy: hat                             | None                               | None or one of 20 hats.                                                                                           |
 | Buddy: tone                            | Cheerful                           | Cheerful, calm, or dry.                                                                                           |
 | Buddy: personality                     | Empty                              | Up to 4000 characters.                                                                                            |

@@ -21,6 +21,8 @@ class Observer {
 }
 vi.stubGlobal("ResizeObserver", Observer);
 vi.stubGlobal("IntersectionObserver", Observer);
+// No canvas: the orb looks draw nothing, and their hats stay hidden.
+HTMLCanvasElement.prototype.getContext = vi.fn(() => null);
 HTMLElement.prototype.scrollTo = vi.fn();
 HTMLElement.prototype.scrollIntoView = vi.fn();
 HTMLDialogElement.prototype.showModal = function () {

@@ -422,8 +422,13 @@ fn mood_follows_the_loops() {
 fn settings_check_the_name_and_choices() {
     let mut b = Buddy::default();
     assert_eq!(
-        (b.name.as_str(), b.colour.as_str(), b.hat.as_str()),
-        ("Bit", "lime", "none")
+        (
+            b.name.as_str(),
+            b.colour.as_str(),
+            b.hat.as_str(),
+            b.look.as_str()
+        ),
+        ("Bit", "lime", "none", "glim")
     );
     assert!(b.enabled);
     assert!(b.validate().is_ok());
@@ -445,6 +450,7 @@ fn settings_check_the_name_and_choices() {
             "'plaid' isn't one of the buddy's colours.",
         ),
         ("hat", "fez", "'fez' isn't one of the buddy's hats."),
+        ("look", "blob", "'blob' isn't one of the buddy's looks."),
         ("tone", "grumpy", "'grumpy' isn't one of the buddy's tones."),
         (
             "answerer",
@@ -462,6 +468,7 @@ fn settings_check_the_name_and_choices() {
             "name" => bad.name = value.into(),
             "colour" => bad.colour = value.into(),
             "hat" => bad.hat = value.into(),
+            "look" => bad.look = value.into(),
             "answerer" => bad.answerer = value.into(),
             "ollama_url" => bad.ollama_url = value.into(),
             _ => bad.tone = value.into(),
@@ -469,9 +476,13 @@ fn settings_check_the_name_and_choices() {
         assert_eq!(bad.validate().unwrap_err(), error, "{field}");
     }
     let patch: BuddyPatch =
-        serde_json::from_value(json!({"name": "  Orbie ", "hat": "wizard"})).unwrap();
+        serde_json::from_value(json!({"name": "  Orbie ", "hat": "wizard", "look": "fizz"}))
+            .unwrap();
     patch.apply(&mut b);
-    assert_eq!((b.name.as_str(), b.hat.as_str()), ("Orbie", "wizard"));
+    assert_eq!(
+        (b.name.as_str(), b.hat.as_str(), b.look.as_str()),
+        ("Orbie", "wizard", "fizz")
+    );
     assert!(serde_json::from_value::<BuddyPatch>(json!({"mood": "happy"})).is_err());
     // Codex answers until you choose another.
     assert_eq!(b.answered_by(), Answerer::Codex);
@@ -508,17 +519,29 @@ fn saved_state_from_another_version_falls_back_to_defaults() {
     // Older state has no buddy at all.
     let settings: Settings = serde_json::from_value(json!({"automatic": true})).unwrap();
     assert_eq!(settings.buddy, Buddy::default());
-    // Newer state may name a hat or colour this version doesn't know.
+    // Older state has no look, so Bit takes the default one and keeps its
+    // colour and hat.
+    let b: Buddy = serde_json::from_value(json!({"colour": "pink", "hat": "crown"})).unwrap();
+    assert_eq!(
+        (b.colour.as_str(), b.hat.as_str(), b.look.as_str()),
+        ("pink", "crown", "glim")
+    );
+    // Newer state may name a hat, colour or look this version doesn't know.
     let mut b: Buddy = serde_json::from_value(
-        json!({"name": "Sprocket", "colour": "plaid", "hat": "fez", "tone": "grumpy", "answerer": "eliza"}),
+        json!({"name": "Sprocket", "colour": "plaid", "hat": "fez", "look": "blob", "tone": "grumpy", "answerer": "eliza"}),
     )
     .unwrap();
     b.normalize();
     assert_eq!(b.answerer, "codex");
     assert_eq!(b.name, "Sprocket");
     assert_eq!(
-        (b.colour.as_str(), b.hat.as_str(), b.tone.as_str()),
-        ("lime", "none", "cheerful")
+        (
+            b.colour.as_str(),
+            b.hat.as_str(),
+            b.look.as_str(),
+            b.tone.as_str()
+        ),
+        ("lime", "none", "glim", "cheerful")
     );
     assert!(b.validate().is_ok());
     // An Ollama address Orbit can't use.
@@ -558,6 +581,7 @@ fn the_app_offers_the_same_choices() {
     };
     assert_eq!(list("colours"), COLOURS);
     assert_eq!(list("hats"), HATS);
+    assert_eq!(list("looks"), LOOKS);
     assert_eq!(list("tones"), TONES);
     assert_eq!(list("answerers"), ANSWERERS);
     assert_eq!(list("rules"), RULES);
