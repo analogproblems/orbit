@@ -12,15 +12,18 @@ impl Engine {
         tokio::spawn(async move { e.watch_ci().await });
     }
     /// Reads each connected repository's CI and updates its problems,
-    /// unless Watch CI is off or a read is already running. A repository
-    /// GitHub doesn't answer for keeps what was read before, with the error,
-    /// and its problems stay as they were.
+    /// unless Watch CI is off or a read is already running, then tells
+    /// agents what changed. A repository GitHub doesn't answer for keeps
+    /// what was read before, with the error, and its problems stay as they
+    /// were.
     pub async fn watch_ci(&self) {
         if self.watching_ci.swap(true, Ordering::SeqCst) {
             return;
         }
         self.watch_ci_now().await;
         self.watching_ci.store(false, Ordering::SeqCst);
+        // Also with Watch CI off, so what Orbit posted is closed.
+        self.tell_agents().await;
     }
     async fn watch_ci_now(&self) {
         let (watch, repos) = {

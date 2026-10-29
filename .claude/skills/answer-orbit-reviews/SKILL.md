@@ -33,6 +33,13 @@ Declined F4: the caller in src/api.rs rejects an empty list, so this path can't 
 - Only say `Fixed` when the whole finding is fixed. If part is left, say what remains in a separate comment and leave the finding unanswered, or decline the rest with a reason.
 - If you answer a finding twice, the latest answer counts.
 
+## Orbit's CI comments and issues
+
+Orbit also watches CI. When a pull request's checks fail, it posts one comment headed `## Orbit · CI` and edits that same comment as CI changes. When a default branch's checks fail, it opens an issue labelled `orbit`, such as "CI is failing on main". Each failing check is an item, such as **I1** · `CI / Rust tests` · failing at `9f3c2a1`, and the hidden `<!-- orbit-ops thread=... {json} -->` line at the end holds the same items (`id`, `check`, `failing`, `since`, `at`).
+
+- Fix the failing checks and push. Orbit reads CI after each sync and updates the comment or issue itself: it says when every check passes, and closes its issue once the branch has stayed green for an hour.
+- Orbit only reads CI. It never pushes to your branch.
+
 ## Where to post
 
 - Post one conversation comment on the pull request with a line per finding, or reply in each finding's inline thread. The summary of a GitHub review isn't read, so don't answer there.

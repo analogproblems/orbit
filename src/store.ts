@@ -461,6 +461,34 @@ async function demoAction(
     commit();
     return;
   }
+  if (command === "tell_agent") {
+    const t = demo.ops?.find((t) => t.key === args.key);
+    if (!t) throw Error("Orbit has nothing to tell about that any more.");
+    const at = new Date().toISOString();
+    t.allowed = true;
+    t.number ??= 300;
+    t.url =
+      t.kind === "issue"
+        ? `https://github.com/${t.repo}/issues/${t.number}`
+        : `https://github.com/${t.repo}/pull/${t.number}#issuecomment-902`;
+    t.updatedAt = at;
+    demo.journal = [
+      ...(demo.journal ?? []),
+      {
+        id: `demo-write-${Date.now()}`,
+        thread: t.key,
+        action: t.kind === "issue" ? "open_issue" : "post_comment",
+        repo: t.repo,
+        number: t.number,
+        state: "done",
+        at,
+        doneAt: at,
+        url: t.url,
+      },
+    ];
+    commit();
+    return;
+  }
   if (command === "reset_demo") {
     timers.forEach(clearTimeout);
     timers.clear();

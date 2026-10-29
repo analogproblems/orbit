@@ -16,6 +16,8 @@ import {
   type Model,
   type ModelSelection,
   type Snapshot,
+  type OpsThread,
+  type OpsWrite,
   type Problem,
   type PullRequest,
   type RepoCi,
@@ -821,7 +823,9 @@ const sha = (start: string) => start + "0".repeat(40 - start.length);
 /** CI as Orbit last read it: orbit's main fails, api's passes after failing
  * yesterday, dashboard can't be read, and one pull request fails its own
  * checks. */
-export function demoCi(prs: PullRequest[]): Pick<Snapshot, "ci" | "problems"> {
+export function demoCi(
+  prs: PullRequest[],
+): Pick<Snapshot, "ci" | "problems" | "ops" | "journal"> {
   const failingPr = prs[2];
   const check = (name: string) => ({ name, url: "" });
   const ci: RepoCi[] = [
@@ -939,7 +943,91 @@ export function demoCi(prs: PullRequest[]): Pick<Snapshot, "ci" | "problems"> {
       alerts: 1,
     },
   ];
-  return { ci, problems };
+  const item = (
+    number: number,
+    check: string,
+    failing: boolean,
+    since: string,
+    at: string,
+  ) => ({ number, check, url: "", failing, since, at });
+  const thread = (
+    t: Partial<OpsThread> & Pick<OpsThread, "key" | "kind" | "repo">,
+  ): OpsThread => ({
+    url: "",
+    branch: "main",
+    problemId: "",
+    items: [],
+    posted: "",
+    closed: false,
+    allowed: false,
+    gone: false,
+    tries: 0,
+    updatedAt: ago(18),
+    ...t,
+  });
+  const ops: OpsThread[] = [
+    thread({
+      key: "issue:demo-problem-1",
+      kind: "issue",
+      repo: "acme/orbit",
+      number: 212,
+      url: "https://github.com/acme/orbit/issues/212",
+      problemId: "demo-problem-1",
+      items: [item(1, "CI / Rust tests", true, sha("7d41e09"), sha("9f3c2a1"))],
+    }),
+    thread({
+      key: `pr:${failingPr.id}`,
+      kind: "comment",
+      repo: failingPr.repo,
+      number: failingPr.number,
+      prId: failingPr.id,
+      commentId: 901,
+      url: `${failingPr.url}#issuecomment-901`,
+      branch: failingPr.headRef,
+      problemId: "demo-problem-2",
+      items: [
+        item(1, "CI / Frontend", true, failingPr.headSha, failingPr.headSha),
+      ],
+      updatedAt: ago(20),
+    }),
+    thread({
+      key: "issue:demo-problem-3",
+      kind: "issue",
+      repo: "acme/api",
+      number: 88,
+      url: "https://github.com/acme/api/issues/88",
+      problemId: "demo-problem-3",
+      items: [item(1, "CI / Lint", false, sha("c19e4d2"), sha("4be81aa"))],
+      closed: true,
+      updatedAt: ago(25 * 60),
+    }),
+  ];
+  const write = (
+    id: string,
+    action: OpsWrite["action"],
+    t: OpsThread,
+    at: string,
+  ): OpsWrite => ({
+    id,
+    thread: t.key,
+    action,
+    repo: t.repo,
+    number: t.number,
+    state: "done",
+    at,
+    doneAt: at,
+    url: t.url,
+  });
+  const journal: OpsWrite[] = [
+    write("demo-write-1", "open_issue", ops[2], ago(26 * 60 + 39)),
+    write("demo-write-2", "edit_issue", ops[2], ago(26 * 60)),
+    write("demo-write-3", "note_on_issue", ops[2], ago(25 * 60)),
+    write("demo-write-4", "close_issue", ops[2], ago(25 * 60)),
+    write("demo-write-5", "open_issue", ops[0], ago(44)),
+    write("demo-write-6", "post_comment", ops[1], ago(19)),
+    write("demo-write-7", "edit_issue", ops[0], ago(18)),
+  ];
+  return { ci, problems, ops, journal };
 }
 /** The browser demo: the fresh workspace plus two weeks of history. */
 export function demoWorkspace(): Snapshot {

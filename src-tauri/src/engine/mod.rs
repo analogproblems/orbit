@@ -24,6 +24,7 @@ mod findings;
 mod fixes;
 mod inline;
 mod ledger;
+mod ops;
 mod prune;
 mod publish;
 mod queue;
@@ -75,6 +76,8 @@ mod model_tests;
 #[cfg(test)]
 mod notice_tests;
 #[cfg(test)]
+mod ops_tests;
+#[cfg(test)]
 mod prune_tests;
 #[cfg(test)]
 mod publish_tests;
@@ -112,8 +115,9 @@ type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// users' clones up to date), `scans` (repository security scans),
 /// `fixes` (Bit's fixes and answers), `ask` (questions you type to Bit),
 /// `setup` (repositories Bit sets up), `ledger` (each repository's
-/// pull-request history, for the Decisions page) and `writeup` (its
-/// plain-language write-ups).
+/// pull-request history, for the Decisions page), `writeup` (its
+/// plain-language write-ups), `watch` (reading CI) and `ops` (Orbit's
+/// comments and issues about failing CI).
 ///
 /// # Locks
 ///
@@ -172,6 +176,9 @@ pub struct Engine {
     updating_clones: AtomicBool,
     /// CI is being read; another read skips rather than waits.
     watching_ci: AtomicBool,
+    /// Orbit's comments and issues about failing CI are being brought up to
+    /// date.
+    telling: AtomicBool,
     /// The pull-request history is being read; another read skips rather
     /// than waits.
     refreshing_ledger: AtomicBool,
@@ -377,6 +384,7 @@ impl Engine {
             stopping: AtomicBool::new(false),
             updating_clones: AtomicBool::new(false),
             watching_ci: AtomicBool::new(false),
+            telling: AtomicBool::new(false),
             refreshing_ledger: AtomicBool::new(false),
             ledger_full_at: std::sync::Mutex::new(HashMap::new()),
             queue_retry: std::sync::Mutex::new(HashMap::new()),

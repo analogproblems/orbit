@@ -63,6 +63,7 @@ pub(super) fn prune(s: &mut Snapshot, now: chrono::DateTime<chrono::Utc>) -> boo
         }
     }
     changed |= crate::problems::prune(&mut s.problems, now);
+    changed |= crate::ops::prune(&mut s.ops, &mut s.journal, &s.problems, now);
     changed
 }
 

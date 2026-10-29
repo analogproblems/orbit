@@ -12,21 +12,25 @@ import {
   VStack,
 } from "@astryxdesign/core";
 import { FolderGit2, Workflow } from "lucide-react";
-import { useOrbit } from "./store";
+import { openLink, useOrbit } from "./store";
 import { SaveFeedback } from "./SaveFeedback";
 import {
+  buddyOf,
   checkNames,
   sameRepo,
   shortSha,
   trustedSource,
   type AttentionHandlers,
   type CiState,
+  type OpsAction,
+  type OpsThread,
+  type OpsWrite,
   type Problem,
   type RepoCi,
   type Snapshot,
 } from "./types";
 
-/** How many closed problems the page lists. */
+/** How many closed problems the page lists, and how many writes. */
 const RECENT = 10;
 /** How many of a problem's latest events it shows. */
 const EVENTS = 5;
@@ -78,6 +82,47 @@ function partlyRead(s: Snapshot, repo: string) {
           trustedSource(pr, s.settings.trustedAuthors),
       ),
   );
+}
+
+/** Orbit's comment or issue about a problem. */
+function threadOf(s: Snapshot, p: Problem) {
+  return s.ops?.find((t) => t.problemId === p.id);
+}
+
+/** Whether Bit waits for your tap before it posts about a problem. */
+function asksFirst(s: Snapshot, p: Problem, t: OpsThread | undefined) {
+  const buddy = buddyOf(s.settings);
+  const rule =
+    p.kind === "default_branch"
+      ? buddy.rules.open_issues
+      : buddy.rules.comment_on_prs;
+  return !!t && !t.url && buddy.enabled && rule === "ask_first" && !t.allowed;
+}
+
+/** Where Orbit told the problem's agent, or why it hasn't. */
+export function toldText(s: Snapshot, p: Problem, t: OpsThread | undefined) {
+  const buddy = buddyOf(s.settings);
+  const issue = p.kind === "default_branch";
+  if (t?.gone) return t.error ?? "";
+  if (t?.url) {
+    const where = issue
+      ? `Orbit told the repository’s agent in issue #${t.number}.`
+      : "Orbit told the agent in a comment on the pull request.";
+    return t.error
+      ? `${where} Its latest update didn’t go through: ${t.error}`
+      : where;
+  }
+  if (t?.error) return `Orbit couldn’t tell the agent yet: ${t.error}`;
+  const rule = issue ? buddy.rules.open_issues : buddy.rules.comment_on_prs;
+  if (!buddy.enabled)
+    return `${buddy.name} is off, so Orbit doesn’t tell the agent.`;
+  if (rule === "leave_it")
+    return "Your rule is Leave it to me, so Orbit doesn’t tell the agent.";
+  if (asksFirst(s, p, t))
+    return issue
+      ? `${buddy.name} asks before opening an issue for the repository’s agent.`
+      : `${buddy.name} asks before commenting for the pull request’s agent.`;
+  return "Orbit tells the agent on GitHub after this sync.";
 }
 
 /** A problem's name: its repository and branch, or its pull request. */
@@ -178,7 +223,7 @@ function Timeline({ p }: { p: Problem }) {
 }
 
 function OpenProblems({ go }: { go: AttentionHandlers }) {
-  const { snapshot: s } = useOrbit();
+  const { snapshot: s, action } = useOrbit();
   const open = (s.problems ?? [])
     .filter((p) => !p.closedAt)
     .sort(
@@ -218,6 +263,8 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
         {open.map((p) => {
           const pr = s.prs.find((pr) => pr.id === p.prId);
           const yours = p.kind === "default_branch";
+          const t = threadOf(s, p);
+          const told = toldText(s, p, t);
           return (
             <ListItem
               key={p.id}
@@ -237,14 +284,31 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
                   <Text>
                     {yours
                       ? `Failing: ${checkNames(p.failing)}.`
-                      : `Failing: ${checkNames(p.failing)}. Its author’s to fix; Orbit only lists it.`}
+                      : `Failing: ${checkNames(p.failing)}. Its author’s to fix.`}
                   </Text>
+                  {told && <Text color="secondary">{told}</Text>}
                   <Timeline p={p} />
                 </VStack>
               }
               onClick={pr ? () => go.onChoose(pr) : undefined}
               endContent={
-                <Timestamp value={p.openedAt} format="relative_short" />
+                t && asksFirst(s, p, t) ? (
+                  <Button
+                    label={yours ? "Open issue" : "Post comment"}
+                    size="sm"
+                    variant="primary"
+                    onClick={() => void action("tell_agent", { key: t.key })}
+                  />
+                ) : t?.url ? (
+                  <Button
+                    label="Open on GitHub"
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => openLink(t.url)}
+                  />
+                ) : (
+                  <Timestamp value={p.openedAt} format="relative_short" />
+                )
               }
             />
           );
@@ -289,6 +353,66 @@ function RecentlyFixed() {
   );
 }
 
+const writeText: Record<OpsAction, string> = {
+  post_comment: "Commented on",
+  edit_comment: "Updated its comment on",
+  open_issue: "Opened an issue on",
+  edit_issue: "Updated its issue on",
+  note_on_issue: "Left a closing note on",
+  close_issue: "Closed its issue on",
+  reopen_issue: "Reopened its issue on",
+};
+/** A write in words, such as "Opened an issue on acme/api #45". */
+export function writeSummary(w: OpsWrite) {
+  const target = w.number ? `${w.repo} #${w.number}` : w.repo;
+  return `${writeText[w.action]} ${target}.`;
+}
+
+/** The latest writes Orbit made on GitHub, newest first. */
+function Posted() {
+  const { snapshot: s } = useOrbit();
+  const writes = (s.journal ?? []).slice(-RECENT).reverse();
+  if (!writes.length) return null;
+  return (
+    <VStack gap={3}>
+      <Heading level={3}>What Orbit posted</Heading>
+      <Card padding={0}>
+        <List hasDividers aria-label="What Orbit posted">
+          {writes.map((w) => (
+            <ListItem
+              key={w.id}
+              startContent={
+                <StatusDot
+                  variant={
+                    w.state === "done"
+                      ? "success"
+                      : w.state === "failed"
+                        ? "warning"
+                        : "accent"
+                  }
+                  label={
+                    w.state === "done"
+                      ? "Done"
+                      : w.state === "failed"
+                        ? "Didn’t go through"
+                        : "Sending"
+                  }
+                />
+              }
+              label={<Text weight="medium">{writeSummary(w)}</Text>}
+              description={
+                w.error ? <Text color="secondary">{w.error}</Text> : undefined
+              }
+              onClick={w.url ? () => openLink(w.url) : undefined}
+              endContent={<Timestamp value={w.at} format="relative_short" />}
+            />
+          ))}
+        </List>
+      </Card>
+    </VStack>
+  );
+}
+
 /** CI on every connected repository, and what is failing. */
 export function Operations(go: AttentionHandlers) {
   const { snapshot: s, updateSettings } = useOrbit();
@@ -299,7 +423,9 @@ export function Operations(go: AttentionHandlers) {
         <Heading level={2}>Operations</Heading>
         <Text color="secondary">
           Orbit reads CI after each sync. A failing default branch needs you; a
-          failing pull request is its author’s to fix, so it is only listed.
+          failing pull request is its author’s to fix. Either way, Orbit tells
+          the project’s agent on GitHub: an issue for a default branch, one
+          comment on a pull request.
         </Text>
       </VStack>
       {!watching ? (
@@ -329,6 +455,7 @@ export function Operations(go: AttentionHandlers) {
             <Repositories go={go} />
           </VStack>
           <RecentlyFixed />
+          <Posted />
         </>
       )}
     </VStack>

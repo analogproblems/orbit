@@ -470,7 +470,10 @@ export type Fix =
  * connections always ask first. */
 export type RuledFix = Exclude<Fix, "turn_on_autopilot" | "check_connections">;
 export type FixRule = "do_it" | "ask_first" | "leave_it";
-export type BuddyRules = Record<RuledFix, FixRule>;
+/** What Bit posts on GitHub to tell an agent about failing CI. */
+export type RuledPost = "comment_on_prs" | "open_issues";
+export type RuledAction = RuledFix | RuledPost;
+export type BuddyRules = Record<RuledAction, FixRule>;
 export const fixLabels: Record<Fix, string> = {
   continue_loop: "Continue loop",
   review_again: "Review again",
@@ -487,6 +490,21 @@ export const fixDescriptions: Record<RuledFix, string> = {
     "When a report is waiting for you, publish it. Never a report with text that looks like credentials, or one from a pull request automatic publication wouldn't trust.",
   sync_now: "When syncing keeps failing, sync again.",
 };
+export const postLabels: Record<RuledPost, string> = {
+  comment_on_prs: "Comment on pull requests",
+  open_issues: "Open issues",
+};
+export const postDescriptions: Record<RuledPost, string> = {
+  comment_on_prs:
+    "When a pull request’s checks fail, post one comment on it for its agent, and keep it up to date.",
+  open_issues:
+    "When a default branch’s checks fail, open an issue labelled orbit for the repository’s agent, and close it once the checks have passed for an hour.",
+};
+/** A rule's name, for a fix or a post. */
+export const ruleLabel = (rule: RuledAction) =>
+  rule in postLabels
+    ? postLabels[rule as RuledPost]
+    : fixLabels[rule as RuledFix];
 export const fixRuleLabels: Record<FixRule, string> = {
   do_it: "Do it",
   ask_first: "Ask first",
@@ -505,6 +523,8 @@ export const defaultBuddy: Buddy = {
     review_again: "ask_first",
     publish: "ask_first",
     sync_now: "ask_first",
+    comment_on_prs: "do_it",
+    open_issues: "do_it",
   },
   answerer: "codex",
   ollamaUrl: "http://localhost:11434",
@@ -1044,6 +1064,10 @@ export interface Snapshot {
   ci?: RepoCi[];
   /** What is wrong with CI, open or closed lately. */
   problems?: Problem[];
+  /** Orbit's comments and issues that tell agents about failing CI. */
+  ops?: OpsThread[];
+  /** Each write Orbit made on GitHub for them; the newest last. */
+  journal?: OpsWrite[];
 }
 /** Where a commit's checks stand. "none" is no checks, or only ones that
  * were skipped or cancelled. */
@@ -1108,10 +1132,70 @@ export interface Problem {
   updatedAt: string;
   closedAt?: string | null;
   closedReason?: string | null;
+  /** The commit it passed at, when it closed by passing. */
+  closedSha?: string;
   /** Oldest first. */
   timeline: ProblemEvent[];
   /** How many times it has told you. */
   alerts: number;
+}
+/** One failing check, as Orbit's comment or issue lists it. */
+export interface OpsItem {
+  /** 1 for I1. Never reused within its comment or issue. */
+  number: number;
+  check: string;
+  url: string;
+  /** Whether it failed at `at`, the latest commit Orbit saw. */
+  failing: boolean;
+  since: string;
+  at: string;
+}
+/** Where Orbit tells an agent about failing CI: its one comment on a pull
+ * request, or its issue about a default branch. */
+export interface OpsThread {
+  key: string;
+  kind: "comment" | "issue";
+  repo: string;
+  /** The pull request, or the issue once it is open. */
+  number?: number | null;
+  prId?: string | null;
+  commentId?: number | null;
+  /** Where it is on GitHub, once posted. */
+  url: string;
+  branch: string;
+  problemId: string;
+  items: OpsItem[];
+  posted: string;
+  closed: boolean;
+  /** You said to post it, while Bit asks first. */
+  allowed: boolean;
+  /** It is gone from GitHub, so Orbit leaves it be. */
+  gone: boolean;
+  error?: string | null;
+  tries: number;
+  retryAt?: string | null;
+  updatedAt: string;
+}
+export type OpsAction =
+  | "post_comment"
+  | "edit_comment"
+  | "open_issue"
+  | "edit_issue"
+  | "note_on_issue"
+  | "close_issue"
+  | "reopen_issue";
+/** One write Orbit made on GitHub, recorded before it was sent. */
+export interface OpsWrite {
+  id: string;
+  thread: string;
+  action: OpsAction;
+  repo: string;
+  number?: number | null;
+  state: "sending" | "done" | "failed";
+  at: string;
+  doneAt?: string | null;
+  url: string;
+  error?: string | null;
 }
 /** A commit's first seven characters, as GitHub shows them. */
 export function shortSha(sha: string) {

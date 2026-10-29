@@ -160,7 +160,8 @@ pub enum Fix {
 }
 
 /// The rule for each fix Bit can do on its own, keyed by the fix's own name
-/// (`continue_loop`, …) as the app's rule maps are.
+/// (`continue_loop`, …) as the app's rule maps are, and for telling agents
+/// about failing CI (see `crate::ops`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Rules {
@@ -168,6 +169,10 @@ pub struct Rules {
     pub review_again: String,
     pub publish: String,
     pub sync_now: String,
+    /// Posting Orbit's comment on a pull request whose checks fail.
+    pub comment_on_prs: String,
+    /// Opening an `orbit` issue for a default branch that fails.
+    pub open_issues: String,
 }
 impl Default for Rules {
     fn default() -> Self {
@@ -176,6 +181,8 @@ impl Default for Rules {
             review_again: "ask_first".into(),
             publish: "ask_first".into(),
             sync_now: "ask_first".into(),
+            comment_on_prs: "do_it".into(),
+            open_issues: "do_it".into(),
         }
     }
 }
@@ -190,20 +197,24 @@ impl Rules {
             Fix::TurnOnAutopilot | Fix::CheckConnections => "ask_first",
         }
     }
-    fn each(&self) -> [&str; 4] {
+    fn each(&self) -> [&str; 6] {
         [
             &self.continue_loop,
             &self.review_again,
             &self.publish,
             &self.sync_now,
+            &self.comment_on_prs,
+            &self.open_issues,
         ]
     }
-    fn each_mut(&mut self) -> [&mut String; 4] {
+    fn each_mut(&mut self) -> [&mut String; 6] {
         [
             &mut self.continue_loop,
             &mut self.review_again,
             &mut self.publish,
             &mut self.sync_now,
+            &mut self.comment_on_prs,
+            &mut self.open_issues,
         ]
     }
 }
@@ -215,6 +226,8 @@ pub struct RulesPatch {
     pub review_again: Option<String>,
     pub publish: Option<String>,
     pub sync_now: Option<String>,
+    pub comment_on_prs: Option<String>,
+    pub open_issues: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -448,6 +461,8 @@ impl BuddyPatch {
                 rules.review_again,
                 rules.publish,
                 rules.sync_now,
+                rules.comment_on_prs,
+                rules.open_issues,
             ];
             for (rule, v) in buddy.rules.each_mut().into_iter().zip(patch) {
                 if let Some(v) = v {

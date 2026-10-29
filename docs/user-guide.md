@@ -308,13 +308,26 @@ The sidebar's **Live** item shows a pulsing dot while reviews are running. Anima
 
 ### Operations
 
-**Operations**, below **Live** in the sidebar, shows CI on every connected repository. After each sync, and after **Sync now**, Orbit reads the checks on each repository's default branch and on the latest commit of each open pull request, one repository at a time. It reads only; nothing is posted to GitHub. Orbit's own `orbit/review` check is left out, and skipped or cancelled checks count neither way. A commit with more checks than Orbit reads in one sync (100 per commit, and up to 2,000 more per repository) is never counted as passing: its row says Orbit couldn't read every check. The page lists:
+**Operations**, below **Live** in the sidebar, shows CI on every connected repository. After each sync, and after **Sync now**, Orbit reads the checks on each repository's default branch and on the latest commit of each open pull request, one repository at a time, then tells each project's agent what fails (see [Telling agents](#telling-agents)). Orbit's own `orbit/review` check is left out, and skipped or cancelled checks count neither way. A commit with more checks than Orbit reads in one sync (100 per commit, and up to 2,000 more per repository) is never counted as passing: its row says Orbit couldn't read every check. The page lists:
 
 - **Open problems**: each thing failing now, with the checks that fail and its latest events, such as "Failing on main at 7d41e09: CI / Rust tests." and "Still failing at 9f3c2a1.". A failing default branch comes first and **needs you**. A failing pull request is its author's to fix, so it is only listed, and only for pull requests Orbit follows: open, not drafts, and from a source Autopilot trusts. Select one to open the pull request. With nothing failing, it reads **All clear** once Orbit has read every check on each repository's default branch and on the pull requests it follows, and otherwise says on how many repositories it couldn't;
 - **CI by repository**: where each default branch stands (passing, failing, running, or no checks), how many followed pull requests fail, and when Orbit last read it. When GitHub doesn't answer, the row says why and keeps what Orbit read before; a problem never closes because a read failed;
-- **Recently closed**: problems from the last two weeks, with why each closed.
+- **Recently closed**: problems from the last two weeks, with why each closed;
+- **What Orbit posted**: Orbit's latest 10 comments, issues and edits on GitHub, newest first, with any that didn't go through and why. Select one to open it on GitHub.
 
 A problem closes when its commit passes ("Passed at 4be81aa."), when its pull request closes, goes back to draft or is no longer followed, when its repository is disconnected, or when **Watch CI** is turned off. A failing default branch tells you once, on the **Needs you** list, by notification and in a note from Bit. While it stays red, it tells you again only when a newer commit fails more checks, or a day later. If it passes and fails again within an hour of telling you, it is the same problem back, so it stays quiet and tells you again only if it is still failing an hour after the last time. A default branch that fails again later is a new problem. The sidebar's **Operations** item shows a red dot while a default branch fails. Turn off **Watch CI** in Settings to stop reading CI; the page then offers **Turn on**.
+
+#### Telling agents
+
+While Bit is on, Orbit tells each project's agent on GitHub when its CI fails, where the agent already looks, so it can fix it. Each open problem on **Operations** says where Orbit told the agent, with **Open on GitHub**, or why it hasn't.
+
+- **A pull request whose checks fail** gets one comment from Orbit, headed **Orbit · CI**. Orbit edits that same comment as the checks change, rather than adding new ones, and it says so when every check passes. Orbit never pushes to the pull request's branch.
+- **A default branch whose checks fail** gets an issue titled, for example, "CI is failing on main", labelled `orbit`. Orbit edits it as CI changes. Once every check passes, the issue says so at once, and Orbit closes it with a short note after the branch has stayed green for an hour, so a flaky branch doesn't close and reopen it on every run. A default branch that fails again later gets a new issue. When a problem closes for another reason, such as **Watch CI** being turned off or the repository being disconnected, Orbit closes its issue at once with a note saying why.
+- Each failing check is an item, such as **I1** · `CI / Rust tests` · failing since `7d41e09`, still at `9f3c2a1`, with a link to the check. Items are numbered once in their comment or issue and never reused, so an agent can name them. A hidden `orbit-ops` line at the end holds the same items for agents that read the raw text.
+
+Two rules in **Settings → Buddy → What Bit can do** decide what Bit posts: **Comment on pull requests** and **Open issues**, both on **Do it** to start with. With **Ask first**, the problem on **Operations** has a **Post comment** or **Open issue** button instead. With **Leave it to me**, or with Bit off, nothing new is posted. Once a comment or issue is on GitHub, Orbit keeps it true whatever the rule, until it closes. If someone deletes it, Orbit leaves it be.
+
+Every write Orbit makes on GitHub is saved in its journal before it is sent. If Orbit stops before GitHub answers, it looks on GitHub for what it sent before trying again, so nothing is posted twice. When GitHub doesn't answer, Orbit tries again after a minute, then waits twice as long after each failure, up to an hour, and the problem says what went wrong.
 
 ### Review loops
 
@@ -480,7 +493,7 @@ When something needs you and one of Orbit's own controls fixes it, Bit's note ab
 
 These buttons never answer a reviewer's request to run a command or change files, never change a repository's setup, and never touch the code under review. When a button's action fails, its error shows under the button.
 
-In **Settings → Buddy → What Bit can do**, each button except **Turn autopilot back on** and **Check again** has a rule. Every rule starts on **Ask first**:
+In **Settings → Buddy → What Bit can do**, each button except **Turn autopilot back on** and **Check again** has a rule. Every button's rule starts on **Ask first**:
 
 - **Do it**: when the item first opens, Bit uses the control itself instead of a desktop notification. It notes that it's on it, then that it's done. Right before acting, Bit checks again that the item still needs you, that Bit is still on and that the rule is still **Do it**. Before publishing, it also checks with GitHub that the pull request still comes from a source automatic publication would trust. If the item has closed in the meantime, Bit lets it go. If the fix doesn't work, or isn't Bit's to do any more, Bit says why, offers the button, and the item is notified as usual. Bit does it once per item, not again after a restart. Bit continues a loop on its own only once: when the extra rounds run out too, the loop waits for you.
 - **Ask first**: Bit offers the button and waits for your tap.
@@ -499,7 +512,7 @@ In **Settings → Buddy** you can preview each mood and change:
 - **Hat**: one of 20, or none: party hat, top hat, beanie, crown, propeller cap, wizard hat, cowboy hat, chef's hat, baseball cap, graduation cap, beret, flower, bow, halo, headphones, Santa hat, Viking helmet, cat ears, antennae, or space helmet. Every look can wear one: on an orb it sits on top and moves with it.
 - **Tone**: how the notes sound: **Cheerful** ("On it! Round 2 of orbit#41 is underway."), **Calm**, or **Dry**.
 - **Personality**: your own description of Bit, up to 4000 characters, saved with **Save personality**. It shapes how Bit answers the questions you type, never what Bit may do.
-- **What Bit can do**: the rule for each of Bit's buttons, as above.
+- **What Bit can do**: the rule for each of Bit's buttons, as above, and for what Bit posts when CI fails (see [Telling agents](#telling-agents)).
 - **What Bit remembers**: Bit's memory, as above, with a button to forget each line.
 
 An orb is always gently moving: it breathes, blinks and acts out its mood, such as Fizz's bubbles swirling while it's busy, making a question mark when it's worried and a "z" when it's sleepy. Tap it on Bit's page or in Settings for a squish. The small pictures beside Bit's notes and in the lists of looks, colours and hats hold still. Classic moves only while it is busy: its moon circles and a propeller cap spins. With your system set to reduce motion, every look holds still.
@@ -542,6 +555,7 @@ Settings has seven pages: **Connections**, **Reviewers** (Codex, Claude and Anti
 | Buddy: tone                            | Cheerful                           | Cheerful, calm, or dry.                                                                                           |
 | Buddy: personality                     | Empty                              | Up to 4000 characters.                                                                                            |
 | Buddy: rules                           | Ask first                          | Do it, ask first, or leave it to me, for Continue loop, Review again, Publish report and Sync now.                |
+| Buddy: post rules                      | Do it                              | Do it, ask first, or leave it to me, for Comment on pull requests and Open issues.                                |
 
 Settings switches and selections save immediately. Changing the model saves that model and its explicit supported default effort in the same update. **Choose a model** and **Choose an effort** are placeholders, not executable default choices. **Saving…**, **Saved**, or an error with **Retry saving** shows the result. **Saved** clears after 2.5 seconds; errors remain until resolved. After a failed write, controls return to the active values. The unapplied request is listed beside its error and **Retry saving**, and survives page navigation along with typed account input. Retry after resolving the failure. If a model change fails, effort stays disabled until you retry successfully or choose a model again; this prevents a later retry from resetting a newly selected effort.
 

@@ -359,6 +359,8 @@ describe("Bit's fixes", () => {
       review_again: "ask_first",
       publish: "do_it",
       sync_now: "ask_first",
+      comment_on_prs: "do_it",
+      open_issues: "do_it",
     });
     expect(
       buddyOf(withPatch(patched, { buddy: { name: "Orbie" } })).rules.publish,

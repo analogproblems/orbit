@@ -64,6 +64,8 @@ pub struct Problem {
     pub closed_at: Option<String>,
     /// Why it closed, such as "Passed at 1a2b3c4."
     pub closed_reason: Option<String>,
+    /// The commit it passed at, when it closed by passing.
+    pub closed_sha: String,
     /// Oldest first.
     pub timeline: Vec<ProblemEvent>,
     /// How many times it has told you. Its Needs you item changes with it,
@@ -115,16 +117,21 @@ impl Problem {
         self.note(at, reason.clone());
         self.closed_at = Some(at.into());
         self.closed_reason = Some(reason);
+        self.closed_sha.clear();
         self.alert_due = None;
+    }
+    /// Whether it closed because its commit passed.
+    pub fn passed(&self) -> bool {
+        !self.is_open() && !self.closed_sha.is_empty()
     }
 }
 
-fn time(at: &str) -> Option<DateTime<Utc>> {
+pub(crate) fn time(at: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(at)
         .ok()
         .map(|t| t.with_timezone(&Utc))
 }
-fn stamp(t: DateTime<Utc>) -> String {
+pub(crate) fn stamp(t: DateTime<Utc>) -> String {
     t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 /// Check names in a sentence: "A", "A and B", "A, B and 2 more".
@@ -232,7 +239,10 @@ fn see(problems: &mut Vec<Problem>, seen: Seen, now: DateTime<Utc>) {
         .iter_mut()
         .find(|p| p.key == seen.key && p.is_open());
     match (seen.ci.state, open) {
-        (CiState::Passing, Some(p)) => p.close(&at, format!("Passed at {short}.")),
+        (CiState::Passing, Some(p)) => {
+            p.close(&at, format!("Passed at {short}."));
+            p.closed_sha = seen.ci.sha.clone();
+        }
         (CiState::Failing, Some(p)) => {
             if p.sha != seen.ci.sha {
                 p.note(&at, format!("Still failing at {short}."));
@@ -271,6 +281,7 @@ fn see(problems: &mut Vec<Problem>, seen: Seen, now: DateTime<Utc>) {
                 Some(p) => {
                     p.closed_at = None;
                     p.closed_reason = None;
+                    p.closed_sha.clear();
                     p.sha = seen.ci.sha.clone();
                     p.failing = seen.ci.failing.clone();
                     p.note(&at, format!("Failing again at {short}."));

@@ -20,6 +20,7 @@ import {
   defaultBuddy,
   fixLabels,
   fixRuleLabels,
+  postLabels,
   memoryLimits,
   questionLabels,
   type BuddyHat,
@@ -107,13 +108,16 @@ describe("Bit", () => {
     ]);
     expect(memoryLimits).toEqual(options.memoryLimits);
     // Every fix but a settings change or checking connections has a rule,
-    // which starts on Ask first, under the same names the engine saves and
-    // accepts.
-    expect(Object.keys(defaultBuddy.rules)).toEqual(
-      options.fixes.filter(
+    // which starts on Ask first, and so does each post that tells an agent
+    // about failing CI, which starts on Do it, under the same names the
+    // engine saves and accepts.
+    expect(Object.keys(defaultBuddy.rules)).toEqual([
+      ...options.fixes.filter(
         (f) => f !== "turn_on_autopilot" && f !== "check_connections",
       ),
-    );
+      ...options.posts,
+    ]);
+    expect(Object.keys(postLabels)).toEqual(options.posts);
     expect(defaultBuddy.rules).toEqual(options.defaultRules);
   });
 

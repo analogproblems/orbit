@@ -16,6 +16,7 @@ pub mod guide;
 pub mod ledger;
 pub mod models;
 pub mod ollama;
+pub mod ops;
 pub mod problems;
 pub mod remote;
 pub mod review_instructions;
@@ -221,6 +222,10 @@ mod desktop {
     #[tauri::command]
     async fn use_fix(engine: State<'_, AppState>, key: String) -> Result<(), String> {
         engine.fix(&key).await
+    }
+    #[tauri::command]
+    async fn tell_agent(engine: State<'_, AppState>, key: String) -> Result<(), String> {
+        engine.tell_agent(&key).await
     }
     #[tauri::command]
     async fn ask_buddy(
@@ -483,6 +488,7 @@ mod desktop {
                 stop_loop,
                 continue_loop,
                 use_fix,
+                tell_agent,
                 ask_buddy,
                 ask_buddy_anything,
                 use_proposal,
