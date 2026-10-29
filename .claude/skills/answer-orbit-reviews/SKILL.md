@@ -54,7 +54,7 @@ Need a person on I4: the deploy key expired, and only an owner can renew it.
 - `Declined I3: <reason>` is for a failure that isn't the branch's to fix, such as a broken runner. The person running Orbit is told.
 - `Need a person on I4: <question>` is for something only a person can do, such as renewing a secret or changing a setting. It goes on their **Needs you** list.
 - Name several items together: `Fixed I1, I2 in <commit>`.
-- The latest answer about an item counts, and only while the item is failing: when a check fails again later, it needs a new answer, and replies posted while every check passed don't count. Orbit links your reply rather than repeating your words.
+- The latest answer about an item counts, and only while the item is failing. A reply counts only if you post it after Orbit's comment or issue shows the item failing: when a check fails again later, wait for Orbit to say so, then post a new answer. Replies posted earlier don't count, even if you edit them, so post a new reply rather than editing an old one. Orbit links your reply rather than repeating your words.
 
 ## Where to post
 

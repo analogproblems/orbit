@@ -42,7 +42,9 @@ const missing = () => {
 const me = { login: "me" };
 const url = (n, id) =>
   `https://github.com/a/b/issues/${n}${id ? `#issuecomment-${id}` : ""}`;
-// Comments and issues are made a second apart, by ID.
+// Comments and issues are made a second apart, by ID, and an edit takes the
+// next second too. A list with `since` holds those posted or edited then or
+// later, by ID.
 const made = (id) =>
   new Date(Date.UTC(2026, 9, 29, 12) + id * 1000)
     .toISOString()
@@ -80,7 +82,8 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
       page(
         db.comments.filter(
           (c) =>
-            c.issue === n && (!fields.since || c.created_at >= fields.since),
+            c.issue === n &&
+            (!fields.since || (c.updated_at || c.created_at) >= fields.since),
         ),
       ),
     );
@@ -92,7 +95,7 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
       body: input.body,
       html_url: "",
     };
-    c.created_at = made(c.id);
+    c.created_at = c.updated_at = made(c.id);
     c.html_url = url(n, c.id);
     db.comments.push(c);
     save(db);
@@ -102,6 +105,7 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
   const c = db.comments.find((c) => c.id === Number(m[1]));
   if (!c) missing();
   c.body = input.body;
+  c.updated_at = made(db.next++);
   save(db);
   answer(c);
 } else if (endpoint === "repos/a/b/issues") {
@@ -122,7 +126,7 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
       state_reason: null,
       html_url: "",
     };
-    i.created_at = made(i.number);
+    i.created_at = i.updated_at = made(i.number);
     i.html_url = url(i.number);
     db.issues.push(i);
     save(db);
@@ -132,6 +136,7 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
   const i = db.issues.find((i) => i.number === Number(m[1]));
   if (!i) missing();
   Object.assign(i, input);
+  i.updated_at = made(db.next++);
   save(db);
   answer(i);
 } else {

@@ -1155,6 +1155,9 @@ export interface OpsItem {
   at: string;
   /** What an agent last said about it since it started failing. */
   answer?: OpsAnswer | null;
+  /** When GitHub first showed it failing this time: only replies from
+   * then on are about it. */
+  heardFrom?: string;
 }
 /** What an agent says about an item: `Taking I2`, `Fixed I2 in <commit>`,
  * `Declined I2: <reason>` or `Need a person on I2: <question>`. */
@@ -1207,9 +1210,13 @@ export interface OpsThread {
   updatedAt: string;
   /** The newest reply Orbit has read, by GitHub comment ID. */
   readTo?: number;
+  /** Orbit reads the comments posted or edited from this time on, going
+   * on from `readPage` while part way through them. */
   readSince?: string;
-  /** Whether Orbit read replies on its last pass. */
-  reading?: boolean;
+  readPage?: number;
+  readNewest?: string;
+  /** When GitHub last took Orbit's text. */
+  shownAt?: string;
 }
 export type OpsAction =
   | "post_comment"

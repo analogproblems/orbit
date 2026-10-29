@@ -132,15 +132,12 @@ impl Engine {
             repo: String,
             number: u64,
             since: String,
+            page: u32,
             /// The pull request's author, when Orbit trusts its source.
             author: Option<String>,
         }
         let (asks, me, trusted) = {
-            let mut s = self.state.lock().await;
-            let s = &mut *s;
-            if ops::pause_reading(&mut s.ops, &s.problems) {
-                self.dirty.store(true, Ordering::SeqCst);
-            }
+            let s = self.state.lock().await;
             let open = |t: &ops::Thread| {
                 s.problems
                     .iter()
@@ -156,6 +153,7 @@ impl Engine {
                         repo: t.repo.clone(),
                         number: t.number?,
                         since: t.read_since.clone(),
+                        page: t.read_page,
                         author: t
                             .pr_id
                             .as_deref()
@@ -176,7 +174,8 @@ impl Engine {
         };
         let mut heard = vec![];
         for ask in asks {
-            let Ok(comments) = github::replies(&ask.repo, ask.number, &ask.since).await else {
+            let read = github::replies(&ask.repo, ask.number, &ask.since, ask.page).await;
+            let Ok((comments, more)) = read else {
                 continue;
             };
             let trusts = |login: &str| {
@@ -193,7 +192,7 @@ impl Engine {
                 .collect();
             self.update(|s| {
                 if let Some(t) = s.ops.iter_mut().find(|t| t.key == ask.key) {
-                    heard.extend(ops::hear(t, &replies));
+                    heard.extend(ops::hear(t, &replies, more));
                 }
             })
             .await;
@@ -249,6 +248,7 @@ fn reply(c: &Value, me: &str, trusts: &impl Fn(&str) -> bool) -> Option<ops::Rep
         id: c["id"].as_u64()?,
         author: author.to_string(),
         created_at: text("created_at"),
+        updated_at: text("updated_at"),
         url: text("html_url"),
         said: if trusts(author) && !own {
             claims::ci_lines(body)

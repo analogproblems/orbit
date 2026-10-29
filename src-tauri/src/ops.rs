@@ -102,13 +102,19 @@ pub struct Thread {
     /// The newest reply Orbit has read on its comment or issue, by GitHub
     /// comment ID, so each reply is read once.
     pub read_to: u64,
-    /// When that reply, or Orbit's own comment or issue, was posted, by
-    /// GitHub's clock, so Orbit only asks for newer ones.
+    /// Orbit reads the comments posted or edited from this time on, by
+    /// GitHub's clock. GitHub lists them oldest first, by when they were
+    /// posted, so it moves on only once Orbit has read them all.
     pub read_since: String,
-    /// Whether Orbit read replies on its last pass. It doesn't while the
-    /// problem is closed, so when a failure comes back, the replies it
-    /// missed are about the one before and are skipped.
-    pub reading: bool,
+    /// The page of that list Orbit goes on from, part way through it; 0
+    /// once it has read it all.
+    pub read_page: u32,
+    /// The latest time a comment on that list was posted or edited, where
+    /// the next list starts.
+    pub read_newest: String,
+    /// When GitHub last took Orbit's text for its comment or issue, by
+    /// GitHub's clock.
+    pub shown_at: String,
 }
 impl Thread {
     /// Whether it is on GitHub.
@@ -150,6 +156,10 @@ pub struct Item {
     /// What an agent last said about it since it started failing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub answer: Option<Answer>,
+    /// When GitHub first showed it failing this time, by GitHub's clock:
+    /// only replies from then on are about this failure. Empty until
+    /// Orbit's text that shows it is on GitHub.
+    pub heard_from: String,
 }
 
 /// What an agent says about an item.
@@ -181,7 +191,9 @@ pub struct Said {
 pub struct Reply {
     pub id: u64,
     pub author: String,
+    /// When it was posted and last edited, by GitHub's clock.
     pub created_at: String,
+    pub updated_at: String,
     pub url: String,
     pub said: Vec<Said>,
 }
@@ -317,8 +329,8 @@ pub struct Posted {
     pub id: u64,
     pub number: Option<u64>,
     pub url: String,
-    /// When GitHub made it, by GitHub's clock.
-    pub created_at: String,
+    /// When GitHub took this write, by GitHub's clock.
+    pub updated_at: String,
 }
 
 /// Whether a rule lets Bit post: it is on, and the rule is Do it, or Ask
@@ -394,6 +406,13 @@ pub fn refresh(threads: &mut Vec<Thread>, problems: &[Problem], now: DateTime<Ut
         t.problem_id = p.id.clone();
         t.branch = p.branch.clone();
         items_from(t, p);
+        // A failure that came back without changing Orbit's text has been
+        // on GitHub since Orbit last wrote it.
+        let unshown = t.items.iter().any(|i| i.failing && i.heard_from.is_empty());
+        if unshown && t.is_posted() && !t.shown_at.is_empty() && body_now(t, p) == t.posted {
+            let at = t.shown_at.clone();
+            shown(t, &at);
+        }
     }
     let at = stamp(now);
     let mut changed = false;
@@ -434,6 +453,7 @@ fn items_from(t: &mut Thread, p: &Problem) {
             // Failing again: what was said about it before is over.
             item.since = p.sha.clone();
             item.answer = None;
+            item.heard_from.clear();
         }
         item.failing = failing;
         item.at = p.sha.clone();
@@ -451,50 +471,76 @@ fn items_from(t: &mut Thread, p: &Problem) {
                     since: p.sha.clone(),
                     at: p.sha.clone(),
                     answer: None,
+                    heard_from: String::new(),
                 });
             }
         }
     }
 }
 
-/// Stops reading replies on threads whose problem isn't open. Returns
-/// whether any stopped.
-pub fn pause_reading(threads: &mut [Thread], problems: &[Problem]) -> bool {
-    let mut changed = false;
-    for t in threads.iter_mut().filter(|t| t.reading) {
-        if !problems.iter().any(|p| p.id == t.problem_id && p.is_open()) {
-            t.reading = false;
-            changed = true;
+/// Records that GitHub has Orbit's text for a thread from `at` on, by
+/// GitHub's clock. Each failing item it shows for the first time this time
+/// hears replies from then on, and as no reply from before the earliest of
+/// those is about a failing item, Orbit reads on from there.
+fn shown(t: &mut Thread, at: &str) {
+    if at.is_empty() {
+        return;
+    }
+    t.shown_at = at.to_string();
+    let failing = t.items.iter_mut().filter(|i| i.failing);
+    for item in failing.filter(|i| i.heard_from.is_empty()) {
+        item.heard_from = at.to_string();
+    }
+    let floor = t
+        .items
+        .iter()
+        .filter(|i| i.failing)
+        .map(|i| &i.heard_from)
+        .min();
+    if let Some(floor) = floor.filter(|f| **f > t.read_since) {
+        t.read_since = floor.clone();
+        t.read_page = 0;
+        t.read_newest.clear();
+    }
+}
+/// Reads comments Orbit asked GitHub for: each line about a failing item
+/// in a reply Orbit hasn't read yet, posted since GitHub first showed the
+/// item failing this time, becomes its answer, the latest counting. Other
+/// items are left alone. `more` is the page to go on from next time, when
+/// GitHub has more of the list. Returns the answers that changed.
+pub fn hear(t: &mut Thread, replies: &[Reply], more: Option<u32>) -> Vec<Heard> {
+    if let Some(newest) = replies.iter().map(|r| &r.updated_at).max() {
+        if *newest > t.read_newest {
+            t.read_newest = newest.clone();
         }
     }
-    changed
-}
-/// Reads the replies on a thread Orbit hasn't read yet, oldest first: each
-/// line about a failing item becomes its answer, the latest counting. An
-/// item that isn't failing, or doesn't exist yet, is left alone. Returns
-/// the answers that changed.
-pub fn hear(t: &mut Thread, replies: &[Reply]) -> Vec<Heard> {
-    // Pages of replies Orbit has already passed move the next read on too.
-    if let Some(newest) = replies.iter().map(|r| &r.created_at).max() {
-        if *newest > t.read_since {
-            t.read_since = newest.clone();
+    match more {
+        Some(page) => t.read_page = page,
+        // Read to the end, so every comment from before the latest one on
+        // the list was on it. Moving on any sooner would skip those GitHub
+        // lists after the ones read so far.
+        None => {
+            let newest = std::mem::take(&mut t.read_newest);
+            if newest > t.read_since {
+                t.read_since = newest;
+            }
+            t.read_page = 0;
         }
     }
     let mut replies: Vec<&Reply> = replies.iter().filter(|r| r.id > t.read_to).collect();
     replies.sort_by_key(|r| r.id);
-    if !t.reading {
-        // Left while the problem was closed: about an earlier failure.
-        t.reading = true;
-        t.read_to = replies.last().map_or(t.read_to, |r| r.id);
-        return vec![];
-    }
     let mut heard: Vec<Heard> = vec![];
     for r in replies {
         t.read_to = r.id;
         for said in &r.said {
             for &number in &said.numbers {
-                let Some(item) = t.items.iter_mut().find(|i| i.number == number && i.failing)
-                else {
+                let about = |i: &&mut Item| {
+                    i.number == number
+                        && i.failing
+                        && !i.heard_from.is_empty()
+                        && r.created_at >= i.heard_from
+                };
+                let Some(item) = t.items.iter_mut().find(about) else {
                     continue;
                 };
                 let answer = Answer {
@@ -649,7 +695,7 @@ pub fn next(
             if p.closed_reason.as_deref() == Some(PR_CLOSED) {
                 return None;
             }
-            let body = comment_body(t, p);
+            let body = body_now(t, p);
             (body != t.posted).then(|| plan(Action::EditComment, body))
         }
         ThreadKind::Issue => {
@@ -674,7 +720,7 @@ pub fn next(
             if p.is_open() && t.closed {
                 return Some(plan(Action::ReopenIssue, issue_body(t, p, false)));
             }
-            let body = issue_body(t, p, t.closed);
+            let body = body_now(t, p);
             (body != t.posted).then(|| plan(Action::EditIssue, body))
         }
     }
@@ -879,6 +925,13 @@ pub fn comment_body(t: &Thread, p: &Problem) -> String {
         data(t, p)
     )
 }
+/// The text a thread's comment or issue should have now, until it closes.
+fn body_now(t: &Thread, p: &Problem) -> String {
+    match t.kind {
+        ThreadKind::Comment => comment_body(t, p),
+        ThreadKind::Issue => issue_body(t, p, t.closed),
+    }
+}
 fn branch(t: &Thread) -> String {
     if t.branch.is_empty() {
         "the default branch".into()
@@ -1028,16 +1081,7 @@ pub fn looked(
                 }
                 ThreadKind::Issue => t.number = found.number.or(t.number),
             }
-            start_reading(t, &found.created_at);
         }
-    }
-}
-/// Replies count from Orbit's own comment or issue on: Orbit asks GitHub
-/// only for those from when it was posted.
-fn start_reading(t: &mut Thread, created_at: &str) {
-    t.reading = true;
-    if created_at > t.read_since.as_str() {
-        t.read_since = created_at.to_string();
     }
 }
 fn wait(t: &mut Thread, error: String, now: DateTime<Utc>) {
@@ -1102,22 +1146,19 @@ pub fn settle(
                     t.posted = planned.body.clone();
                     // Replies before Orbit's comment aren't about its items.
                     t.read_to = t.read_to.max(posted.id);
-                    if planned.action == Action::PostComment {
-                        start_reading(t, &posted.created_at);
-                    }
+                    shown(t, &posted.updated_at);
                 }
                 Action::OpenIssue | Action::EditIssue | Action::ReopenIssue => {
                     t.number = posted.number.or(t.number);
                     t.url = posted.url;
                     t.posted = planned.body.clone();
                     t.closed = false;
-                    if planned.action == Action::OpenIssue {
-                        start_reading(t, &posted.created_at);
-                    }
+                    shown(t, &posted.updated_at);
                 }
                 Action::CloseIssue => {
                     t.posted = planned.body.clone();
                     t.closed = true;
+                    shown(t, &posted.updated_at);
                 }
                 Action::NoteOnIssue => t.noted = planned.closed_at.clone(),
             }

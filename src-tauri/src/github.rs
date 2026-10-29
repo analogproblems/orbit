@@ -608,7 +608,7 @@ fn posted(v: &Value, marker: &str) -> Result<crate::ops::Posted, String> {
         id,
         number: v["number"].as_u64(),
         url: url.to_string(),
-        created_at: v["created_at"].as_str().unwrap_or_default().to_string(),
+        updated_at: v["updated_at"].as_str().unwrap_or_default().to_string(),
     })
 }
 fn by(v: &Value, login: &str) -> bool {
@@ -706,22 +706,36 @@ pub(crate) async fn find_issue_within(
 }
 /// Pages of replies Orbit reads on its comment or issue in one pass.
 const REPLY_PAGES: u32 = 10;
-/// The comments on an issue or pull request, oldest first, from those
-/// posted or edited at `since` (a time GitHub gave) on, or all of them
-/// when it is empty; up to `REPLY_PAGES` pages.
-pub async fn replies(repo: &str, number: u64, since: &str) -> Result<Vec<Value>, String> {
+/// The comments on an issue or pull request posted or edited at `since` (a
+/// time GitHub gave) or later, or all of them when it is empty, oldest
+/// first by when they were posted. Up to `REPLY_PAGES` pages from page
+/// `from`, and the page to go on from when GitHub has more: the last one
+/// read, again, as any comment deleted meanwhile moves the rest back.
+pub async fn replies(
+    repo: &str,
+    number: u64,
+    since: &str,
+    from: u32,
+) -> Result<(Vec<Value>, Option<u32>), String> {
     validate_repo(repo)?;
-    let mut fields = vec![];
+    let endpoint = format!("repos/{repo}/issues/{number}/comments");
+    let mut fields = vec![("per_page", "100".to_string())];
     if chrono::DateTime::parse_from_rfc3339(since).is_ok() {
         fields.push(("since", since.to_string()));
     }
-    pages(
-        &format!("repos/{repo}/issues/{number}/comments"),
-        &fields,
-        REPLY_PAGES,
-        "Invalid comment list",
-    )
-    .await
+    let from = from.max(1);
+    let mut all = vec![];
+    for page in from..from + REPLY_PAGES {
+        let mut query = fields.clone();
+        query.push(("page", page.to_string()));
+        let v = api(&endpoint, "GET", &query, None).await?;
+        let items = v.as_array().ok_or("Invalid comment list")?;
+        all.extend(items.iter().cloned());
+        if items.len() < 100 {
+            return Ok((all, None));
+        }
+    }
+    Ok((all, Some(from + REPLY_PAGES - 1)))
 }
 /// Where `commit` stands against `head`: GitHub's status (`identical`,
 /// `ahead` when `head` comes after it, `behind` when it comes after
