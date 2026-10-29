@@ -406,6 +406,26 @@ export type BuddyHat =
   | "cat-ears"
   | "antenna"
   | "space-helmet";
+/** How Bit looks: the classic ringed planet, or one of the orbs and shapes
+ * in orbs.ts. */
+export type BuddyLook =
+  | "classic"
+  | "pip"
+  | "tide"
+  | "bloom"
+  | "moss"
+  | "glim"
+  | "nova"
+  | "duo"
+  | "puff"
+  | "jelly"
+  | "fizz"
+  | "poly"
+  | "prism"
+  | "gem"
+  | "twirl"
+  | "cubby"
+  | "fold";
 export type BuddyTone = "cheerful" | "calm" | "dry";
 /** A provider Bit can use with an API key of yours. */
 export type ApiProvider = "openai" | "anthropic" | "google";
@@ -417,6 +437,7 @@ export interface Buddy {
   /** One of the colours in Bit.tsx. */
   colour: string;
   hat: BuddyHat;
+  look: BuddyLook;
   tone: BuddyTone;
   /** Saved now, used once Bit can chat. */
   personality: string;
@@ -473,6 +494,7 @@ export const defaultBuddy: Buddy = {
   name: "Bit",
   colour: "lime",
   hat: "none",
+  look: "glim",
   tone: "cheerful",
   personality: "",
   rules: {

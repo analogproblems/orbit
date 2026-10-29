@@ -1,3 +1,4 @@
+import { bitColours, bitHats, bitLooks } from "./Bit";
 import {
   buddyAnswerers,
   fixLabels,
@@ -5,6 +6,8 @@ import {
   providerLabels,
   type Buddy,
   type BuddyAnswerer,
+  type BuddyHat,
+  type BuddyLook,
   type FixRule,
   type Model,
   type RepositoryPatch,
@@ -40,6 +43,7 @@ const buddyLabels: Record<keyof Buddy, string> = {
   name: "Buddy's name",
   colour: "Buddy's colour",
   hat: "Buddy's hat",
+  look: "Buddy's look",
   tone: "Buddy's tone",
   personality: "Buddy's personality",
   rules: "Buddy's rules",
@@ -50,6 +54,21 @@ const buddyLabels: Record<keyof Buddy, string> = {
   anthropicModel: "Anthropic model",
   googleModel: "Gemini model",
 };
+
+/** A buddy setting's value as the settings page names it, such as Pink. */
+function buddyValue(field: string, v: unknown): unknown {
+  const name =
+    field === "answerer"
+      ? buddyAnswerers[v as BuddyAnswerer]
+      : field === "colour"
+        ? bitColours[v as string]?.label
+        : field === "hat"
+          ? bitHats[v as BuddyHat]
+          : field === "look"
+            ? bitLooks[v as BuddyLook]?.label
+            : undefined;
+  return name ?? v;
+}
 
 function buddyEntries(
   buddy: NonNullable<SettingsPatch["buddy"]>,
@@ -63,15 +82,7 @@ function buddyEntries(
             `${fixLabels[fix as RuledFix]} rule`,
           ],
         )
-      : [
-          [
-            field,
-            field === "answerer"
-              ? (buddyAnswerers[v as BuddyAnswerer] ?? v)
-              : v,
-            buddyLabels[field as keyof Buddy],
-          ],
-        ],
+      : [[field, buddyValue(field, v), buddyLabels[field as keyof Buddy]]],
   );
 }
 

@@ -55,7 +55,7 @@ Turn on **Autopilot** and Orbit reviews every new push by itself. Each pull requ
 
 <img src="docs/screenshots/bit.png" alt="Bit's page: Bit looking worried, notes about rounds and a stalled loop with Continue loop and Sync now buttons, and quick questions to ask" />
 
-Bit is Orbit's buddy, a small planet at the bottom of the sidebar. It notes each round and each clean loop, its face shows how things are going, and it offers a button when one of Orbit's own controls can fix a problem. Ask it what needs you or what's running, or type any question. **Help me set up** walks you through connecting your first repository, one tap per step. Bit can answer with Codex, Claude, Antigravity, Ollama or an API key, and you can rename it, pick its colour and give it a hat.
+Bit is Orbit's buddy, a little orb at the bottom of the sidebar. It notes each round and each clean loop, its face shows how things are going, and it offers a button when one of Orbit's own controls can fix a problem. Ask it what needs you or what's running, or type any question. **Help me set up** walks you through connecting your first repository, one tap per step. Bit can answer with Codex, Claude, Antigravity, Ollama or an API key, and you can rename it, pick one of 16 looks and a colour, and give it a hat.
 
 ### Take it with you
 

@@ -44,7 +44,7 @@ A command is wired in four places, and missing one fails in only one mode:
 - **Locks.** `std` mutexes are never held across an `.await`. When taking more than one lock, follow the order in the table on `Engine`.
 - **State** is one `state.json`, rewritten whole on each change and pruned by `engine/prune.rs`. New fields need `#[serde(default)]` so older state files still load.
 - **UI text is plain language**: short sentences, no jargon, the same words the user guide uses. The UI is dark-only and makes no requests to external hosts.
-- **Only the diff grid, the Live chart and Bit's picture are hand-drawn** (`DiffLines` in `Files.tsx`, `ActivityChart` in `Live.tsx`, `Bit.tsx`). Everything else uses Astryx components and tokens.
+- **Only the diff grid, the Live chart and Bit's picture are hand-drawn** (`DiffLines` in `Files.tsx`, `ActivityChart` in `Live.tsx`, `Bit.tsx` with the orb looks in `orbs.ts`). Everything else uses Astryx components and tokens.
 - **Docs follow behaviour.** A change users can see updates `docs/user-guide.md`; a change to internals or an invariant updates `docs/architecture.md`. The README is a short showcase: link to the guide rather than adding detail there.
 
 ## Things that must stay true
