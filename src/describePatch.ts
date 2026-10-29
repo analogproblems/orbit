@@ -32,6 +32,7 @@ const labels: Record<keyof SettingsPatch, string> = {
   commitStatus: "GitHub status check",
   notify: "Notifications",
   keepScanArtifacts: "Keep scan working files",
+  watchCi: "Watch CI",
   buddy: "Buddy",
   writeUps: "Write-ups",
 };

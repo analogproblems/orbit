@@ -1708,10 +1708,21 @@ fn answer(
                     };
                     text.push_str(&format!(" The last {syncs} failed: {}", f.error));
                 }
-                let item = items.iter().find(|a| {
-                    a.kind == AttentionKind::SyncFailing
-                        && a.repo.as_deref().is_some_and(|r| same_repo(r, &repo.name))
-                });
+                let ci =
+                    s.ci.iter()
+                        .find(|c| same_repo(&c.repo, &repo.name))
+                        .filter(|_| s.settings.watch_ci);
+                if let Some(ci) = ci {
+                    text.push_str(&ci_sentence(ci));
+                }
+                // A failing sync first: CI can't be read without one.
+                let about = |kind: AttentionKind| {
+                    items.iter().find(|a| {
+                        a.kind == kind
+                            && a.repo.as_deref().is_some_and(|r| same_repo(r, &repo.name))
+                    })
+                };
+                let item = about(AttentionKind::SyncFailing).or(about(AttentionKind::CiFailing));
                 lines.push(line(text, None, item));
             }
             let text = say::repositories_answer(tone, s.settings.repositories.len() as u32);
@@ -1726,6 +1737,27 @@ fn answer(
                 .collect();
             (say::setup_answer(tone, guide.to_do), lines, guide.proposals)
         }
+    }
+}
+
+/// How a repository's default branch's CI stands, as a sentence to follow
+/// its line in How are my repositories, or nothing when nothing ran.
+fn ci_sentence(ci: &crate::ci::RepoCi) -> String {
+    use crate::ci::CiState;
+    let branch = if ci.branch.is_empty() {
+        "the default branch"
+    } else {
+        &ci.branch
+    };
+    match ci.head.state {
+        _ if ci.head.sha.is_empty() => String::new(),
+        CiState::Failing => format!(
+            " CI is failing on {branch}: {}.",
+            crate::problems::names(&ci.head.failing)
+        ),
+        CiState::Running => format!(" CI is running on {branch}."),
+        CiState::Passing => format!(" CI is passing on {branch}."),
+        CiState::None => String::new(),
     }
 }
 

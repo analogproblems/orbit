@@ -576,6 +576,24 @@ async function demoAction(
     )
       throw Error("Enter a valid GitHub account name (at most 50 accounts).");
     demo.settings = next;
+    // As Orbit does on its next sync, watching CI off forgets what was read
+    // and closes what was open.
+    if (next.watchCi === false) {
+      const at = new Date().toISOString();
+      const text = "Orbit stopped watching CI.";
+      demo.ci = [];
+      demo.problems = demo.problems?.map((p) =>
+        p.closedAt
+          ? p
+          : {
+              ...p,
+              closedAt: at,
+              closedReason: text,
+              timeline: [...p.timeline, { at, text }],
+            },
+      );
+      demo.attention = demo.attention?.filter((a) => a.kind !== "ci_failing");
+    }
     demo.modelConfigurationError = selectionError(demo.models, next);
     if (
       command === "update_settings" &&

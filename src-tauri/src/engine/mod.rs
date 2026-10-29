@@ -34,6 +34,7 @@ mod settings;
 mod setup;
 mod sign_in;
 mod status;
+mod watch;
 mod worktrees;
 mod writeup;
 
@@ -95,6 +96,8 @@ mod sign_in_tests;
 mod state_tests;
 #[cfg(test)]
 mod test_support;
+#[cfg(test)]
+mod watch_tests;
 #[cfg(test)]
 mod worktrees_tests;
 #[cfg(test)]
@@ -167,6 +170,8 @@ pub struct Engine {
     stopping: AtomicBool,
     /// An `update_clones` pass is running; another one skips rather than waits.
     updating_clones: AtomicBool,
+    /// CI is being read; another read skips rather than waits.
+    watching_ci: AtomicBool,
     /// The pull-request history is being read; another read skips rather
     /// than waits.
     refreshing_ledger: AtomicBool,
@@ -371,6 +376,7 @@ impl Engine {
             changed: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
             updating_clones: AtomicBool::new(false),
+            watching_ci: AtomicBool::new(false),
             refreshing_ledger: AtomicBool::new(false),
             ledger_full_at: std::sync::Mutex::new(HashMap::new()),
             queue_retry: std::sync::Mutex::new(HashMap::new()),
@@ -541,6 +547,7 @@ impl Engine {
         let e = self.clone();
         tokio::spawn(async move {
             let _ = e.poll().await;
+            e.watch_ci().await;
             e.update_clones().await;
             e.clean_worktrees().await;
         });
@@ -599,6 +606,7 @@ impl Engine {
                     let p = e.clone();
                     tokio::spawn(async move {
                         let _ = p.poll().await;
+                        p.watch_ci().await;
                         p.update_clones().await;
                         p.clean_worktrees().await;
                     });

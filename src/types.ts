@@ -365,6 +365,9 @@ export interface Settings {
   notify: boolean;
   /** Keep a security scan's bulky working files after its import. */
   keepScanArtifacts?: boolean;
+  /** Watch CI on each repository's default branch and on the pull requests
+   * Orbit follows; missing means on. */
+  watchCi?: boolean;
   /** Bit, Orbit's buddy. Older saved state has none. */
   buddy?: Buddy;
   /** Plain-language write-ups on the Decisions page. Older saved state has
@@ -875,7 +878,8 @@ export type AttentionKind =
   | "loop"
   | "autopilot_paused"
   | "sync_failing"
-  | "disconnected";
+  | "disconnected"
+  | "ci_failing";
 /** Something only the developer can resolve. */
 export interface Attention {
   /** Stays the same while the item is open. */
@@ -898,6 +902,7 @@ export const attentionLabels: Record<AttentionKind, string> = {
   autopilot_paused: "Autopilot paused",
   sync_failing: "Sync failing",
   disconnected: "Not connected",
+  ci_failing: "CI failing",
 };
 export interface AttentionHandlers {
   onChoose: (p: PullRequest, r?: Review) => void;
@@ -905,6 +910,7 @@ export interface AttentionHandlers {
   onSettings: () => void;
   onApproval: (reviewId: string, id: string | number) => void;
   onPublish: (r: Review) => void;
+  onOperations: () => void;
 }
 /** Where an item is resolved: its review, its PR, or a settings page. */
 export function attentionAction(
@@ -913,6 +919,7 @@ export function attentionAction(
   go: AttentionHandlers,
 ): (() => void) | undefined {
   if (a.kind === "sync_failing" && a.repo) return go.onRepositories;
+  if (a.kind === "ci_failing") return go.onOperations;
   if (
     a.kind === "autopilot_paused" ||
     a.kind === "sync_failing" ||
@@ -1011,6 +1018,88 @@ export interface Snapshot {
   mood?: Mood | null;
   /** Reading each repository's pull-request history for the Decisions page. */
   ledger?: LedgerStatus;
+  /** Each connected repository's CI, as last read. */
+  ci?: RepoCi[];
+  /** What is wrong with CI, open or closed lately. */
+  problems?: Problem[];
+}
+/** Where a commit's checks stand. "none" is no checks, or only ones that
+ * were skipped or cancelled. */
+export type CiState = "none" | "running" | "passing" | "failing";
+/** A check that didn't pass. */
+export interface CiCheck {
+  /** Such as "CI / Rust": the workflow, then the job. */
+  name: string;
+  url: string;
+}
+export interface CommitCi {
+  sha: string;
+  state: CiState;
+  failing: CiCheck[];
+  running: number;
+  passing: number;
+}
+export interface PullCi {
+  number: number;
+  draft: boolean;
+  ci: CommitCi;
+}
+/** A repository's CI, as Orbit last read it. */
+export interface RepoCi {
+  repo: string;
+  /** The default branch. */
+  branch: string;
+  head: CommitCi;
+  /** The default branch's latest commit's first line. Someone else's words. */
+  title: string;
+  pulls: PullCi[];
+  /** Whether every open pull request was read. */
+  complete: boolean;
+  /** When CI was last read without an error. */
+  checkedAt: string;
+  /** Why the latest read failed; what was read before is kept. */
+  error?: string | null;
+}
+export type ProblemKind = "default_branch" | "pull_request";
+export interface ProblemEvent {
+  at: string;
+  text: string;
+}
+/** One thing wrong with CI, from when Orbit first saw it until it saw it
+ * fixed. A default branch's problem needs you; a pull request's is its
+ * author's to fix. */
+export interface Problem {
+  id: string;
+  key: string;
+  kind: ProblemKind;
+  repo: string;
+  prId?: string | null;
+  /** The default branch, or the pull request's branch. */
+  branch: string;
+  /** The latest commit seen failing, and the first. */
+  sha: string;
+  sinceSha: string;
+  failing: CiCheck[];
+  openedAt: string;
+  updatedAt: string;
+  closedAt?: string | null;
+  closedReason?: string | null;
+  /** Oldest first. */
+  timeline: ProblemEvent[];
+  /** How many times it has told you. */
+  alerts: number;
+}
+/** A commit's first seven characters, as GitHub shows them. */
+export function shortSha(sha: string) {
+  return sha.slice(0, 7);
+}
+/** Check names in a sentence: "A", "A and B", "A, B and 2 more". */
+export function checkNames(checks: CiCheck[]) {
+  const [a, b, ...rest] = checks.map((c) => c.name);
+  if (!a) return "no checks";
+  if (!b) return a;
+  if (!rest.length) return `${a} and ${b}`;
+  return `${a}, ${b} and ${rest.length} more`;
 }
 export interface LedgerProgress {
   repo: string;
@@ -1166,6 +1255,7 @@ export const defaults: Settings = {
   commitStatus: true,
   notify: true,
   keepScanArtifacts: false,
+  watchCi: true,
   buddy: defaultBuddy,
   writeUps: defaultWriteUps,
 };

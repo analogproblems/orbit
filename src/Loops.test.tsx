@@ -23,6 +23,7 @@ function show(snapshot: Snapshot) {
     onSettings: vi.fn(),
     onApproval: vi.fn(),
     onPublish: vi.fn(),
+    onOperations: vi.fn(),
   };
   function Page() {
     const [selected, onSelect] = useState<string | null>(null);
@@ -268,7 +269,7 @@ describe("loops", () => {
   it("summarises autopilot for the header", () => {
     const snapshot = freshDemo();
     expect(autopilotSummary(snapshot)).toBe(
-      "Autopilot · 2 loops running · 2 need you",
+      "Autopilot · 2 loops running · 3 need you",
     );
     snapshot.attention = [];
     snapshot.loopStates = snapshot.loopStates!.slice(2);

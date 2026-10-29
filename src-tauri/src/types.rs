@@ -961,6 +961,9 @@ pub struct Settings {
     pub buddy: crate::buddy::Buddy,
     /// Plain-language write-ups of each pull request on the Decisions page.
     pub write_ups: WriteUps,
+    /// Read the checks on each repository's default branch and open pull
+    /// requests after each sync, and keep track of what fails.
+    pub watch_ci: bool,
 }
 /// Who writes up each pull request's decisions for the Decisions page.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1010,6 +1013,7 @@ pub struct SettingsPatch {
     pub keep_scan_artifacts: Option<bool>,
     pub buddy: Option<crate::buddy::BuddyPatch>,
     pub write_ups: Option<WriteUps>,
+    pub watch_ci: Option<bool>,
 }
 impl SettingsPatch {
     pub fn apply(self, settings: &mut Settings) {
@@ -1070,6 +1074,9 @@ impl SettingsPatch {
         if let Some(v) = self.write_ups {
             settings.write_ups = v;
         }
+        if let Some(v) = self.watch_ci {
+            settings.watch_ci = v;
+        }
     }
 }
 impl Default for Settings {
@@ -1095,6 +1102,7 @@ impl Default for Settings {
             keep_scan_artifacts: false,
             buddy: crate::buddy::Buddy::default(),
             write_ups: WriteUps::default(),
+            watch_ci: true,
         }
     }
 }
@@ -1331,6 +1339,11 @@ pub struct Snapshot {
     /// Reading each repository's pull-request history for the Decisions
     /// page.
     pub ledger: LedgerStatus,
+    /// Each connected repository's CI, as last read.
+    pub ci: Vec<crate::ci::RepoCi>,
+    /// What Orbit saw go wrong, open or closed lately (see
+    /// `crate::problems`).
+    pub problems: Vec<crate::problems::Problem>,
 }
 /// How reading the pull-request history is going.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -1475,6 +1488,8 @@ pub enum AttentionKind {
     /// A reviewer, or dev containers, that a repository needs isn't
     /// connected.
     Disconnected,
+    /// CI fails on a repository's default branch.
+    CiFailing,
 }
 /// Something only the developer can resolve.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

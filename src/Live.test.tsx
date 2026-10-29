@@ -22,6 +22,7 @@ function show(snapshot: Snapshot) {
     onSettings: vi.fn(),
     onApproval: vi.fn(),
     onPublish: vi.fn(),
+    onOperations: vi.fn(),
   };
   render(<Live {...go} />);
   return go;
@@ -149,7 +150,7 @@ describe("live page", () => {
     const go = show(s);
     const panel = screen.getByRole("region", { name: "Needs you" });
     expect(
-      within(panel).getByRole("heading", { name: "3 things need you" }),
+      within(panel).getByRole("heading", { name: "4 things need you" }),
     ).toBeTruthy();
     expect(within(panel).getByText("Codex is disconnected")).toBeTruthy();
     fireEvent.click(
@@ -163,6 +164,11 @@ describe("live page", () => {
       within(panel).getAllByRole("button", { name: "Open settings" })[0],
     );
     expect(go.onSettings).toHaveBeenCalled();
+    // A failing default branch leads to the Operations page.
+    fireEvent.click(
+      within(panel).getByRole("button", { name: "Open operations" }),
+    );
+    expect(go.onOperations).toHaveBeenCalled();
   });
   it("says all clear when nothing needs you", () => {
     const s = freshDemo();
