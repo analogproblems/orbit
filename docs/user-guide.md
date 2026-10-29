@@ -291,7 +291,7 @@ While automatic publication is on, Orbit also shows each automatic round's resul
 
 ### Replies from coding agents
 
-When a coding agent such as Claude Code fixes a PR, it can answer each finding in the form the next round recognises. Orbit includes a Claude Code skill for this, `answer-orbit-reviews`. It explains how to read a published review and its hidden data, which findings need an answer, the `Fixed F2 in <commit>` and `Declined F2: <reason>` lines, where to post them, and which accounts Orbit reads replies from.
+When a coding agent such as Claude Code fixes a PR, it can answer each finding in the form the next round recognises. Orbit includes a Claude Code skill for this, `answer-orbit-reviews`. It explains how to read a published review and its hidden data, which findings need an answer, the `Fixed F2 in <commit>` and `Declined F2: <reason>` lines, the answers to Orbit's CI comments and issues (`Taking I2`, `Fixed I2 in <commit>`, `Declined I2: <reason>`, `Need a person on I2: <question>`), where to post them, and which accounts Orbit reads replies from.
 
 In Settings, **Replies from coding agents** shows the skill with **Copy skill**. Save it as `.claude/skills/answer-orbit-reviews/SKILL.md` in a repository Orbit reviews, then commit and push it: cloud sessions load skills from the repository they clone, not from your computer. Or save it under `~/.claude/skills/answer-orbit-reviews/` for every project on one computer. Orbit never adds it to a repository itself. If the agent posts as a bot account, add that account under **Trusted accounts**; otherwise its replies are left out.
 
@@ -326,6 +326,13 @@ While Bit is on, Orbit tells each project's agent on GitHub when its CI fails, w
 - Each failing check is an item, such as **I1** · `CI / Rust tests` · failing since `7d41e09`, still at `9f3c2a1`, with a link to the check. Items are numbered once in their comment or issue and never reused, so an agent can name them. Only a passing commit marks a check as no longer failing: when Orbit stops watching for another reason, items keep what it last saw, such as "failing at `9f3c2a1` when Orbit stopped watching". A hidden `orbit-ops` line at the end holds the same items for agents that read the raw text.
 
 Two rules in **Settings → Buddy → What Bit can do** decide what Bit posts: **Comment on pull requests** and **Open issues**, both on **Do it** to start with. With **Ask first**, the problem on **Operations** has a **Post comment** or **Open issue** button instead. With **Leave it to me**, or with Bit off, nothing new is posted, nor for a repository Orbit no longer watches because it was disconnected or **Watch CI** is off. Orbit checks all of this again just before each post, so a change you make while it is busy counts at once. Once a comment or issue is on GitHub, Orbit keeps it true whatever the rule, until it closes. If someone deletes it, Orbit leaves it be, and doesn't post a pull request's comment again if that pull request fails later.
+
+The agent answers on the same comment or issue, one line per item, as the [reply skill](#replies-from-coding-agents) teaches: `Taking I2`, `Fixed I2 in <commit>`, `Declined I2: <reason>` or `Need a person on I2: <question>`. Orbit reads the replies after each CI read, only from accounts it trusts (you, your trusted accounts, and the pull request's author when Autopilot trusts its source), and only while the item is failing; the latest answer about an item counts, and a check that fails again later starts over. Each open problem on **Operations** lists the answers, and Orbit's comment or issue says what it found, linking the reply rather than repeating it:
+
+- **Taking**: someone is on it.
+- **Fixed in a commit**: Orbit checks that the commit is on the branch, then reads that check on it, and says whether it passes there, still fails, isn't on the branch, or can't be found. While the commit's checks still run, or the commit is newer than the one Orbit last read, it waits. A problem still closes only when its checks pass on the branch's latest commit.
+- **Declined**: the agent says it isn't the branch's to fix, such as a broken runner. Bit tells you, with the reason.
+- **Need a person**: the question goes on your **Needs you** list until the check passes or the agent answers that item again.
 
 Every write Orbit makes on GitHub is saved in its journal before it is sent. If Orbit stops before GitHub answers, it looks on GitHub for what it sent before doing anything else about that problem, even if CI has passed or your rule changed since, and keeps what it finds up to date, so nothing is posted twice. If there are too many comments or issues to look through them all, Orbit posts nothing and says so. When GitHub doesn't answer, Orbit tries again after a minute, then waits twice as long after each failure, up to an hour, and the problem says what went wrong. Looking on GitHub in between doesn't start the wait over.
 
@@ -406,7 +413,8 @@ When something can only move forward with you, the sidebar shows **Needs you** w
 - Autopilot was turned off because Orbit could not save its state (turn Autopilot back on once saving works);
 - a repository has failed to sync 3 times in a row, or Orbit could not sync with GitHub at all 3 times in a row (for example, when the GitHub sign-in expired). When the GitHub CLI isn't installed or isn't signed in, this shows after the first sync, and Orbit doesn't try to start `gh` until it is installed. The item says what is wrong and how often Orbit checks again;
 - Codex, Claude, Antigravity, or Docker and the Dev Container CLI isn't connected while a connected repository uses it, for example after its sign-in expired. Sign in again, then tap **Check again**;
-- a connected repository's default branch fails its CI checks, with the checks that fail and since which commit (see [Operations](#operations) for when it tells you again).
+- a connected repository's default branch fails its CI checks, with the checks that fail and since which commit (see [Operations](#operations) for when it tells you again);
+- a project's agent asks for a person about a failing check (`Need a person on I2: …`), with its question, until the check passes or the agent answers again (see [Telling agents](#telling-agents)).
 
 An item disappears once it is resolved. A stopped loop lists only its approvals, since you have already taken it over.
 
@@ -421,6 +429,7 @@ Bit is Orbit's buddy: a little character with a face, at the bottom of the sideb
 - a loop is stopped or continued;
 - something new needs you, with the same reason as the **Needs you** list;
 - a repository gets connected, from **Repositories** or one of Bit's buttons, with what it still needs and a button for each (see [Help me set up](#ask-bit));
+- Orbit posts a new comment or opens an issue to tell an agent its CI fails, or closes one of its issues; and when an agent declines a failing check, or says it fixed one in a commit where Orbit sees it still fail, that isn't on the branch, or that GitHub doesn't know (see [Telling agents](#telling-agents));
 - a pull request on [Decisions](#decisions) has something to decide: it merged while a finding was still open, the reviewer disputes a finding the builder declined, or its write-up marks a decision as needing one. Bit notes each once, with the writer's reason, and only what turns up after it started watching that repository, so connecting one doesn't retell its history.
 
 **Open decisions** under a note opens that pull request's chapter on Decisions; **Open loop** opens that pull request's loop; **Open operations** opens Operations for failing CI; **Open repositories** opens Repositories for a repository's sync problem, and **Open settings** opens Settings for anything else. Bit keeps its last 50 notes, answers included, and they survive a restart. When Orbit starts for the first time with Bit, it looks at the loops already running and starts noting from there, rather than retelling their history.

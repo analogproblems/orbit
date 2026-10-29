@@ -1,7 +1,9 @@
 // A fake `gh api` for tests, holding a repository's issues and comments in
 // <dir>/github.json. Usage: node gh_fixture.cjs <dir> api --hostname github.com
 // --method <METHOD> <endpoint> [-f key=value ...] [--input -]
-// GraphQL answers with <dir>/answer.json. While <dir>/down exists every call
+// GraphQL answers with <dir>/answer.json, or <dir>/commit-<oid>.json for a
+// query about one commit. Compare answers from <dir>/compare.json, keyed by
+// "base...head", or 404. While <dir>/down exists every call
 // fails. While <dir>/hold exists a GET waits, after writing <dir>/held. Each
 // call is logged to <dir>/calls as "METHOD endpoint".
 const fs = require("node:fs");
@@ -47,7 +49,9 @@ const page = (list) => {
 };
 
 if (endpoint === "graphql") {
-  process.stdout.write(fs.readFileSync(path.join(dir, "answer.json"), "utf8"));
+  const commit = path.join(dir, `commit-${fields.oid}.json`);
+  const file = fields.oid && fs.existsSync(commit) ? commit : "answer.json";
+  process.stdout.write(fs.readFileSync(path.resolve(dir, file), "utf8"));
   process.exit(0);
 }
 if (method === "GET" && fs.existsSync(path.join(dir, "hold"))) {
@@ -57,7 +61,14 @@ if (method === "GET" && fs.existsSync(path.join(dir, "hold"))) {
 }
 const db = load();
 let m;
-if ((m = endpoint.match(/^repos\/a\/b\/issues\/(\d+)\/comments$/))) {
+if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
+  const compare = path.join(dir, "compare.json");
+  const known = fs.existsSync(compare)
+    ? JSON.parse(fs.readFileSync(compare, "utf8"))
+    : {};
+  if (!known[m[1]]) missing();
+  answer(known[m[1]]);
+} else if ((m = endpoint.match(/^repos\/a\/b\/issues\/(\d+)\/comments$/))) {
   const n = Number(m[1]);
   if (method === "GET") answer(page(db.comments.filter((c) => c.issue === n)));
   else {

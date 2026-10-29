@@ -703,6 +703,60 @@ pub(crate) async fn find_issue_within(
     .map(|i| posted(&i, marker))
     .transpose()
 }
+/// Pages of replies Orbit reads on its comment or issue in one pass.
+const REPLY_PAGES: u32 = 10;
+/// The comments on an issue or pull request, oldest first, from those
+/// posted or edited at `since` (a time GitHub gave) on, or all of them
+/// when it is empty; up to `REPLY_PAGES` pages.
+pub async fn replies(repo: &str, number: u64, since: &str) -> Result<Vec<Value>, String> {
+    validate_repo(repo)?;
+    let mut fields = vec![];
+    if chrono::DateTime::parse_from_rfc3339(since).is_ok() {
+        fields.push(("since", since.to_string()));
+    }
+    pages(
+        &format!("repos/{repo}/issues/{number}/comments"),
+        &fields,
+        REPLY_PAGES,
+        "Invalid comment list",
+    )
+    .await
+}
+/// Where `commit` stands against `head`: GitHub's status (`identical`,
+/// `ahead` when `head` comes after it, `behind` when it comes after
+/// `head`, or `diverged`) and its full SHA, or None when GitHub doesn't
+/// know it. Both are hex, so neither is read as anything else.
+pub async fn compare(
+    repo: &str,
+    commit: &str,
+    head: &str,
+) -> Result<Option<(String, String)>, String> {
+    validate_repo(repo)?;
+    let hex = |s: &str| (7..=40).contains(&s.len()) && s.chars().all(|c| c.is_ascii_hexdigit());
+    if !hex(commit) || !hex(head) {
+        return Err("Invalid commit".into());
+    }
+    let v = match api(
+        &format!("repos/{repo}/compare/{commit}...{head}"),
+        "GET",
+        &[("per_page", "1".into())],
+        None,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) if e.contains("HTTP 404") || e.contains("HTTP 422") => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let sha = v["base_commit"]["sha"].as_str().unwrap_or_default();
+    if !valid_sha(sha) {
+        return Err("GitHub returned an invalid commit SHA.".into());
+    }
+    Ok(Some((
+        v["status"].as_str().unwrap_or_default().to_string(),
+        sha.to_string(),
+    )))
+}
 /// Posts a comment on an issue or pull request.
 pub async fn post_comment(
     repo: &str,

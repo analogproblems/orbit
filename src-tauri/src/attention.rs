@@ -249,6 +249,48 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
             ..item(p.item_key(), AttentionKind::CiFailing, None, None, reason)
         });
     }
+    // An agent that needs a person, about an item still failing.
+    for t in s.ops.iter().filter(|t| !t.gone) {
+        if !s
+            .problems
+            .iter()
+            .any(|p| p.id == t.problem_id && p.is_open())
+        {
+            continue;
+        }
+        for i in t.items.iter().filter(|i| i.failing) {
+            let Some(a) = i
+                .answer
+                .as_ref()
+                .filter(|a| a.kind == crate::ops::AnswerKind::Question)
+            else {
+                continue;
+            };
+            let about = format!(
+                "The agent on {} needs a person for I{} ({})",
+                crate::ops::place(t),
+                i.number,
+                i.check
+            );
+            let reason = match &a.text {
+                Some(question) => format!("{about}: {question}"),
+                None => format!("{about}."),
+            };
+            out.push(Attention {
+                repo: Some(t.repo.clone()),
+                ..item(
+                    format!(
+                        "problem:{}:question:I{}:{}",
+                        t.problem_id, i.number, a.reply_id
+                    ),
+                    AttentionKind::CiQuestion,
+                    None,
+                    None,
+                    reason,
+                )
+            });
+        }
+    }
     for a in &s.approvals {
         let pr_id = s
             .reviews
@@ -337,6 +379,7 @@ pub fn notice(s: &Snapshot, a: Attention) -> Notice {
         AttentionKind::SyncFailing => "Orbit can't sync",
         AttentionKind::Disconnected => "A connection needs you",
         AttentionKind::CiFailing => "CI is failing",
+        AttentionKind::CiQuestion => "An agent needs a person",
     };
     let pr = s.prs.iter().find(|p| Some(&p.id) == a.pr_id.as_ref());
     let body = match pr {

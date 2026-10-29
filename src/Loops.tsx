@@ -89,7 +89,7 @@ export function mainAction(
     return { label: "Approve or deny", onClick: open };
   if (a.kind === "sync_failing" && a.repo)
     return { label: "Open repositories", onClick: go.onRepositories };
-  if (a.kind === "ci_failing")
+  if (a.kind === "ci_failing" || a.kind === "ci_question")
     return { label: "Open operations", onClick: go.onOperations };
   if (a.kind === "sync_failing" || a.kind === "autopilot_paused")
     return { label: "Open settings", onClick: go.onSettings };

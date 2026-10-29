@@ -591,3 +591,205 @@ fn may_post_checks_where_things_stand_now() {
     s.settings.repositories.clear();
     assert!(!may_post(&s, &t), "disconnected");
 }
+
+/// A reply from the agent, as the engine reads it.
+fn reply(id: u64, body: &str) -> Reply {
+    Reply {
+        id,
+        author: "agent".into(),
+        created_at: format!("2026-10-29T12:00:{:02}Z", id % 60),
+        url: format!("https://github.com/a/b/issues/12#issuecomment-{id}"),
+        said: crate::engine::claims::ci_lines(body),
+    }
+}
+
+/// Each reply is read once, the latest answer about a failing item counts,
+/// and an item that fails again starts without one.
+#[test]
+fn answers_count_while_their_item_fails() {
+    let p = pull("p1", &["A", "B"], '1', t0());
+    let mut threads = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    let t = &mut threads[0];
+    // Orbit's comment is reply 10; older replies aren't about its items.
+    t.read_to = 10;
+    let long = "x".repeat(MAX_ANSWER + 100);
+    let heard = hear(
+        t,
+        &[
+            reply(9, "Taking I2"),
+            reply(11, &format!("Taking I1\nDeclined I2: {long}")),
+            reply(12, "Fixed I1 in abc1234\nTaking I9"),
+        ],
+    );
+    let numbers: Vec<u32> = heard.iter().map(|h| h.number).collect();
+    assert_eq!(numbers, [2, 1]);
+    let a = t.items[0].answer.clone().unwrap();
+    assert_eq!(
+        (a.kind, a.commit.as_deref(), a.check, a.reply_id),
+        (
+            AnswerKind::Fixed,
+            Some("abc1234"),
+            Some(FixCheck::Waiting),
+            12
+        )
+    );
+    let declined = t.items[1].answer.clone().unwrap();
+    assert_eq!(declined.kind, AnswerKind::Declined);
+    assert_eq!(declined.text.unwrap().chars().count(), MAX_ANSWER);
+    assert_eq!(
+        (t.read_to, t.read_since.as_str()),
+        (12, "2026-10-29T12:00:12Z")
+    );
+    assert!(
+        hear(t, &[reply(12, "Declined I1: no")]).is_empty(),
+        "read once"
+    );
+    assert!(hear(t, &[reply(13, "Thanks")]).is_empty());
+    assert_eq!(t.read_to, 13);
+
+    // B passes: an answer about it now is left alone. It fails again: what
+    // was said before is over.
+    let mut q = p.clone();
+    q.failing = vec![check("A")];
+    q.sha = sha('2');
+    refresh(&mut threads, std::slice::from_ref(&q), t0());
+    assert!(hear(&mut threads[0], &[reply(14, "Taking I2")]).is_empty());
+    assert_eq!(threads[0].items[1].answer.as_ref().unwrap().reply_id, 11);
+    q.failing = vec![check("A"), check("B")];
+    q.sha = sha('3');
+    refresh(&mut threads, std::slice::from_ref(&q), t0());
+    assert_eq!(threads[0].items[1].answer, None);
+    assert!(
+        threads[0].items[0].answer.is_some(),
+        "A never stopped failing"
+    );
+}
+
+/// A fix in a named commit is checked against CI until CI settles it; one
+/// not on the branch is checked again once the branch moves. Bit hears of
+/// each settled check once.
+#[test]
+fn fixes_are_checked_until_ci_settles_them() {
+    let p = pull("p1", &["A"], '1', t0());
+    let mut threads = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    hear(&mut threads[0], &[reply(1, "Fixed I1 in abc1234")]);
+    let v = to_verify(&threads, std::slice::from_ref(&p));
+    assert_eq!(
+        v,
+        [Verify {
+            thread: "pr:a/b#12".into(),
+            number: 1,
+            repo: "a/b".into(),
+            commit: "abc1234".into(),
+            head: sha('1'),
+            check: "A".into(),
+        }]
+    );
+    assert_eq!(verified(&mut threads, &v[0], FixCheck::Waiting), None);
+    assert_eq!(to_verify(&threads, std::slice::from_ref(&p)).len(), 1);
+    let told = verified(&mut threads, &v[0], FixCheck::NotOnBranch).unwrap();
+    assert_eq!(told.answer.check, Some(FixCheck::NotOnBranch));
+    assert!(to_verify(&threads, std::slice::from_ref(&p)).is_empty());
+
+    let mut moved = p.clone();
+    moved.sha = sha('2');
+    refresh(&mut threads, std::slice::from_ref(&moved), t0());
+    let v = to_verify(&threads, std::slice::from_ref(&moved));
+    assert_eq!(v[0].head, sha('2'));
+    assert_eq!(
+        verified(&mut threads, &v[0], FixCheck::NotOnBranch),
+        None,
+        "already told"
+    );
+    assert!(to_verify(&threads, std::slice::from_ref(&moved)).is_empty());
+    let told = verified(&mut threads, &v[0], FixCheck::Fails).unwrap();
+    assert_eq!(told.answer.head, sha('2'));
+    assert!(to_verify(&threads, std::slice::from_ref(&moved)).is_empty());
+
+    // A newer answer replaces it, and the old one's check is dropped.
+    hear(&mut threads[0], &[reply(2, "Fixed I1 in def5678")]);
+    assert_eq!(verified(&mut threads, &v[0], FixCheck::Passes), None);
+    let a = threads[0].items[0].answer.clone().unwrap();
+    assert_eq!(a.check, Some(FixCheck::Waiting));
+    // Nothing is checked on a problem that closed.
+    let mut passed = moved.clone();
+    pass(&mut passed, '3', t0());
+    assert!(to_verify(&threads, std::slice::from_ref(&passed)).is_empty());
+}
+
+/// Orbit's comment says what the agent answered and links the reply, but
+/// never repeats a reason or question, or links anywhere but GitHub. Once
+/// Orbit stops watching, answers aren't shown.
+#[test]
+fn bodies_say_what_agents_answered_without_repeating_them() {
+    let mut p = pull("p1", &["A", "B"], '1', t0());
+    let mut threads = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    hear(
+        &mut threads[0],
+        &[reply(1, "Declined I1: ask @someone <b>now</b>\nFixed I2")],
+    );
+    let body = comment_body(&threads[0], &p);
+    assert!(body.contains(
+        "- **I1** · `A` · failing at `1111111` · [details](https://github.com/a/b/actions/runs/1/job/2) · declined ([reply](https://github.com/a/b/issues/12#issuecomment-1))\n"
+    ), "{body}");
+    assert!(body.contains("· said to be fixed; Orbit is waiting to see it pass ([reply]("));
+    assert!(!body.contains("someone") && !body.contains("<b>"));
+    let hidden = body.lines().last().unwrap();
+    assert!(hidden.contains(r#""answer":{"check":null,"commit":null,"kind":"declined"}"#));
+    assert_eq!(hidden.matches("\"answer\"").count(), 2, "{hidden}");
+    threads[0].items[1].answer = None;
+    let hidden = comment_body(&threads[0], &p);
+    assert_eq!(hidden.matches("\"answer\"").count(), 1, "none without one");
+    threads[0].items[0].answer.as_mut().unwrap().url = "https://example.com/x".into();
+    assert!(comment_body(&threads[0], &p).contains("job/2) · declined\n"));
+
+    p.closed_at = Some(stamp(t0()));
+    p.closed_reason = Some("Orbit stopped watching CI.".into());
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    let body = comment_body(&threads[0], &p);
+    let shown = body.rsplit_once('\n').unwrap().0;
+    assert!(!shown.contains("declined") && !shown.contains("said to be fixed"));
+}
+
+/// Bit tells you what Orbit posted and closed, and the answers worth your
+/// attention: a declined item, or a fix CI doesn't bear out.
+#[test]
+fn bit_hears_what_matters() {
+    let mut p = branch(&["A"], '1');
+    let mut threads = vec![];
+    let mut journal = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    send(&mut threads, &mut journal, &p, true, t0());
+    let key = threads[0].key.clone();
+    let text = |e: &Event, threads: &[Thread], p: &Problem| {
+        event_text(threads, std::slice::from_ref(p), e).map(|(_, _, text)| text)
+    };
+    assert_eq!(
+        text(&Event::Posted(key.clone()), &threads, &p).as_deref(),
+        Some("Orbit opened issue #45 to tell the agent that A fails on main in a/b.")
+    );
+    let heard = hear(
+        &mut threads[0],
+        &[reply(1, "Taking I1"), reply(2, "Declined I1: the runner")],
+    );
+    assert_eq!(heard.len(), 1);
+    assert_eq!(
+        text(&Event::Heard(heard[0].clone()), &threads, &p).as_deref(),
+        Some("The agent on main in a/b declined I1 (A): the runner")
+    );
+    let taking = hear(&mut threads[0], &[reply(3, "Taking I1")]);
+    assert_eq!(text(&Event::Heard(taking[0].clone()), &threads, &p), None);
+    pass(&mut p, '2', t0());
+    assert_eq!(
+        text(&Event::Closed(key.clone()), &threads, &p).as_deref(),
+        Some("Orbit closed issue #45: main in a/b stayed green for an hour.")
+    );
+    p.closed_sha.clear();
+    assert_eq!(
+        text(&Event::Closed(key), &threads, &p).as_deref(),
+        Some("Orbit closed issue #45, as it stopped watching main in a/b.")
+    );
+}

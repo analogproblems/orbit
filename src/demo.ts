@@ -973,7 +973,19 @@ export function demoCi(
       number: 212,
       url: "https://github.com/acme/orbit/issues/212",
       problemId: "demo-problem-1",
-      items: [item(1, "CI / Rust tests", true, sha("7d41e09"), sha("9f3c2a1"))],
+      items: [
+        {
+          ...item(1, "CI / Rust tests", true, sha("7d41e09"), sha("9f3c2a1")),
+          answer: {
+            kind: "taking",
+            author: "acme-bot",
+            at: ago(12),
+            url: "https://github.com/acme/orbit/issues/212#issuecomment-930",
+            replyId: 930,
+            head: "",
+          },
+        },
+      ],
     }),
     thread({
       key: `pr:${failingPr.id}`,
@@ -986,7 +998,25 @@ export function demoCi(
       branch: failingPr.headRef,
       problemId: "demo-problem-2",
       items: [
-        item(1, "CI / Frontend", true, failingPr.headSha, failingPr.headSha),
+        {
+          ...item(
+            1,
+            "CI / Frontend",
+            true,
+            failingPr.headSha,
+            failingPr.headSha,
+          ),
+          answer: {
+            kind: "fixed",
+            author: failingPr.author,
+            at: ago(19),
+            url: `${failingPr.url}#issuecomment-905`,
+            replyId: 905,
+            commit: failingPr.headSha.slice(0, 7),
+            check: "fails",
+            head: failingPr.headSha,
+          },
+        },
       ],
       updatedAt: ago(20),
     }),

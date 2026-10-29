@@ -10,6 +10,11 @@
 //! posts something new, it looks on GitHub for that thing's marker, in case
 //! an earlier try reached GitHub just before Orbit stopped, and a thread
 //! whose post may have got there looks for it before anything else.
+//!
+//! Agents answer on the same comment or issue, item by item (`Taking I2`,
+//! `Fixed I2 in abc1234`, `Declined I2: reason`, `Need a person on I2:
+//! question`; see `hear`). A fix in a named commit is checked against CI
+//! there (`to_verify`), and the comment or issue says what Orbit found.
 use crate::{
     ci::short,
     problems::{stamp, time, Problem, ProblemKind, FLAP_QUIET, KEEP_CLOSED},
@@ -36,6 +41,10 @@ pub const MAX_JOURNAL: usize = 200;
 /// The longest wait before a failed write is tried again. The wait starts
 /// at a minute and doubles with each failure in a row.
 pub const MAX_RETRY: Duration = Duration::hours(1);
+/// The longest reason or question kept from an answer.
+pub const MAX_ANSWER: usize = 500;
+/// The most fixes checked against CI in one pass, for GitHub's limits.
+pub const CHECKS_PER_PASS: usize = 5;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -90,6 +99,12 @@ pub struct Thread {
     pub tries: u32,
     pub retry_at: Option<String>,
     pub updated_at: String,
+    /// The newest reply Orbit has read on its comment or issue, by GitHub
+    /// comment ID, so each reply is read once.
+    pub read_to: u64,
+    /// When that reply was posted, by GitHub's clock, so Orbit only asks
+    /// for newer ones.
+    pub read_since: String,
 }
 impl Thread {
     /// Whether it is on GitHub.
@@ -128,6 +143,96 @@ pub struct Item {
     /// The commit it started failing at, this time.
     pub since: String,
     pub at: String,
+    /// What an agent last said about it since it started failing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub answer: Option<Answer>,
+}
+
+/// What an agent says about an item.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnswerKind {
+    /// `Taking I2`: someone is on it.
+    #[default]
+    Taking,
+    /// `Fixed I2 in abc1234`, or just `Fixed I2`.
+    Fixed,
+    /// `Declined I2: reason`.
+    Declined,
+    /// `Need a person on I2: question`.
+    Question,
+}
+/// One line of a reply about items, as `engine::claims::ci_lines` reads it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Said {
+    pub numbers: Vec<u32>,
+    pub kind: AnswerKind,
+    pub commit: Option<String>,
+    /// The reason or question.
+    pub text: Option<String>,
+}
+/// A reply on Orbit's comment or issue. `said` is empty for one from an
+/// account Orbit doesn't trust, or one Orbit wrote.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reply {
+    pub id: u64,
+    pub author: String,
+    pub created_at: String,
+    pub url: String,
+    pub said: Vec<Said>,
+}
+/// What CI says at the commit an agent says fixes an item.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FixCheck {
+    /// Not known yet: its checks are still running, or the commit is newer
+    /// than the one Orbit last read.
+    Waiting,
+    Passes,
+    Fails,
+    /// The commit isn't part of the branch Orbit reads.
+    NotOnBranch,
+    /// GitHub doesn't know the commit.
+    NotFound,
+}
+/// The latest answer about an item.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Answer {
+    pub kind: AnswerKind,
+    pub author: String,
+    /// When the reply was posted, by GitHub's clock.
+    pub at: String,
+    /// The reply on GitHub.
+    pub url: String,
+    pub reply_id: u64,
+    pub commit: Option<String>,
+    /// The reason or question, in the agent's words. Orbit shows it, but
+    /// never posts it.
+    pub text: Option<String>,
+    /// For a fix in a named commit, what CI says there.
+    pub check: Option<FixCheck>,
+    /// The commit the branch was at when Orbit last checked.
+    pub head: String,
+}
+/// An answer Orbit just heard or checked, for Bit's notes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Heard {
+    pub thread: String,
+    pub number: u32,
+    pub check: String,
+    pub answer: Answer,
+}
+/// A fix to check against CI: an item an agent says is fixed in `commit`,
+/// still failing at `head`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Verify {
+    pub thread: String,
+    pub number: u32,
+    pub repo: String,
+    pub commit: String,
+    pub head: String,
+    pub check: String,
 }
 
 /// What a write does on GitHub.
@@ -317,7 +422,9 @@ fn items_from(t: &mut Thread, p: &Problem) {
     for item in &mut t.items {
         let failing = p.failing.iter().any(|c| c.name == item.check);
         if failing && !item.failing {
+            // Failing again: what was said about it before is over.
             item.since = p.sha.clone();
+            item.answer = None;
         }
         item.failing = failing;
         item.at = p.sha.clone();
@@ -334,10 +441,111 @@ fn items_from(t: &mut Thread, p: &Problem) {
                     failing: true,
                     since: p.sha.clone(),
                     at: p.sha.clone(),
+                    answer: None,
                 });
             }
         }
     }
+}
+
+/// Reads the replies on a thread Orbit hasn't read yet, oldest first: each
+/// line about a failing item becomes its answer, the latest counting. An
+/// item that isn't failing, or doesn't exist yet, is left alone. Returns
+/// the answers that changed.
+pub fn hear(t: &mut Thread, replies: &[Reply]) -> Vec<Heard> {
+    let mut replies: Vec<&Reply> = replies.iter().filter(|r| r.id > t.read_to).collect();
+    replies.sort_by_key(|r| r.id);
+    let mut heard: Vec<Heard> = vec![];
+    for r in replies {
+        t.read_to = r.id;
+        t.read_since = r.created_at.clone();
+        for said in &r.said {
+            for &number in &said.numbers {
+                let Some(item) = t.items.iter_mut().find(|i| i.number == number && i.failing)
+                else {
+                    continue;
+                };
+                let answer = Answer {
+                    kind: said.kind,
+                    author: r.author.clone(),
+                    at: r.created_at.clone(),
+                    url: r.url.clone(),
+                    reply_id: r.id,
+                    commit: said.commit.clone(),
+                    text: said
+                        .text
+                        .as_ref()
+                        .map(|t| t.chars().take(MAX_ANSWER).collect()),
+                    check: said.commit.as_ref().map(|_| FixCheck::Waiting),
+                    head: String::new(),
+                };
+                item.answer = Some(answer.clone());
+                heard.retain(|h| h.number != number);
+                heard.push(Heard {
+                    thread: t.key.clone(),
+                    number,
+                    check: item.check.clone(),
+                    answer,
+                });
+            }
+        }
+    }
+    heard
+}
+/// The fixes to check against CI now: failing items an agent says a commit
+/// fixes, on open problems, whose check hasn't settled. One that wasn't on
+/// the branch is checked again once the branch moves.
+pub fn to_verify(threads: &[Thread], problems: &[Problem]) -> Vec<Verify> {
+    let mut out = vec![];
+    for t in threads.iter().filter(|t| !t.gone) {
+        let Some(p) = problems
+            .iter()
+            .find(|p| p.id == t.problem_id && p.is_open() && !p.sha.is_empty())
+        else {
+            continue;
+        };
+        for item in t.items.iter().filter(|i| i.failing) {
+            let Some(a) = &item.answer else { continue };
+            let (Some(commit), Some(check)) = (&a.commit, a.check) else {
+                continue;
+            };
+            let again = match check {
+                FixCheck::Waiting => true,
+                FixCheck::NotOnBranch => a.head != p.sha,
+                _ => false,
+            };
+            if again {
+                out.push(Verify {
+                    thread: t.key.clone(),
+                    number: item.number,
+                    repo: t.repo.clone(),
+                    commit: commit.clone(),
+                    head: p.sha.clone(),
+                    check: item.check.clone(),
+                });
+            }
+        }
+    }
+    out
+}
+/// Records what CI says at a fix's commit, if the answer is still the one
+/// checked. Returns it when it has just settled, for Bit's notes.
+pub fn verified(threads: &mut [Thread], v: &Verify, check: FixCheck) -> Option<Heard> {
+    let t = threads.iter_mut().find(|t| t.key == v.thread)?;
+    let item = t.items.iter_mut().find(|i| i.number == v.number)?;
+    let a = item
+        .answer
+        .as_mut()
+        .filter(|a| a.commit.as_deref() == Some(v.commit.as_str()))?;
+    let was = a.check;
+    a.check = Some(check);
+    a.head = v.head.clone();
+    (was != Some(check) && check != FixCheck::Waiting).then(|| Heard {
+        thread: t.key.clone(),
+        number: v.number,
+        check: item.check.clone(),
+        answer: a.clone(),
+    })
 }
 
 /// The next write a thread needs, if any: post it, keep it up to date, and
@@ -451,20 +659,53 @@ fn code(text: &str) -> String {
         .collect();
     format!("`{text}`")
 }
-/// A link to a check's page, only to GitHub and only when it is safe in
-/// Markdown.
-fn details(url: &str) -> String {
+/// A link's address, only to GitHub and only when it is safe in Markdown.
+fn safe(url: &str) -> Option<&str> {
     let safe = url.starts_with("https://github.com/")
         && !url
             .chars()
             .any(|c| c.is_whitespace() || matches!(c, '(' | ')' | '<' | '>' | '"'));
-    if safe {
-        format!(" · [details]({url})")
-    } else {
-        String::new()
-    }
+    safe.then_some(url)
 }
-fn item_line(item: &Item, p: &Problem) -> String {
+/// A link to a check's page.
+fn details(url: &str) -> String {
+    safe(url).map_or_else(String::new, |url| format!(" · [details]({url})"))
+}
+/// What an agent said about a failing item, and for a fix, what Orbit
+/// found. A reason or question is linked, never repeated.
+fn answer_text(item: &Item, t: &Thread) -> String {
+    let Some(a) = &item.answer else {
+        return String::new();
+    };
+    let reply = |what: String| match safe(&a.url) {
+        Some(url) => format!(" · {what} ([reply]({url}))"),
+        None => format!(" · {what}"),
+    };
+    let what = match (a.kind, &a.commit) {
+        (AnswerKind::Taking, _) => "someone is on it".to_string(),
+        (AnswerKind::Declined, _) => "declined".to_string(),
+        (AnswerKind::Question, _) => "waiting for a person".to_string(),
+        (AnswerKind::Fixed, None) => {
+            "said to be fixed; Orbit is waiting to see it pass".to_string()
+        }
+        (AnswerKind::Fixed, Some(commit)) => {
+            let c = code(short(commit));
+            match a.check.unwrap_or(FixCheck::Waiting) {
+                FixCheck::Waiting => {
+                    format!("said to be fixed in {c}; Orbit is waiting for its checks there")
+                }
+                FixCheck::Passes => format!("said to be fixed in {c}, and it passes there"),
+                FixCheck::Fails => format!("said to be fixed in {c}, but it still fails there"),
+                FixCheck::NotOnBranch => {
+                    format!("said to be fixed in {c}, which isn't on {}", branch(t))
+                }
+                FixCheck::NotFound => format!("said to be fixed in {c}, which Orbit can't find"),
+            }
+        }
+    };
+    reply(what)
+}
+fn item_line(item: &Item, t: &Thread, p: &Problem) -> String {
     let state = if item.failing && !p.is_open() {
         format!(
             "failing at {} when Orbit stopped watching",
@@ -485,13 +726,15 @@ fn item_line(item: &Item, p: &Problem) -> String {
     } else {
         format!("not failing at {}", code(short(&item.at)))
     };
-    let link = if item.failing {
-        details(&item.url)
+    let (link, answer) = if item.failing && p.is_open() {
+        (details(&item.url), answer_text(item, t))
+    } else if item.failing {
+        (details(&item.url), String::new())
     } else {
-        String::new()
+        (String::new(), String::new())
     };
     format!(
-        "- **I{}** · {} · {state}{link}",
+        "- **I{}** · {} · {state}{link}{answer}",
         item.number,
         code(&item.check)
     )
@@ -503,7 +746,7 @@ fn items_text(t: &Thread, p: &Problem) -> String {
     let mut lines: Vec<String> = items
         .iter()
         .take(MAX_ITEMS)
-        .map(|i| item_line(i, p))
+        .map(|i| item_line(i, t, p))
         .collect();
     if items.len() > MAX_ITEMS {
         lines.push(format!("- and {} more", items.len() - MAX_ITEMS));
@@ -518,13 +761,22 @@ fn data(t: &Thread, p: &Problem) -> String {
         .iter()
         .take(MAX_ITEMS)
         .map(|i| {
-            json!({
+            let mut item = json!({
                 "id": format!("I{}", i.number),
                 "check": i.check,
                 "failing": i.failing,
                 "since": i.since,
                 "at": i.at,
-            })
+            });
+            // Only with an answer, so older bodies stay as they were.
+            if let Some(a) = &i.answer {
+                item["answer"] = json!({
+                    "kind": a.kind,
+                    "commit": a.commit,
+                    "check": a.check,
+                });
+            }
+            item
         })
         .collect();
     let v = json!({
@@ -724,7 +976,10 @@ pub fn looked(
             // What it says now is unknown, so it is brought up to date.
             t.posted.clear();
             match t.kind {
-                ThreadKind::Comment => t.comment_id = Some(found.id),
+                ThreadKind::Comment => {
+                    t.comment_id = Some(found.id);
+                    t.read_to = t.read_to.max(found.id);
+                }
                 ThreadKind::Issue => t.number = found.number.or(t.number),
             }
         }
@@ -790,6 +1045,8 @@ pub fn settle(
                     t.comment_id = Some(posted.id);
                     t.url = posted.url;
                     t.posted = planned.body.clone();
+                    // Replies before Orbit's comment aren't about its items.
+                    t.read_to = t.read_to.max(posted.id);
                 }
                 Action::OpenIssue | Action::EditIssue | Action::ReopenIssue => {
                     t.number = posted.number.or(t.number);
@@ -833,6 +1090,105 @@ pub fn settle(
             wait(t, error, now);
         }
     }
+}
+
+/// Something Bit tells you about telling agents.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Event {
+    /// Orbit posted a thread's comment or opened its issue.
+    Posted(String),
+    /// Orbit closed a thread's issue.
+    Closed(String),
+    /// An agent answered, or Orbit checked a fix.
+    Heard(Heard),
+}
+/// Where a thread is, in plain words: `acme/api #12` for a pull request's
+/// comment, `main in acme/api` for a default branch's issue.
+pub fn place(t: &Thread) -> String {
+    match t.kind {
+        ThreadKind::Comment => match t.number {
+            Some(n) => format!("{} #{n}", t.repo),
+            None => t.repo.clone(),
+        },
+        ThreadKind::Issue if t.branch.is_empty() => format!("the default branch in {}", t.repo),
+        ThreadKind::Issue => format!("{} in {}", t.branch, t.repo),
+    }
+}
+/// What Bit says about an event, and the problem and repository it is
+/// about. Only answers worth your attention are told: a declined item, or
+/// a fix CI doesn't bear out.
+pub fn event_text(
+    threads: &[Thread],
+    problems: &[Problem],
+    e: &Event,
+) -> Option<(String, String, String)> {
+    let key = match e {
+        Event::Posted(key) | Event::Closed(key) => key,
+        Event::Heard(h) => &h.thread,
+    };
+    let t = threads.iter().find(|t| &t.key == key)?;
+    let p = problems.iter().find(|p| p.id == t.problem_id);
+    let issue = || {
+        t.number
+            .map_or("its issue".to_string(), |n| format!("issue #{n}"))
+    };
+    let text = match e {
+        Event::Posted(_) => {
+            let failing = &p?.failing;
+            let names = crate::problems::names(failing);
+            let fail = if failing.len() == 1 { "fails" } else { "fail" };
+            match t.kind {
+                ThreadKind::Comment => {
+                    format!("Orbit told the agent on {} that {names} {fail}.", place(t))
+                }
+                ThreadKind::Issue => format!(
+                    "Orbit opened {} to tell the agent that {names} {fail} on {}.",
+                    issue(),
+                    place(t)
+                ),
+            }
+        }
+        Event::Closed(_) => {
+            if p.is_some_and(|p| p.passed()) {
+                format!(
+                    "Orbit closed {}: {} stayed green for an hour.",
+                    issue(),
+                    place(t)
+                )
+            } else {
+                format!(
+                    "Orbit closed {}, as it stopped watching {}.",
+                    issue(),
+                    place(t)
+                )
+            }
+        }
+        Event::Heard(h) => {
+            let a = &h.answer;
+            let what = format!("I{} ({})", h.number, h.check);
+            let commit = a.commit.as_deref().map(short).unwrap_or_default();
+            let said = format!("The agent on {} said {what} is fixed in {commit}", place(t));
+            match (a.kind, a.check) {
+                (AnswerKind::Declined, _) => match &a.text {
+                    Some(reason) => {
+                        format!("The agent on {} declined {what}: {reason}", place(t))
+                    }
+                    None => format!("The agent on {} declined {what}.", place(t)),
+                },
+                (AnswerKind::Fixed, Some(FixCheck::Fails)) => {
+                    format!("{said}, but it still fails there.")
+                }
+                (AnswerKind::Fixed, Some(FixCheck::NotOnBranch)) => {
+                    format!("{said}, but that commit isn't on {}.", t.branch)
+                }
+                (AnswerKind::Fixed, Some(FixCheck::NotFound)) => {
+                    format!("{said}, but Orbit can't find that commit.")
+                }
+                _ => return None,
+            }
+        }
+    };
+    Some((t.problem_id.clone(), t.repo.clone(), text))
 }
 
 /// Whether Orbit still has work for a thread: an issue it hasn't closed, a

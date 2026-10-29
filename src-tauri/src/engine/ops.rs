@@ -1,13 +1,17 @@
-//! Telling agents about failing CI: after each CI read, Orbit's comments on
-//! pull requests and its issues about default branches are posted, kept up
-//! to date and closed as their problems need (see `crate::ops`). Each write
-//! is recorded in the journal, and the journal saved, before it is sent.
-use super::Engine;
+//! Telling agents about failing CI: after each CI read, Orbit reads the
+//! agents' answers on its comments and issues, checks the fixes they name
+//! against CI, then posts, updates and closes its comments on pull requests
+//! and its issues about default branches as their problems need (see
+//! `crate::ops`). Each write is recorded in the journal, and the journal
+//! saved, before it is sent.
+use super::{claims, Engine};
 use crate::{
+    ci::CiState,
     github,
-    ops::{self, Action, Planned, Posted},
-    types::Snapshot,
+    ops::{self, Action, Event, FixCheck, Planned, Posted},
+    types::{trusted_source, Snapshot},
 };
+use serde_json::Value;
 use std::sync::{atomic::Ordering, Arc};
 
 /// The next thing any thread needs, as things stand now.
@@ -41,6 +45,7 @@ impl Engine {
                 self.dirty.store(true, Ordering::SeqCst);
             }
         }
+        let mut events = self.read_answers().await;
         for _ in 0..ops::WRITES_PER_PASS {
             let next = {
                 let s = self.state.lock().await;
@@ -85,6 +90,15 @@ impl Engine {
                 Err(_) => Err("Orbit couldn't save its journal, so it didn't send this.".into()),
             };
             let sent = result.is_ok();
+            if sent {
+                match planned.action {
+                    Action::PostComment | Action::OpenIssue => {
+                        events.push(Event::Posted(planned.thread.clone()))
+                    }
+                    Action::CloseIssue => events.push(Event::Closed(planned.thread.clone())),
+                    _ => {}
+                }
+            }
             self.update(|s| {
                 ops::settle(
                     &mut s.ops,
@@ -100,7 +114,98 @@ impl Engine {
                 break;
             }
         }
+        if !events.is_empty() {
+            self.update(|s| {
+                crate::buddy::observe_ci(s, &events);
+            })
+            .await;
+        }
         let _ = self.flush().await;
+    }
+    /// Reads the replies on each comment or issue about an open problem,
+    /// from the accounts Orbit trusts, then checks the fixes they name
+    /// against CI. Returns what Orbit heard, for Bit's notes. A read GitHub
+    /// doesn't answer is tried again on the next pass.
+    async fn read_answers(&self) -> Vec<Event> {
+        struct Ask {
+            key: String,
+            repo: String,
+            number: u64,
+            since: String,
+            /// The pull request's author, when Orbit trusts its source.
+            author: Option<String>,
+        }
+        let (asks, me, trusted) = {
+            let s = self.state.lock().await;
+            let open = |t: &ops::Thread| {
+                s.problems
+                    .iter()
+                    .any(|p| p.id == t.problem_id && p.is_open())
+            };
+            let asks: Vec<Ask> = s
+                .ops
+                .iter()
+                .filter(|t| t.is_posted() && !t.gone && !t.closed && open(t))
+                .filter_map(|t| {
+                    Some(Ask {
+                        key: t.key.clone(),
+                        repo: t.repo.clone(),
+                        number: t.number?,
+                        since: t.read_since.clone(),
+                        author: t
+                            .pr_id
+                            .as_deref()
+                            .and_then(|id| s.prs.iter().find(|p| p.id == id))
+                            .filter(|p| trusted_source(p, &s.settings.trusted_authors))
+                            .map(|p| p.author.clone()),
+                    })
+                })
+                .collect();
+            (
+                asks,
+                s.github_user.clone(),
+                s.settings.trusted_authors.clone(),
+            )
+        };
+        let Some(me) = me else {
+            return vec![];
+        };
+        let mut heard = vec![];
+        for ask in asks {
+            let Ok(comments) = github::replies(&ask.repo, ask.number, &ask.since).await else {
+                continue;
+            };
+            let trusts = |login: &str| {
+                login.eq_ignore_ascii_case(&me)
+                    || trusted.iter().any(|a| a.eq_ignore_ascii_case(login))
+                    || ask
+                        .author
+                        .as_deref()
+                        .is_some_and(|a| a.eq_ignore_ascii_case(login))
+            };
+            let replies: Vec<ops::Reply> = comments
+                .iter()
+                .filter_map(|c| reply(c, &me, &trusts))
+                .collect();
+            self.update(|s| {
+                if let Some(t) = s.ops.iter_mut().find(|t| t.key == ask.key) {
+                    heard.extend(ops::hear(t, &replies));
+                }
+            })
+            .await;
+        }
+        let checks = {
+            let s = self.state.lock().await;
+            ops::to_verify(&s.ops, &s.problems)
+        };
+        for v in checks.into_iter().take(ops::CHECKS_PER_PASS) {
+            let Ok(check) = verify(&v).await else {
+                continue;
+            };
+            self.update(|s| heard.extend(ops::verified(&mut s.ops, &v, check)))
+                .await;
+        }
+        heard.into_iter().map(Event::Heard).collect()
     }
     /// Lets Bit post a comment or issue it asks about first, and posts it.
     pub async fn tell_agent(self: &Arc<Self>, key: &str) -> Result<(), String> {
@@ -125,6 +230,44 @@ impl Engine {
         }
         self.flush().await
     }
+}
+
+/// A comment as a reply Orbit reads: what it says about items, when it is
+/// from an account Orbit trusts and isn't one of Orbit's own.
+fn reply(c: &Value, me: &str, trusts: &impl Fn(&str) -> bool) -> Option<ops::Reply> {
+    let text = |key: &str| c[key].as_str().unwrap_or_default().to_string();
+    let author = c["user"]["login"].as_str().unwrap_or_default();
+    let body = c["body"].as_str().unwrap_or_default();
+    let own = author.eq_ignore_ascii_case(me) && body.contains("<!-- orbit-");
+    Some(ops::Reply {
+        id: c["id"].as_u64()?,
+        author: author.to_string(),
+        created_at: text("created_at"),
+        url: text("html_url"),
+        said: if trusts(author) && !own {
+            claims::ci_lines(body)
+        } else {
+            vec![]
+        },
+    })
+}
+/// What CI says at the commit a fix names: whether it is on the branch,
+/// then whether the item's check passes there.
+async fn verify(v: &ops::Verify) -> Result<FixCheck, String> {
+    let Some((status, full)) = github::compare(&v.repo, &v.commit, &v.head).await? else {
+        return Ok(FixCheck::NotFound);
+    };
+    match status.as_str() {
+        "identical" | "ahead" => {}
+        // Newer than the commit Orbit last read: checked after the next read.
+        "behind" => return Ok(FixCheck::Waiting),
+        _ => return Ok(FixCheck::NotOnBranch),
+    }
+    Ok(match crate::ci::check_at(&v.repo, &full, &v.check).await? {
+        CiState::Passing => FixCheck::Passes,
+        CiState::Failing => FixCheck::Fails,
+        CiState::Running | CiState::None => FixCheck::Waiting,
+    })
 }
 
 /// Looks on GitHub for what a write would make: the thread's comment or

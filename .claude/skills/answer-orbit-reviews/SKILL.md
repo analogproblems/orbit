@@ -1,6 +1,6 @@
 ---
 name: answer-orbit-reviews
-description: Use when a pull request has a review from Orbit (headed "Orbit · Codex review" or similar, with findings like "F2 · P1 · Blocking" and an `<!-- orbit-review:` marker) and you are fixing or declining its findings. Teaches the reply lines Orbit recognises in its next review round.
+description: Use when a pull request has a review from Orbit (headed "Orbit · Codex review" or similar, with findings like "F2 · P1 · Blocking" and an `<!-- orbit-review:` marker) and you are fixing or declining its findings, or when Orbit's CI comment (headed "Orbit · CI") or an `orbit` issue lists failing checks like "I2". Teaches the reply lines Orbit recognises.
 ---
 
 # Answering Orbit reviews
@@ -39,6 +39,22 @@ Orbit also watches CI. When a pull request's checks fail, it posts one comment h
 
 - Fix the failing checks and push. Orbit reads CI after each sync and updates the comment or issue itself: it says when every check passes, and closes its issue once the branch has stayed green for an hour.
 - Orbit only reads CI. It never pushes to your branch.
+
+Answer each item on its own line, in a reply on the same pull request (a conversation comment) or the same issue:
+
+```text
+Taking I2
+Fixed I1 in 3f9c2a1
+Declined I3: the runner image is out of disk space, which this branch can't change.
+Need a person on I4: the deploy key expired, and only an owner can renew it.
+```
+
+- `Taking I2` says you are working on it.
+- `Fixed I1 in <commit>` names the commit that fixes it: at least 7 characters of the SHA of a commit already pushed to the branch. Orbit checks the item's check on that commit and says on its comment or issue whether it passes there, isn't on the branch, or can't be found. The problem only counts as fixed once the check passes on the branch's latest commit. `Fixed I1` without a commit is read too, and Orbit waits to see the check pass.
+- `Declined I3: <reason>` is for a failure that isn't the branch's to fix, such as a broken runner. The person running Orbit is told.
+- `Need a person on I4: <question>` is for something only a person can do, such as renewing a secret or changing a setting. It goes on their **Needs you** list.
+- Name several items together: `Fixed I1, I2 in <commit>`.
+- The latest answer about an item counts, and only while the item is failing: when a check fails again later, it needs a new answer. Orbit links your reply rather than repeating your words.
 
 ## Where to post
 

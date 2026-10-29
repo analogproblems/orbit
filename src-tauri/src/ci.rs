@@ -166,6 +166,64 @@ pub async fn read(repo: &str) -> Result<RepoCi, String> {
     Ok(ci)
 }
 
+/// The GraphQL query for one commit's checks, a page at a time.
+pub fn commit_query() -> String {
+    format!(
+        "query($owner: String!, $name: String!, $oid: GitObjectID!, $cursor: String) {{ \
+repository(owner: $owner, name: $name) {{ object(oid: $oid) {{ ... on Commit {{ \
+statusCheckRollup {{ contexts(first: {CHECKS}, after: $cursor) {{ {NODES} }} }} }} }} }} }}"
+    )
+}
+/// Where the check named `name` stands at commit `oid`: failing if any run
+/// of it failed, running while one runs, passing once one passed, and None
+/// when it didn't run there, or wasn't found in the first `MORE_PAGES`
+/// pages.
+pub async fn check_at(repo: &str, oid: &str, name: &str) -> Result<CiState, String> {
+    validate_repo(repo)?;
+    if !valid_sha(oid) {
+        return Err("Invalid commit".into());
+    }
+    let (owner, name_of_repo) = repo.split_once('/').ok_or("Invalid repository")?;
+    let mut states = vec![];
+    let mut cursor: Option<String> = None;
+    for _ in 0..=MORE_PAGES {
+        let mut fields = vec![
+            ("query", commit_query()),
+            ("owner", owner.to_string()),
+            ("name", name_of_repo.to_string()),
+            ("oid", oid.to_string()),
+        ];
+        if let Some(c) = cursor.take() {
+            fields.push(("cursor", c));
+        }
+        let v = crate::github::api("graphql", "POST", &fields, None).await?;
+        refused(&v)?;
+        let contexts = &v["data"]["repository"]["object"]["statusCheckRollup"]["contexts"];
+        for node in contexts["nodes"].as_array().into_iter().flatten() {
+            if let Some((check, state)) = check(node) {
+                if check.name == name {
+                    states.push(state);
+                }
+            }
+        }
+        match contexts["pageInfo"]["endCursor"].as_str() {
+            Some(c) if contexts["pageInfo"]["hasNextPage"] == true && !c.is_empty() => {
+                cursor = Some(c.to_string())
+            }
+            _ => break,
+        }
+    }
+    Ok(if states.contains(&CiState::Failing) {
+        CiState::Failing
+    } else if states.contains(&CiState::Running) {
+        CiState::Running
+    } else if states.contains(&CiState::Passing) {
+        CiState::Passing
+    } else {
+        CiState::None
+    })
+}
+
 /// What GitHub refused, from a GraphQL answer.
 fn refused(v: &Value) -> Result<(), String> {
     match v["errors"].as_array().and_then(|e| e.first()) {

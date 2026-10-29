@@ -496,6 +496,9 @@ pub enum NoteKind {
     Fixed,
     /// Bit's answer to a question you asked.
     Answer,
+    /// Something Orbit posted for an agent about failing CI, or an
+    /// agent's answer worth knowing.
+    Ci,
     /// A repository was connected, with its next steps.
     Connected,
     /// A pull request's story has something for you to decide, from the
@@ -848,6 +851,20 @@ mod say {
             (_, None) => format!("Heads up! {reason}"),
         }
     }
+    pub fn told(tone: &str, what: &str) -> String {
+        match tone {
+            "calm" => what.to_string(),
+            "dry" => format!("{what} Done."),
+            _ => format!("{what} 📮"),
+        }
+    }
+    pub fn answered(tone: &str, what: &str) -> String {
+        match tone {
+            "calm" => what.to_string(),
+            "dry" => format!("{what} Of course."),
+            _ => format!("{what} Worth a look."),
+        }
+    }
     pub fn stopped(tone: &str, pr: &str) -> String {
         match tone {
             "calm" => format!("The loop on {pr} is paused."),
@@ -1183,6 +1200,34 @@ fn append(feed: &mut Feed, notes: Vec<Note>) {
         }
         !drop
     });
+}
+
+/// Writes a note for each event about telling agents that Bit tells (see
+/// `ops::event_text`), leading to Operations. With the buddy off nothing is
+/// written. Returns whether the feed changed.
+pub fn observe_ci(s: &mut Snapshot, events: &[crate::ops::Event]) -> bool {
+    if !s.settings.buddy.enabled {
+        return false;
+    }
+    let tone = s.settings.buddy.tone.clone();
+    let notes: Vec<Note> = events
+        .iter()
+        .filter_map(|e| crate::ops::event_text(&s.ops, &s.problems, e).map(|told| (e, told)))
+        .map(|(e, (problem, repo, text))| {
+            let text = match e {
+                crate::ops::Event::Heard(_) => say::answered(&tone, &text),
+                _ => say::told(&tone, &text),
+            };
+            Note {
+                repo: Some(repo),
+                key: Some(format!("problem:{problem}")),
+                ..Note::new(NoteKind::Ci, text)
+            }
+        })
+        .collect();
+    let changed = !notes.is_empty();
+    append(&mut s.buddy_feed, notes);
+    changed
 }
 
 /// Something in a pull request's story that needs a decision: a flag that

@@ -609,3 +609,221 @@ async fn a_search_too_big_to_finish_finds_nothing_it_can_trust() {
     seed(150, None);
     assert_eq!(issue().await.unwrap(), None);
 }
+
+/// A reply on GitHub from `who` on pull request 12.
+fn say(dir: &Path, who: &str, body: &str) {
+    let file = dir.join("github.json");
+    let mut db = github(dir);
+    let id = db["next"].as_u64().unwrap_or(100);
+    db["next"] = json!(id + 1);
+    db["comments"].as_array_mut().unwrap().push(json!({
+        "id": id,
+        "issue": 12,
+        "user": { "login": who },
+        "body": body,
+        "created_at": "2026-10-29T12:00:00Z",
+        "html_url": format!("https://github.com/a/b/issues/12#issuecomment-{id}"),
+    }));
+    std::fs::write(file, db.to_string()).unwrap();
+}
+/// GitHub's checks at one commit, for checking a fix there.
+fn checks_at(dir: &Path, at: char, checks: &[(&str, &str)]) {
+    let v = json!({ "data": { "repository": { "object": {
+        "statusCheckRollup": rollup(checks)
+    } } } });
+    std::fs::write(dir.join(format!("commit-{}.json", sha(at))), v.to_string()).unwrap();
+}
+/// Where commit `at`, named by its first seven characters, stands against
+/// `head`.
+fn compared(dir: &Path, at: char, head: char, status: &str) {
+    let file = dir.join("compare.json");
+    let mut v: Value = std::fs::read_to_string(&file)
+        .map(|t| serde_json::from_str(&t).unwrap())
+        .unwrap_or(json!({}));
+    let key = format!("{}...{}", &sha(at)[..7], sha(head));
+    v[key] = json!({ "status": status, "base_commit": { "sha": sha(at) } });
+    std::fs::write(file, v.to_string()).unwrap();
+}
+fn calls(dir: &Path, what: &str) -> usize {
+    std::fs::read_to_string(dir.join("calls"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.contains(what))
+        .count()
+}
+
+/// The agent answers on Orbit's comment: a fix that CI doesn't bear out
+/// is said so on the comment and in a note from Bit, a question for a
+/// person is a Needs you item until the agent takes it back, and replies
+/// from accounts Orbit doesn't trust are left out.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_agent_answers_on_orbits_comment() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let e = connected(d.path()).await;
+    e.update(|s| s.prs = vec![pr('5')]).await;
+    let both = [("Rust", "FAILURE"), ("Lint", "FAILURE")];
+    answer(d.path(), '1', &[("Rust", "SUCCESS")], Some(('5', &both)));
+    // From before Orbit's comment, so not about its items.
+    say(d.path(), "agent", "Declined I1: an older reply");
+    watch(&e, &gh).await;
+    let notes = e.snapshot().await.buddy_feed.notes;
+    assert_eq!(
+        notes.last().unwrap().text,
+        "Orbit told the agent on a/b #12 that CI / Rust and CI / Lint fail. 📮"
+    );
+    watch(&e, &gh).await;
+    let body = github(d.path())["comments"][1]["body"].to_string();
+    assert!(!body.contains("declined"), "{body}");
+
+    say(
+        d.path(),
+        "agent",
+        "Thanks!\n- Fixed I2 in 7777777\n- Need a person on I1: the runner is out of disk.",
+    );
+    say(d.path(), "stranger", "Declined I1: not mine");
+    // The agent pushed 7777777, where Lint still fails.
+    e.update(|s| s.prs = vec![pr('7')]).await;
+    answer(d.path(), '1', &[("Rust", "SUCCESS")], Some(('7', &both)));
+    compared(d.path(), '7', '7', "identical");
+    checks_at(d.path(), '7', &both);
+    watch(&e, &gh).await;
+    let body = github(d.path())["comments"][1]["body"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(body.contains(
+        "- **I2** · `CI / Lint` · failing since `5555555`, still at `7777777` · [details](https://github.com/a/b/actions/runs/1/job/2) · said to be fixed in `7777777`, but it still fails there ([reply](https://github.com/a/b/issues/12#issuecomment-"
+    ), "{body}");
+    assert!(body.contains("· waiting for a person ([reply]("), "{body}");
+    assert!(!body.contains("declined"), "{body}");
+    assert!(
+        !body.contains("out of disk"),
+        "an agent's words aren't posted"
+    );
+    assert!(body.contains(r#""answer":{"check":"fails","commit":"7777777","kind":"fixed"}"#));
+    let shown = e.shown_snapshot().await;
+    let asks: Vec<&Attention> = shown
+        .attention
+        .iter()
+        .filter(|a| a.kind == AttentionKind::CiQuestion)
+        .collect();
+    assert_eq!(asks.len(), 1);
+    assert_eq!(
+        asks[0].reason,
+        "The agent on a/b #12 needs a person for I1 (CI / Rust): the runner is out of disk."
+    );
+    let notes = e.snapshot().await.buddy_feed.notes;
+    assert!(notes.iter().any(|n| n.text
+        == "The agent on a/b #12 said I2 (CI / Lint) is fixed in 7777777, but it still fails there. Worth a look."));
+    assert_eq!(calls(d.path(), "compare/"), 1);
+
+    // The agent takes I1 itself: nobody is needed any more, and a settled
+    // fix isn't checked again.
+    say(d.path(), "agent", "Taking I1");
+    watch(&e, &gh).await;
+    let body = github(d.path())["comments"][1]["body"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(body.contains("· someone is on it ([reply]("), "{body}");
+    let asks = |s: Snapshot| {
+        s.attention
+            .iter()
+            .filter(|a| a.kind == AttentionKind::CiQuestion)
+            .count()
+    };
+    assert_eq!(asks(e.shown_snapshot().await), 0);
+    assert_eq!(calls(d.path(), "compare/"), 1);
+
+    // A question about a check that then passes needs nobody.
+    say(
+        d.path(),
+        "agent",
+        "Need a person on I2: who owns the linter?",
+    );
+    watch(&e, &gh).await;
+    assert_eq!(asks(e.shown_snapshot().await), 1);
+    e.update(|s| s.prs = vec![pr('8')]).await;
+    answer(
+        d.path(),
+        '1',
+        &[("Rust", "SUCCESS")],
+        Some(('8', &[("Rust", "FAILURE"), ("Lint", "SUCCESS")])),
+    );
+    watch(&e, &gh).await;
+    assert_eq!(asks(e.shown_snapshot().await), 0);
+}
+
+/// A fix in a commit newer than the one Orbit read waits until Orbit reads
+/// a commit it leads to; then CI there decides. A commit that isn't on the
+/// branch, or that GitHub doesn't know, is said so.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_fix_is_checked_against_ci_where_it_was_made() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let e = connected(d.path()).await;
+    e.update(|s| s.prs = vec![pr('5')]).await;
+    let lint = |r| [("Rust", "SUCCESS"), ("Lint", r)];
+    answer(d.path(), '1', &[], Some(('5', &lint("FAILURE"))));
+    watch(&e, &gh).await;
+    let body = || {
+        github(d.path())["comments"][0]["body"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    say(d.path(), "agent", "Fixed I1 in 6666666");
+    compared(d.path(), '6', '5', "behind");
+    watch(&e, &gh).await;
+    assert!(
+        body().contains("said to be fixed in `6666666`; Orbit is waiting for its checks there"),
+        "{}",
+        body()
+    );
+
+    // The agent pushed 6666666, where Lint passed, then 7777777, where it
+    // fails again.
+    e.update(|s| s.prs = vec![pr('7')]).await;
+    answer(d.path(), '1', &[], Some(('7', &lint("FAILURE"))));
+    compared(d.path(), '6', '7', "ahead");
+    checks_at(d.path(), '6', &lint("SUCCESS"));
+    let notes = e.snapshot().await.buddy_feed.notes.len();
+    watch(&e, &gh).await;
+    assert!(
+        body().contains("said to be fixed in `6666666`, and it passes there"),
+        "{}",
+        body()
+    );
+    assert_eq!(
+        e.snapshot().await.buddy_feed.notes.len(),
+        notes,
+        "a fix that holds needs no note"
+    );
+
+    say(d.path(), "agent", "Fixed I1 in 8888888");
+    compared(d.path(), '8', '7', "diverged");
+    watch(&e, &gh).await;
+    assert!(
+        body().contains("said to be fixed in `8888888`, which isn't on `fix-it`"),
+        "{}",
+        body()
+    );
+    say(d.path(), "agent", "Fixed I1 in abcdef0");
+    watch(&e, &gh).await;
+    assert!(
+        body().contains("said to be fixed in `abcdef0`, which Orbit can't find"),
+        "{}",
+        body()
+    );
+    let notes = e.snapshot().await.buddy_feed.notes;
+    let texts: Vec<&str> = notes.iter().map(|n| n.text.as_str()).collect();
+    assert!(texts.contains(
+        &"The agent on a/b #12 said I1 (CI / Lint) is fixed in 8888888, but that commit isn't on fix-it. Worth a look."
+    ), "{texts:?}");
+    assert!(texts.contains(
+        &"The agent on a/b #12 said I1 (CI / Lint) is fixed in abcdef0, but Orbit can't find that commit. Worth a look."
+    ), "{texts:?}");
+}
