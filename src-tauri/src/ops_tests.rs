@@ -297,8 +297,9 @@ fn failed_writes_wait_and_deleted_ones_are_left_alone() {
     refresh(&mut threads, std::slice::from_ref(&p), t0());
     let mut now = t0();
     let mut waits = vec![];
-    for _ in 0..8 {
+    for tries in 1..=8 {
         let planned = next(&threads[0], Some(&p), true, now).unwrap();
+        assert_eq!(planned.action, Action::PostComment);
         let id = record(&mut journal, &planned, now);
         settle(
             &mut threads,
@@ -308,8 +309,7 @@ fn failed_writes_wait_and_deleted_ones_are_left_alone() {
             Err("HTTP 502".into()),
             now,
         );
-        // As if Orbit had looked and found nothing.
-        threads[0].unsure = false;
+        assert_eq!(threads[0].error.as_deref(), Some("HTTP 502"));
         let retry = time(threads[0].retry_at.as_deref().unwrap()).unwrap();
         waits.push((retry - now).num_minutes());
         assert_eq!(
@@ -317,9 +317,15 @@ fn failed_writes_wait_and_deleted_ones_are_left_alone() {
             None
         );
         now = retry;
+        // GitHub may have taken it, so Orbit looks first and finds nothing,
+        // which doesn't count as the post going through.
+        let find = next(&threads[0], Some(&p), true, now).unwrap();
+        assert_eq!(find.action, Action::Find);
+        looked(&mut threads, &find, Ok(None), now);
+        assert!(!threads[0].unsure);
+        assert_eq!(threads[0].tries, tries);
     }
     assert_eq!(waits, [1, 2, 4, 8, 16, 32, 60, 60]);
-    assert_eq!(threads[0].error.as_deref(), Some("HTTP 502"));
     send(&mut threads, &mut journal, &p, true, now);
     assert_eq!(threads[0].tries, 0);
     let mut moved = p.clone();
@@ -340,6 +346,18 @@ fn failed_writes_wait_and_deleted_ones_are_left_alone() {
         next(&threads[0], Some(&moved), true, now + Duration::days(1)),
         None
     );
+    // It stays deleted while the pull request is open, even once its
+    // problem has gone and the pull request fails again.
+    let later = now + KEEP_CLOSED + Duration::days(1);
+    let prs = [open_pr()];
+    prune(&mut threads, &mut journal, &[], &prs, later);
+    assert_eq!(threads.len(), 1);
+    let again = pull("p2", &["B"], '3', later);
+    refresh(&mut threads, std::slice::from_ref(&again), later);
+    assert_eq!(threads.len(), 1);
+    assert_eq!(next(&threads[0], Some(&again), true, later), None);
+    prune(&mut threads, &mut journal, &[], &[], later);
+    assert!(threads.is_empty(), "and goes once the pull request closes");
 }
 
 /// Threads go with their problems, but an issue Orbit hasn't closed stays;

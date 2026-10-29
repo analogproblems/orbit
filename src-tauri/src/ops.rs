@@ -689,8 +689,9 @@ pub fn looks_first(action: Action) -> bool {
 /// Records what Orbit found on GitHub before making something: a comment
 /// or issue an earlier try posted becomes the thread's, to be brought up to
 /// date, and a closing note already there counts as posted. Found nothing
-/// means nothing earlier got there. A search that failed waits like a
-/// failed write.
+/// means nothing earlier got there; it keeps the count of failed tries, so
+/// a post that keeps failing still waits longer each time. A search that
+/// failed waits like a failed write.
 pub fn looked(
     threads: &mut [Thread],
     planned: &Planned,
@@ -709,12 +710,12 @@ pub fn looked(
         }
     };
     t.error = None;
-    t.tries = 0;
     t.retry_at = None;
     let Some(found) = found else {
         t.unsure = false;
         return;
     };
+    t.tries = 0;
     match planned.action {
         Action::NoteOnIssue => t.noted = planned.closed_at.clone(),
         _ => {
@@ -836,15 +837,16 @@ pub fn settle(
 
 /// Whether Orbit still has work for a thread: an issue it hasn't closed, a
 /// post it may have to find, or a comment on a pull request that is still
-/// open and may fail again, which keeps its item numbers.
+/// open and may fail again, which keeps its item numbers. A comment someone
+/// deleted stays too while its pull request is open, so a later failure
+/// doesn't post it again.
 fn in_use(t: &Thread, prs: &[PullRequest]) -> bool {
-    !t.gone
-        && (t.unsure
-            || (t.kind == ThreadKind::Issue && t.is_posted() && !t.closed)
-            || (t.kind == ThreadKind::Comment
-                && prs
-                    .iter()
-                    .any(|p| t.pr_id.as_deref() == Some(p.id.as_str()))))
+    let pr_open = t.kind == ThreadKind::Comment
+        && prs
+            .iter()
+            .any(|p| t.pr_id.as_deref() == Some(p.id.as_str()));
+    pr_open
+        || (!t.gone && (t.unsure || (t.kind == ThreadKind::Issue && t.is_posted() && !t.closed)))
 }
 /// The problems that threads still need, which pruning keeps.
 pub fn pinned(threads: &[Thread], prs: &[PullRequest]) -> HashSet<String> {
