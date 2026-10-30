@@ -506,6 +506,7 @@ async function demoAction(
         tries: 0,
         lasting: false,
         failedAgain: false,
+        unsure: false,
       },
     ];
     t.updatedAt = at;

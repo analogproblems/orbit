@@ -74,10 +74,16 @@ fn fail(s: &mut Snapshot, id: u32, flaky: Option<&str>) {
 fn item(s: &Snapshot) -> &Item {
     &s.ops[0].items[0]
 }
+/// Records a rerun Orbit plans, as the engine does before sending it.
+fn send(s: &mut Snapshot, planned: &Planned) -> String {
+    let id = record(&mut s.journal, planned, t0());
+    sending(&mut s.ops, &mut s.journal, &id, planned);
+    id
+}
 /// Reruns what Orbit plans, as GitHub would take it, and returns Bit's
 /// note.
 fn rerun(s: &mut Snapshot, planned: &Planned, result: Result<(), &str>) -> Option<Event> {
-    let id = record(&mut s.journal, planned, t0());
+    let id = send(s, planned);
     let result = result
         .map(|()| Posted {
             id: 2,
@@ -106,8 +112,10 @@ fn a_job_that_looks_like_bad_luck_is_rerun_once() {
         Some(Job {
             item: 1,
             url: job(2),
+            check: "CI / Rust".into(),
             sha: sha('1'),
             reason: LOST.into(),
+            unsure: false,
         })
     );
     let note = rerun(&mut s, p, Ok(()));
@@ -336,6 +344,7 @@ fn a_refused_rerun_stays_refused_and_a_failed_one_waits() {
     for error in [
         "gh: Bad Gateway (HTTP 502)",
         "gh: API rate limit exceeded for user ID 1. (HTTP 403)",
+        "gh: Conflict (HTTP 409)",
     ] {
         let mut s = state(Some(LOST));
         let planned = all(&s, t0()).remove(0);
@@ -355,7 +364,9 @@ fn a_refused_rerun_stays_refused_and_a_failed_one_waits() {
             Some(&*stamp(t0() + Duration::minutes(1)))
         );
         assert!(all(&s, t0()).is_empty());
-        assert_eq!(all(&s, t0() + Duration::minutes(1)).len(), 1);
+        // It may have gone through, so Orbit looks first.
+        let next = all(&s, t0() + Duration::minutes(1));
+        assert!(r.unsure && next[0].rerun.as_ref().unwrap().unsure);
         // Each failure in a row waits longer.
         rerun(&mut s, &planned, Err(error));
         assert_eq!(item(&s).reruns[0].tries, 2);
@@ -372,18 +383,46 @@ fn a_refused_rerun_stays_refused_and_a_failed_one_waits() {
 /// What Orbit looks for on GitHub before rerunning a job.
 #[test]
 fn orbit_looks_before_it_reruns() {
-    let ours = json!({ "id": 2, "name": "Rust", "run_attempt": 1, "status": "completed" });
-    let done = |jobs: Value| looked_at(&ours, &json!({ "jobs": jobs }));
+    let ours_ = json!({ "id": 2, "name": "Rust", "run_attempt": 1, "status": "completed" });
+    let done = |jobs: Value| looked_at(&ours_, jobs.as_array().unwrap());
     let docs = json!({ "id": 3, "name": "Docs", "run_attempt": 1, "status": "completed" });
-    assert_eq!(done(json!([ours, docs])), Look::Ready);
+    assert_eq!(done(json!([ours_, docs])), Look::Ready);
     let newer = json!({ "id": 1002, "name": "Rust", "run_attempt": 2, "status": "queued" });
     assert_eq!(done(json!([newer, docs])), Look::Already);
     let busy = json!({ "id": 3, "name": "Docs", "run_attempt": 1, "status": "in_progress" });
-    assert_eq!(done(json!([ours, busy])), Look::Running);
+    assert_eq!(done(json!([ours_, busy])), Look::Running);
     // Another job's newer try isn't this one's.
     let other = json!({ "id": 1003, "name": "Docs", "run_attempt": 2, "status": "completed" });
-    assert_eq!(done(json!([ours, other])), Look::Ready);
-    assert_eq!(done(json!(null)), Look::Ready);
+    assert_eq!(done(json!([ours_, other])), Look::Ready);
+
+    // A page of the run's jobs must say what it holds.
+    let page = json!({ "total_count": 2, "jobs": [docs] });
+    let (jobs, total) = page_of(&page).unwrap();
+    assert_eq!((jobs.len(), total), (1, 2));
+    for bad in [
+        json!({}),
+        json!({ "total_count": 1, "jobs": null }),
+        json!({ "jobs": [] }),
+    ] {
+        assert!(page_of(&bad).is_err(), "{bad}");
+    }
+
+    // The job must be the check's, at the commit Orbit read.
+    let planned = Job {
+        item: 1,
+        url: job(2),
+        check: "CI / Rust".into(),
+        sha: sha('1'),
+        reason: String::new(),
+        unsure: false,
+    };
+    let at = |c: char, name: &str| json!({ "name": name, "head_sha": sha(c) });
+    assert!(ours(&at('1', "Rust"), &planned));
+    assert!(ours(&at('1', "CI / Rust"), &planned), "named as the check");
+    assert!(!ours(&at('0', "Rust"), &planned), "another commit");
+    assert!(!ours(&at('1', "Lint"), &planned), "another check");
+    assert!(!ours(&at('1', "ust"), &planned), "part of a name");
+    assert!(!ours(&json!({ "head_sha": sha('1') }), &planned), "no name");
 
     let mut s = state(Some(LOST));
     let planned = all(&s, t0()).remove(0);
@@ -409,12 +448,81 @@ fn orbit_looks_before_it_reruns() {
     );
 
     let mut s = state(Some(LOST));
-    looked(&mut s.ops, &planned, Ok(Look::Already), t0());
+    assert_eq!(looked(&mut s.ops, &planned, Ok(Look::Already), t0()), None);
     let r = &item(&s).reruns[0];
     assert!(r.done && r.already);
     assert_eq!(reruns_text(&s), "This job was already rerun on GitHub.");
     assert!(all(&s, t0()).is_empty());
     assert!(s.journal.is_empty(), "looking isn't a write");
+
+    let mut s = state(Some(LOST));
+    looked(&mut s.ops, &planned, Ok(Look::Elsewhere), t0());
+    let r = &item(&s).reruns[0];
+    assert!(r.lasting && !r.done);
+    assert_eq!(
+        r.error.as_deref(),
+        Some("Its link isn't this check's job at this commit, so Orbit won't rerun it.")
+    );
+    assert!(all(&s, t0() + Duration::days(1)).is_empty());
+}
+
+/// A rerun Orbit sent but didn't hear back about is looked for on GitHub
+/// before anything else is rerun for its check: found, it is the first
+/// rerun, so a new try that fails waits for your tap; not there, Orbit
+/// reruns as before.
+#[test]
+fn an_unsure_rerun_is_looked_for_before_any_other() {
+    let mut s = state(Some(LOST));
+    let first = all(&s, t0()).remove(0);
+    send(&mut s, &first);
+    assert_eq!(s.journal[0].url, job(2), "the journal names the job");
+    assert!(item(&s).reruns[0].unsure && !item(&s).reruns[0].done);
+    // Orbit stopped, and meanwhile the new try failed.
+    fail(&mut s, 1002, Some(LOST));
+    for rule in ["do_it", "ask_first"] {
+        s.settings.buddy.rules.rerun_again = rule.into();
+        let plans = all(&s, t0());
+        assert_eq!(plans.len(), 1, "{rule}");
+        let job_ = plans[0].rerun.as_ref().unwrap();
+        assert!(job_.unsure && job_.url == job(2), "{rule}");
+    }
+    assert!(noticed(&mut s).is_empty());
+    let look = all(&s, t0()).remove(0);
+    assert_eq!(
+        looked(&mut s.ops, &look, Ok(Look::Already), t0()),
+        Some(Event::Reran {
+            thread: "issue:p1".into(),
+            number: 1
+        })
+    );
+    let r = &item(&s).reruns[0];
+    assert!(r.done && !r.already && !r.unsure);
+    assert!(all(&s, t0()).is_empty(), "the second waits for your tap");
+    assert!(matches!(
+        noticed(&mut s)[..],
+        [Event::FailedAgain { ask: true, .. }]
+    ));
+
+    // Not there: it didn't go through, so Orbit reruns as before.
+    let mut s = state(Some(LOST));
+    let first = all(&s, t0()).remove(0);
+    send(&mut s, &first);
+    let look = all(&s, t0()).remove(0);
+    assert_eq!(looked(&mut s.ops, &look, Ok(Look::Ready), t0()), None);
+    assert!(!item(&s).reruns[0].unsure && !item(&s).reruns[0].done);
+    assert_eq!(all(&s, t0()), std::slice::from_ref(&first));
+    // A look that fails waits, still unsure.
+    send(&mut s, &first);
+    looked(
+        &mut s.ops,
+        &look,
+        Err("gh: Bad Gateway (HTTP 502)".into()),
+        t0(),
+    );
+    assert!(item(&s).reruns[0].unsure);
+    assert!(all(&s, t0()).is_empty());
+    let later = all(&s, t0() + Duration::minutes(1));
+    assert!(later[0].rerun.as_ref().unwrap().unsure);
 }
 
 /// Reruns are of one commit's jobs: a new commit starts again, and a rerun

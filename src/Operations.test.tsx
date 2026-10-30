@@ -447,6 +447,7 @@ describe("ci sentences", () => {
       tries: 0,
       lasting: false,
       failedAgain: false,
+      unsure: false,
       ...more,
     });
     const item = (reruns: OpsRerun[], flaky = true): OpsItem => ({
@@ -490,11 +491,22 @@ describe("ci sentences", () => {
     ]);
     expect(rerunText(s, p, failed)).toBe(refused);
     expect(asksToRerun(s, p, failed)).toBe(false);
+    // A rerun cut off while being sent is looked for before anything else.
+    const cut = item([
+      rerun(job(2)),
+      rerun(job(3), { done: false, unsure: true, error: "Not yet." }),
+    ]);
+    const checking =
+      "Orbit is checking on GitHub whether its rerun went through.";
+    expect(rerunText(s, p, cut)).toBe(checking);
     // Ask first, until you say yes.
     s.settings.buddy!.rules.rerun_flaky = "ask_first";
     expect(asksToRerun(s, p, item([]))).toBe(true);
     expect(rerunText(s, p, item([]))).toBe("Bit asks before rerunning it.");
     expect(asksToRerun(s, p, { ...item([]), rerunOk: job(3) })).toBe(false);
+    s.settings.buddy!.rules.rerun_again = "ask_first";
+    expect(asksToRerun(s, p, item([rerun(job(2))]))).toBe(true);
+    expect(asksToRerun(s, p, cut)).toBe(false);
     expect(asksToRerun(s, p, item([], false))).toBe(false);
     s.settings.buddy!.enabled = false;
     expect(asksToRerun(s, p, item([]))).toBe(false);

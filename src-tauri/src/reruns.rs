@@ -6,9 +6,13 @@
 //! real, and Orbit's comment or issue says so.
 //!
 //! A rerun is a write on GitHub like Orbit's comments and issues
-//! (`crate::ops`): recorded in the journal and saved before it is sent. Orbit
-//! looks on GitHub first, so a job an earlier try already reran isn't rerun
-//! again, and a job whose workflow is still running waits for it to finish.
+//! (`crate::ops`): recorded in the journal, and on its item as unsure, and
+//! saved before it is sent. A rerun Orbit didn't hear back about is looked
+//! for on GitHub before anything else is rerun for that check, so a restart
+//! never turns it into an extra one. Before each rerun Orbit also looks at
+//! the job on GitHub: it must be that check's job at that commit, a job an
+//! earlier try already reran isn't rerun again, and a job whose workflow is
+//! still running waits for it to finish.
 use crate::{
     logs,
     ops::{self, Action, Event, Item, Planned, Thread, ThreadKind, Write, WriteState},
@@ -21,6 +25,8 @@ use serde_json::Value;
 
 /// The most times Orbit reruns one check at one commit.
 pub const MAX_RERUNS: usize = 2;
+/// The most pages of a workflow run's jobs Orbit reads, 100 to a page.
+pub const MAX_PAGES: u32 = 10;
 
 /// One rerun of an item's job, or Orbit's tries at one.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,16 +51,23 @@ pub struct Rerun {
     pub lasting: bool,
     /// Orbit saw the job fail again after this rerun.
     pub failed_again: bool,
+    /// Orbit asked GitHub to rerun it and stopped, or didn't hear back,
+    /// before GitHub answered, so it may have gone through. Orbit looks on
+    /// GitHub before it reruns anything else for this check.
+    pub unsure: bool,
 }
 
-/// A rerun Orbit plans: which item's job, at which commit, and why it looks
-/// like bad luck.
+/// A rerun Orbit plans: which item's job, its check, at which commit, and
+/// why it looks like bad luck. `unsure` only looks whether an earlier try
+/// went through.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Job {
     pub item: u32,
     pub url: String,
+    pub check: String,
     pub sha: String,
     pub reason: String,
+    pub unsure: bool,
 }
 
 /// The reruns that went through at the item's commit.
@@ -63,14 +76,18 @@ pub fn done(item: &Item) -> usize {
 }
 /// Why an item's job looks like bad luck, when Orbit may still rerun it:
 /// it fails, Orbit read its log, it is a GitHub Actions job in `repo`,
-/// Orbit hasn't rerun this job or given up on it, and fewer than
-/// `MAX_RERUNS` went through at this commit. With the reruns done so far.
+/// Orbit hasn't rerun this job or given up on it, no rerun is unsure, and
+/// fewer than `MAX_RERUNS` went through at this commit. With the reruns done
+/// so far.
 fn candidate<'a>(repo: &str, item: &'a Item) -> Option<(&'a str, usize)> {
     let why = item.why.as_ref().filter(|w| w.url == item.url)?;
     let reason = why.flaky.as_deref()?;
     logs::job_of(&item.url, repo)?;
     let tried = item.reruns.iter().find(|r| r.url == item.url);
-    if !item.failing || tried.is_some_and(|r| r.done || r.lasting) {
+    if !item.failing
+        || tried.is_some_and(|r| r.done || r.lasting)
+        || item.reruns.iter().any(|r| r.unsure)
+    {
         return None;
     }
     let done = done(item);
@@ -101,9 +118,43 @@ fn current(s: &Snapshot, t: &Thread, p: &Problem) -> bool {
 
 /// The reruns Orbit may send now, as writes: for each failing item on an
 /// open problem about the latest commit that Orbit watches, whose job looks
-/// like bad luck, when Bit's rule allows it and any wait is over.
+/// like bad luck, when Bit's rule allows it and any wait is over. Before
+/// those, whatever the rules, a look for each rerun Orbit is unsure about.
 pub fn all(s: &Snapshot, now: DateTime<Utc>) -> Vec<Planned> {
+    let due = |r: &Rerun| {
+        !r.retry_at
+            .as_deref()
+            .and_then(time)
+            .is_some_and(|at| now < at)
+    };
+    let plan = |t: &Thread, item: &Item, url: &str, reason: &str, unsure: bool| Planned {
+        thread: t.key.clone(),
+        action: Action::RerunJob,
+        repo: t.repo.clone(),
+        number: t.number,
+        comment_id: None,
+        title: String::new(),
+        body: String::new(),
+        marker: String::new(),
+        completed: false,
+        closed_at: None,
+        rerun: Some(Job {
+            item: item.number,
+            url: url.to_string(),
+            check: item.check.clone(),
+            sha: item.at.clone(),
+            reason: reason.to_string(),
+            unsure,
+        }),
+    };
     let mut out = vec![];
+    for t in s.ops.iter().filter(|t| !t.gone) {
+        for item in &t.items {
+            for r in item.reruns.iter().filter(|r| r.unsure && due(r)) {
+                out.push(plan(t, item, &r.url, &r.reason, true));
+            }
+        }
+    }
     for t in s.ops.iter().filter(|t| !t.gone) {
         let Some(p) = s
             .problems
@@ -124,34 +175,10 @@ pub fn all(s: &Snapshot, now: DateTime<Utc>) -> Vec<Planned> {
             if !ops::rule_allows(rule, allowed, s.settings.buddy.enabled) {
                 continue;
             }
-            let waiting = item
-                .reruns
-                .iter()
-                .find(|r| r.url == item.url)
-                .and_then(|r| r.retry_at.as_deref())
-                .and_then(time)
-                .is_some_and(|at| now < at);
-            if waiting {
+            if item.reruns.iter().any(|r| r.url == item.url && !due(r)) {
                 continue;
             }
-            out.push(Planned {
-                thread: t.key.clone(),
-                action: Action::RerunJob,
-                repo: t.repo.clone(),
-                number: t.number,
-                comment_id: None,
-                title: String::new(),
-                body: String::new(),
-                marker: String::new(),
-                completed: false,
-                closed_at: None,
-                rerun: Some(Job {
-                    item: item.number,
-                    url: item.url.clone(),
-                    sha: item.at.clone(),
-                    reason: reason.to_string(),
-                }),
-            });
+            out.push(plan(t, item, &item.url, reason, false));
         }
     }
     out
@@ -201,36 +228,72 @@ pub enum Look {
     /// Its workflow is still running, and GitHub reruns a job only once
     /// its workflow has finished.
     Running,
+    /// It isn't the check's job at the commit Orbit read, such as a status
+    /// that links to some other job, so it isn't Orbit's to rerun.
+    Elsewhere,
 }
-/// Looks at a job on GitHub before Orbit reruns it: its workflow's latest
-/// jobs say whether it was rerun already, or is still running.
-pub async fn look(repo: &str, url: &str) -> Result<Look, String> {
+/// Looks at a job on GitHub before Orbit reruns it: the job must be the
+/// check's job at the commit, and its workflow's latest jobs, every page of
+/// them, say whether it was rerun already or is still running.
+pub async fn look(repo: &str, job: &Job) -> Result<Look, String> {
     crate::types::validate_repo(repo)?;
-    let job = logs::job_of(url, repo).ok_or("Orbit can only rerun GitHub Actions jobs.")?;
-    let v = crate::github::api(
-        &format!("repos/{repo}/actions/jobs/{job}"),
-        "GET",
-        &[],
-        None,
-    )
-    .await?;
+    let id = logs::job_of(&job.url, repo).ok_or("Orbit can only rerun GitHub Actions jobs.")?;
+    let v =
+        crate::github::api(&format!("repos/{repo}/actions/jobs/{id}"), "GET", &[], None).await?;
+    if !ours(&v, job) {
+        return Ok(Look::Elsewhere);
+    }
     let run = v["run_id"]
         .as_u64()
         .ok_or("GitHub didn't say which workflow run this job is in.")?;
-    let fields = [("filter", "latest".to_string()), ("per_page", "100".into())];
-    let latest = crate::github::api(
-        &format!("repos/{repo}/actions/runs/{run}/jobs"),
-        "GET",
-        &fields,
-        None,
-    )
-    .await?;
-    Ok(looked_at(&v, &latest))
+    let mut jobs: Vec<Value> = vec![];
+    for page in 1..=MAX_PAGES {
+        let fields = [
+            ("filter", "latest".to_string()),
+            ("per_page", "100".into()),
+            ("page", page.to_string()),
+        ];
+        let list = crate::github::api(
+            &format!("repos/{repo}/actions/runs/{run}/jobs"),
+            "GET",
+            &fields,
+            None,
+        )
+        .await?;
+        let (some, total) = page_of(&list)?;
+        jobs.extend(some.iter().cloned());
+        if jobs.len() as u64 >= total {
+            return Ok(looked_at(&v, &jobs));
+        }
+        if some.is_empty() {
+            return Err("GitHub's list of the run's jobs ended early.".into());
+        }
+    }
+    Err("The run has too many jobs for Orbit to check them all.".into())
+}
+/// One page of a run's jobs and how many there are in all, or an error when
+/// GitHub's answer doesn't say, so nothing is taken as safe from a list
+/// Orbit couldn't read.
+pub fn page_of(list: &Value) -> Result<(&[Value], u64), String> {
+    let jobs = list["jobs"].as_array();
+    let total = list["total_count"].as_u64();
+    match (jobs, total) {
+        (Some(jobs), Some(total)) => Ok((jobs, total)),
+        _ => Err("GitHub's list of the run's jobs didn't say what it holds.".into()),
+    }
+}
+/// Whether GitHub's job is the check Orbit plans to rerun: at the commit
+/// Orbit read (a pull request's head, for its runs), and named as the check
+/// is, alone or after its workflow.
+pub fn ours(v: &Value, job: &Job) -> bool {
+    let name = v["name"].as_str().unwrap_or_default();
+    v["head_sha"] == job.sha.as_str()
+        && !name.is_empty()
+        && (job.check == name || job.check.ends_with(&format!(" / {name}")))
 }
 /// What a job and its workflow's latest jobs say, as `look` reads them.
-pub fn looked_at(job: &Value, latest: &Value) -> Look {
+pub fn looked_at(job: &Value, jobs: &[Value]) -> Look {
     let attempt = |j: &Value| j["run_attempt"].as_u64().unwrap_or(1);
-    let jobs = latest["jobs"].as_array().map_or(&[][..], Vec::as_slice);
     if jobs
         .iter()
         .any(|j| j["name"] == job["name"] && attempt(j) > attempt(job))
@@ -265,7 +328,8 @@ fn lasting(error: &str) -> Option<String> {
     if error.contains("HTTP 404") || error.contains("HTTP 410") {
         return Some("GitHub no longer has this job.".into());
     }
-    ["HTTP 403", "HTTP 409", "HTTP 422"]
+    // A conflict may only mean the run started again meanwhile.
+    ["HTTP 403", "HTTP 422"]
         .iter()
         .any(|code| error.contains(code))
         .then(|| format!("GitHub won't rerun this job: {}.", logs::short(error)))
@@ -302,6 +366,7 @@ fn entry<'a>(item: &'a mut Item, job: &Job) -> &'a mut Rerun {
 fn wait(r: &mut Rerun, error: &str, now: DateTime<Utc>) {
     if let Some(lasting) = lasting(error) {
         r.lasting = true;
+        r.unsure = false;
         r.error = Some(lasting);
         r.retry_at = None;
         return;
@@ -315,27 +380,42 @@ fn wait(r: &mut Rerun, error: &str, now: DateTime<Utc>) {
     ));
 }
 /// Records what Orbit found when it looked at a job before rerunning it:
-/// already rerun counts as done, still running waits for it to finish, and
-/// a look that failed waits like a failed rerun.
+/// already rerun counts as done, still running waits for it to finish, a
+/// job that isn't the check's at that commit is never rerun, and a look that
+/// failed waits like a failed rerun. For a rerun Orbit was unsure about, a
+/// newer try is its own rerun, which returns Bit's note, and none means it
+/// didn't go through. Returns Bit's note.
 pub fn looked(
     threads: &mut [Thread],
     planned: &Planned,
     result: Result<Look, String>,
     now: DateTime<Utc>,
-) {
-    let Some((item, job)) = item_of(threads, planned) else {
-        return;
-    };
+) -> Option<Event> {
+    let thread = planned.thread.clone();
+    let (item, job) = item_of(threads, planned)?;
+    let number = item.number;
     let r = entry(item, job);
     match result {
-        Ok(Look::Ready) => {}
         Ok(Look::Already) => {
             r.done = true;
-            r.already = true;
+            r.already = !r.unsure;
             r.at = stamp(now);
             r.error = None;
             r.retry_at = None;
+            let mine = std::mem::take(&mut r.unsure);
+            return mine.then_some(Event::Reran { thread, number });
         }
+        Ok(Look::Elsewhere) => {
+            r.lasting = true;
+            r.unsure = false;
+            r.error = Some(
+                "Its link isn't this check's job at this commit, so Orbit won't rerun it.".into(),
+            );
+            r.retry_at = None;
+        }
+        // An unsure rerun that GitHub has no newer try of didn't go through.
+        Ok(_) if r.unsure => r.unsure = false,
+        Ok(Look::Ready) => {}
         Ok(Look::Running) => {
             r.tries += 1;
             let wait = Duration::minutes(1i64 << (r.tries - 1).min(6)).min(ops::MAX_RETRY);
@@ -345,6 +425,20 @@ pub fn looked(
             );
         }
         Err(error) => wait(r, &error, now),
+    }
+    None
+}
+/// Records a rerun about to be sent: on its journal entry, the job, and on
+/// its item, as unsure until GitHub answers. Saved before it is sent.
+pub fn sending(threads: &mut [Thread], journal: &mut [Write], id: &str, planned: &Planned) {
+    let Some(job) = planned.rerun.as_ref() else {
+        return;
+    };
+    if let Some(w) = journal.iter_mut().find(|w| w.id == id) {
+        w.url = job.url.clone();
+    }
+    if let Some((item, job)) = item_of(threads, planned) {
+        entry(item, job).unsure = true;
     }
 }
 /// Records what GitHub said to a rerun, on its journal entry and its item.
@@ -377,6 +471,7 @@ pub fn settle(
     match result {
         Ok(_) => {
             r.done = true;
+            r.unsure = false;
             r.at = at;
             r.error = None;
             r.tries = 0;
@@ -386,6 +481,7 @@ pub fn settle(
                 number,
             })
         }
+        // It may have gone through all the same, so it stays unsure.
         Err(error) => {
             wait(r, &error, now);
             None

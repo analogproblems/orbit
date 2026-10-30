@@ -266,8 +266,9 @@ pub fn understand(mut failure: Failure, job: &Value, log: &str) -> Failure {
         Some((s, window)) => (window, own(window, s, job)),
         None => (&lines[..], last_step(&lines)),
     };
+    // What the step printed, not the script GitHub echoed before running it.
     let own: Vec<&str> = shown.iter().map(|l| l.text.as_str()).collect();
-    failure.flaky = flaky(step, &own);
+    failure.flaky = flaky(step, &output(&own));
     let text: Vec<&str> = checked.iter().map(|l| l.text.as_str()).collect();
     if !credential_kinds(&format!("{name}\n{}", text.join("\n"))).is_empty() {
         failure.held = true;
@@ -495,21 +496,7 @@ fn tail(lines: &[Line]) -> Vec<String> {
         .rposition(|l| l.starts_with("##[error]"))
         .map_or(text.len(), |e| e + 1);
     let mut kept: Vec<String> = vec![];
-    let mut i = 0;
-    while i < end {
-        let line = text[i];
-        if line.starts_with("##[group]Run ") {
-            // Up to its end, unless another group starts first.
-            let close = text[i + 1..end]
-                .iter()
-                .position(|l| l.starts_with("##[endgroup]") || l.starts_with("##[group]"));
-            i += match close {
-                Some(c) if text[i + 1 + c].starts_with("##[endgroup]") => c + 2,
-                _ => 1,
-            };
-            continue;
-        }
-        i += 1;
+    for line in output(&text[..end]) {
         if line.trim().is_empty()
             || line.starts_with("##[group]")
             || line.starts_with("##[endgroup]")
@@ -525,6 +512,29 @@ fn tail(lines: &[Line]) -> Vec<String> {
     }
     if kept.len() > MAX_LINES {
         kept.drain(..kept.len() - MAX_LINES);
+    }
+    kept
+}
+/// A log's lines without the commands GitHub echoes before running them:
+/// each `##[group]Run` group up to its end, unless another group starts
+/// first. What a command printed stays.
+fn output<'a>(text: &[&'a str]) -> Vec<&'a str> {
+    let mut kept = vec![];
+    let mut i = 0;
+    while i < text.len() {
+        let line = text[i];
+        if line.starts_with("##[group]Run ") {
+            let close = text[i + 1..]
+                .iter()
+                .position(|l| l.starts_with("##[endgroup]") || l.starts_with("##[group]"));
+            i += match close {
+                Some(c) if text[i + 1 + c].starts_with("##[endgroup]") => c + 2,
+                _ => 1,
+            };
+            continue;
+        }
+        kept.push(line);
+        i += 1;
     }
     kept
 }

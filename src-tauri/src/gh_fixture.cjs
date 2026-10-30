@@ -8,7 +8,9 @@
 // <dir>/log-<id>.txt, or 404; while <dir>/limit exists they answer as past
 // GitHub's rate limit. Rerunning a job writes <dir>/rerun-<id>, or fails
 // with the text of <dir>/rerun-error while that exists. A run's latest jobs
-// are the jobs in it, each one rerun replaced by its next try, queued.
+// are the newest try of each job in it, by name, in pages: a job rerun
+// whose next try (<id> + 1000) has no file yet has it queued. While
+// <dir>/more-jobs exists, the list claims that many jobs more than it has.
 // While <dir>/down exists every call
 // fails. While <dir>/hold exists a GET waits, after writing <dir>/held. Each
 // call is logged to <dir>/calls as "METHOD endpoint".
@@ -111,23 +113,35 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
       return null;
     }
   };
-  const jobs = fs
+  const tries = fs
     .readdirSync(dir)
     .filter((f) => /^job-\d+\.json$/.test(f))
     .map(read)
-    .filter((j) => j && j.run_id === Number(m[1]))
-    .map((j) =>
-      fs.existsSync(path.join(dir, `rerun-${j.id}`))
-        ? {
-            ...j,
-            id: j.id + 1000,
-            run_attempt: (j.run_attempt || 1) + 1,
-            status: "queued",
-            conclusion: null,
-          }
-        : j,
-    );
-  answer({ total_count: jobs.length, jobs });
+    .filter((j) => j && j.run_id === Number(m[1]));
+  for (const j of [...tries]) {
+    const next = j.id + 1000;
+    if (
+      fs.existsSync(path.join(dir, `rerun-${j.id}`)) &&
+      !fs.existsSync(path.join(dir, `job-${next}.json`))
+    )
+      tries.push({
+        ...j,
+        id: next,
+        run_attempt: (j.run_attempt || 1) + 1,
+        status: "queued",
+        conclusion: null,
+      });
+  }
+  const latest = [];
+  for (const j of tries) {
+    const at = latest.findIndex((l) => l.name === j.name);
+    if (at < 0) latest.push(j);
+    else if ((j.run_attempt || 1) > (latest[at].run_attempt || 1))
+      latest[at] = j;
+  }
+  const more = path.join(dir, "more-jobs");
+  const extra = fs.existsSync(more) ? Number(fs.readFileSync(more, "utf8")) : 0;
+  answer({ total_count: latest.length + extra, jobs: page(latest) });
 } else if (
   (m = endpoint.match(/^repos\/a\/b\/actions\/jobs\/(\d+)(\/logs)?$/))
 ) {

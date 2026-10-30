@@ -1222,6 +1222,8 @@ export interface OpsRerun {
   lasting: boolean;
   /** Orbit saw the job fail again after this rerun. */
   failedAgain: boolean;
+  /** Orbit may have sent it, so it looks on GitHub before anything else. */
+  unsure: boolean;
 }
 /** What an agent says about an item: `Taking I2`, `Fixed I2 in <commit>`,
  * `Declined I2: <reason>` or `Need a person on I2: <question>`. */

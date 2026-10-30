@@ -188,12 +188,13 @@ function doneReruns(i: OpsItem) {
 
 /** Whether Bit waits for your tap before rerunning a failing item's job:
  * it looks like bad luck, Orbit hasn't rerun this job or given up on it,
- * fewer than two reruns went through at this commit, and the rule for the
- * next one is Ask first. */
+ * isn't checking whether a rerun went through, fewer than two reruns went
+ * through at this commit, and the rule for the next one is Ask first. */
 export function asksToRerun(s: Snapshot, p: Problem, i: OpsItem) {
   const buddy = buddyOf(s.settings);
   if (!buddy.enabled || p.closedAt || !i.failing) return false;
   if (i.why?.url !== i.url || !i.why.flaky) return false;
+  if (i.reruns?.some((r) => r.unsure)) return false;
   const tried = i.reruns?.find((r) => r.url === i.url);
   if (tried?.done || tried?.lasting) return false;
   const done = doneReruns(i).length;
@@ -206,6 +207,8 @@ export function asksToRerun(s: Snapshot, p: Problem, i: OpsItem) {
  * it reran it, that it failed again, or why it hasn't rerun it yet. */
 export function rerunText(s: Snapshot, p: Problem, i: OpsItem) {
   const name = buddyOf(s.settings).name;
+  if (i.reruns?.some((r) => r.unsure))
+    return "Orbit is checking on GitHub whether its rerun went through.";
   const done = doneReruns(i);
   const last = done.at(-1);
   if (last?.url === i.url) {

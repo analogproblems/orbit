@@ -161,6 +161,36 @@ fn only_the_failed_steps_own_lines_say_it_was_bad_luck() {
     );
 }
 
+/// The command GitHub echoes at the start of a step, and its settings,
+/// aren't what the step said, so a network error named there doesn't
+/// excuse a real failure.
+#[test]
+fn the_command_a_step_ran_isnt_bad_luck() {
+    let mut log = log();
+    let group = log
+        .iter()
+        .position(|l| l.contains("cargo test --locked"))
+        .unwrap();
+    for (n, line) in [
+        "grep -q 'ECONNRESET' out.log && echo 'Could not resolve host'",
+        "env:",
+        "  ERRORS: 503 Service Unavailable",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        log.insert(group + 1 + n, at(2.015, line));
+    }
+    assert_eq!(understood(&steps(), &log).flaky, None);
+    // What the step itself printed still counts.
+    let test = log
+        .iter()
+        .position(|l| l.contains("test it_works"))
+        .unwrap();
+    log.insert(test, at(4.5, "curl: (6) Could not resolve host: x.org"));
+    assert!(understood(&steps(), &log).flaky.is_some());
+}
+
 /// An earlier step that logged an error but succeeded, or that continued
 /// on error, isn't the one shown, nor is the end of a step that ran in
 /// the same second before the failing one.

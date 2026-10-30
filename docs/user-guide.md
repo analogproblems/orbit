@@ -351,7 +351,7 @@ Some failures aren't the code's fault, and running the job again fixes them. Fro
 - no step failed, as when the runner was lost;
 - the runner went away, such as "The runner has received a shutdown signal";
 - the job failed setting up, or getting the code or tools ready (`actions/checkout`, `actions/setup-…` or `actions/cache`), before any test ran;
-- the failed step's own lines show a network or registry error, such as `ECONNRESET`, "Could not resolve host", "502 Bad Gateway" or Docker's `toomanyrequests`.
+- the failed step's own lines show a network or registry error, such as `ECONNRESET`, "Could not resolve host", "502 Bad Gateway" or Docker's `toomanyrequests`. The command and settings GitHub shows at the start of a step don't count, as they say what the step ran, not what happened.
 
 Each open problem on **Operations** shows "Looks like bad luck:" and the reason. Two rules in **Settings → Buddy → What Bit can do** decide what Bit does about it:
 
@@ -360,7 +360,9 @@ Each open problem on **Operations** shows "Looks like bad luck:" and the reason.
 
 A job that fails again after a rerun is likely real: the item says "It failed again after it was rerun, so it's likely real.", and Bit tells you. Orbit never reruns a check more than twice on one commit, whatever the rules; a newer commit starts again. It reruns only jobs on the latest commit of a default branch or of a pull request it follows, while Bit is on, and with **Ask first** on the first rule, Operations has a **Rerun** button instead. A check that passes after a rerun says "passes at `9f3c2a1` after a rerun".
 
-A rerun is a write on GitHub, so it goes in Orbit's journal like a comment (see below). Before each rerun, Orbit looks at the job's workflow run on GitHub: if a newer try of the job is already there, such as one an earlier try made just before Orbit stopped, it counts that, and the item says "This job was already rerun on GitHub." GitHub reruns a job only once its whole workflow run has finished, so while other jobs in it still run, Orbit waits and tries again later. When GitHub refuses a rerun, such as when Orbit's sign-in may not rerun jobs there, Operations says why and Orbit doesn't ask again for that job. When GitHub doesn't answer, Orbit tries again after a minute, then waits twice as long each time, up to an hour.
+A rerun is a write on GitHub, so it goes in Orbit's journal like a comment (see below). Orbit saves that it is about to rerun a job before it asks GitHub. If Orbit stops before GitHub answers, the rerun may have gone through, so Operations says "Orbit is checking on GitHub whether its rerun went through." and Orbit looks on GitHub before it does anything else about that check.
+
+Before each rerun, Orbit looks at the job on GitHub. It must be the failing check's job at the commit Orbit read, or Orbit won't rerun it and says why. Then Orbit reads every job in the job's workflow run: if a newer try of the job is already there, such as one an earlier try made just before Orbit stopped, it counts that, and the item says "This job was already rerun on GitHub." GitHub reruns a job only once its whole workflow run has finished, so while other jobs in it still run, Orbit waits and tries again later. When GitHub refuses a rerun, such as when Orbit's sign-in may not rerun jobs there, Operations says why and Orbit doesn't ask again for that job. When GitHub doesn't answer, or its list of the run's jobs is cut short, Orbit tries again after a minute, then waits twice as long each time, up to an hour.
 
 Orbit doesn't yet treat a check that passed earlier on the same commit as bad luck.
 

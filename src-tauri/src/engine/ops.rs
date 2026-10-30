@@ -68,11 +68,14 @@ impl Engine {
             if let Some(job) = &planned.rerun {
                 // An earlier try may have rerun it before Orbit heard back,
                 // and GitHub reruns a job only once its workflow is done.
-                let look = reruns::look(&planned.repo, &job.url).await;
-                if look != Ok(Look::Ready) {
+                let look = reruns::look(&planned.repo, job).await;
+                if job.unsure || look != Ok(Look::Ready) {
                     let failed = look.is_err();
-                    self.update(|s| reruns::looked(&mut s.ops, &planned, look, chrono::Utc::now()))
-                        .await;
+                    self.update(|s| {
+                        let now = chrono::Utc::now();
+                        events.extend(reruns::looked(&mut s.ops, &planned, look, now));
+                    })
+                    .await;
                     if self.flush().await.is_err() || failed {
                         break;
                     }
@@ -109,7 +112,10 @@ impl Engine {
             }
             let id = {
                 let mut s = self.state.lock().await;
-                ops::record(&mut s.journal, &planned, chrono::Utc::now())
+                let s = &mut *s;
+                let id = ops::record(&mut s.journal, &planned, chrono::Utc::now());
+                reruns::sending(&mut s.ops, &mut s.journal, &id, &planned);
+                id
             };
             self.dirty.store(true, Ordering::SeqCst);
             // Saved before it is sent, so after a restart Orbit knows it may

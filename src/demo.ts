@@ -1059,6 +1059,7 @@ export function demoCi(
               tries: 0,
               lasting: false,
               failedAgain: true,
+              unsure: false,
             },
           ],
         },
