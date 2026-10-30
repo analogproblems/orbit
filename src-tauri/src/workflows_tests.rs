@@ -116,14 +116,16 @@ fn a_node_repository_gets_its_scripts_run_with_its_package_manager() {
         "trunk",
     );
     assert_eq!(from, ["package.json", "pnpm-lock.yaml"]);
-    assert!(workflow.contains("          node-version: lts/*\n      - run: corepack enable\n      - run: pnpm install --frozen-lockfile\n      - run: pnpm run lint\n"), "{workflow}");
+    // setup-node's own caching is off, as pnpm isn't set up when it runs.
+    assert!(workflow.contains("          node-version: lts/*\n          package-manager-cache: false\n      - run: corepack enable\n      - run: pnpm install --frozen-lockfile\n      - run: pnpm run lint\n"), "{workflow}");
     assert!(workflow.contains("      - run: pnpm test\n"));
-    assert!(!workflow.contains("cache:"));
+    assert!(!workflow.contains("          cache:"));
     assert!(workflow.contains("      - trunk\n"));
-    let (workflow, _) = propose(&names(&["package.json", "yarn.lock"]), None, "main");
+    let yarn = json!({ "packageManager": "yarn@4.5.0" }).to_string();
+    let (workflow, _) = propose(&names(&["package.json", "yarn.lock"]), Some(&yarn), "main");
     assert!(
         workflow.contains(
-            "      - run: corepack enable\n      - run: yarn install --frozen-lockfile\n"
+            "          package-manager-cache: false\n      - run: corepack enable\n      - run: yarn install --frozen-lockfile\n"
         ),
         "{workflow}"
     );
@@ -135,6 +137,15 @@ fn a_node_repository_gets_its_scripts_run_with_its_package_manager() {
     assert_eq!(from, ["package.json"]);
     assert!(
         workflow.ends_with("      - run: npm install\n      - run: npm run check\n"),
+        "{workflow}"
+    );
+    // With no lock file to cache by, setup-node's own caching is off, even
+    // when `package.json` names npm.
+    let named =
+        json!({ "packageManager": "npm@10.9.0", "scripts": { "test": "node --test" } }).to_string();
+    let (workflow, _) = propose(&names(&["package.json"]), Some(&named), "main");
+    assert!(
+        workflow.contains("      - uses: actions/setup-node@v5\n        with:\n          node-version: lts/*\n          package-manager-cache: false\n      - run: npm install\n      - run: npm test\n"),
         "{workflow}"
     );
     // A package.json that isn't JSON still installs.
@@ -353,6 +364,7 @@ fn reads_each_new_commit_once_and_tries_again_after_an_error() {
     ];
     let read = |repo: &str, sha: &str| Setup {
         repo: repo.into(),
+        branch: "main".into(),
         sha: sha.into(),
         ..Default::default()
     };
@@ -426,6 +438,13 @@ fn reads_each_new_commit_once_and_tries_again_after_an_error() {
     // A new repository's first read is added.
     record(&mut setups, "c/d", "main", SHA, Ok(read("c/d", SHA)), later);
     assert!(wanted(&ci, &setups, later).is_empty());
+    // A branch renamed at the same commit is read again, as the proposal
+    // names it.
+    let renamed = [repo_ci("c/d", "trunk", SHA)];
+    assert_eq!(
+        wanted(&renamed, &setups, later),
+        [("c/d".into(), "trunk".into(), SHA.into())]
+    );
     // Those tried least go first.
     let tried = Setup {
         error: Some("down".into()),

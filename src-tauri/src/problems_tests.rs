@@ -641,6 +641,17 @@ fn a_repository_with_no_ci_on_pull_requests_is_listed_once_orbit_is_sure() {
             "CI runs on pull requests at 3333333."
         ]
     );
+    // Files read before the branch was renamed say nothing until they are
+    // read again.
+    let mut trunk = quiet(C);
+    trunk.branch = "trunk".into();
+    let mut none = setup(C, 14, &[]);
+    let mut renamed = vec![];
+    see_setup(&mut renamed, Some(&mut none), &trunk, &[], at(40));
+    assert!(renamed.is_empty());
+    none.branch = "trunk".into();
+    see_setup(&mut renamed, Some(&mut none), &trunk, &[], at(40));
+    assert_eq!(renamed[0].branch, "trunk");
     // Once closed, nothing opens while CI runs.
     see_setup(&mut problems, Some(&mut ci), &quiet(C), &[], at(40));
     assert_eq!(problems.len(), 1);

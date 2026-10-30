@@ -171,8 +171,9 @@ package: object(expression: $package) { ... on Blob { text isTruncated } } } }"
 }
 
 /// The repositories whose files Orbit should read now, at most `PER_PASS`:
-/// each whose default branch's latest commit Orbit hasn't read them at,
-/// and those due again after an error, the ones tried least first.
+/// each whose default branch's latest commit, or name, Orbit hasn't read
+/// them at, and those due again after an error, the ones tried least
+/// first. A rename changes the proposal, which names the branch.
 pub fn wanted(
     ci: &[ci::RepoCi],
     setups: &[Setup],
@@ -183,7 +184,7 @@ pub fn wanted(
         .filter(|c| valid_sha(&c.head.sha) && !c.branch.is_empty())
         .filter_map(
             |c| match setups.iter().find(|s| same_repo(&s.repo, &c.repo)) {
-                Some(s) if s.sha == c.head.sha => {
+                Some(s) if s.sha == c.head.sha && s.branch == c.branch => {
                     let due = s.error.is_some()
                         && s.retry_at
                             .as_deref()
@@ -631,11 +632,19 @@ pub fn propose(names: &[String], package: Option<&str>, branch: &str) -> (String
                 }
                 None => node.push("          node-version: lts/*".into()),
             }
+            let mut cached = false;
             if let Some((file, _)) = lock {
                 from.push(file.to_string());
                 if manager == "npm" {
                     node.push("          cache: npm".into());
+                    cached = true;
                 }
+            }
+            // Otherwise setup-node caches on its own when `package.json`
+            // names a package manager, which fails without a lock file, or
+            // before Corepack has set up pnpm or Yarn.
+            if !cached {
+                node.push("          package-manager-cache: false".into());
             }
             steps.extend(node);
             if manager != "npm" {

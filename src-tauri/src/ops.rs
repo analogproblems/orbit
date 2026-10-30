@@ -567,8 +567,12 @@ fn items_from(t: &mut Thread, p: &Problem) {
             ItemKind::BaseMoved => moved,
             ItemKind::NoCi => no_ci,
         };
+        // Its branch follows a rename.
         if failing && item.kind == ItemKind::BaseMoved {
             item.check = p.base.clone();
+        }
+        if failing && item.kind == ItemKind::NoCi {
+            item.check = p.branch.clone();
         }
         if failing && !item.failing {
             // Failing again: what was said about it before is over.

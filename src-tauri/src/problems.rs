@@ -370,8 +370,9 @@ pub fn see_setup(
     now: DateTime<Utc>,
 ) {
     use crate::workflows::{Verdict, QUIET};
-    // Only what was read at the commit Orbit sees now counts.
-    let Some(setup) = setup.filter(|s| s.sha == ci.head.sha && !s.sha.is_empty()) else {
+    // Only what was read at the commit and branch Orbit sees now counts.
+    let now_read = |s: &&mut Setup| s.sha == ci.head.sha && s.branch == ci.branch;
+    let Some(setup) = setup.filter(|s| now_read(s) && !s.sha.is_empty()) else {
         return;
     };
     let Some(verdict) = setup.verdict() else {

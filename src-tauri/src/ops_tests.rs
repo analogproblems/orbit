@@ -1374,6 +1374,29 @@ fn a_repository_with_no_ci_gets_an_issue_with_a_workflow_to_start_from() {
         "None of the workflows on `main` runs on pull requests (`.github/workflows/de'ploy.yml`, `.github/workflows/x.yml`), so nothing checks a change before it merges.\n\nOrbit couldn't tell from the files at the top of this repository how it builds and tests, so it has no workflow to suggest. One in `.github/workflows` that runs the project's tests on `pull_request` is enough.\n\n"
     ), "{}", edit.body);
     assert!(!edit.body.contains("```"));
+    // Its item and text follow a renamed branch.
+    p.branch = "trunk".into();
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    assert_eq!(
+        (
+            threads[0].branch.as_str(),
+            threads[0].items[0].check.as_str()
+        ),
+        ("trunk", "trunk")
+    );
+    let edit = send(&mut threads, &mut journal, &p, true, t0()).unwrap();
+    assert!(
+        edit.body.contains("None of the workflows on `trunk`"),
+        "{}",
+        edit.body
+    );
+    assert_eq!(
+        hidden(&edit.body, "issue:p9")["items"][0]["branch"],
+        "trunk"
+    );
+    p.branch = "main".into();
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    send(&mut threads, &mut journal, &p, true, t0()).unwrap();
 
     // Done: the note and the close go at once, as completed.
     let later = t0() + Duration::minutes(5);
