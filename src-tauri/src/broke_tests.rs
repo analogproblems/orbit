@@ -325,6 +325,7 @@ fn the_problems_orbit_reads() {
     record(
         &mut ps,
         "a",
+        &sha('2'),
         Err("gh: Bad Gateway (HTTP 502)".into()),
         earlier,
     );
@@ -332,6 +333,7 @@ fn the_problems_orbit_reads() {
     record(
         &mut ps,
         "b",
+        &sha('2'),
         Ok(Broke {
             done: true,
             ..Default::default()
@@ -341,6 +343,7 @@ fn the_problems_orbit_reads() {
     record(
         &mut ps,
         "c",
+        &sha('2'),
         Ok(Broke {
             done: true,
             ..Default::default()
@@ -348,7 +351,13 @@ fn the_problems_orbit_reads() {
         t0(),
     );
     assert_eq!(ids(&ps, t0()), ["a"]);
-    record(&mut ps, "a", Err("gh: Bad Gateway (HTTP 502)".into()), t0());
+    record(
+        &mut ps,
+        "a",
+        &sha('2'),
+        Err("gh: Bad Gateway (HTTP 502)".into()),
+        t0(),
+    );
     assert!(ids(&ps, t0()).is_empty(), "a waits");
     assert_eq!(ids(&ps, t0() + Duration::minutes(2)), ["a"]);
     ps[0].closed_at = Some(stamp(t0()));
@@ -365,6 +374,7 @@ fn what_orbit_records() {
     assert!(record(
         &mut ps,
         "a",
+        &sha('2'),
         Err("gh: Bad Gateway (HTTP 502)".into()),
         t0()
     ));
@@ -376,7 +386,13 @@ fn what_orbit_records() {
         b.error.as_deref(),
         Some("Orbit couldn't read the branch's history yet: Bad Gateway (HTTP 502). It tries again later.")
     );
-    record(&mut ps, "a", Err("gh: Bad Gateway (HTTP 502)".into()), t0());
+    record(
+        &mut ps,
+        "a",
+        &sha('2'),
+        Err("gh: Bad Gateway (HTTP 502)".into()),
+        t0(),
+    );
     assert_eq!(
         ps[0].broke.as_ref().unwrap().retry_at,
         Some(stamp(t0() + Duration::minutes(2)))
@@ -390,8 +406,15 @@ fn what_orbit_records() {
         pull: Some(42),
         ..Default::default()
     };
-    record(&mut ps, "a", Ok(one.clone()), t0());
-    assert_eq!(ps[0].broke, Some(one));
+    record(&mut ps, "a", &sha('2'), Ok(one.clone()), t0());
+    assert_eq!(ps[0].broke, Some(one.clone()));
+    // It passed and failed again from another commit while Orbit read.
+    ps[0].since_sha = sha('4');
+    ps[0].broke = None;
+    assert!(!record(&mut ps, "a", &sha('2'), Ok(one.clone()), t0()));
+    assert_eq!(ps[0].broke, None);
+    assert!(record(&mut ps, "a", &sha('4'), Ok(one.clone()), t0()));
     ps[0].closed_at = Some(stamp(t0()));
-    assert!(!record(&mut ps, "a", Ok(Broke::default()), t0()));
+    assert!(!record(&mut ps, "a", &sha('4'), Ok(Broke::default()), t0()));
+    assert_eq!(ps[0].broke, Some(one));
 }

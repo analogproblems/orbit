@@ -246,6 +246,26 @@ async fn a_broken_default_branch_opens_one_issue_and_green_closes_it() {
     assert!(journal.iter().all(|w| w.state == WriteState::Done));
 }
 
+/// The fake GitHub's history from `at`: that one commit, with its first
+/// parent, its Rust check and the pull request merged as it, so the next
+/// commit back is read from its own file.
+fn history(dir: &Path, at: char, parent: char, result: &str, pull: u64) {
+    let node = json!({
+        "oid": sha(at),
+        "parents": { "nodes": [{ "oid": sha(parent) }] },
+        "statusCheckRollup": rollup(&[("Rust", result)]),
+        "associatedPullRequests": { "nodes": [
+            { "number": pull, "merged": true, "baseRefName": "main" }
+        ] }
+    });
+    std::fs::write(
+        dir.join(format!("history-{}.json", sha(at))),
+        json!({ "data": { "repository": { "object": { "history": { "nodes": [node] } } } } })
+            .to_string(),
+    )
+    .unwrap();
+}
+
 /// A broken default branch's issue names the pull request that broke it,
 /// from the branch's history, read once.
 #[cfg(unix)]
@@ -254,24 +274,8 @@ async fn a_broken_default_branch_names_the_pull_request_that_broke_it() {
     let d = tempfile::tempdir().unwrap();
     let gh = fake_gh(d.path());
     answer(d.path(), '2', &[("Rust", "FAILURE")], None);
-    let commit = |at: char, parent: char, result: &str, pull: u64| {
-        json!({
-            "oid": sha(at),
-            "parents": { "nodes": [{ "oid": sha(parent) }] },
-            "statusCheckRollup": rollup(&[("Rust", result)]),
-            "associatedPullRequests": { "nodes": [
-                { "number": pull, "merged": true, "baseRefName": "main" }
-            ] }
-        })
-    };
-    // The history from commit 2 stops at 2; it goes on from 1.
-    let history = |nodes: Vec<Value>| {
-        json!({ "data": { "repository": { "object": { "history": { "nodes": nodes } } } } })
-            .to_string()
-    };
-    let at = |c: char| d.path().join(format!("history-{}.json", sha(c)));
-    std::fs::write(at('2'), history(vec![commit('2', '1', "FAILURE", 42)])).unwrap();
-    std::fs::write(at('1'), history(vec![commit('1', '0', "SUCCESS", 41)])).unwrap();
+    history(d.path(), '2', '1', "FAILURE", 42);
+    history(d.path(), '1', '0', "SUCCESS", 41);
     let e = connected(d.path()).await;
     watch(&e, &gh).await;
     let issue = &github(d.path())["issues"][0];
@@ -294,6 +298,56 @@ async fn a_broken_default_branch_names_the_pull_request_that_broke_it() {
         .as_str()
         .unwrap()
         .contains("It started failing with #42"));
+}
+
+/// A branch that passes and breaks again within the hour is the same
+/// problem, but what broke it is read again from the new failure.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_branch_that_breaks_again_soon_names_what_broke_it_this_time() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    answer(d.path(), '2', &[("Rust", "FAILURE")], None);
+    history(d.path(), '2', '1', "FAILURE", 42);
+    history(d.path(), '1', '0', "SUCCESS", 41);
+    let e = connected(d.path()).await;
+    watch(&e, &gh).await;
+    answer(d.path(), '3', &[("Rust", "SUCCESS")], None);
+    watch(&e, &gh).await;
+    answer(d.path(), '4', &[("Rust", "FAILURE")], None);
+    history(d.path(), '4', '3', "FAILURE", 44);
+    history(d.path(), '3', '2', "SUCCESS", 43);
+    watch(&e, &gh).await;
+
+    let s = e.snapshot().await;
+    assert_eq!(s.problems.len(), 1, "the same problem, back again");
+    assert_eq!(s.problems[0].since_sha, sha('4'));
+    let check = |issue: &Value, shown: &Snapshot| {
+        let body = issue["body"].as_str().unwrap();
+        assert!(body.contains("at `4444444`."), "{body}");
+        assert!(body.contains(
+            "\n\nIt started failing with #44, merged as `4444444`; `3333333` before it passed.\n\n"
+        ));
+        assert!(!body.contains("#42"));
+        assert_eq!(
+            shown.attention[0].reason,
+            "CI is failing on main in a/b since 4444444: CI / Rust. \
+             It started failing with #44, merged as 4444444; 3333333 before it passed."
+        );
+    };
+    let g = github(d.path());
+    assert_eq!(g["issues"].as_array().unwrap().len(), 1);
+    check(&g["issues"][0], &e.shown_snapshot().await);
+    assert_eq!(calls(d.path(), "GET history/"), 4);
+
+    // After a restart, the same, without reading the history again.
+    drop(e);
+    let e = connected(d.path()).await;
+    watch(&e, &gh).await;
+    let g = github(d.path());
+    assert_eq!(g["issues"].as_array().unwrap().len(), 1);
+    check(&g["issues"][0], &e.shown_snapshot().await);
+    assert_eq!(calls(d.path(), "GET history/"), 4);
 }
 
 /// A write GitHub got just before Orbit stopped, before Orbit heard back,

@@ -151,7 +151,7 @@ impl Engine {
         for (id, repo, branch, start) in &wanted {
             let result = broke::read(repo, branch, start).await;
             self.update(|s| {
-                broke::record(&mut s.problems, id, result, chrono::Utc::now());
+                broke::record(&mut s.problems, id, start, result, chrono::Utc::now());
             })
             .await;
         }

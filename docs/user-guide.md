@@ -373,6 +373,7 @@ When a default branch starts failing, Orbit reads the branch's history on GitHub
 - When those commits are one pull request's merge, Orbit's issue, the problem on **Operations** and the **Needs you** item say so, such as "It started failing with #42, merged as `7d41e09`; `3b8e6f4` before it passed." A pull request rebased onto the branch counts as one merge too.
 - Otherwise they list where the commits came from, such as "It started failing in the 3 commits after `3b8e6f4`, which passed, up to `7d41e09`: from #41, #42 and 1 pushed without a pull request."
 - With no commit that passed in the 20 before, or none since the branch began, Operations says so and the issue names nothing. When GitHub doesn't answer, Operations says so and Orbit tries again after a minute, then waits twice as long each time, up to an hour.
+- When the branch passes and fails again within the hour, it is the same problem back, but something new broke it, so Orbit reads again from the new failure and the issue says what broke it this time.
 
 Orbit's own `orbit/review` check doesn't count, and a commit whose checks Orbit couldn't all read never counts as passing.
 

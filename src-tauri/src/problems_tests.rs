@@ -137,6 +137,10 @@ fn a_flaky_branch_comes_back_quietly_and_tells_you_an_hour_after_its_alert() {
     let mut problems = vec![];
     observe(&mut problems, &failing(A, &["Test"]), &[], at(0));
     let key = problems[0].item_key();
+    problems[0].broke = Some(crate::broke::Broke {
+        done: true,
+        ..Default::default()
+    });
     observe(&mut problems, &passing(B), &[], at(20));
     // Closed a moment ago, so its item stays announced.
     assert_eq!(quiet_keys(&problems, at(30)), std::slice::from_ref(&key));
@@ -146,6 +150,9 @@ fn a_flaky_branch_comes_back_quietly_and_tells_you_an_hour_after_its_alert() {
     assert!(p.is_open());
     assert_eq!(p.item_key(), key);
     assert_eq!(timeline(p).last(), Some(&"Failing again at 3333333."));
+    // It passed in between, so it starts again from C.
+    assert_eq!(p.since_sha, C);
+    assert_eq!(p.broke, None);
     assert!(p.alert_due.is_some());
     // Still red an hour after the first alert: it tells you then.
     observe(&mut problems, &failing(C, &["Test"]), &[], at(59));

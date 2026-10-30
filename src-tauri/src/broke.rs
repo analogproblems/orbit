@@ -256,15 +256,20 @@ pub async fn read(repo: &str, branch: &str, start: &str) -> Result<Broke, String
     })
 }
 
-/// Records what Orbit read for a problem. Returns whether anything
-/// changed.
+/// Records what Orbit read back from `start` for a problem, unless it has
+/// since started failing again from another commit. Returns whether
+/// anything changed.
 pub fn record(
     problems: &mut [Problem],
     id: &str,
+    start: &str,
     result: Result<Broke, String>,
     now: DateTime<Utc>,
 ) -> bool {
-    let Some(p) = problems.iter_mut().find(|p| p.id == id && p.is_open()) else {
+    let Some(p) = problems
+        .iter_mut()
+        .find(|p| p.id == id && p.is_open() && p.since_sha == start)
+    else {
         return false;
     };
     let broke = match result {
