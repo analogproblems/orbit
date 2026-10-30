@@ -2,10 +2,13 @@
 //! default branch and open pull requests, and the problems they open or
 //! close (see `crate::ci` and `crate::problems`), whether CI runs on each
 //! repository's pull requests (`crate::workflows`), the self-hosted
-//! runners its runs wait for (`crate::runners`), and its Actions storage
-//! (`crate::actions_storage`).
+//! runners its runs wait for (`crate::runners`), its Actions storage
+//! (`crate::actions_storage`), and whether GitHub says each pull request
+//! Orbit reviews can merge (`crate::readiness`).
 use super::Engine;
-use crate::{actions_storage as storage, broke, ci, logs, problems, runners, types::*, workflows};
+use crate::{
+    actions_storage as storage, broke, ci, logs, problems, readiness, runners, types::*, workflows,
+};
 use std::sync::atomic::Ordering;
 
 impl Engine {
@@ -27,6 +30,7 @@ impl Engine {
         self.read_failures().await;
         self.read_breaks().await;
         self.read_setups().await;
+        self.read_merges().await;
         self.watching_ci.store(false, Ordering::SeqCst);
         // Also with Watch CI off, so what Orbit posted is closed.
         self.tell_agents().await;
@@ -98,6 +102,7 @@ impl Engine {
             workflows::prune(&mut s.setups, &connected);
             runners::prune(&mut s.runners, &connected);
             storage::prune(&mut s.actions_storage, &connected);
+            readiness::prune(s);
             problems::close_unwatched(&mut s.problems, &connected, false, now);
         })
         .await;
@@ -193,6 +198,36 @@ impl Engine {
                 problems::see_setup(&mut s.problems, setup, ci, &followed, now);
             })
             .await;
+        }
+        let _ = self.flush().await;
+    }
+}
+impl Engine {
+    /// Asks GitHub whether the pull requests Orbit reviews can merge, a
+    /// few a pass, once nothing else is in the way, then forgets those it
+    /// no longer reviews. One GitHub didn't answer for, or is still working
+    /// out, is asked again after a wait.
+    async fn read_merges(&self) {
+        // While Watch CI is off, every answer waits on the checks, so
+        // nothing is wanted.
+        let wanted = readiness::wanted(&*self.state.lock().await, chrono::Utc::now());
+        for (repo, number, head, base) in &wanted {
+            let result = readiness::read(repo, *number, head, base).await;
+            // After a rate limit, the rest wait for the next pass.
+            let limited = result.as_ref().is_err_and(|e| logs::rate_limited(e));
+            self.update(|s| {
+                // Watch CI went off meanwhile.
+                if !s.settings.watch_ci {
+                    return;
+                }
+                let id = pr_id(repo, *number);
+                readiness::record(&mut s.merges, &id, head, base, result, chrono::Utc::now());
+                readiness::prune(s);
+            })
+            .await;
+            if limited {
+                break;
+            }
         }
         let _ = self.flush().await;
     }
@@ -299,6 +334,7 @@ fn stop_watching(s: &mut Snapshot) {
     s.setups.clear();
     s.runners.clear();
     s.actions_storage.clear();
+    s.merges.clear();
     problems::close_unwatched(&mut s.problems, &[], true, chrono::Utc::now());
 }
 fn repos_of(s: &Snapshot) -> Vec<String> {

@@ -1723,6 +1723,7 @@ fn answer(
                 .into_iter()
                 .filter(|l| !l.closed && l.rounds > 0)
                 .collect();
+            let ready = crate::readiness::all(s);
             let status = |l: &LoopState| match l.status {
                 LoopStatus::NeedsYou => "needs you",
                 LoopStatus::Reviewing => "reviewing",
@@ -1747,6 +1748,15 @@ fn answer(
                     {
                         text.push(' ');
                         text.push_str(reason);
+                    }
+                    // A clean loop says whether it is clear to merge.
+                    if let Some(r) = ready
+                        .iter()
+                        .find(|r| r.pr_id == l.pr_id)
+                        .filter(|_| l.status == LoopStatus::Clean)
+                    {
+                        text.push(' ');
+                        text.push_str(&r.line());
                     }
                     // The item that offers a fix, if the PR has one.
                     let about = |a: &&Attention| a.pr_id.as_deref() == Some(&*l.pr_id);

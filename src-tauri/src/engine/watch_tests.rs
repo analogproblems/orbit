@@ -859,3 +859,241 @@ async fn storage_read_after_a_change_is_dropped() {
         );
     }
 }
+
+/// GitHub's CI for `a/b`: main at commit `1`, made an hour ago, and pull
+/// request 1 at `head`, whose one check passed, begun half an hour ago.
+fn passing_pull(dir: &Path, head: &str) {
+    passing_pulls(dir, &[(1, head)]);
+}
+/// The same, with these pull requests, by number and head.
+fn passing_pulls(dir: &Path, pulls: &[(u64, &str)]) {
+    let ago = |m: i64| (chrono::Utc::now() - chrono::Duration::minutes(m)).to_rfc3339();
+    let check = json!({
+        "__typename": "CheckRun",
+        "name": "Rust",
+        "status": "COMPLETED",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/a/b/actions/runs/1/job/2",
+        "checkSuite": { "createdAt": ago(30), "workflowRun": { "workflow": { "name": "CI" } } }
+    });
+    let rollup = json!({ "contexts": {
+        "pageInfo": { "hasNextPage": false, "endCursor": null },
+        "nodes": [check]
+    } });
+    let nodes: Vec<_> = pulls
+        .iter()
+        .map(|(number, head)| {
+            json!({
+                "number": number,
+                "isDraft": false,
+                "headRefOid": head,
+                "commits": { "nodes": [{ "commit": { "oid": head, "statusCheckRollup": rollup } }] }
+            })
+        })
+        .collect();
+    let v = json!({ "data": { "repository": {
+        "defaultBranchRef": { "name": "main", "target": {
+            "oid": "1".repeat(40),
+            "committedDate": ago(60),
+            "messageHeadline": "Update the build",
+            "statusCheckRollup": rollup
+        } },
+        "pullRequests": { "pageInfo": { "hasNextPage": false }, "nodes": nodes }
+    } } });
+    std::fs::write(dir.join("answer.json"), v.to_string()).unwrap();
+}
+/// What GitHub says about pull request 1 at `head`.
+fn mergeable(dir: &Path, head: &str, mergeable: serde_json::Value, state: &str) {
+    let v = json!({ "head": { "sha": head }, "mergeable": mergeable, "mergeable_state": state });
+    std::fs::write(dir.join("pull-1.json"), v.to_string()).unwrap();
+}
+/// Pull request 1, by a member from a branch in `a/b`, and a clean round
+/// of it as it is.
+async fn reviewed(e: &Engine) -> PullRequest {
+    let mut p = crate::types::tests::pr();
+    p.head_repo = "a/b".into();
+    p.author_association = "MEMBER".into();
+    e.update(|s| {
+        s.prs = vec![p.clone()];
+        let mut r = Review::new(&p, &s.settings, true);
+        r.status = "posted".into();
+        r.report = "Report".into();
+        r.findings = Some(vec![]);
+        crate::review_loop::decide(&mut r, Some(1));
+        s.reviews.push(r);
+    })
+    .await;
+    p
+}
+async fn line(e: &Engine) -> String {
+    e.shown_snapshot().await.readiness[0].line()
+}
+
+/// Once nothing else is in the way, Orbit asks GitHub whether a pull
+/// request merges, again a little later while GitHub is still working it
+/// out, and then not for a while. A failed read keeps the answer, and
+/// Watch CI off forgets it. Nothing is written to GitHub.
+#[cfg(unix)]
+#[tokio::test]
+async fn github_is_asked_whether_a_clean_pull_request_merges() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    let e = connected(d.path()).await;
+    let p = reviewed(&e).await;
+    let ask = "GET repos/a/b/pulls/1";
+    // Its check fails: GitHub isn't asked.
+    answer_pull_failing(d.path(), &p.head_sha);
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!(sent(d.path(), ask), 0);
+    assert_eq!(
+        line(&e).await,
+        "Not clear to merge yet. CI / Rust fails on aaaaaaa."
+    );
+
+    passing_pull(d.path(), &p.head_sha);
+    mergeable(d.path(), &p.head_sha, json!(null), "unknown");
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!(sent(d.path(), ask), 1);
+    assert_eq!(
+        line(&e).await,
+        "Not clear to merge yet. GitHub is still checking whether it merges."
+    );
+    // Not again until its wait is over.
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!(sent(d.path(), ask), 1);
+    e.update(|s| s.merges[0].retry_at = Some("2020-01-01T00:00:00.000Z".into()))
+        .await;
+    mergeable(d.path(), &p.head_sha, json!(true), "clean");
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!(sent(d.path(), ask), 2);
+    let shown = e.shown_snapshot().await;
+    assert!(shown.readiness[0].clear);
+    assert_eq!(
+        shown.readiness[0].line(),
+        "Clear to merge at aaaaaaa against main at 1111111."
+    );
+    // A definite answer stands for a while.
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!(sent(d.path(), ask), 2);
+
+    // GitHub fails: the answer stands, with the error kept.
+    e.update(|s| s.merges[0].read_at = "2020-01-01T00:00:00.000Z".into())
+        .await;
+    std::fs::write(d.path().join("pull-error"), "gh: Bad Gateway (HTTP 502)\n").unwrap();
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!(sent(d.path(), ask), 3);
+    let shown = e.shown_snapshot().await;
+    assert!(shown.readiness[0].clear);
+    assert_eq!(
+        shown.merges[0].error.as_deref(),
+        Some("Orbit couldn't ask GitHub whether it merges: Bad Gateway (HTTP 502). It tries again later.")
+    );
+    assert!(writes(d.path()).is_empty());
+
+    // Back to draft: Orbit no longer reviews it, so its answer goes.
+    e.update(|s| s.prs[0].draft = true).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let shown = e.shown_snapshot().await;
+    assert!(shown.merges.is_empty());
+    assert!(shown.readiness.is_empty());
+    assert_eq!(sent(d.path(), ask), 3);
+    e.update(|s| s.prs[0].draft = false).await;
+
+    e.update(|s| s.settings.watch_ci = false).await;
+    crate::github::GH.scope(gh, e.watch_ci()).await;
+    let shown = e.shown_snapshot().await;
+    assert!(shown.merges.is_empty());
+    assert_eq!(
+        shown.readiness[0].line(),
+        "Not clear to merge yet. Orbit can't see its checks while Watch CI is off."
+    );
+    assert_eq!(sent(d.path(), ask), 3);
+}
+/// GitHub's CI for `a/b` with pull request 1's one check failing at `head`.
+fn answer_pull_failing(dir: &Path, head: &str) {
+    passing_pull(dir, head);
+    let text = std::fs::read_to_string(dir.join("answer.json")).unwrap();
+    let text = text.replacen(
+        "\"conclusion\":\"SUCCESS\"",
+        "\"conclusion\":\"FAILURE\"",
+        2,
+    );
+    let mut v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    // The default branch still passes.
+    v["data"]["repository"]["defaultBranchRef"]["target"]["statusCheckRollup"]["contexts"]
+        ["nodes"][0]["conclusion"] = json!("SUCCESS");
+    std::fs::write(dir.join("answer.json"), v.to_string()).unwrap();
+}
+
+/// GitHub's answer that comes back after Watch CI went off, the
+/// repository was disconnected or the pull request became a draft is
+/// dropped.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_merge_answer_after_a_change_is_dropped() {
+    for change in ["disconnect", "watch off", "draft"] {
+        let d = tempfile::tempdir().unwrap();
+        let gh = fixture_gh(d.path());
+        let e = connected(d.path()).await;
+        let p = reviewed(&e).await;
+        passing_pull(d.path(), &p.head_sha);
+        mergeable(d.path(), &p.head_sha, json!(true), "clean");
+        // GitHub takes its time over the pull request.
+        std::fs::write(d.path().join("hold"), "repos/a/b/pulls/1").unwrap();
+        let reading = tokio::spawn(crate::github::GH.scope(gh.clone(), {
+            let e = e.clone();
+            async move { e.watch_ci().await }
+        }));
+        let held = d.path().join("held");
+        for _ in 0..500 {
+            if held.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(held.exists(), "{change}");
+        e.update(|s| match change {
+            "disconnect" => s.settings.repositories.clear(),
+            "draft" => s.prs[0].draft = true,
+            _ => s.settings.watch_ci = false,
+        })
+        .await;
+        std::fs::remove_file(d.path().join("hold")).unwrap();
+        reading.await.unwrap();
+        assert!(e.shown_snapshot().await.merges.is_empty(), "{change}");
+    }
+}
+
+/// A rate limit stops the pass: the next pull request waits.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_rate_limit_stops_asking_whether_pull_requests_merge() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    let e = connected(d.path()).await;
+    let p = reviewed(&e).await;
+    let mut second = p.clone();
+    second.number = 2;
+    second.id = pr_id("a/b", 2);
+    second.head_sha = "2".repeat(40);
+    e.update(|s| {
+        let mut r = Review::new(&second, &s.settings, true);
+        r.status = "posted".into();
+        r.report = "Report".into();
+        r.findings = Some(vec![]);
+        crate::review_loop::decide(&mut r, Some(1));
+        s.reviews.push(r);
+        s.prs.push(second.clone());
+    })
+    .await;
+    passing_pulls(d.path(), &[(1, &p.head_sha), (2, &second.head_sha)]);
+    std::fs::write(
+        d.path().join("pull-error"),
+        "gh: API rate limit exceeded for user ID 1. (HTTP 403)\n",
+    )
+    .unwrap();
+    crate::github::GH.scope(gh, e.watch_ci()).await;
+    let asked = sent(d.path(), "GET repos/a/b/pulls/1") + sent(d.path(), "GET repos/a/b/pulls/2");
+    assert_eq!(asked, 1);
+    assert_eq!(e.shown_snapshot().await.merges.len(), 1);
+}

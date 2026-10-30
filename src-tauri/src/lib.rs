@@ -21,6 +21,7 @@ pub mod models;
 pub mod ollama;
 pub mod ops;
 pub mod problems;
+pub mod readiness;
 pub mod remote;
 pub mod reruns;
 pub mod review_instructions;

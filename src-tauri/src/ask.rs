@@ -414,6 +414,7 @@ pub fn briefing(s: &Snapshot, lookups: &Lookups) -> Value {
         })
         .collect();
     let loops = crate::review_loop::states(s);
+    let ready = crate::readiness::all(s);
     let pull_requests: Vec<Value> = s
         .prs
         .iter()
@@ -448,6 +449,7 @@ pub fn briefing(s: &Snapshot, lookups: &Lookups) -> Value {
                     "published": r.comment_url.is_some(),
                 })),
                 "readyToPublish": publishable_report(s, pr).is_some(),
+                "mergeReadiness": ready.iter().find(|r| r.pr_id == pr.id).map(|r| r.line()),
             })
         })
         .collect();

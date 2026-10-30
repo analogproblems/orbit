@@ -194,6 +194,14 @@ describe("demo ci", () => {
     expect(s.problems?.every((p) => p.closedAt)).toBe(true);
     expect(s.attention?.some((a) => a.kind === "ci_failing")).toBe(false);
     expect(s.attention?.some((a) => a.kind === "runs_waiting")).toBe(false);
+    expect(s.merges).toEqual([]);
+    expect(s.readiness?.map((r) => r.waits.map((w) => w.text))).toEqual([
+      [
+        "Orbit's review loop needs you: Round limit reached.",
+        "Orbit can't see its checks while Watch CI is off.",
+      ],
+      ["Orbit can't see its checks while Watch CI is off."],
+    ]);
   });
 });
 
@@ -270,6 +278,10 @@ describe("demo buddy", () => {
     const key = last().lines![0].key!;
     expect(last().lines![0].text).toMatch(
       /^orbit#\d+: round 4 of 4, needs you\. Round limit reached\.$/,
+    );
+    // A clean loop says whether it is clear to merge.
+    expect(last().lines![2].text).toBe(
+      "orbit#145: round 3 of 4, clean. Not clear to merge yet. main moved on since its checks ran: merge main in and let them run again.",
     );
     expect((await store.action("use_fix", { key })).ok).toBe(true);
     const s = useOrbit.getState().snapshot;
@@ -591,5 +603,21 @@ describe("review loop controls", () => {
     });
     await store.action("stop_loop", { prId });
     expect(loop().status).toBe("stopped");
+  });
+  it("says what the loop leaves in the way of merging", async () => {
+    const store = useOrbit.getState();
+    const prId = store.snapshot.prs[1].id;
+    const waits = () =>
+      useOrbit
+        .getState()
+        .snapshot.readiness!.find((r) => r.prId === prId)!
+        .waits.map((w) => w.text);
+    await store.action("continue_loop", { prId, rounds: 2 });
+    expect(waits()).toEqual([
+      "1 blocking finding from Orbit's review of abc1111 waits on the author.",
+      "Orbit hasn't read the checks on abc1111 yet.",
+    ]);
+    await store.action("stop_loop", { prId });
+    expect(waits()[0]).toBe("Orbit's review loop on it is stopped.");
   });
 });

@@ -3,6 +3,7 @@ import {
   checkNames,
   defaults,
   loopStatusLabels,
+  readinessLine,
   sameRepo,
   scanActive,
   selectionError,
@@ -667,6 +668,44 @@ export function freshDemo(): Snapshot {
         rounds: 3,
         roundLimit: 4,
         roundIds: ids(clean),
+      },
+    ],
+    // Only acme/orbit is reviewed automatically, and orbit#148's author
+    // isn't trusted yet, so two pull requests have an answer.
+    readiness: [
+      {
+        prId: prs[1].id,
+        repo: prs[1].repo,
+        number: prs[1].number,
+        headSha: prs[1].headSha,
+        base: "main",
+        baseSha: "",
+        clear: false,
+        waits: [
+          {
+            kind: "loop",
+            text: "Orbit's review loop needs you: Round limit reached.",
+          },
+          {
+            kind: "checks",
+            text: `Orbit hasn't read the checks on ${prs[1].headSha.slice(0, 7)} yet.`,
+          },
+        ],
+      },
+      {
+        prId: prs[4].id,
+        repo: prs[4].repo,
+        number: prs[4].number,
+        headSha: prs[4].headSha,
+        base: "main",
+        baseSha: "",
+        clear: false,
+        waits: [
+          {
+            kind: "base",
+            text: "main moved on since its checks ran: merge main in and let them run again.",
+          },
+        ],
       },
     ],
     // Bit's notes, as the engine would have written them.
@@ -1531,10 +1570,14 @@ export function demoAnswer(
           : loopStatusLabels[l.status].toLowerCase();
     const lines = open.map((l) => {
       const reason = l.status === "needs_you" && l.reason ? ` ${l.reason}` : "";
+      // A clean loop says whether it is clear to merge.
+      const ready = s.readiness?.find((r) => r.prId === l.prId);
+      const merge =
+        l.status === "clean" && ready ? ` ${readinessLine(ready)}` : "";
       const about = items.filter((a) => a.prId === l.prId);
       const item = about.find((a) => a.fix) ?? about[0];
       return line(
-        `${prLabel(s, l.prId)}: round ${l.rounds} of ${l.roundLimit}, ${status(l)}.${reason}`,
+        `${prLabel(s, l.prId)}: round ${l.rounds} of ${l.roundLimit}, ${status(l)}.${reason}${merge}`,
         l.prId,
         item?.key ?? null,
       );

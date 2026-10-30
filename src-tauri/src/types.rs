@@ -1363,6 +1363,13 @@ pub struct Snapshot {
     /// Each connected repository's GitHub Actions caches and artifacts, as
     /// Orbit last read them (see `crate::actions_storage`).
     pub actions_storage: Vec<crate::actions_storage::Storage>,
+    /// What GitHub last said about whether each pull request Orbit reviews
+    /// can merge (see `crate::readiness`).
+    pub merges: Vec<crate::readiness::Merge>,
+    /// Whether each pull request Orbit reviews is clear to merge. Derived
+    /// like `loop_states`.
+    #[serde(skip_deserializing, skip_serializing_if = "Vec::is_empty")]
+    pub readiness: Vec<crate::readiness::Readiness>,
 }
 /// How reading the pull-request history is going.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

@@ -48,7 +48,10 @@ import {
   type CleanupResult,
   followUpUnavailable,
   canExport,
+  shortSha,
   type SettingsTab,
+  type Wait,
+  type WaitKind,
 } from "./types";
 /** Running in the native desktop window. */
 export const desktop = isTauri();
@@ -130,6 +133,8 @@ let demo: Snapshot;
 // independent from the global settings lane, so disabling Autopilot stays fast.
 const mutationTails = new Map<string, Promise<unknown>>();
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
+/** What stands after Orbit's review loop in a readiness answer. */
+const afterReview: WaitKind[] = ["checks", "base", "merge"];
 function commit() {
   try {
     localStorage.setItem("orbit-demo-v3", JSON.stringify(demo));
@@ -652,6 +657,19 @@ async function demoAction(
       demo.ci = [];
       demo.runners = [];
       demo.actionsStorage = [];
+      demo.merges = [];
+      demo.readiness = demo.readiness?.map((r) => ({
+        ...r,
+        baseSha: "",
+        clear: false,
+        waits: [
+          ...r.waits.filter((w) => !afterReview.includes(w.kind)),
+          {
+            kind: "checks",
+            text: "Orbit can't see its checks while Watch CI is off.",
+          },
+        ],
+      }));
       demo.problems = demo.problems?.map((p) =>
         p.closedAt
           ? p
@@ -699,6 +717,27 @@ async function demoAction(
       state.status = stop ? "stopped" : "waiting_for_author";
       state.reason = null;
       if (!stop) state.roundLimit = state.rounds + Number(args.rounds);
+      const latest = demo.reviews.find((r) => r.id === state.roundIds?.at(-1));
+      const n = latest?.blocking ?? 0;
+      const head = shortSha(latest?.headSha ?? "");
+      const loop: Wait = stop
+        ? { kind: "loop", text: "Orbit's review loop on it is stopped." }
+        : {
+            kind: "findings",
+            text: `${n === 1 ? "1 blocking finding" : `${n} blocking findings`} from Orbit's review of ${head} ${n === 1 ? "waits" : "wait"} on the author.`,
+          };
+      demo.readiness = demo.readiness?.map((r) =>
+        r.prId === args.prId
+          ? {
+              ...r,
+              clear: false,
+              waits: [
+                loop,
+                ...r.waits.filter((w) => afterReview.includes(w.kind)),
+              ],
+            }
+          : r,
+      );
     }
     demo.attention = demo.attention?.filter((a) => a.prId !== args.prId);
     commit();

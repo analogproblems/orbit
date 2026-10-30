@@ -29,6 +29,7 @@ import {
   buddyOf,
   defaults,
   offeredFix,
+  readinessLine,
   withPatch,
   type Attention,
   type Provider,
@@ -471,5 +472,35 @@ describe("what needs you", () => {
     expect(open("ci_failing")).toBe(go.onOperations);
     expect(open("ci_question")).toBe(go.onOperations);
     expect(open("runs_waiting")).toBe(go.onOperations);
+  });
+});
+describe("readiness line", () => {
+  it("says it as the engine does", () => {
+    const r = {
+      prId: "a/b#1",
+      repo: "a/b",
+      number: 1,
+      headSha: "a".repeat(40),
+      base: "main",
+      baseSha: "c".repeat(40),
+      clear: true,
+      waits: [],
+    };
+    expect(readinessLine(r)).toBe(
+      "Clear to merge at aaaaaaa against main at ccccccc.",
+    );
+    expect(
+      readinessLine({
+        ...r,
+        clear: false,
+        waits: [
+          { kind: "checks", text: "Checks are still running on aaaaaaa." },
+          {
+            kind: "merge",
+            text: "GitHub is still checking whether it merges.",
+          },
+        ],
+      }),
+    ).toBe("Not clear to merge yet. Checks are still running on aaaaaaa.");
   });
 });

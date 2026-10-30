@@ -462,6 +462,22 @@ describe("PR review regressions", () => {
     );
   });
 
+  it("opens a pull request from Ready to merge and says what is in its way", async () => {
+    await mount();
+    await user().click(screen.getByRole("button", { name: /^Operations/ }));
+    await user().click(
+      within(
+        await screen.findByRole("list", { name: "Ready to merge" }),
+      ).getByText(/^acme\/orbit#145/),
+    );
+    await user().click(screen.getByRole("tab", { name: /Overview/ }));
+    expect(screen.getByRole("heading", { name: "Merging" })).toBeTruthy();
+    expect(
+      screen.getByText(
+        "main moved on since its checks ran: merge main in and let them run again.",
+      ),
+    ).toBeTruthy();
+  });
   it("opens on Live under autopilot and keeps inbox search on Ctrl+K", async () => {
     snapshot.settings.automatic = true;
     await mount();

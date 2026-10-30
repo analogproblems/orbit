@@ -18,6 +18,7 @@ import { SaveFeedback } from "./SaveFeedback";
 import {
   buddyOf,
   checkNames,
+  readinessLine,
   sameRepo,
   shortSha,
   trustedSource,
@@ -913,6 +914,53 @@ function StorageUse() {
   );
 }
 
+/** Each pull request Orbit reviews: clear to merge, or what is in the
+ * way. */
+function ReadyToMerge({ go }: { go: AttentionHandlers }) {
+  const { snapshot: s } = useOrbit();
+  const all = s.readiness ?? [];
+  if (!all.length) return null;
+  const clear = all.filter((r) => r.clear).length;
+  return (
+    <VStack gap={3}>
+      <Heading level={3}>Ready to merge</Heading>
+      <Text color="secondary">
+        {clear === 1
+          ? "1 pull request is clear to merge."
+          : `${clear} pull requests are clear to merge.`}{" "}
+        Clear means Orbit’s review of its latest commit is clean, every check
+        passed with the base branch’s latest commit, and GitHub says it merges.
+      </Text>
+      <Card padding={0}>
+        <List hasDividers aria-label="Ready to merge">
+          {all.map((r) => {
+            const pr = s.prs.find((p) => p.id === r.prId);
+            return (
+              <ListItem
+                key={r.prId}
+                startContent={
+                  <StatusDot
+                    variant={r.clear ? "success" : "warning"}
+                    label={r.clear ? "Clear to merge" : "Not clear yet"}
+                  />
+                }
+                label={
+                  <Text weight="medium" maxLines={2}>
+                    {r.repo}#{r.number}
+                    {pr?.title ? ` · ${pr.title}` : ""}
+                  </Text>
+                }
+                description={<Text color="secondary">{readinessLine(r)}</Text>}
+                onClick={pr ? () => go.onChoose(pr) : undefined}
+              />
+            );
+          })}
+        </List>
+      </Card>
+    </VStack>
+  );
+}
+
 function RecentlyFixed() {
   const { snapshot: s } = useOrbit();
   const closed = (s.problems ?? [])
@@ -1047,6 +1095,7 @@ export function Operations(go: AttentionHandlers) {
             <Heading level={3}>Open problems</Heading>
             <OpenProblems go={go} />
           </VStack>
+          <ReadyToMerge go={go} />
           <VStack gap={3}>
             <Heading level={3}>CI by repository</Heading>
             <Repositories go={go} />
