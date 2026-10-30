@@ -1102,7 +1102,7 @@ fn runs_waiting_for_a_runner_are_one_heads_up_linked_from_how_are_my_repositorie
         name: "Release".into(),
         ..Default::default()
     };
-    crate::problems::see_waiting(&mut s.problems, "a/b", &[run], chrono::Utc::now());
+    crate::problems::see_waiting(&mut s.problems, "a/b", &[run], true, chrono::Utc::now());
     assert_eq!(
         step(&mut s),
         [(

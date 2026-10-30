@@ -1227,6 +1227,9 @@ export interface RunnerPlace {
   unseen?: string | null;
   /** For a repository, its runs waiting for a runner. */
   waiting: WaitingRun[];
+  /** GitHub had more queued runs than Orbit read, so more may wait than
+   * `waiting` lists. */
+  moreQueued?: boolean;
   /** Why the last read failed; what was read before is kept. */
   error?: string | null;
   tries: number;

@@ -248,23 +248,30 @@ fn fixture_gh(dir: &Path) -> std::path::PathBuf {
     std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
     gh
 }
+/// A queued run of `a/b`, made these many minutes ago, and its latest try
+/// begun these many minutes ago, if later.
+fn run(id: u64, name: &str, made: i64, began: Option<i64>) -> serde_json::Value {
+    let ago = |m: i64| (chrono::Utc::now() - chrono::Duration::minutes(m)).to_rfc3339();
+    json!({
+        "id": id,
+        "name": name,
+        "status": "queued",
+        "created_at": ago(made),
+        "run_started_at": ago(began.unwrap_or(made)),
+        "html_url": format!("https://github.com/a/b/actions/runs/{id}"),
+    })
+}
+/// The runs of `a/b`.
+fn queue(dir: &Path, runs: &[serde_json::Value]) {
+    std::fs::write(dir.join("queued.json"), json!(runs).to_string()).unwrap();
+}
 /// Runs of `a/b` queued since these many minutes ago, by ID and name.
 fn queued(dir: &Path, runs: &[(u64, &str, i64)]) {
     let runs: Vec<_> = runs
         .iter()
-        .map(|(id, name, ago)| {
-            let since = chrono::Utc::now() - chrono::Duration::minutes(*ago);
-            json!({
-                "id": id,
-                "name": name,
-                "status": "queued",
-                "created_at": since.to_rfc3339(),
-                "html_url": format!("https://github.com/a/b/actions/runs/{id}"),
-            })
-        })
+        .map(|(id, name, ago)| run(*id, name, *ago, None))
         .collect();
-    let v = json!({ "total_count": runs.len(), "workflow_runs": runs });
-    std::fs::write(dir.join("queued.json"), v.to_string()).unwrap();
+    queue(dir, &runs);
 }
 /// How many times the fake GitHub was sent this call.
 fn sent(dir: &Path, call: &str) -> usize {
@@ -345,11 +352,13 @@ async fn runs_waiting_for_a_runner_need_you_until_none_wait() {
     assert_eq!(shown.attention[0].kind, AttentionKind::RunsWaiting);
     assert_eq!(
         shown.attention[0].reason,
-        "A run of CI in a/b has waited more than 30 minutes for a runner. Orbit sees no self-hosted runners for it, so they wait for GitHub's own runners or for one it doesn't have."
+        "A run of CI in a/b has waited more than 30 minutes for a runner. Orbit sees no self-hosted runners for it, so its runs wait for GitHub's own runners or for one it doesn't have."
     );
     assert_eq!(waits_told(&e).await, 1);
     assert!(shown.ops.is_empty(), "no agent hears of it");
     assert!(writes(d.path()).is_empty());
+
+    assert_eq!(sent(d.path(), "GET repos/a/b/actions/runs"), 1, "one page");
 
     // Read again a moment later: nothing is due yet.
     crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
@@ -406,11 +415,11 @@ async fn a_rate_limit_stops_the_pass() {
     assert_eq!(sent(d.path(), "GET users/a"), 0);
 }
 
-/// An organization's runners count for its repositories, and runners Orbit
-/// can't see are said so.
+/// An organization's runners are read, though Orbit can't tell which of
+/// its repositories may use them, and runners Orbit can't see are said so.
 #[cfg(unix)]
 #[tokio::test]
-async fn an_organizations_runners_count_and_hidden_ones_are_said_so() {
+async fn an_organizations_runners_are_read_and_hidden_ones_are_said_so() {
     use crate::runners::PlaceKind;
     let d = tempfile::tempdir().unwrap();
     let gh = fixture_gh(d.path());
@@ -450,13 +459,89 @@ async fn an_organizations_runners_count_and_hidden_ones_are_said_so() {
     assert_eq!(org.runners[0].labels, ["self-hosted", "big"]);
     assert_eq!(
         shown.attention[0].reason,
-        "A run of CI in a/b has waited more than 30 minutes for a runner. None of the 2 self-hosted runners Orbit sees for it is online. Orbit can't see all of them."
+        "A run of CI in a/b has waited more than 30 minutes for a runner. Orbit can't see its own self-hosted runners. The a organization shares 2 self-hosted runners (0 online and free), but Orbit can't tell whether a/b may use them."
     );
-    // Next time, Orbit knows a is an organization.
+    // Next time, Orbit knows a is an organization. Now a/b's own runner
+    // is offline, and one of a's is free, in a runner group that may leave
+    // a/b out: it isn't a/b's to use as far as Orbit can tell.
+    std::fs::remove_file(d.path().join("runners-repo-error")).unwrap();
+    let mine = json!({ "total_count": 1, "runners": [
+        { "id": 3, "name": "mac-1", "os": "macos", "status": "offline", "busy": false, "labels": [] },
+    ] });
+    std::fs::write(d.path().join("runners-repo.json"), mine.to_string()).unwrap();
+    let shared = json!({ "total_count": 2, "runners": [
+        { "id": 1, "name": "big-1", "os": "linux", "status": "offline", "busy": false, "labels": [] },
+        { "id": 2, "name": "big-2", "os": "linux", "status": "online", "busy": false, "labels": [] },
+    ] });
+    std::fs::write(d.path().join("runners-org.json"), shared.to_string()).unwrap();
     read_long_ago(&e).await;
     crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
     assert_eq!(sent(d.path(), "GET users/a"), 1);
     assert_eq!(sent(d.path(), "GET orgs/a/actions/runners"), 2);
+    assert_eq!(
+        e.shown_snapshot().await.attention[0].reason,
+        "A run of CI in a/b has waited more than 30 minutes for a runner. Its one self-hosted runner is offline. The a organization shares 2 self-hosted runners (1 online and free), but Orbit can't tell whether a/b may use them."
+    );
+}
+
+/// Orbit reads every page of the queued runs made long enough ago to have
+/// waited, as GitHub lists the one that has waited longest last, and a
+/// queue longer than it reads never says none wait.
+#[cfg(unix)]
+#[tokio::test]
+async fn every_page_of_the_queue_is_read_and_a_longer_one_never_clears() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    std::fs::write(
+        d.path().join("answer.json"),
+        answer(&"1".repeat(40), "SUCCESS"),
+    )
+    .unwrap();
+    // Runs made a moment ago can't have waited long, nor reruns whose try
+    // began a moment ago, and runs that started aren't queued.
+    let mut runs: Vec<_> = (0..300).map(|i| run(1000 + i, "New", 1, None)).collect();
+    runs.extend((0..250).map(|i| run(2000 + i, "Rerun", 300, Some(5))));
+    runs.extend((0..50).map(|i| {
+        let mut r = run(3000 + i, "Started", 350, None);
+        r["status"] = json!("in_progress");
+        r
+    }));
+    runs.push(run(9, "Release", 400, None));
+    queue(d.path(), &runs);
+    let e = connected(d.path()).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let shown = e.shown_snapshot().await;
+    let open: Vec<_> = shown.problems.iter().filter(|p| p.is_open()).collect();
+    assert_eq!(open.len(), 1);
+    let ids: Vec<u64> = open[0].waiting.iter().map(|w| w.id).collect();
+    assert_eq!(ids, [9], "on the third page");
+    assert!(!shown.runners[0].more_queued);
+    assert_eq!(sent(d.path(), "GET repos/a/b/actions/runs"), 3);
+
+    // Now more are queued than Orbit reads, and the one that waited
+    // longest is past its last page.
+    runs.extend((0..50).map(|i| run(4000 + i, "Rerun", 300, Some(5))));
+    queue(d.path(), &runs);
+    read_long_ago(&e).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!(sent(d.path(), "GET repos/a/b/actions/runs"), 6);
+    let shown = e.shown_snapshot().await;
+    assert!(shown.runners[0].more_queued);
+    let open: Vec<_> = shown.problems.iter().filter(|p| p.is_open()).collect();
+    assert_eq!(open.len(), 1, "it may wait still");
+    assert_eq!(open[0].waiting.len(), 1, "as Orbit saw it last");
+    assert_eq!(
+        shown.attention[0].reason,
+        "A run of Release in a/b has waited more than 30 minutes for a runner. Orbit couldn't read every queued run, so more may wait. Orbit sees no self-hosted runners for it, so its runs wait for GitHub's own runners or for one it doesn't have."
+    );
+
+    // The queue empties.
+    std::fs::remove_file(d.path().join("queued.json")).unwrap();
+    read_long_ago(&e).await;
+    crate::github::GH.scope(gh, e.watch_ci()).await;
+    let shown = e.shown_snapshot().await;
+    assert!(shown.problems.iter().all(|p| !p.is_open()));
+    assert!(!shown.runners[0].more_queued);
 }
 
 /// A read GitHub doesn't answer keeps what Orbit saw, and turning Watch CI

@@ -385,7 +385,7 @@ fn runs_waiting_for_a_runner_need_you_with_what_orbit_sees_of_its_runners() {
         url: String::new(),
         since: String::new(),
     };
-    see_waiting(&mut s.problems, "a/b", &[run], chrono::Utc::now());
+    see_waiting(&mut s.problems, "a/b", &[run], true, chrono::Utc::now());
     assert_eq!(s.problems[0].kind, ProblemKind::Waiting);
     let all = items(&s);
     assert_eq!(all.len(), 1);
@@ -405,11 +405,11 @@ fn runs_waiting_for_a_runner_need_you_with_what_orbit_sees_of_its_runners() {
     });
     assert_eq!(
         items(&s)[0].reason,
-        "A run of CI in a/b has waited more than 30 minutes for a runner. Orbit sees no self-hosted runners for it, so they wait for GitHub's own runners or for one it doesn't have."
+        "A run of CI in a/b has waited more than 30 minutes for a runner. It has no self-hosted runners of its own. Orbit hasn't read what the a account shares yet."
     );
     let n = notice(&s, items(&s).remove(0));
     assert_eq!(n.title, "Runs are waiting for a runner");
     // Closed, it needs you no more.
-    see_waiting(&mut s.problems, "a/b", &[], chrono::Utc::now());
+    see_waiting(&mut s.problems, "a/b", &[], true, chrono::Utc::now());
     assert!(items(&s).is_empty());
 }

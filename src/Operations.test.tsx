@@ -501,6 +501,7 @@ describe("operations page", () => {
     );
     expect(row.textContent).toContain("Release · queued");
     expect(row.textContent).toContain("A run · queued");
+    expect(row.textContent).not.toContain("every queued run");
     expect(row.textContent).toContain(
       "Only a person can add or fix a runner, so Orbit doesn’t tell an agent.",
     );
@@ -511,6 +512,24 @@ describe("operations page", () => {
       "noopener,noreferrer",
     );
     open.mockRestore();
+    cleanup();
+    // A queue Orbit didn't read in full shows only on that repository's
+    // waiting runs: not on another's, nor on acme/orbit's failing default
+    // branch.
+    s.runners!.find((p) => p.name === "acme/orbit")!.moreQueued = true;
+    show(s);
+    const problems = () => screen.getByRole("list", { name: "Open problems" });
+    expect(problems().textContent).not.toContain("every queued run");
+    const again = () =>
+      within(problems())
+        .getAllByRole("listitem")
+        .find((i) => i.textContent?.includes("acme/api: runs"))!;
+    cleanup();
+    s.runners!.find((p) => p.name === "acme/api")!.moreQueued = true;
+    show(s);
+    expect(again().textContent).toContain(
+      "Orbit couldn’t read every queued run, so more may wait.",
+    );
   });
 
   it("lists the self-hosted runners Orbit sees, and where it can't see them", () => {
@@ -529,9 +548,11 @@ describe("operations page", () => {
         "acme/dashboardOrbit can't see the self-hosted runners of acme/dashboard: that needs admin rights on it.",
       ),
       expect.stringContaining(
-        "acme · organization2 runners, 2 online, 1 busy.linux-big-1 · Linux · busy · self-hosted, Linux, X64linux-big-2 · Linux · free",
+        "acme · organization2 runners, 2 online, 1 busy.Orbit can’t tell which of its repositories may use them, as a runner group can leave some out.linux-big-1 · Linux · busy · self-hosted, Linux, X64linux-big-2 · Linux · free",
       ),
     ]);
+    // A repository's own runners have no such doubt.
+    expect(rows[0]).not.toContain("runner group");
     const api = within(list).getAllByRole("listitem")[0];
     expect(within(api).getByLabelText("Offline")).toBeTruthy();
     cleanup();
@@ -544,6 +565,22 @@ describe("operations page", () => {
         screen.getByRole("list", { name: "Self-hosted runners" }),
       ).getAllByRole("listitem")[0].textContent,
     ).toContain("acme/orbitOrbit couldn't read the runners yet: Bad Gateway");
+    cleanup();
+    // An organization whose runners Orbit can't see has none to doubt.
+    const org = s.runners!.find((p) => p.kind === "organization")!;
+    Object.assign(org, {
+      runners: [],
+      total: 0,
+      unseen: "Orbit can't see the runners the acme organization shares.",
+    });
+    show(s);
+    const orgRow = within(
+      screen.getByRole("list", { name: "Self-hosted runners" }),
+    )
+      .getAllByRole("listitem")
+      .find((i) => i.textContent?.includes("acme · organization"))!;
+    expect(orgRow.textContent).toContain("Orbit can't see the runners");
+    expect(orgRow.textContent).not.toContain("runner group");
     cleanup();
     // With none anywhere, one line says so.
     s.runners = s.runners!.map((p) => ({

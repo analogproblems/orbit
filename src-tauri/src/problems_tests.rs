@@ -778,9 +778,9 @@ fn run(id: u64, name: &str) -> Waiting {
 #[test]
 fn runs_waiting_for_a_runner_tell_you_once_and_close_when_none_wait() {
     let mut problems = vec![];
-    see_waiting(&mut problems, "a/b", &[], at(0));
+    see_waiting(&mut problems, "a/b", &[], true, at(0));
     assert!(problems.is_empty(), "nothing waits");
-    see_waiting(&mut problems, "a/b", &[run(1, "CI")], at(0));
+    see_waiting(&mut problems, "a/b", &[run(1, "CI")], true, at(0));
     assert_eq!(problems.len(), 1);
     let p = &problems[0];
     assert_eq!(p.key, "wait:a/b");
@@ -795,7 +795,7 @@ fn runs_waiting_for_a_runner_tell_you_once_and_close_when_none_wait() {
     let key = p.item_key();
     // More runs wait: an update, not news.
     let more = [run(1, "CI"), run(2, "Release"), run(3, "CI")];
-    see_waiting(&mut problems, "A/B", &more, at(5));
+    see_waiting(&mut problems, "A/B", &more, true, at(5));
     assert_eq!(problems.len(), 1);
     assert_eq!(problems[0].item_key(), key);
     assert_eq!(problems[0].waiting.len(), 3);
@@ -808,39 +808,57 @@ fn runs_waiting_for_a_runner_tell_you_once_and_close_when_none_wait() {
         &mut problems,
         "a/b",
         &[run(4, "CI"), run(5, "CI"), run(6, "CI")],
+        true,
         at(6),
     );
     assert_eq!(problems[0].timeline.len(), 2);
     assert_eq!(problems[0].waiting[0].id, 4);
-    see_waiting(&mut problems, "a/b", &[run(4, "CI")], at(7));
+    see_waiting(&mut problems, "a/b", &[run(4, "CI")], true, at(7));
     assert_eq!(
         timeline(&problems[0]).last(),
         Some(&"Now 1 run waits for a runner.")
     );
     // Still waiting a day later: it reminds you.
-    see_waiting(&mut problems, "a/b", &[run(4, "CI")], at(24 * 60 - 1));
+    see_waiting(&mut problems, "a/b", &[run(4, "CI")], true, at(24 * 60 - 1));
     assert_eq!(problems[0].alerts, 1);
-    see_waiting(&mut problems, "a/b", &[run(4, "CI")], at(24 * 60));
+    see_waiting(&mut problems, "a/b", &[run(4, "CI")], true, at(24 * 60));
     assert_eq!(problems[0].alerts, 2);
-    see_waiting(&mut problems, "a/b", &[], at(24 * 60 + 5));
+    see_waiting(&mut problems, "a/b", &[], true, at(24 * 60 + 5));
     assert!(open(&problems).is_empty());
     assert_eq!(
         problems[0].closed_reason.as_deref(),
         Some("No runs wait for a runner now.")
     );
     // Another repository's runs are another problem.
-    see_waiting(&mut problems, "a/c", &[run(7, "CI")], at(24 * 60 + 5));
+    see_waiting(&mut problems, "a/c", &[run(7, "CI")], true, at(24 * 60 + 5));
     assert_eq!(open(&problems)[0].key, "wait:a/c");
+}
+
+/// A read that missed some queued runs can't say none wait.
+#[test]
+fn runs_waiting_stay_a_problem_until_orbit_reads_every_queued_run() {
+    let mut problems = vec![];
+    see_waiting(&mut problems, "a/b", &[], false, at(0));
+    assert!(problems.is_empty());
+    // What it did read still counts.
+    see_waiting(&mut problems, "a/b", &[run(1, "CI")], false, at(0));
+    assert_eq!(open(&problems).len(), 1);
+    see_waiting(&mut problems, "a/b", &[], false, at(5));
+    assert_eq!(open(&problems).len(), 1);
+    assert_eq!(problems[0].waiting, [run(1, "CI")]);
+    assert_eq!(problems[0].timeline.len(), 1);
+    see_waiting(&mut problems, "a/b", &[], true, at(10));
+    assert!(open(&problems).is_empty());
 }
 
 #[test]
 fn runs_that_wait_again_soon_after_are_the_same_problem_and_stay_quiet() {
     let mut problems = vec![];
-    see_waiting(&mut problems, "a/b", &[run(1, "CI")], at(0));
+    see_waiting(&mut problems, "a/b", &[run(1, "CI")], true, at(0));
     let key = problems[0].item_key();
-    see_waiting(&mut problems, "a/b", &[], at(20));
+    see_waiting(&mut problems, "a/b", &[], true, at(20));
     assert_eq!(quiet_keys(&problems, at(30)), std::slice::from_ref(&key));
-    see_waiting(&mut problems, "a/b", &[run(2, "Release")], at(30));
+    see_waiting(&mut problems, "a/b", &[run(2, "Release")], true, at(30));
     assert_eq!(problems.len(), 1, "the same problem, back again");
     let p = &problems[0];
     assert!(p.is_open());
@@ -851,13 +869,13 @@ fn runs_that_wait_again_soon_after_are_the_same_problem_and_stay_quiet() {
         Some(&"Again: A run of Release in a/b has waited more than 30 minutes for a runner.")
     );
     // Still waiting an hour after the first alert: it tells you then.
-    see_waiting(&mut problems, "a/b", &[run(2, "Release")], at(59));
+    see_waiting(&mut problems, "a/b", &[run(2, "Release")], true, at(59));
     assert_eq!(problems[0].alerts, 1);
-    see_waiting(&mut problems, "a/b", &[run(2, "Release")], at(60));
+    see_waiting(&mut problems, "a/b", &[run(2, "Release")], true, at(60));
     assert_eq!(problems[0].alerts, 2);
     // Back later than that, it's a new problem.
-    see_waiting(&mut problems, "a/b", &[], at(70));
-    see_waiting(&mut problems, "a/b", &[run(3, "CI")], at(70 + 61));
+    see_waiting(&mut problems, "a/b", &[], true, at(70));
+    see_waiting(&mut problems, "a/b", &[run(3, "CI")], true, at(70 + 61));
     assert_eq!(problems.len(), 2);
     assert_eq!(open(&problems)[0].alerts, 1);
 }

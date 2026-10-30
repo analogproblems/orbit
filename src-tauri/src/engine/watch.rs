@@ -226,7 +226,13 @@ impl Engine {
                 let repo = *kind == runners::PlaceKind::Repository;
                 if let (true, Ok(place)) = (repo, &result) {
                     if connected.iter().any(|r| same_repo(r, name)) {
-                        problems::see_waiting(&mut s.problems, name, &place.waiting, now);
+                        problems::see_waiting(
+                            &mut s.problems,
+                            name,
+                            &place.waiting,
+                            !place.more_queued,
+                            now,
+                        );
                     }
                 }
                 runners::record(&mut s.runners, name, *kind, result, now);

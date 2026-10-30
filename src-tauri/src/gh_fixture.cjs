@@ -18,7 +18,9 @@
 // The runners of a/b and of the organization a are <dir>/runners-repo.json
 // and <dir>/runners-org.json, or none; while <dir>/runners-repo-error or
 // <dir>/runners-org-error exists, reading them fails with its text. The
-// queued runs of a/b are <dir>/queued.json, or none.
+// runs of a/b are the list in <dir>/queued.json, or none, listed newest
+// first in pages, those with the status asked for made before `created`
+// ("<time") when it is given.
 // While <dir>/down exists every call
 // fails. While <dir>/hold exists a GET waits, after writing <dir>/held. Each
 // call is logged to <dir>/calls as "METHOD endpoint".
@@ -283,9 +285,17 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
   else answer({ total_count: 0, runners: [] });
 } else if (endpoint === "repos/a/b/actions/runs") {
   const queued = path.join(dir, "queued.json");
-  if (fs.existsSync(queued))
-    process.stdout.write(fs.readFileSync(queued, "utf8"));
-  else answer({ total_count: 0, workflow_runs: [] });
+  const before = Date.parse((fields.created || "").replace(/^</, ""));
+  const runs = (
+    fs.existsSync(queued) ? JSON.parse(fs.readFileSync(queued, "utf8")) : []
+  )
+    .filter(
+      (r) =>
+        (!fields.status || r.status === fields.status) &&
+        (Number.isNaN(before) || Date.parse(r.created_at) < before),
+    )
+    .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+  answer({ total_count: runs.length, workflow_runs: page(runs) });
 } else {
   answer([]);
 }

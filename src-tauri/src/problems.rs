@@ -520,22 +520,25 @@ pub fn see_setup(
 }
 
 /// Opens, updates or closes the problem about a repository's runs waiting
-/// for a runner, from what Orbit just read of them (see `crate::runners`).
-/// It tells you when it opens and reminds you after `REMIND_AFTER`; one
-/// that clears and comes back within `FLAP_QUIET` stays quiet then, as a
-/// failing default branch does.
+/// for a runner, from what Orbit just read of them (see `crate::runners`):
+/// `all` says whether it read every queued run, as it closes the problem
+/// only then. It tells you when it opens and reminds you after
+/// `REMIND_AFTER`; one that clears and comes back within `FLAP_QUIET` stays
+/// quiet then, as a failing default branch does.
 pub fn see_waiting(
     problems: &mut Vec<Problem>,
     repo: &str,
     waiting: &[Waiting],
+    all: bool,
     now: DateTime<Utc>,
 ) {
     let at = stamp(now);
     let key = waiting_key(repo);
     let open = problems.iter_mut().find(|p| p.key == key && p.is_open());
     match (waiting.is_empty(), open) {
-        (true, Some(p)) => p.close(&at, "No runs wait for a runner now.".into()),
-        (true, None) => {}
+        (true, Some(p)) if all => p.close(&at, "No runs wait for a runner now.".into()),
+        // A run Orbit didn't read may still wait.
+        (true, _) => {}
         (false, Some(p)) => {
             if p.waiting.len() != waiting.len() {
                 let now_waiting = match waiting.len() {

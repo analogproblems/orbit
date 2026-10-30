@@ -117,7 +117,7 @@ fn runs_waiting_for_a_runner_get_no_thread() {
         name: "CI".into(),
         ..Default::default()
     };
-    crate::problems::see_waiting(&mut problems, "a/b", &[run], t0());
+    crate::problems::see_waiting(&mut problems, "a/b", &[run], true, t0());
     let mut threads = vec![];
     assert!(!refresh(&mut threads, &problems, t0()));
     assert!(threads.is_empty());

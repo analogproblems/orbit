@@ -145,7 +145,7 @@ fn runners_are_read_from_githubs_answer() {
 
 #[test]
 fn runs_that_waited_half_an_hour_for_a_runner_are_kept_the_longest_first() {
-    let v = json!({ "workflow_runs": [
+    let v = json!([
         { "id": 1, "name": "CI", "status": "queued", "created_at": ago(45),
           "html_url": "https://github.com/a/b/actions/runs/1" },
         // Its try began later than the run: that's when it began waiting.
@@ -157,8 +157,8 @@ fn runs_that_waited_half_an_hour_for_a_runner_are_kept_the_longest_first() {
         { "id": 5, "name": "Docs", "status": "queued" },
         { "id": 6, "name": "CI", "status": "queued", "created_at": ago(30),
           "html_url": "https://github.com/a/b/actions/runs/6" },
-    ] });
-    let list = waiting(&v, now()).unwrap();
+    ]);
+    let list = waiting(v.as_array().unwrap(), now());
     assert_eq!(
         list,
         [
@@ -182,7 +182,42 @@ fn runs_that_waited_half_an_hour_for_a_runner_are_kept_the_longest_first() {
             },
         ]
     );
-    assert!(waiting(&json!({}), now()).is_err());
+}
+
+#[test]
+fn queued_runs_are_read_a_page_at_a_time_until_orbit_has_all_github_counts() {
+    let runs = |from: u64, n: u64| -> Vec<Value> {
+        (from..from + n).map(|id| json!({ "id": id })).collect()
+    };
+    let page =
+        |total: u64, list: Vec<Value>| json!({ "total_count": total, "workflow_runs": list });
+    let mut q = Queue::default();
+    assert!(q.add(&page(250, runs(0, 100))).unwrap(), "more to read");
+    assert!(!q.all());
+    // A run that moved to the next page counts once.
+    assert!(q.add(&page(250, runs(99, 100))).unwrap());
+    assert_eq!(q.runs.len(), 199);
+    assert!(!q.all());
+    // A short page is the last. The queue shrank meanwhile, so a run may
+    // have moved to a page Orbit read already: GitHub's largest count
+    // stands.
+    assert!(!q.add(&page(230, runs(199, 40))).unwrap());
+    assert!(!q.all(), "GitHub counted more than Orbit read");
+    // A full page that brings every run GitHub counts is the last too.
+    let mut q = Queue::default();
+    assert!(!q.add(&page(100, runs(0, 100))).unwrap());
+    assert!(q.all());
+    let mut q = Queue::default();
+    assert!(!q.add(&page(0, vec![])).unwrap());
+    assert!(q.all(), "none queued");
+    assert_eq!(
+        q.add(&json!({ "total_count": 1 })),
+        Err("GitHub didn't return the queued runs.".into())
+    );
+    assert_eq!(
+        q.add(&json!({ "workflow_runs": [] })),
+        Err("GitHub didn't say how many runs are queued.".into())
+    );
 }
 
 #[test]
@@ -283,6 +318,7 @@ fn what_orbit_sees_of_the_runners_a_repository_could_use() {
         ..place(name, kind, 0)
     };
     let text = |places: &[Place]| seen_text(places, "a/b");
+    let person = place("a", Person, 0);
     assert_eq!(text(&[]), None, "nothing read yet");
     let failed = Place {
         error: Some("down".into()),
@@ -290,67 +326,154 @@ fn what_orbit_sees_of_the_runners_a_repository_could_use() {
     };
     let never = Place {
         read_at: String::new(),
-        ..failed
+        ..failed.clone()
     };
-    assert_eq!(text(&[never]), None, "never read, only tried");
-    // Another repository's and a person's account don't count.
-    let other = [place("a/c", Repository, 0), place("a", Person, 0)];
-    assert_eq!(text(&other), None);
     assert_eq!(
-        text(&[place("a/b", Repository, 0)]).as_deref(),
-        Some("Orbit sees no self-hosted runners for it, so they wait for GitHub's own runners or for one it doesn't have.")
+        text(&[never, person.clone()]),
+        None,
+        "never read, only tried"
     );
-    let offline = with("a/b", Repository, vec![runner("x", false, false)]);
+    let other = [place("a/c", Repository, 0), person.clone()];
+    assert_eq!(text(&other), None, "another repository's");
+    let none = place("a/b", Repository, 0);
     assert_eq!(
-        text(&[offline]).as_deref(),
-        Some("The one self-hosted runner Orbit sees for it is offline.")
+        text(std::slice::from_ref(&none)).as_deref(),
+        Some("It has no self-hosted runners of its own. Orbit hasn't read what the a account shares yet.")
     );
-    // The organization's count with the repository's own.
+    assert_eq!(
+        text(&[none.clone(), person.clone()]).as_deref(),
+        Some("Orbit sees no self-hosted runners for it, so its runs wait for GitHub's own runners or for one it doesn't have.")
+    );
+    let shares_none = place("a", Organization, 0);
+    assert_eq!(
+        text(&[none.clone(), person.clone()]),
+        text(&[none.clone(), shares_none.clone()])
+    );
+    let more = Place {
+        more_queued: true,
+        ..none.clone()
+    };
+    assert_eq!(
+        text(&[more, person.clone()]).as_deref(),
+        Some("Orbit couldn't read every queued run, so more may wait. Orbit sees no self-hosted runners for it, so its runs wait for GitHub's own runners or for one it doesn't have.")
+    );
+    // Its own runners.
+    let own = |list: Vec<Runner>| text(&[with("a/b", Repository, list), person.clone()]).unwrap();
+    assert_eq!(
+        own(vec![runner("x", false, false)]),
+        "Its one self-hosted runner is offline."
+    );
+    assert_eq!(
+        own(vec![runner("x", false, false), runner("y", false, false)]),
+        "Its 2 self-hosted runners are all offline."
+    );
+    assert_eq!(
+        own(vec![runner("x", false, false), runner("y", true, true)]),
+        "Every one of its online self-hosted runners is busy."
+    );
+    assert_eq!(
+        own(vec![runner("x", true, false), runner("y", true, true)]),
+        "1 of its self-hosted runners is online and free, so the runs may ask for a label it doesn't have."
+    );
+    assert_eq!(
+        own(vec![runner("x", true, false), runner("y", true, false)]),
+        "2 of its self-hosted runners are online and free, so the runs may ask for a label none of them has."
+    );
+    let hidden = Place {
+        unseen: Some(unseen("a/b", Repository)),
+        ..none.clone()
+    };
+    assert_eq!(
+        text(&[hidden, person.clone()]).as_deref(),
+        Some("Orbit can't see its own self-hosted runners.")
+    );
+    let cut = Place {
+        total: 150,
+        ..with("a/b", Repository, vec![runner("x", false, false)])
+    };
+    assert_eq!(
+        text(&[cut, person.clone()]).as_deref(),
+        Some("Its one self-hosted runner is offline. Orbit read only 1 of its 150.")
+    );
+    assert_eq!(
+        text(&[failed, person.clone()]).as_deref(),
+        Some("It has no self-hosted runners of its own. Orbit's latest read of them failed, so this may be out of date.")
+    );
+    // What its organization shares, which a runner group may keep from it.
     let mine = with("a/b", Repository, vec![runner("x", false, false)]);
-    let shared = with("a", Organization, vec![runner("y", false, false)]);
+    let org = |p: Option<Place>| {
+        let mut places = vec![mine.clone()];
+        places.extend(p);
+        text(&places).unwrap()
+    };
+    let offline = "Its one self-hosted runner is offline.";
     assert_eq!(
-        text(&[mine.clone(), shared]).as_deref(),
-        Some("None of the 2 self-hosted runners Orbit sees for it is online.")
+        org(None),
+        format!("{offline} Orbit hasn't read what the a account shares yet.")
     );
-    let busy = with("a", Organization, vec![runner("y", true, true)]);
+    let tried = Place {
+        read_at: String::new(),
+        error: Some("down".into()),
+        ..place("a", Owner, 0)
+    };
     assert_eq!(
-        text(&[mine.clone(), busy]).as_deref(),
-        Some("Every self-hosted runner online for it is busy.")
+        org(Some(tried)),
+        format!("{offline} Orbit couldn't read what the a account shares yet.")
+    );
+    assert_eq!(org(Some(person.clone())), offline);
+    assert_eq!(
+        org(Some(shares_none)),
+        format!("{offline} The a organization shares no self-hosted runners.")
     );
     let free = with("a", Organization, vec![runner("y", true, false)]);
     assert_eq!(
-        text(&[mine.clone(), free]).as_deref(),
-        Some("1 self-hosted runner for it is online and free, so the runs may ask for a label it doesn't have.")
+        org(Some(free)),
+        format!("{offline} The a organization shares 1 self-hosted runner (1 online and free), but Orbit can't tell whether a/b may use it.")
     );
     let two = with(
         "a",
         Organization,
-        vec![runner("y", true, false), runner("z", true, false)],
+        vec![runner("y", true, false), runner("z", true, true)],
     );
     assert_eq!(
-        text(&[two]).as_deref(),
-        Some("2 self-hosted runners for it are online and free, so the runs may ask for a label none of them has.")
+        org(Some(two.clone())),
+        format!("{offline} The a organization shares 2 self-hosted runners (1 online and free), but Orbit can't tell whether a/b may use them.")
     );
-    // Runners Orbit can't see, or more than it read.
+    let stale = Place {
+        total: 300,
+        error: Some("down".into()),
+        ..two
+    };
+    assert_eq!(
+        org(Some(stale)),
+        format!("{offline} The a organization shares 300 self-hosted runners (1 online and free), but Orbit can't tell whether a/b may use them. Orbit read only 2 of them. Orbit's latest read of what a shares failed, so this may be out of date.")
+    );
     let hidden = Place {
         unseen: Some(unseen("a", Organization)),
         ..place("a", Organization, 0)
     };
     assert_eq!(
-        text(&[place("a/b", Repository, 0), hidden.clone()]).as_deref(),
-        Some("Orbit can't see the self-hosted runners it may use.")
+        org(Some(hidden)),
+        format!("{offline} Orbit can't see the runners the a organization shares.")
     );
-    assert_eq!(
-        text(&[mine.clone(), hidden]).as_deref(),
-        Some(
-            "The one self-hosted runner Orbit sees for it is offline. Orbit can't see all of them."
-        )
-    );
-    let more = Place { total: 150, ..mine };
-    assert_eq!(
-        text(&[more]).as_deref(),
-        Some(
-            "The one self-hosted runner Orbit sees for it is offline. Orbit can't see all of them."
-        )
-    );
+}
+
+/// A runner group can keep an organization's free runners from a
+/// repository, so they never count as its own.
+#[test]
+fn an_organizations_free_runners_are_never_said_to_be_the_repositorys() {
+    let mine = Place {
+        total: 1,
+        runners: vec![runner("x", false, false)],
+        ..place("a/b", PlaceKind::Repository, 0)
+    };
+    let shared = Place {
+        total: 1,
+        runners: vec![runner("y", true, false)],
+        ..place("a", PlaceKind::Organization, 0)
+    };
+    let text = seen_text(&[mine, shared], "a/b").unwrap();
+    assert!(text.starts_with("Its one self-hosted runner is offline."));
+    assert!(!text.contains("so the runs may ask for a label"));
+    assert!(text.contains("Orbit can't tell whether a/b may use it."));
 }

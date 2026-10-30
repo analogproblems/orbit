@@ -581,6 +581,13 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
             p.kind === "default_branch" ? brokeText(p.broke) : undefined;
           // The run that has waited longest, to open on GitHub.
           const longest = waiting ? p.waiting?.find((r) => r.url) : undefined;
+          // Whether Orbit's latest read missed some queued runs.
+          const more =
+            waiting &&
+            s.runners?.some(
+              (r) =>
+                r.name.toLowerCase() === p.repo.toLowerCase() && r.moreQueued,
+            );
           // The jobs Bit asks before rerunning.
           const reruns = t?.items.filter((i) => asksToRerun(s, p, i)) ?? [];
           return (
@@ -617,6 +624,11 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
                         <Timestamp value={r.since} format="relative_short" />
                       </HStack>
                     ))}
+                  {more && (
+                    <Text color="secondary">
+                      Orbit couldn’t read every queued run, so more may wait.
+                    </Text>
+                  )}
                   {broke && <Text>{broke}</Text>}
                   <Why s={s} p={p} t={t} />
                   {told && <Text color="secondary">{told}</Text>}
@@ -740,6 +752,12 @@ function Runners() {
                   description={
                     <VStack gap={1}>
                       {p.runners.length > 0 && <Text>{runnersText(p)}</Text>}
+                      {p.kind === "organization" && p.runners.length > 0 && (
+                        <Text color="secondary">
+                          Orbit can’t tell which of its repositories may use
+                          them, as a runner group can leave some out.
+                        </Text>
+                      )}
                       {p.runners.slice(0, RUNNERS).map((r, i) => (
                         <Text key={`${r.name}-${i}`} color="secondary">
                           {runnerLine(r)}
