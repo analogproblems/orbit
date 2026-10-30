@@ -190,12 +190,20 @@ async fn a_broken_default_branch_opens_one_issue_and_green_closes_it() {
     assert_eq!(shown.journal.len(), 1);
     assert_eq!(shown.journal[0].state, WriteState::Done);
     assert_eq!(writes(d.path()), ["POST repos/a/b/issues"]);
+    // With no history from GitHub, it names nothing, and doesn't ask again.
+    let broke = shown.problems[0].broke.clone().unwrap();
+    assert!(broke.done && broke.commits.is_empty());
+    assert_eq!(
+        broke.error.as_deref(),
+        Some("GitHub no longer has commit 1111111.")
+    );
 
     // Orbit restarts and CI is still red: nothing is posted again.
     drop(e);
     let e = connected(d.path()).await;
     watch(&e, &gh).await;
     assert_eq!(writes(d.path()).len(), 1);
+    assert_eq!(calls(d.path(), "GET history/"), 1);
 
     // A fix lands: the issue says so, and stays open for now.
     answer(d.path(), '2', &[("Rust", "SUCCESS")], None);
@@ -236,6 +244,56 @@ async fn a_broken_default_branch_opens_one_issue_and_green_closes_it() {
     assert_eq!(writes(d.path()).len(), 4, "and nothing after a restart");
     let journal = e.snapshot().await.journal;
     assert!(journal.iter().all(|w| w.state == WriteState::Done));
+}
+
+/// A broken default branch's issue names the pull request that broke it,
+/// from the branch's history, read once.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_broken_default_branch_names_the_pull_request_that_broke_it() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    answer(d.path(), '2', &[("Rust", "FAILURE")], None);
+    let commit = |at: char, parent: char, result: &str, pull: u64| {
+        json!({
+            "oid": sha(at),
+            "parents": { "nodes": [{ "oid": sha(parent) }] },
+            "statusCheckRollup": rollup(&[("Rust", result)]),
+            "associatedPullRequests": { "nodes": [
+                { "number": pull, "merged": true, "baseRefName": "main" }
+            ] }
+        })
+    };
+    // The history from commit 2 stops at 2; it goes on from 1.
+    let history = |nodes: Vec<Value>| {
+        json!({ "data": { "repository": { "object": { "history": { "nodes": nodes } } } } })
+            .to_string()
+    };
+    let at = |c: char| d.path().join(format!("history-{}.json", sha(c)));
+    std::fs::write(at('2'), history(vec![commit('2', '1', "FAILURE", 42)])).unwrap();
+    std::fs::write(at('1'), history(vec![commit('1', '0', "SUCCESS", 41)])).unwrap();
+    let e = connected(d.path()).await;
+    watch(&e, &gh).await;
+    let issue = &github(d.path())["issues"][0];
+    assert!(issue["body"].as_str().unwrap().contains(
+        "\n\nIt started failing with #42, merged as `2222222`; `1111111` before it passed.\n\n"
+    ));
+    let s = e.snapshot().await;
+    assert_eq!(s.problems[0].broke.as_ref().unwrap().pull, Some(42));
+    let shown = e.shown_snapshot().await;
+    assert!(shown.attention[0].reason.ends_with(
+        ": CI / Rust. It started failing with #42, merged as 2222222; 1111111 before it passed."
+    ));
+    assert_eq!(calls(d.path(), "GET history/"), 2);
+
+    // Still failing at a newer commit: read once, so not again.
+    answer(d.path(), '3', &[("Rust", "FAILURE")], None);
+    watch(&e, &gh).await;
+    assert_eq!(calls(d.path(), "GET history/"), 2);
+    assert!(github(d.path())["issues"][0]["body"]
+        .as_str()
+        .unwrap()
+        .contains("It started failing with #42"));
 }
 
 /// A write GitHub got just before Orbit stopped, before Orbit heard back,

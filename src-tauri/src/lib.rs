@@ -4,6 +4,7 @@ pub mod api;
 pub mod ask;
 pub mod attention;
 pub mod boxtool;
+pub mod broke;
 pub mod buddy;
 pub mod ci;
 pub mod claude;

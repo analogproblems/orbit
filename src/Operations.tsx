@@ -22,6 +22,7 @@ import {
   shortSha,
   trustedSource,
   type AttentionHandlers,
+  type Broke,
   type CiFailure,
   type CiState,
   type OpsAction,
@@ -107,6 +108,35 @@ function asksFirst(s: Snapshot, p: Problem, t: OpsThread | undefined) {
     rule === "ask_first" &&
     !t.allowed
   );
+}
+
+/** "A", "A and B", "A, B and C". */
+function and(parts: string[]) {
+  return parts.length < 2
+    ? (parts[0] ?? "")
+    : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
+}
+
+/** Where a default branch broke, as Orbit's issue says it, or why Orbit
+ * can't say yet. */
+export function brokeText(b: Broke | null | undefined) {
+  if (!b) return undefined;
+  if (!b.done || !b.commits.length) return b.error ?? undefined;
+  const [red, green, n] = [
+    shortSha(b.red),
+    shortSha(b.green),
+    b.commits.length,
+  ];
+  if (b.pull != null)
+    return n === 1
+      ? `It started failing with #${b.pull}, merged as ${red}; ${green} before it passed.`
+      : `It started failing with #${b.pull}, merged as ${n} commits up to ${red}; ${green} before them passed.`;
+  if (n === 1)
+    return `It started failing at ${red}, pushed without a pull request; ${green} before it passed.`;
+  const from = b.pulls.map((p) => `#${p}`);
+  if (b.direct === 1) from.push("1 pushed without a pull request");
+  else if (b.direct > 1) from.push(`${b.direct} pushed without one`);
+  return `It started failing in the ${n} commits after ${green}, which passed, up to ${red}: from ${and(from)}.`;
 }
 
 /** Where Orbit told the problem's agent, or why it hasn't. */
@@ -405,6 +435,7 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
           const yours = p.kind === "default_branch";
           const t = threadOf(s, p);
           const told = toldText(s, p, t);
+          const broke = yours ? brokeText(p.broke) : undefined;
           // The jobs Bit asks before rerunning.
           const reruns = t?.items.filter((i) => asksToRerun(s, p, i)) ?? [];
           return (
@@ -428,6 +459,7 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
                       ? `Failing: ${checkNames(p.failing)}.`
                       : `Failing: ${checkNames(p.failing)}. Its author’s to fix.`}
                   </Text>
+                  {broke && <Text>{broke}</Text>}
                   <Why s={s} p={p} t={t} />
                   {told && <Text color="secondary">{told}</Text>}
                   {t?.items

@@ -79,6 +79,10 @@ pub struct Problem {
     /// When a problem that came back within `FLAP_QUIET` tells you, if it is
     /// still open then.
     pub alert_due: Option<String>,
+    /// Where a default branch broke, once Orbit has read its history (see
+    /// `crate::broke`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub broke: Option<crate::broke::Broke>,
 }
 impl Problem {
     pub fn is_open(&self) -> bool {

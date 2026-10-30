@@ -13,6 +13,7 @@ import {
   answerText,
   asksToRerun,
   branchSummary,
+  brokeText,
   rerunText,
   whyText,
 } from "./Operations";
@@ -20,6 +21,7 @@ import { freshDemo } from "./demo";
 import { useOrbit } from "./store";
 import {
   checkNames,
+  type Broke,
   type CiFailure,
   type OpsAnswer,
   type OpsItem,
@@ -270,6 +272,16 @@ describe("operations page", () => {
     expect(pull.textContent).not.toContain("hidden");
   });
 
+  it("names the pull request that broke a default branch", () => {
+    show(freshDemo());
+    const open = screen.getByRole("list", { name: "Open problems" });
+    const [branch, pull] = within(open).getAllByRole("listitem");
+    expect(branch.textContent).toContain(
+      "It started failing with #208, merged as 7d41e09; 3b8e6f4 before it passed.",
+    );
+    expect(pull.textContent).not.toContain("It started failing");
+  });
+
   it("lists what Orbit did on GitHub, newest first", () => {
     const s = freshDemo();
     s.journal!.push({
@@ -375,6 +387,48 @@ describe("ci sentences", () => {
     expect(branchSummary(unread)).toBe(
       "Orbit couldn’t read every check on main at aaaaaaa, so it can’t say it passes.",
     );
+  });
+  it("say where a default branch broke", () => {
+    const sha = (c: string) => c.repeat(40);
+    const b = (more: Partial<Broke>): Broke => ({
+      done: true,
+      green: sha("1"),
+      red: sha("2"),
+      commits: [sha("2")],
+      pulls: [42],
+      direct: 0,
+      pull: 42,
+      tries: 0,
+      ...more,
+    });
+    expect(brokeText(null)).toBeUndefined();
+    expect(brokeText(b({}))).toBe(
+      "It started failing with #42, merged as 2222222; 1111111 before it passed.",
+    );
+    expect(brokeText(b({ red: sha("3"), commits: [sha("3"), sha("2")] }))).toBe(
+      "It started failing with #42, merged as 2 commits up to 3333333; 1111111 before them passed.",
+    );
+    expect(brokeText(b({ pull: null, pulls: [], direct: 1 }))).toBe(
+      "It started failing at 2222222, pushed without a pull request; 1111111 before it passed.",
+    );
+    const two = { red: sha("3"), commits: [sha("3"), sha("2")], pull: null };
+    expect(brokeText(b({ ...two, pulls: [43], direct: 1 }))).toBe(
+      "It started failing in the 2 commits after 1111111, which passed, up to 3333333: from #43 and 1 pushed without a pull request.",
+    );
+    expect(brokeText(b({ ...two, pulls: [43, 42] }))).toBe(
+      "It started failing in the 2 commits after 1111111, which passed, up to 3333333: from #43 and #42.",
+    );
+    expect(brokeText(b({ ...two, pulls: [], direct: 2 }))).toBe(
+      "It started failing in the 2 commits after 1111111, which passed, up to 3333333: from 2 pushed without one.",
+    );
+    const waiting =
+      "Orbit couldn’t read the branch’s history yet: Bad Gateway. It tries again later.";
+    expect(brokeText(b({ done: false, commits: [], error: waiting }))).toBe(
+      waiting,
+    );
+    expect(
+      brokeText(b({ done: false, commits: [], error: null })),
+    ).toBeUndefined();
   });
   it("say what an agent answered", () => {
     const t = { branch: "fix-it" } as OpsThread;

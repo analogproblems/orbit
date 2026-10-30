@@ -2,8 +2,9 @@
 // <dir>/github.json. Usage: node gh_fixture.cjs <dir> api --hostname github.com
 // --method <METHOD> <endpoint> [-f key=value ...] [--input -]
 // GraphQL answers with <dir>/answer.json, <dir>/commit-<oid>.json for a
-// query about one commit, or when a comment or issue was made and last
-// edited for a query about one by its node ID. Compare answers from <dir>/compare.json, keyed by
+// query about one commit, <dir>/history-<oid>.json for one about a
+// commit's history (or no such commit), or when a comment or issue was
+// made and last edited for a query about one by its node ID. Compare answers from <dir>/compare.json, keyed by
 // "base...head", or 404. A job is <dir>/job-<id>.json and its log
 // <dir>/log-<id>.txt, or 404; while <dir>/limit exists they answer as past
 // GitHub's rate limit. Rerunning a job writes <dir>/rerun-<id>, or fails
@@ -76,6 +77,14 @@ if (endpoint === "graphql" && fields.id) {
       },
     },
   });
+  process.exit(0);
+}
+if (endpoint === "graphql" && (fields.query || "").includes("history(")) {
+  fs.appendFileSync(path.join(dir, "calls"), `GET history/${fields.oid}\n`);
+  const history = path.join(dir, `history-${fields.oid}.json`);
+  if (fs.existsSync(history))
+    process.stdout.write(fs.readFileSync(history, "utf8"));
+  else answer({ data: { repository: { object: null } } });
   process.exit(0);
 }
 if (endpoint === "graphql") {

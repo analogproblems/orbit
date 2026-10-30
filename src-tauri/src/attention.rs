@@ -244,6 +244,9 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
         if p.sha != p.since_sha {
             reason.push_str(&format!(" It still fails at {}.", crate::ci::short(&p.sha)));
         }
+        if let Some(found) = p.broke.as_ref().and_then(crate::broke::text) {
+            reason.push_str(&format!(" {found}"));
+        }
         out.push(Attention {
             repo: Some(p.repo.clone()),
             ..item(p.item_key(), AttentionKind::CiFailing, None, None, reason)
