@@ -55,7 +55,7 @@ pub struct Problem {
     pub pr_id: Option<String>,
     /// The default branch, for a default branch's problem.
     pub branch: String,
-    /// The latest commit seen failing, and the first.
+    /// The latest commit seen failing, and the first since it last passed.
     pub sha: String,
     pub since_sha: String,
     pub failing: Vec<Check>,
@@ -79,6 +79,10 @@ pub struct Problem {
     /// When a problem that came back within `FLAP_QUIET` tells you, if it is
     /// still open then.
     pub alert_due: Option<String>,
+    /// Where a default branch broke, once Orbit has read its history (see
+    /// `crate::broke`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub broke: Option<crate::broke::Broke>,
 }
 impl Problem {
     pub fn is_open(&self) -> bool {
@@ -283,6 +287,10 @@ fn see(problems: &mut Vec<Problem>, seen: Seen, now: DateTime<Utc>) {
                     p.closed_reason = None;
                     p.closed_sha.clear();
                     p.sha = seen.ci.sha.clone();
+                    // It passed in between, so whatever broke it now came
+                    // after that.
+                    p.since_sha = seen.ci.sha.clone();
+                    p.broke = None;
                     p.failing = seen.ci.failing.clone();
                     p.note(&at, format!("Failing again at {short}."));
                     if p.needs_you() {

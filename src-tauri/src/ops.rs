@@ -1135,8 +1135,12 @@ pub fn issue_body(t: &Thread, p: &Problem, closing: bool) -> String {
             p.closed_reason.as_deref().unwrap_or_default()
         )
     };
+    let broke = match p.broke.as_ref().and_then(crate::broke::markdown) {
+        Some(found) => format!("{found}\n\n"),
+        None => String::new(),
+    };
     format!(
-        "## Orbit · CI\n\n{status}\n\n{}\n\nOrbit opened this issue because CI fails on {on}. It edits this issue as CI changes, and closes it once every check has passed for an hour.\n\n{}",
+        "## Orbit · CI\n\n{status}\n\n{broke}{}\n\nOrbit opened this issue because CI fails on {on}. It edits this issue as CI changes, and closes it once every check has passed for an hour.\n\n{}",
         items_text(t, p),
         data(t, p)
     )

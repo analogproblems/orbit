@@ -39,6 +39,7 @@ Orbit also watches CI. When a pull request's checks fail, it posts one comment h
 
 - Fix the failing checks and push. Orbit reads CI after each sync and updates the comment or issue itself: it says when every check passes, and closes its issue once the branch has stayed green for an hour.
 - A job that looks like bad luck rather than the code, such as a lost runner or a network error, Orbit may rerun: the item then says "Orbit reran this job, as it looks like bad luck: …". Wait for that rerun before chasing the failure. "It failed again after it was rerun, so it's likely real." means it is worth fixing. The item in the hidden line then has `reruns`, how many times Orbit reran it on this commit.
+- A default branch's issue may say what broke it, such as "It started failing with #42, merged as `7d41e09`; `3b8e6f4` before it passed." Start with that pull request's changes.
 - Orbit reads CI and reruns jobs, but it never pushes to your branch.
 
 Answer each item on its own line, in a reply on the same pull request (a conversation comment) or the same issue:

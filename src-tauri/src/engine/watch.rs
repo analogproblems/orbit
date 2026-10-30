@@ -2,7 +2,7 @@
 //! default branch and open pull requests, and the problems they open or
 //! close (see `crate::ci` and `crate::problems`).
 use super::Engine;
-use crate::{ci, logs, problems, types::*};
+use crate::{broke, ci, logs, problems, types::*};
 use std::sync::atomic::Ordering;
 
 impl Engine {
@@ -22,6 +22,7 @@ impl Engine {
         }
         self.watch_ci_now().await;
         self.read_failures().await;
+        self.read_breaks().await;
         self.watching_ci.store(false, Ordering::SeqCst);
         // Also with Watch CI off, so what Orbit posted is closed.
         self.tell_agents().await;
@@ -135,6 +136,24 @@ impl Engine {
         };
         if pruned {
             self.dirty.store(true, Ordering::SeqCst);
+        }
+        let _ = self.flush().await;
+    }
+}
+impl Engine {
+    /// Reads where each newly broken default branch broke, a few a pass. A
+    /// history GitHub didn't answer for is tried again after a wait.
+    async fn read_breaks(&self) {
+        let wanted = {
+            let s = self.state.lock().await;
+            broke::wanted(&s.problems, chrono::Utc::now())
+        };
+        for (id, repo, branch, start) in &wanted {
+            let result = broke::read(repo, branch, start).await;
+            self.update(|s| {
+                broke::record(&mut s.problems, id, start, result, chrono::Utc::now());
+            })
+            .await;
         }
         let _ = self.flush().await;
     }

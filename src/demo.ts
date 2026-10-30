@@ -637,7 +637,7 @@ export function freshDemo(): Snapshot {
         reviewId: null,
         approvalId: null,
         repo: red.repo,
-        reason: `${redReason} It still fails at ${red.sha.slice(0, 7)}.`,
+        reason: `${redReason} It still fails at ${red.sha.slice(0, 7)}. It started failing with #208, merged as 7d41e09; 3b8e6f4 before it passed.`,
       },
     ],
     loopStates: [
@@ -909,6 +909,16 @@ export function demoCi(
         { at: ago(18), text: "Still failing at 9f3c2a1." },
       ],
       alerts: 1,
+      broke: {
+        done: true,
+        green: sha("3b8e6f4"),
+        red: sha("7d41e09"),
+        commits: [sha("7d41e09")],
+        pulls: [208],
+        direct: 0,
+        pull: 208,
+        tries: 0,
+      },
     },
     {
       id: "demo-problem-2",

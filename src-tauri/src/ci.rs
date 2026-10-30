@@ -89,7 +89,7 @@ impl RepoCi {
     }
 }
 
-const NODES: &str = "pageInfo { hasNextPage endCursor } nodes { __typename \
+pub(crate) const NODES: &str = "pageInfo { hasNextPage endCursor } nodes { __typename \
 ... on CheckRun { name status conclusion detailsUrl checkSuite { workflowRun { workflow { name } } } } \
 ... on StatusContext { context state targetUrl } }";
 
@@ -239,7 +239,7 @@ pub(crate) async fn check_at_within(
 }
 
 /// What GitHub refused, from a GraphQL answer.
-fn refused(v: &Value) -> Result<(), String> {
+pub(crate) fn refused(v: &Value) -> Result<(), String> {
     match v["errors"].as_array().and_then(|e| e.first()) {
         Some(error) => Err(error["message"]
             .as_str()

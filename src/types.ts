@@ -1155,6 +1155,30 @@ export interface Problem {
   timeline: ProblemEvent[];
   /** How many times it has told you. */
   alerts: number;
+  /** Where a default branch broke, once Orbit has read its history. */
+  broke?: Broke | null;
+}
+/** Where a default branch broke: the commits after the last one whose
+ * checks passed, up to the first that failed. */
+export interface Broke {
+  /** Whether Orbit has its answer; until then it reads again later. */
+  done: boolean;
+  /** The last commit that passed, empty when Orbit found none. */
+  green: string;
+  /** The first that failed after it. */
+  red: string;
+  /** The commits after `green` up to `red`, newest first. */
+  commits: string[];
+  /** The pull requests merged as those commits, and how many came from
+   * none. */
+  pulls: number[];
+  direct: number;
+  /** The pull request when the commits are its merge alone. */
+  pull?: number | null;
+  /** Why Orbit couldn't read it, or found nothing. */
+  error?: string | null;
+  tries: number;
+  retryAt?: string | null;
 }
 /** One failing check, as Orbit's comment or issue lists it. */
 export interface OpsItem {
