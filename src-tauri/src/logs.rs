@@ -1,10 +1,15 @@
-//! Why a CI job failed: the step that failed and the end of that step's
-//! log, read from GitHub Actions once per job. What a log says is someone
-//! else's words, so it is only ever shown as plain text, and an excerpt
-//! that matches a credential format is never kept.
-use crate::{problems::Problem, types::*};
+//! Why a CI job failed: the step that failed the job and the end of that
+//! step's log, read from GitHub Actions once per job. What a log says is
+//! someone else's words, so it is only ever shown as plain text, and a step
+//! whose log matches a credential format is never kept.
+use crate::{
+    problems::{stamp, time, Problem, ProblemKind},
+    types::*,
+};
+use chrono::{DateTime, Duration, SubsecRound, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::sync::LazyLock;
 
 /// Jobs whose logs Orbit reads in one pass, at two requests each.
@@ -12,6 +17,9 @@ pub const PER_PASS: usize = 3;
 /// The most lines an excerpt keeps, and the most characters per line.
 pub const MAX_LINES: usize = 20;
 pub const MAX_LINE: usize = 240;
+/// The longest Orbit waits to read a log again that GitHub didn't answer
+/// for.
+pub const MAX_RETRY: Duration = Duration::hours(1);
 
 /// Why one failing job failed, as Orbit read it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,17 +28,22 @@ pub struct Failure {
     /// The job's page on GitHub, its check's link, which it is found by.
     pub url: String,
     pub check: String,
-    /// The step that failed, such as "Run cargo test", when GitHub says.
+    /// The step that failed the job, such as "Run cargo test", when
+    /// GitHub says.
     pub step: String,
-    /// The last lines of that step's log up to its error, without times
-    /// or colours.
+    /// The last lines of that step's log up to its last error, without
+    /// times or colours.
     pub lines: Vec<String>,
-    /// The excerpt looked like it held a secret, so Orbit dropped it.
+    /// The step's log looked like it held a secret, so Orbit dropped it.
     pub held: bool,
     /// Why Orbit can't say, such as a check that isn't a GitHub Actions
     /// job.
     pub error: Option<String>,
     pub read_at: String,
+    /// Reads in a row that GitHub didn't answer for. Orbit tries again
+    /// from `retry_at`.
+    pub tries: u32,
+    pub retry_at: Option<String>,
 }
 
 /// The job a check's link names, when it is a GitHub Actions job in
@@ -55,24 +68,110 @@ pub fn job_of(url: &str, repo: &str) -> Option<u64> {
     }
 }
 
-/// The failing checks on open problems whose logs Orbit hasn't read,
-/// default branches first, at most `PER_PASS`: each check's repository,
-/// name and link.
-pub fn wanted(problems: &[Problem], read: &[Failure]) -> Vec<(String, String, String)> {
+/// The failing checks on open problems whose logs Orbit should read now,
+/// at most `PER_PASS`: first those it hasn't tried, default branches
+/// first, then those due to be tried again, the longest waiting first, so
+/// a log GitHub keeps failing on never holds up the others. Each check's
+/// repository, name and link.
+pub fn wanted(
+    problems: &[Problem],
+    read: &[Failure],
+    now: DateTime<Utc>,
+) -> Vec<(String, String, String)> {
     let mut open: Vec<&Problem> = problems.iter().filter(|p| p.is_open()).collect();
-    open.sort_by_key(|p| p.kind != crate::problems::ProblemKind::DefaultBranch);
-    let mut out: Vec<(String, String, String)> = vec![];
+    open.sort_by_key(|p| p.kind != ProblemKind::DefaultBranch);
+    let mut fresh: Vec<(String, String, String)> = vec![];
+    let mut due: Vec<(DateTime<Utc>, (String, String, String))> = vec![];
     for p in open {
         for c in &p.failing {
-            let known = c.url.is_empty()
-                || read.iter().any(|f| f.url == c.url)
-                || out.iter().any(|(_, _, url)| *url == c.url);
-            if !known && out.len() < PER_PASS {
-                out.push((p.repo.clone(), c.name.clone(), c.url.clone()));
+            let listed = fresh.iter().any(|(_, _, url)| *url == c.url)
+                || due.iter().any(|(_, (_, _, url))| *url == c.url);
+            if c.url.is_empty() || listed {
+                continue;
+            }
+            let job = (p.repo.clone(), c.name.clone(), c.url.clone());
+            match read.iter().find(|f| f.url == c.url) {
+                None => fresh.push(job),
+                Some(f) => {
+                    if let Some(at) = f.retry_at.as_deref().and_then(time) {
+                        if at <= now {
+                            due.push((at, job));
+                        }
+                    }
+                }
             }
         }
     }
-    out
+    due.sort_by_key(|(at, _)| *at);
+    fresh
+        .into_iter()
+        .chain(due.into_iter().map(|(_, job)| job))
+        .take(PER_PASS)
+        .collect()
+}
+/// Keeps what Orbit read about a job, in place of an earlier try.
+pub fn record(read: &mut Vec<Failure>, failure: Failure) {
+    match read.iter_mut().find(|f| f.url == failure.url) {
+        Some(f) => *f = failure,
+        None => read.push(failure),
+    }
+}
+/// Records that GitHub didn't answer for a job or its log, to try again
+/// after a wait that doubles with each try, from a minute up to
+/// `MAX_RETRY`, as GitHub asks when it doesn't say how long to wait.
+pub fn retry_later(
+    read: &mut Vec<Failure>,
+    check: &str,
+    url: &str,
+    error: &str,
+    now: DateTime<Utc>,
+) {
+    let tries = read
+        .iter()
+        .find(|f| f.url == url && f.retry_at.is_some())
+        .map_or(0, |f| f.tries)
+        + 1;
+    let wait = Duration::minutes(1i64 << (tries - 1).min(6)).min(MAX_RETRY);
+    record(
+        read,
+        Failure {
+            url: url.into(),
+            check: check.into(),
+            error: Some(format!(
+                "Orbit couldn't read its log yet: {}. It tries again later.",
+                short(error)
+            )),
+            read_at: stamp(now),
+            tries,
+            retry_at: Some(stamp(now + wait)),
+            ..Default::default()
+        },
+    );
+}
+/// The first line of an error, without gh's name and cut short.
+fn short(error: &str) -> String {
+    let line = error.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+    // Orbit names the program, and gh names itself.
+    let line = match line.trim().split_once(": ") {
+        Some((program, rest)) if !program.contains(' ') && program.ends_with("gh") => rest,
+        _ => line.trim(),
+    };
+    let line = line
+        .strip_prefix("gh: ")
+        .unwrap_or(line)
+        .trim_end_matches('.');
+    let line = plain(line);
+    if line.chars().count() > 120 {
+        let cut: String = line.chars().take(119).collect();
+        format!("{cut}…")
+    } else {
+        line
+    }
+}
+/// Whether GitHub said Orbit asked too often. It says so with a 403 or a
+/// 429.
+pub fn rate_limited(error: &str) -> bool {
+    error.to_lowercase().contains("rate limit") || error.contains("HTTP 429")
 }
 /// Keeps what Orbit read about the jobs still failing on open problems.
 /// Returns whether any went.
@@ -89,7 +188,8 @@ pub fn prune(read: &mut Vec<Failure>, problems: &[Problem]) -> bool {
 
 /// Reads why a failing check failed. A check that isn't a GitHub Actions
 /// job, or whose job or log GitHub no longer has or won't show, gives a
-/// failure that says so; other errors are tried again on a later pass.
+/// failure that says so; for other errors, such as a rate limit, Orbit
+/// tries again later (`retry_later`).
 pub async fn read(repo: &str, check: &str, url: &str) -> Result<Failure, String> {
     validate_repo(repo)?;
     let mut failure = Failure {
@@ -103,7 +203,7 @@ pub async fn read(repo: &str, check: &str, url: &str) -> Result<Failure, String>
         return Ok(failure);
     };
     let endpoint = format!("repos/{repo}/actions/jobs/{job}");
-    let steps = match crate::github::api(&endpoint, "GET", &[], None).await {
+    let job = match crate::github::api(&endpoint, "GET", &[], None).await {
         Ok(v) => v,
         Err(e) => return lasting(e, failure),
     };
@@ -111,16 +211,7 @@ pub async fn read(repo: &str, check: &str, url: &str) -> Result<Failure, String>
         Ok(log) => log,
         Err(e) => return lasting(e, failure),
     };
-    let step = failed_step(&steps);
-    let lines = region(&log);
-    // Checked before lines are cut, so no part of a secret is shown.
-    if credential_kinds(&format!("{step}\n{}", lines.join("\n"))).is_empty() {
-        failure.step = cut(&step);
-        failure.lines = lines.iter().map(|l| cut(l)).collect();
-    } else {
-        failure.held = true;
-    }
-    Ok(failure)
+    Ok(understand(failure, &job, &log))
 }
 /// An error that won't go away by asking again, said on the failure, or
 /// the error to try again later.
@@ -128,7 +219,7 @@ fn lasting(error: String, mut failure: Failure) -> Result<Failure, String> {
     failure.error = Some(
         if error.contains("HTTP 404") || error.contains("HTTP 410") {
             "GitHub no longer has this job's log.".into()
-        } else if error.contains("HTTP 403") {
+        } else if error.contains("HTTP 403") && !rate_limited(&error) {
             "Orbit's GitHub sign-in can't read this job's log.".into()
         } else {
             return Err(error);
@@ -136,16 +227,52 @@ fn lasting(error: String, mut failure: Failure) -> Result<Failure, String> {
     );
     Ok(failure)
 }
-
-/// The first step GitHub marks failed, from its answer about a job.
-pub fn failed_step(job: &serde_json::Value) -> String {
-    let steps = job["steps"].as_array().into_iter().flatten();
-    steps
-        .filter(|s| matches!(s["conclusion"].as_str(), Some("failure" | "timed_out")))
-        .filter_map(|s| s["name"].as_str())
+/// What GitHub's answer about a job and its log say about why it failed:
+/// the step that failed the job and the end of what it logged. The whole
+/// step is checked for secrets before anything is cut, so no part of one
+/// is kept.
+pub fn understand(mut failure: Failure, job: &Value, log: &str) -> Failure {
+    let lines = parse(log);
+    let step = failed_step(job);
+    let name = step
+        .and_then(|s| s["name"].as_str())
         .map(plain)
-        .next()
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // Without the step's times, the whole log is checked and its last
+    // step shown.
+    let (checked, shown) = match step.and_then(|s| section(&lines, s)) {
+        Some(section) => (section, section),
+        None => (&lines[..], last_step(&lines)),
+    };
+    let text: Vec<&str> = checked.iter().map(|l| l.text.as_str()).collect();
+    if !credential_kinds(&format!("{name}\n{}", text.join("\n"))).is_empty() {
+        failure.held = true;
+        return failure;
+    }
+    failure.step = cut(&name);
+    failure.lines = tail(shown).iter().map(|l| cut(l)).collect();
+    failure
+}
+
+/// The step that failed the job, from GitHub's answer about it: the first
+/// step marked failed or timed out after which none of the workflow's own
+/// steps succeeded, as a step that continued on error is followed by ones
+/// that did; otherwise the last one marked failed.
+pub fn failed_step(job: &Value) -> Option<&Value> {
+    let steps: Vec<&Value> = job["steps"].as_array().into_iter().flatten().collect();
+    let failed = |s: &Value| matches!(s["conclusion"].as_str(), Some("failure" | "timed_out"));
+    // GitHub's own steps: setting up, the post steps and completing.
+    let github = |s: &Value| {
+        let name = s["name"].as_str().unwrap_or_default();
+        name == "Set up job" || name == "Complete job" || name.starts_with("Post ")
+    };
+    let mut marked = steps.iter().enumerate().filter(|(_, s)| failed(s));
+    let decisive = marked.clone().find(|(i, _)| {
+        !steps[i + 1..]
+            .iter()
+            .any(|s| !github(s) && s["conclusion"] == "success")
+    });
+    decisive.or_else(|| marked.next_back()).map(|(_, s)| *s)
 }
 
 static TIME: LazyLock<Regex> =
@@ -153,6 +280,27 @@ static TIME: LazyLock<Regex> =
 static COLOUR: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\x1b\[[0-9;?]*[ -/]*[@-~]").unwrap());
 
+/// A line of a job's log: when GitHub logged it, and its text.
+struct Line {
+    at: Option<DateTime<Utc>>,
+    text: String,
+}
+/// A job's log, line by line. A line without a time has the one before's.
+fn parse(log: &str) -> Vec<Line> {
+    let mut at = None;
+    log.lines()
+        .map(|raw| {
+            let raw = raw.trim_start_matches('\u{feff}');
+            if let Some(t) = TIME.find(raw).and_then(|m| time(m.as_str().trim_end())) {
+                at = Some(t);
+            }
+            Line {
+                at,
+                text: plain(raw),
+            }
+        })
+        .collect()
+}
 /// A log line as text: without its time, colours or other control
 /// characters.
 fn plain(line: &str) -> String {
@@ -174,35 +322,62 @@ fn cut(line: &str) -> String {
         line.to_string()
     }
 }
-/// The end of the step that failed, from a job's whole log, as Orbit
-/// shows it: each line cut to `MAX_LINE` characters.
-pub fn excerpt(log: &str) -> Vec<String> {
-    region(log).iter().map(|l| cut(l)).collect()
+/// The lines GitHub logged while `step` ran, by the time on each line, to
+/// the second, when GitHub gives the step's times.
+fn section<'a>(lines: &'a [Line], step: &Value) -> Option<&'a [Line]> {
+    let started = step["started_at"].as_str().and_then(time)?;
+    let completed = step["completed_at"].as_str().and_then(time)?;
+    let (from, to) = (
+        started.trunc_subsecs(0),
+        completed.trunc_subsecs(0) + Duration::seconds(1),
+    );
+    let inside = |l: &Line| l.at.is_some_and(|t| t >= from && t < to);
+    let first = lines.iter().position(inside);
+    let last = lines.iter().rposition(inside);
+    Some(match (first, last) {
+        (Some(first), Some(last)) => &lines[first..=last],
+        _ => &[],
+    })
 }
-/// The end of the step that failed, from a job's whole log: the lines
-/// after the step's command up to its first error, and the errors, at
-/// most `MAX_LINES`. GitHub marks a step's command with `##[group]Run`
-/// and an error with `##[error]`. A log with no error gives its end.
-fn region(log: &str) -> Vec<String> {
-    let lines: Vec<String> = log.lines().map(plain).collect();
-    let error = lines.iter().position(|l| l.starts_with("##[error]"));
-    let end = error.unwrap_or(lines.len());
-    let group = lines[..end]
+/// The last step of a whole log: from the last command before its last
+/// error.
+fn last_step(lines: &[Line]) -> &[Line] {
+    let end = lines
         .iter()
-        .rposition(|l| l.starts_with("##[group]Run "));
+        .rposition(|l| l.text.starts_with("##[error]"))
+        .unwrap_or(lines.len());
+    let start = lines[..end]
+        .iter()
+        .rposition(|l| l.text.starts_with("##[group]Run "));
+    &lines[start.unwrap_or(0)..]
+}
+/// The end of a whole log's last step, as Orbit shows it when it doesn't
+/// know the failed step's times: each line cut to `MAX_LINE` characters.
+pub fn excerpt(log: &str) -> Vec<String> {
+    tail(last_step(&parse(log)))
+        .iter()
+        .map(|l| cut(l))
+        .collect()
+}
+/// The end of a step's log: the lines after its command up to its last
+/// error, at most `MAX_LINES`. GitHub starts a step with its command in a
+/// `##[group]Run` group and marks an error with `##[error]`. A step with
+/// no error gives its end.
+fn tail(lines: &[Line]) -> Vec<String> {
+    let text: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+    let group = text.iter().position(|l| l.starts_with("##[group]Run "));
     let start = group.map_or(0, |g| {
-        lines[g..end]
+        text[g..]
             .iter()
             .position(|l| l.starts_with("##[endgroup]"))
             .map_or(g + 1, |e| g + e + 1)
     });
-    let errors = error.map_or(0, |e| {
-        lines[e..]
-            .iter()
-            .take_while(|l| l.starts_with("##[error]"))
-            .count()
-    });
-    let mut kept: Vec<String> = lines[start..end + errors]
+    let end = text
+        .iter()
+        .rposition(|l| l.starts_with("##[error]"))
+        .map_or(text.len(), |e| e + 1)
+        .max(start);
+    let mut kept: Vec<String> = text[start..end]
         .iter()
         .filter(|l| {
             !l.trim().is_empty() && !l.starts_with("##[group]") && !l.starts_with("##[endgroup]")
@@ -211,7 +386,7 @@ fn region(log: &str) -> Vec<String> {
             Some(rest) => format!("Error: {rest}"),
             None => l
                 .strip_prefix("##[warning]")
-                .map_or_else(|| l.clone(), |rest| format!("Warning: {rest}")),
+                .map_or_else(|| l.to_string(), |rest| format!("Warning: {rest}")),
         })
         .collect();
     if kept.len() > MAX_LINES {

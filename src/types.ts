@@ -1169,16 +1169,20 @@ export interface CiFailure {
   /** The job's page on GitHub, its check's link. */
   url: string;
   check: string;
-  /** The step that failed, when GitHub says. */
+  /** The step that failed the job, when GitHub says. */
   step: string;
-  /** The last lines of that step's log up to its error. */
+  /** The last lines of that step's log up to its last error. */
   lines: string[];
-  /** The log looked like it held a secret, so Orbit dropped it. */
+  /** The step's log looked like it held a secret, so Orbit dropped it. */
   held: boolean;
   /** Why Orbit can't say, such as a check that isn't a GitHub Actions
-   * job. */
+   * job, or one GitHub didn't answer for yet. */
   error?: string | null;
   readAt: string;
+  /** Reads in a row GitHub didn't answer for. */
+  tries?: number;
+  /** When Orbit tries again. */
+  retryAt?: string | null;
 }
 /** What an agent says about an item: `Taking I2`, `Fixed I2 in <commit>`,
  * `Declined I2: <reason>` or `Need a person on I2: <question>`. */

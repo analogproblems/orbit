@@ -336,11 +336,11 @@ The agent answers on the same comment or issue, one line per item, as the [reply
 
 #### Why it failed
 
-After each CI read, Orbit reads why the checks on open problems failed, a few new ones each time (3), default branches first, and each check once. For a GitHub Actions job it reads the step that failed, such as "Run cargo test", and the end of that step's log: the last lines before its error, and the error, at most 20 lines of at most 240 characters, without times or colours. Each open problem on **Operations** shows them, and Orbit's comment or issue shows them under the item as plain text, so an agent can start fixing without opening the log. What a log says is shown only as code, never as links, pictures or mentions.
+After each CI read, Orbit reads why the checks on open problems failed, a few each time (3), new ones first and default branches first, and each check once. For a GitHub Actions job it reads the step that failed the job, such as "Run cargo test", and the end of that step's log: the last lines up to its last error, at most 20 lines of at most 240 characters, without times or colours. A step that logged an error but passed, or that was allowed to fail, isn't the one shown, and nothing another step logged is. Each open problem on **Operations** shows them, and Orbit's comment or issue shows them under the item as plain text, so an agent can start fixing without opening the log. What a log says is shown only as code, never as links, pictures or mentions.
 
-- A log that looks like it holds a secret, such as a GitHub token or a private key, is held back: the item says Orbit held back its log, and Orbit keeps none of it.
+- A step whose log looks like it holds a secret anywhere, such as a GitHub token or a private key, is held back, even if the secret is outside the lines Orbit would show: the item says Orbit held back its log, and Orbit keeps none of it.
 - A check that isn't a GitHub Actions job, such as one from another CI service, says Orbit can only read the logs of GitHub Actions jobs. One whose log GitHub no longer has, or that Orbit's GitHub sign-in can't read, says so. Orbit doesn't ask again for these.
-- When GitHub doesn't answer, Orbit tries again after the next sync.
+- When GitHub doesn't answer, or says Orbit is asking too often, Operations says so and Orbit tries again after a minute, then waits twice as long after each failure, up to an hour. Meanwhile it reads the other checks. After GitHub's rate limit, it reads no more logs until the wait is over.
 
 Orbit forgets what it read once the check stops failing or its problem closes. A check that fails again on a newer commit is a new job, so Orbit reads it afresh.
 

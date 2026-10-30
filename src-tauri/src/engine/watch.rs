@@ -100,24 +100,41 @@ impl Engine {
     }
 }
 impl Engine {
-    /// Reads why the jobs failing on open problems failed, a few new ones
-    /// a pass, and forgets the ones no longer failing. A log GitHub didn't
-    /// answer for is tried again on the next pass.
+    /// Reads why the jobs failing on open problems failed, a few a pass,
+    /// and forgets the ones no longer failing. A log GitHub didn't answer
+    /// for is tried again after a wait; after a rate limit, the rest of the
+    /// pass waits too.
     async fn read_failures(&self) {
         let wanted = {
             let s = self.state.lock().await;
-            logs::wanted(&s.problems, &s.failures)
+            logs::wanted(&s.problems, &s.failures, chrono::Utc::now())
         };
-        for (repo, check, url) in wanted {
-            let Ok(failure) = logs::read(&repo, &check, &url).await else {
-                continue;
+        for (i, (repo, check, url)) in wanted.iter().enumerate() {
+            let error = match logs::read(repo, check, url).await {
+                Ok(failure) => {
+                    self.update(|s| logs::record(&mut s.failures, failure))
+                        .await;
+                    continue;
+                }
+                Err(error) => error,
+            };
+            // After a rate limit the rest wait as long, as GitHub would
+            // refuse them too.
+            let limited = logs::rate_limited(&error);
+            let waiting = if limited {
+                &wanted[i..]
+            } else {
+                &wanted[i..=i]
             };
             self.update(|s| {
-                if !s.failures.iter().any(|f| f.url == failure.url) {
-                    s.failures.push(failure);
+                for (_, check, url) in waiting {
+                    logs::retry_later(&mut s.failures, check, url, &error, chrono::Utc::now());
                 }
             })
             .await;
+            if limited {
+                break;
+            }
         }
         let pruned = {
             let mut s = self.state.lock().await;
