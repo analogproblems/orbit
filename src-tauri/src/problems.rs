@@ -4,13 +4,16 @@
 //! branch tells you once, through `crate::alerts`; failing checks on a pull
 //! request are its author's to fix, so they are only listed, as is a pull
 //! request whose checks passed before its base branch moved on, and a
-//! repository where no CI runs on pull requests.
+//! repository where no CI runs on pull requests. Runs that wait a long time
+//! for a runner tell you like a failing default branch, as only a person
+//! can add or fix a runner.
 //!
 //! Everything here is worked out from what Orbit read; nothing reaches
 //! GitHub.
 use crate::{
     alerts::{self, Raise, Standing},
     ci::{self, Check, CiState, CommitCi, RepoCi},
+    runners::{self, Waiting},
     types::*,
     workflows::Setup,
 };
@@ -42,6 +45,9 @@ pub enum ProblemKind {
     BaseMoved,
     /// No CI runs on a repository's pull requests (see `crate::workflows`).
     NoCi,
+    /// A repository's runs have waited a long time for a runner (see
+    /// `crate::runners`).
+    Waiting,
 }
 /// Something that happened to a problem.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,8 +62,9 @@ pub struct Problem {
     pub id: String,
     /// What the problem is about, the same while it stays the same thing:
     /// `ci:owner/name` for a default branch, `ci:owner/name#12` for a pull
-    /// request, `base:owner/name#12` for its base moving on, and
-    /// `setup:owner/name` for a repository with no CI on pull requests.
+    /// request, `base:owner/name#12` for its base moving on,
+    /// `setup:owner/name` for a repository with no CI on pull requests, and
+    /// `wait:owner/name` for its runs waiting for a runner.
     pub key: String,
     pub kind: ProblemKind,
     pub repo: String,
@@ -103,6 +110,10 @@ pub struct Problem {
     /// `sha` on `branch`, and the workflow it proposes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub found: Option<crate::workflows::Found>,
+    /// For runs waiting for a runner: those waiting when Orbit last read
+    /// them, the longest first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub waiting: Vec<Waiting>,
 }
 impl Problem {
     pub fn is_open(&self) -> bool {
@@ -115,7 +126,7 @@ impl Problem {
     /// Whether it is yours to know about, rather than a pull request
     /// author's to fix.
     pub fn needs_you(&self) -> bool {
-        self.kind == ProblemKind::DefaultBranch
+        matches!(self.kind, ProblemKind::DefaultBranch | ProblemKind::Waiting)
     }
     fn note(&mut self, at: &str, text: String) {
         self.timeline.push(ProblemEvent {
@@ -185,6 +196,41 @@ pub fn base_key(pr_id: &str) -> String {
 /// requests.
 pub fn setup_key(repo: &str) -> String {
     format!("setup:{}", repo.to_ascii_lowercase())
+}
+/// The key of a repository's problem about runs waiting for a runner.
+pub fn waiting_key(repo: &str) -> String {
+    format!("wait:{}", repo.to_ascii_lowercase())
+}
+/// Runs waiting for a runner in a sentence: "A run of CI in acme/api has
+/// waited more than 30 minutes for a runner."
+pub fn waiting_text(repo: &str, waiting: &[Waiting]) -> String {
+    let minutes = runners::STUCK.num_minutes();
+    let mut names: Vec<&str> = vec![];
+    for w in waiting.iter().filter(|w| !w.name.is_empty()) {
+        if !names.contains(&w.name.as_str()) {
+            names.push(&w.name);
+        }
+    }
+    let names = match names.as_slice() {
+        [] => String::new(),
+        [one] => (*one).into(),
+        [a, b] => format!("{a} and {b}"),
+        [a, b, rest @ ..] => format!("{a}, {b} and {} more", rest.len()),
+    };
+    match (waiting.len(), names.is_empty()) {
+        (1, false) => format!(
+            "A run of {names} in {repo} has waited more than {minutes} minutes for a runner."
+        ),
+        (1, true) => {
+            format!("A run in {repo} has waited more than {minutes} minutes for a runner.")
+        }
+        (n, false) => format!(
+            "{n} runs in {repo} have waited more than {minutes} minutes for a runner: {names}."
+        ),
+        (n, true) => {
+            format!("{n} runs in {repo} have waited more than {minutes} minutes for a runner.")
+        }
+    }
 }
 
 /// What Orbit saw of one thing that can fail.
@@ -470,6 +516,93 @@ pub fn see_setup(
             }
         }
         (Err(_), None) => {}
+    }
+}
+
+/// Opens, updates or closes the problem about a repository's runs waiting
+/// for a runner, from what Orbit just read of them (see `crate::runners`):
+/// `all` says whether it read every queued run, as it closes the problem
+/// only then. It tells you when it opens and reminds you after
+/// `REMIND_AFTER`; one that clears and comes back within `FLAP_QUIET` stays
+/// quiet then, as a failing default branch does.
+pub fn see_waiting(
+    problems: &mut Vec<Problem>,
+    repo: &str,
+    waiting: &[Waiting],
+    all: bool,
+    now: DateTime<Utc>,
+) {
+    let at = stamp(now);
+    let key = waiting_key(repo);
+    let open = problems.iter_mut().find(|p| p.key == key && p.is_open());
+    match (waiting.is_empty(), open) {
+        (true, Some(p)) if all => p.close(&at, "No runs wait for a runner now.".into()),
+        // A run Orbit didn't read may still wait.
+        (true, _) => {}
+        (false, Some(p)) => {
+            if p.waiting.len() != waiting.len() {
+                let now_waiting = match waiting.len() {
+                    1 => "Now 1 run waits for a runner.".to_string(),
+                    n => format!("Now {n} runs wait for a runner."),
+                };
+                p.note(&at, now_waiting);
+            }
+            p.waiting = waiting.to_vec();
+            let due = p.alert_due.as_deref().and_then(time);
+            let standing = match p.last_alert_at.as_deref().and_then(time) {
+                Some(last_alert) => Standing::Alerted { last_alert },
+                None => Standing::New,
+            };
+            if due.is_some_and(|due| now >= due)
+                || raise(standing, false, now, REMIND_AFTER) == Raise::Alert
+            {
+                p.alert(&at);
+            }
+        }
+        (false, None) => {
+            // One that cleared a moment ago is the same problem back again.
+            let back = problems
+                .iter_mut()
+                .filter(|p| {
+                    p.key == key
+                        && p.closed_at
+                            .as_deref()
+                            .and_then(time)
+                            .is_some_and(|closed| now - closed < FLAP_QUIET)
+                })
+                .max_by(|a, b| a.opened_at.cmp(&b.opened_at));
+            match back {
+                Some(p) => {
+                    p.closed_at = None;
+                    p.closed_reason = None;
+                    p.waiting = waiting.to_vec();
+                    p.note(&at, format!("Again: {}", waiting_text(repo, waiting)));
+                    let standing = match p.last_alert_at.as_deref().and_then(time) {
+                        Some(last_alert) => Standing::Returned { last_alert },
+                        None => Standing::New,
+                    };
+                    match raise(standing, false, now, FLAP_QUIET) {
+                        Raise::Alert => p.alert(&at),
+                        Raise::AlertAfter(due) => p.alert_due = Some(stamp(due)),
+                        Raise::Quiet => {}
+                    }
+                }
+                None => {
+                    let mut p = Problem {
+                        id: id(),
+                        key,
+                        kind: ProblemKind::Waiting,
+                        repo: repo.to_string(),
+                        opened_at: at.clone(),
+                        waiting: waiting.to_vec(),
+                        ..Default::default()
+                    };
+                    p.note(&at, waiting_text(repo, waiting));
+                    p.alert(&at);
+                    problems.push(p);
+                }
+            }
+        }
     }
 }
 

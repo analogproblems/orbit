@@ -169,6 +169,27 @@ describe("live page", () => {
       within(panel).getByRole("button", { name: "Open operations" }),
     );
     expect(go.onOperations).toHaveBeenCalled();
+    cleanup();
+    // So do runs waiting for a runner.
+    s.attention = [
+      {
+        key: "problem:waits:1",
+        kind: "runs_waiting",
+        prId: null,
+        reviewId: null,
+        approvalId: null,
+        repo: "acme/api",
+        reason:
+          "A run of Release in acme/api has waited more than 30 minutes for a runner.",
+      },
+    ];
+    const again = show(s);
+    const waiting = screen.getByRole("region", { name: "Needs you" });
+    expect(waiting.textContent).toContain("waited more than 30 minutes");
+    fireEvent.click(
+      within(waiting).getByRole("button", { name: "Open operations" }),
+    );
+    expect(again.onOperations).toHaveBeenCalled();
   });
   it("says all clear when nothing needs you", () => {
     const s = freshDemo();

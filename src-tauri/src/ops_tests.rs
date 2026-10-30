@@ -107,6 +107,22 @@ fn a_failing_default_branch_gets_one_issue() {
     assert_eq!(next(&threads[0], Some(&p), true, t0()), None);
 }
 
+/// Runs waiting for a runner are a person's to fix, so no agent hears of
+/// them.
+#[test]
+fn runs_waiting_for_a_runner_get_no_thread() {
+    let mut problems = vec![];
+    let run = crate::runners::Waiting {
+        id: 1,
+        name: "CI".into(),
+        ..Default::default()
+    };
+    crate::problems::see_waiting(&mut problems, "a/b", &[run], true, t0());
+    let mut threads = vec![];
+    assert!(!refresh(&mut threads, &problems, t0()));
+    assert!(threads.is_empty());
+}
+
 /// Items keep their numbers: a check that stops failing keeps its item, and
 /// one that fails again gets it back with when it started failing again.
 #[test]

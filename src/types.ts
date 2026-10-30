@@ -941,7 +941,8 @@ export type AttentionKind =
   | "sync_failing"
   | "disconnected"
   | "ci_failing"
-  | "ci_question";
+  | "ci_question"
+  | "runs_waiting";
 /** Something only the developer can resolve. */
 export interface Attention {
   /** Stays the same while the item is open. */
@@ -966,6 +967,7 @@ export const attentionLabels: Record<AttentionKind, string> = {
   disconnected: "Not connected",
   ci_failing: "CI failing",
   ci_question: "An agent needs a person",
+  runs_waiting: "Runs waiting",
 };
 export interface AttentionHandlers {
   onChoose: (p: PullRequest, r?: Review) => void;
@@ -982,7 +984,11 @@ export function attentionAction(
   go: AttentionHandlers,
 ): (() => void) | undefined {
   if (a.kind === "sync_failing" && a.repo) return go.onRepositories;
-  if (a.kind === "ci_failing" || a.kind === "ci_question")
+  if (
+    a.kind === "ci_failing" ||
+    a.kind === "ci_question" ||
+    a.kind === "runs_waiting"
+  )
     return go.onOperations;
   if (
     a.kind === "autopilot_paused" ||
@@ -1095,6 +1101,9 @@ export interface Snapshot {
   failures?: CiFailure[];
   /** What each connected repository's files say about its CI. */
   setups?: CiSetup[];
+  /** The self-hosted runners of each connected repository, and of each
+   * organization that owns one, as Orbit last read them. */
+  runners?: RunnerPlace[];
 }
 /** Where a commit's checks stand. "none" is no checks, or only ones that
  * were skipped or cancelled. */
@@ -1141,16 +1150,17 @@ export interface RepoCi {
   error?: string | null;
 }
 export type ProblemKind =
-  "default_branch" | "pull_request" | "base_moved" | "no_ci";
+  "default_branch" | "pull_request" | "base_moved" | "no_ci" | "waiting";
 export interface ProblemEvent {
   at: string;
   text: string;
 }
 /** One thing wrong with CI, from when Orbit first saw it until it saw it
- * fixed. A default branch's problem needs you; a pull request's is its
- * author's to fix, as is a pull request whose checks passed before its base
- * moved on (`base_moved`). A repository where no CI runs on pull requests
- * (`no_ci`) is listed with the repository. */
+ * fixed. A default branch's problem needs you, as do runs waiting a long
+ * time for a runner (`waiting`); a pull request's is its author's to fix,
+ * as is a pull request whose checks passed before its base moved on
+ * (`base_moved`). A repository where no CI runs on pull requests (`no_ci`)
+ * is listed with the repository. */
 export interface Problem {
   id: string;
   key: string;
@@ -1181,6 +1191,49 @@ export interface Problem {
   baseSha?: string;
   /** For `no_ci`: what Orbit found at `sha`, and the workflow it proposes. */
   found?: CiFound | null;
+  /** For `waiting`: the runs waiting when Orbit last read them, the longest
+   * first. */
+  waiting?: WaitingRun[];
+}
+/** A run that has waited for a runner since `since`. */
+export interface WaitingRun {
+  id: number;
+  /** Its workflow's name; empty when GitHub gives none. */
+  name: string;
+  /** The run on GitHub; empty unless it is a github.com link. */
+  url: string;
+  since: string;
+}
+/** A self-hosted runner. */
+export interface Runner {
+  name: string;
+  os: string;
+  online: boolean;
+  busy: boolean;
+  labels: string[];
+}
+/** What Orbit read about one place's self-hosted runners: a repository's,
+ * or an account's that owns connected repositories. A person's account
+ * shares none; `owner` is one Orbit hasn't read yet. */
+export interface RunnerPlace {
+  name: string;
+  kind: "repository" | "owner" | "organization" | "person";
+  readAt: string;
+  runners: Runner[];
+  /** How many GitHub says there are, more than `runners` when there are
+   * more than Orbit reads. */
+  total: number;
+  /** Why Orbit can't see its runners. */
+  unseen?: string | null;
+  /** For a repository, its runs waiting for a runner. */
+  waiting: WaitingRun[];
+  /** GitHub had more queued runs than Orbit read, so more may wait than
+   * `waiting` lists. */
+  moreQueued?: boolean;
+  /** Why the last read failed; what was read before is kept. */
+  error?: string | null;
+  tries: number;
+  retryAt?: string | null;
 }
 /** What Orbit found in a repository where no CI runs on pull requests. */
 export interface CiFound {

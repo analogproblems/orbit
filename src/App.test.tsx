@@ -432,6 +432,36 @@ describe("PR review regressions", () => {
     );
   });
 
+  it("marks Operations while CI fails, and while runs wait for a runner", async () => {
+    const wide = vi.spyOn(window, "innerWidth", "get").mockReturnValue(1400);
+    onTestFinished(() => wide.mockRestore());
+    await mount();
+    const operations = () =>
+      screen.getByRole("button", { name: /^Operations/ }).parentElement!;
+    expect(within(operations()).getByLabelText("CI failing")).toBeTruthy();
+    const waiting = {
+      key: "problem:waits:1",
+      kind: "runs_waiting" as const,
+      prId: null,
+      reviewId: null,
+      approvalId: null,
+      repo: "acme/api",
+      reason:
+        "A run of Release in acme/api has waited more than 30 minutes for a runner.",
+    };
+    snapshot.attention = [waiting];
+    emit();
+    await waitFor(() =>
+      expect(within(operations()).getByLabelText("Runs waiting")).toBeTruthy(),
+    );
+    expect(within(operations()).queryByLabelText("CI failing")).toBeNull();
+    snapshot.attention = [];
+    emit();
+    await waitFor(() =>
+      expect(within(operations()).queryByLabelText("Runs waiting")).toBeNull(),
+    );
+  });
+
   it("opens on Live under autopilot and keeps inbox search on Ctrl+K", async () => {
     snapshot.settings.automatic = true;
     await mount();

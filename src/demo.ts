@@ -25,6 +25,7 @@ import {
   type RepoCi,
   type Review,
   type RepositorySummary,
+  type RunnerPlace,
   type SecurityScan,
 } from "./types";
 
@@ -833,14 +834,14 @@ export function freshDemo(): Snapshot {
 }
 const sha = (start: string) => start + "0".repeat(40 - start.length);
 /** CI as Orbit last read it: orbit's main fails, api's passes after failing
- * yesterday, dashboard can't be read, docs has no CI on pull requests, one
- * pull request fails its own checks, and one passed before orbit's main
- * moved on. */
+ * yesterday and its one self-hosted runner is offline, dashboard can't be
+ * read, docs has no CI on pull requests, one pull request fails its own
+ * checks, and one passed before orbit's main moved on. */
 export function demoCi(
   prs: PullRequest[],
 ): Pick<
   Snapshot,
-  "ci" | "problems" | "ops" | "journal" | "failures" | "setups"
+  "ci" | "problems" | "ops" | "journal" | "failures" | "setups" | "runners"
 > {
   const failingPr = prs[2];
   const behindPr = prs[4];
@@ -977,6 +978,54 @@ export function demoCi(
       passing: 2,
     },
   });
+  const runner = (
+    name: string,
+    os: string,
+    online: boolean,
+    busy: boolean,
+    labels: string[],
+  ) => ({ name, os, online, busy, labels });
+  const place = (
+    name: string,
+    kind: RunnerPlace["kind"],
+    runners: RunnerPlace["runners"],
+  ): RunnerPlace => ({
+    name,
+    kind,
+    readAt: ago(2),
+    runners,
+    total: runners.length,
+    waiting: [],
+    tries: 0,
+  });
+  const runners: RunnerPlace[] = [
+    place("acme/orbit", "repository", []),
+    place("acme/api", "repository", [
+      runner("mac-mini-1", "macOS", false, false, [
+        "self-hosted",
+        "macOS",
+        "ARM64",
+      ]),
+    ]),
+    {
+      ...place("acme/dashboard", "repository", []),
+      unseen:
+        "Orbit can't see the self-hosted runners of acme/dashboard: that needs admin rights on it.",
+    },
+    place("acme/docs", "repository", []),
+    place("acme", "organization", [
+      runner("linux-big-1", "Linux", true, true, [
+        "self-hosted",
+        "Linux",
+        "X64",
+      ]),
+      runner("linux-big-2", "Linux", true, false, [
+        "self-hosted",
+        "Linux",
+        "X64",
+      ]),
+    ]),
+  ];
   const problems: Problem[] = [
     {
       id: "demo-problem-1",
@@ -1331,7 +1380,15 @@ export function demoCi(
   for (const t of ops)
     for (const i of t.items)
       if (i.failing) i.why = failures.find((f) => f.url === i.url) ?? null;
-  return { ci, problems, ops, journal, failures, setups };
+  return {
+    ci,
+    problems,
+    ops,
+    journal,
+    failures,
+    setups,
+    runners,
+  };
 }
 /** The browser demo: the fresh workspace plus two weeks of history. */
 export function demoWorkspace(): Snapshot {

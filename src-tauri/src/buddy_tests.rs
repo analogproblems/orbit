@@ -1095,6 +1095,27 @@ fn bit_continues_a_loop_on_its_own_only_once() {
     assert_eq!(will_fix(&s, &item), None);
 }
 #[test]
+fn runs_waiting_for_a_runner_are_one_heads_up_linked_from_how_are_my_repositories() {
+    let (mut s, _) = seeded();
+    let run = crate::runners::Waiting {
+        id: 1,
+        name: "Release".into(),
+        ..Default::default()
+    };
+    crate::problems::see_waiting(&mut s.problems, "a/b", &[run], true, chrono::Utc::now());
+    assert_eq!(
+        step(&mut s),
+        [(
+            NoteKind::NeedsYou,
+            "Heads up! A run of Release in a/b has waited more than 30 minutes for a runner."
+                .to_string()
+        )]
+    );
+    assert!(step(&mut s).is_empty(), "told once");
+    let (_, _, keys) = ask_and_read(&mut s, Question::Repositories);
+    assert_eq!(keys, [Some(s.problems[0].item_key())]);
+}
+#[test]
 fn a_failing_default_branch_is_one_heads_up_and_shows_in_how_are_my_repositories() {
     let (mut s, _) = seeded();
     let ci = crate::ci::RepoCi {
