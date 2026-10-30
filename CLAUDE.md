@@ -9,7 +9,7 @@ UI rules for the Astryx design system live in AGENTS.md and apply to every UI ch
 ## Commands
 
 ```sh
-npm run check      # Everything: lint, build, frontend tests, Rust tests, desktop build check. Run before every push.
+npm run check      # Everything: lint, build, frontend tests, Rust tests, desktop build check. Run before every push; CI runs it too.
 npm run lint       # ESLint, Prettier --check, rustfmt --check, Clippy with -D warnings
 npm run format     # Prettier and rustfmt (fixes what lint complains about)
 npm test           # Vitest (jsdom); one file: npx vitest run src/Live.test.tsx
@@ -18,7 +18,7 @@ npm run dev        # Browser demo with sample data at http://127.0.0.1:1420
 npm run desktop    # The real desktop app (needs a display)
 ```
 
-`npm run check:desktop` and Clippy build the `desktop` feature, which needs Tauri's Linux libraries (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev` and friends); the [dev container](.devcontainer/) has them. Prettier also checks Markdown, so run `npm run format` after editing docs.
+`npm run check:desktop` and Clippy build the `desktop` feature, which needs Tauri's Linux libraries (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev` and friends); the [dev container](.devcontainer/) and the [CI workflow](.github/workflows/ci.yml) install them. Prettier also checks Markdown, so run `npm run format` after editing docs.
 
 ## Layout
 
