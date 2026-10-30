@@ -166,6 +166,13 @@ pub struct Item {
     /// Why its job failed at `at`, once Orbit has read its log.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub why: Option<crate::logs::Failure>,
+    /// Orbit's reruns of its job at `at`, and its tries at them (see
+    /// `crate::reruns`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reruns: Vec<crate::reruns::Rerun>,
+    /// The job you said to rerun, by its link, while Bit asks first.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub rerun_ok: String,
 }
 
 /// What an agent says about an item.
@@ -275,6 +282,8 @@ pub enum Action {
     NoteOnIssue,
     CloseIssue,
     ReopenIssue,
+    /// Reruns a failed GitHub Actions job (see `crate::reruns`).
+    RerunJob,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -328,6 +337,8 @@ pub struct Planned {
     pub completed: bool,
     /// For a closing note: when the problem it is about closed.
     pub closed_at: Option<String>,
+    /// For a rerun: the item's job.
+    pub rerun: Option<crate::reruns::Job>,
 }
 /// What GitHub said to a write: where the comment or issue is.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -347,15 +358,20 @@ pub struct Posted {
 pub fn rule_allows(rule: &str, allowed: bool, bit_on: bool) -> bool {
     bit_on && (rule == "do_it" || (rule == "ask_first" && allowed))
 }
-/// Whether Bit may post something new for a thread now: its rule allows it,
-/// Watch CI is on, its repository is connected, and for a comment, Orbit
-/// still follows the pull request. Checked again right before each post.
+/// Whether Bit may post something new for a thread now: its rule allows it
+/// and Orbit is `watching`. Checked again right before each post.
 pub fn may_post(s: &Snapshot, t: &Thread) -> bool {
     let buddy = &s.settings.buddy;
     let rule = match t.kind {
         ThreadKind::Comment => &buddy.rules.comment_on_prs,
         ThreadKind::Issue => &buddy.rules.open_issues,
     };
+    rule_allows(rule, t.allowed, buddy.enabled) && watching(s, t)
+}
+/// Whether Orbit watches what a thread is about: Watch CI is on, its
+/// repository is connected, and for a comment, Orbit still follows the pull
+/// request.
+pub fn watching(s: &Snapshot, t: &Thread) -> bool {
     let watched = s.settings.watch_ci
         && s.settings
             .repositories
@@ -369,7 +385,7 @@ pub fn may_post(s: &Snapshot, t: &Thread) -> bool {
                 && trusted_source(p, &s.settings.trusted_authors)
         }),
     };
-    rule_allows(rule, t.allowed, buddy.enabled) && watched && followed
+    watched && followed
 }
 
 /// Brings each thread up to date with its problem, and starts one for each
@@ -451,7 +467,7 @@ fn items_from(t: &mut Thread, p: &Problem) {
         if p.passed() {
             for item in &mut t.items {
                 item.failing = false;
-                item.at = p.closed_sha.clone();
+                at(item, &p.closed_sha);
             }
         }
         return;
@@ -465,7 +481,7 @@ fn items_from(t: &mut Thread, p: &Problem) {
             item.heard_from.clear();
         }
         item.failing = failing;
-        item.at = p.sha.clone();
+        at(item, &p.sha);
     }
     for check in &p.failing {
         match t.items.iter_mut().find(|i| i.check == check.name) {
@@ -482,9 +498,20 @@ fn items_from(t: &mut Thread, p: &Problem) {
                     answer: None,
                     heard_from: String::new(),
                     why: None,
+                    reruns: vec![],
+                    rerun_ok: String::new(),
                 });
             }
         }
+    }
+}
+/// Moves an item to a commit. Reruns are of one commit's jobs, so they
+/// start again at a new one.
+fn at(item: &mut Item, sha: &str) {
+    if item.at != sha {
+        item.reruns.clear();
+        item.rerun_ok.clear();
+        item.at = sha.to_string();
     }
 }
 
@@ -743,6 +770,7 @@ pub fn next(
             marker: t.tag(),
             completed: false,
             closed_at: None,
+            rerun: None,
         });
     }
     let p = problem?;
@@ -756,6 +784,7 @@ pub fn next(
         marker: t.tag(),
         completed: p.passed(),
         closed_at: None,
+        rerun: None,
         body,
     };
     match t.kind {
@@ -887,10 +916,14 @@ fn item_line(item: &Item, t: &Thread, p: &Problem) -> String {
                 code(short(&item.at))
             )
         }
-    } else if p.passed() {
-        format!("passes at {}", code(short(&item.at)))
     } else {
-        format!("not failing at {}", code(short(&item.at)))
+        let rerun = if crate::reruns::done(item) > 0 {
+            " after a rerun"
+        } else {
+            ""
+        };
+        let state = if p.passed() { "passes" } else { "not failing" };
+        format!("{state} at {}{rerun}", code(short(&item.at)))
     };
     let (link, answer) = if item.failing && p.is_open() {
         (details(&item.url), answer_text(item, t))
@@ -947,12 +980,16 @@ fn items_text(t: &Thread, p: &Problem) -> String {
         .take(MAX_ITEMS)
         .enumerate()
         .map(|(n, i)| {
-            let line = item_line(i, t, p);
-            if i.failing && p.is_open() && n < MAX_WHY {
-                line + &why_text(i)
-            } else {
-                line
+            let mut line = item_line(i, t, p);
+            if i.failing && p.is_open() {
+                if let Some(rerun) = crate::reruns::text(i) {
+                    line = format!("{line}\n  {rerun}");
+                }
+                if n < MAX_WHY {
+                    line += &why_text(i);
+                }
             }
+            line
         })
         .collect();
     if items.len() > MAX_ITEMS {
@@ -982,6 +1019,11 @@ fn data(t: &Thread, p: &Problem) -> String {
                     "commit": a.commit,
                     "check": a.check,
                 });
+            }
+            // The same for reruns.
+            let reruns = crate::reruns::done(i);
+            if reruns > 0 {
+                item["reruns"] = json!(reruns);
             }
             item
         })
@@ -1278,6 +1320,8 @@ pub fn settle(
                     shown(t, &posted.updated_at);
                 }
                 Action::NoteOnIssue => t.noted = planned.closed_at.clone(),
+                // Settled by `crate::reruns::settle`.
+                Action::RerunJob => {}
             }
         }
         Err(error) => {
@@ -1320,6 +1364,15 @@ pub enum Event {
     Closed(String),
     /// An agent answered, or Orbit checked a fix.
     Heard(Box<Heard>),
+    /// Orbit reran an item's job.
+    Reran { thread: String, number: u32 },
+    /// An item's job failed again after a rerun, and `ask` when Bit asks
+    /// before rerunning it again.
+    FailedAgain {
+        thread: String,
+        number: u32,
+        ask: bool,
+    },
 }
 /// Where a thread is, in plain words: `acme/api #12` for a pull request's
 /// comment, `main in acme/api` for a default branch's issue.
@@ -1344,6 +1397,7 @@ pub fn event_text(
     let key = match e {
         Event::Posted(key) | Event::Closed(key) => key,
         Event::Heard(h) => &h.thread,
+        Event::Reran { thread, .. } | Event::FailedAgain { thread, .. } => thread,
     };
     let t = threads.iter().find(|t| &t.key == key)?;
     let p = problems.iter().find(|p| p.id == t.problem_id);
@@ -1404,6 +1458,39 @@ pub fn event_text(
                     format!("{said}, but Orbit can't find that commit.")
                 }
                 _ => return None,
+            }
+        }
+        Event::Reran { number, .. } => {
+            let item = t.items.iter().find(|i| i.number == *number)?;
+            let r = item.reruns.iter().rfind(|r| r.done)?;
+            let what = format!("I{} ({})", item.number, item.check);
+            if crate::reruns::done(item) > 1 {
+                format!(
+                    "Orbit reran {what} on {} a second time, as it still looks like bad luck: {}",
+                    place(t),
+                    r.reason
+                )
+            } else {
+                format!(
+                    "Orbit reran {what} on {}, as it looks like bad luck: {}",
+                    place(t),
+                    r.reason
+                )
+            }
+        }
+        Event::FailedAgain { number, ask, .. } => {
+            let item = t.items.iter().find(|i| i.number == *number)?;
+            let what = format!("I{} ({})", item.number, item.check);
+            let flaky = item.why.as_ref().and_then(|w| w.flaky.as_deref());
+            match flaky.filter(|_| *ask) {
+                Some(reason) => format!(
+                    "{what} failed again on {} after a rerun. It still looks like bad luck: {reason} Tap Rerun again on Operations to try once more.",
+                    place(t)
+                ),
+                None => format!(
+                    "{what} failed again on {} after a rerun, so it's likely real.",
+                    place(t)
+                ),
             }
         }
     };

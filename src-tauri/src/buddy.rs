@@ -173,6 +173,10 @@ pub struct Rules {
     pub comment_on_prs: String,
     /// Opening an `orbit` issue for a default branch that fails.
     pub open_issues: String,
+    /// Rerunning a failed job once when it looks like bad luck.
+    pub rerun_flaky: String,
+    /// Rerunning the same check a second time on the same commit.
+    pub rerun_again: String,
 }
 impl Default for Rules {
     fn default() -> Self {
@@ -183,6 +187,8 @@ impl Default for Rules {
             sync_now: "ask_first".into(),
             comment_on_prs: "do_it".into(),
             open_issues: "do_it".into(),
+            rerun_flaky: "do_it".into(),
+            rerun_again: "ask_first".into(),
         }
     }
 }
@@ -197,7 +203,7 @@ impl Rules {
             Fix::TurnOnAutopilot | Fix::CheckConnections => "ask_first",
         }
     }
-    fn each(&self) -> [&str; 6] {
+    fn each(&self) -> [&str; 8] {
         [
             &self.continue_loop,
             &self.review_again,
@@ -205,9 +211,11 @@ impl Rules {
             &self.sync_now,
             &self.comment_on_prs,
             &self.open_issues,
+            &self.rerun_flaky,
+            &self.rerun_again,
         ]
     }
-    fn each_mut(&mut self) -> [&mut String; 6] {
+    fn each_mut(&mut self) -> [&mut String; 8] {
         [
             &mut self.continue_loop,
             &mut self.review_again,
@@ -215,6 +223,8 @@ impl Rules {
             &mut self.sync_now,
             &mut self.comment_on_prs,
             &mut self.open_issues,
+            &mut self.rerun_flaky,
+            &mut self.rerun_again,
         ]
     }
 }
@@ -228,6 +238,8 @@ pub struct RulesPatch {
     pub sync_now: Option<String>,
     pub comment_on_prs: Option<String>,
     pub open_issues: Option<String>,
+    pub rerun_flaky: Option<String>,
+    pub rerun_again: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -463,6 +475,8 @@ impl BuddyPatch {
                 rules.sync_now,
                 rules.comment_on_prs,
                 rules.open_issues,
+                rules.rerun_flaky,
+                rules.rerun_again,
             ];
             for (rule, v) in buddy.rules.each_mut().into_iter().zip(patch) {
                 if let Some(v) = v {

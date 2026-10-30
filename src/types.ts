@@ -470,8 +470,10 @@ export type Fix =
  * connections always ask first. */
 export type RuledFix = Exclude<Fix, "turn_on_autopilot" | "check_connections">;
 export type FixRule = "do_it" | "ask_first" | "leave_it";
-/** What Bit posts on GitHub to tell an agent about failing CI. */
-export type RuledPost = "comment_on_prs" | "open_issues";
+/** What Bit does on GitHub about failing CI: telling agents, and rerunning
+ * jobs that failed by bad luck. */
+export type RuledPost =
+  "comment_on_prs" | "open_issues" | "rerun_flaky" | "rerun_again";
 export type RuledAction = RuledFix | RuledPost;
 export type BuddyRules = Record<RuledAction, FixRule>;
 export const fixLabels: Record<Fix, string> = {
@@ -493,12 +495,18 @@ export const fixDescriptions: Record<RuledFix, string> = {
 export const postLabels: Record<RuledPost, string> = {
   comment_on_prs: "Comment on pull requests",
   open_issues: "Open issues",
+  rerun_flaky: "Rerun a failed job once when it looks flaky",
+  rerun_again: "Rerun the same job a second time",
 };
 export const postDescriptions: Record<RuledPost, string> = {
   comment_on_prs:
     "When a pull request’s checks fail, post one comment on it for its agent, and keep it up to date.",
   open_issues:
     "When a default branch’s checks fail, open an issue labelled orbit for the repository’s agent, and close it once the checks have passed for an hour.",
+  rerun_flaky:
+    "When a job fails before any test ran, or because its runner went away or the network failed, rerun it once and say so on Orbit’s comment or issue.",
+  rerun_again:
+    "When a rerun job fails again and still looks like bad luck, rerun it one more time. Orbit never reruns a job a third time on the same commit.",
 };
 /** A rule's name, for a fix or a post. */
 export const ruleLabel = (rule: RuledAction) =>
@@ -525,6 +533,8 @@ export const defaultBuddy: Buddy = {
     sync_now: "ask_first",
     comment_on_prs: "do_it",
     open_issues: "do_it",
+    rerun_flaky: "do_it",
+    rerun_again: "ask_first",
   },
   answerer: "codex",
   ollamaUrl: "http://localhost:11434",
@@ -1163,6 +1173,10 @@ export interface OpsItem {
   heardFrom?: string;
   /** Why its job failed, once Orbit has read its log. */
   why?: CiFailure | null;
+  /** Orbit's reruns of its job at `at`, and its tries at them. */
+  reruns?: OpsRerun[];
+  /** The job you said to rerun, while Bit asks first. */
+  rerunOk?: string;
 }
 /** Why one failing job failed, as Orbit read it from GitHub Actions. */
 export interface CiFailure {
@@ -1186,6 +1200,30 @@ export interface CiFailure {
   /** GitHub's rate limit stopped the last try, so Orbit reads no log until
    * `retryAt`. */
   limited?: boolean;
+  /** Why it looks like bad luck rather than the code, such as a lost
+   * runner or a network error, when it does. */
+  flaky?: string | null;
+}
+/** One rerun of an item's job, or Orbit's tries at one. */
+export interface OpsRerun {
+  /** The job Orbit reran, by its link. */
+  url: string;
+  /** Why it looked like bad luck. */
+  reason: string;
+  at: string;
+  done: boolean;
+  /** Orbit found it already rerun on GitHub. */
+  already: boolean;
+  /** Why the latest try didn't go through. */
+  error?: string | null;
+  tries: number;
+  retryAt?: string | null;
+  /** GitHub won't rerun it, so Orbit doesn't ask again. */
+  lasting: boolean;
+  /** Orbit saw the job fail again after this rerun. */
+  failedAgain: boolean;
+  /** Orbit may have sent it, so it looks on GitHub before anything else. */
+  unsure: boolean;
 }
 /** What an agent says about an item: `Taking I2`, `Fixed I2 in <commit>`,
  * `Declined I2: <reason>` or `Need a person on I2: <question>`. */
@@ -1253,7 +1291,8 @@ export type OpsAction =
   | "edit_issue"
   | "note_on_issue"
   | "close_issue"
-  | "reopen_issue";
+  | "reopen_issue"
+  | "rerun_job";
 /** One write Orbit made on GitHub, recorded before it was sent. */
 export interface OpsWrite {
   id: string;

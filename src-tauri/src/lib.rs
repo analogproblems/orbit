@@ -20,6 +20,7 @@ pub mod ollama;
 pub mod ops;
 pub mod problems;
 pub mod remote;
+pub mod reruns;
 pub mod review_instructions;
 pub mod review_loop;
 pub mod rpc;
@@ -227,6 +228,14 @@ mod desktop {
     #[tauri::command]
     async fn tell_agent(engine: State<'_, AppState>, key: String) -> Result<(), String> {
         engine.tell_agent(&key).await
+    }
+    #[tauri::command]
+    async fn rerun_job(
+        engine: State<'_, AppState>,
+        key: String,
+        number: u32,
+    ) -> Result<(), String> {
+        engine.rerun_job(&key, number).await
     }
     #[tauri::command]
     async fn ask_buddy(
@@ -490,6 +499,7 @@ mod desktop {
                 continue_loop,
                 use_fix,
                 tell_agent,
+                rerun_job,
                 ask_buddy,
                 ask_buddy_anything,
                 use_proposal,

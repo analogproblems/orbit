@@ -489,6 +489,44 @@ async function demoAction(
     commit();
     return;
   }
+  if (command === "rerun_job") {
+    const t = demo.ops?.find((t) => t.key === args.key);
+    const i = t?.items.find((i) => i.number === args.number && i.failing);
+    if (!t || !i) throw Error("Orbit has nothing to rerun there any more.");
+    const at = new Date().toISOString();
+    i.rerunOk = i.url;
+    i.reruns = [
+      ...(i.reruns ?? []),
+      {
+        url: i.url,
+        reason: i.why?.flaky ?? "",
+        at,
+        done: true,
+        already: false,
+        tries: 0,
+        lasting: false,
+        failedAgain: false,
+        unsure: false,
+      },
+    ];
+    t.updatedAt = at;
+    demo.journal = [
+      ...(demo.journal ?? []),
+      {
+        id: `demo-write-${Date.now()}`,
+        thread: t.key,
+        action: "rerun_job",
+        repo: t.repo,
+        number: t.number,
+        state: "done",
+        at,
+        doneAt: at,
+        url: i.url,
+      },
+    ];
+    commit();
+    return;
+  }
   if (command === "reset_demo") {
     timers.forEach(clearTimeout);
     timers.clear();

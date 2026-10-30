@@ -79,6 +79,118 @@ fn an_excerpt_is_the_end_of_the_failing_step() {
     assert!(!failure.held);
 }
 
+/// What looks like bad luck rather than the code: no step failed, the
+/// runner went away, the job failed setting up or getting the code or
+/// tools ready, or a network or registry error.
+#[test]
+fn a_failure_looks_like_bad_luck_when_it_isnt_the_code() {
+    let named = |name: &str| json!({ "name": name });
+    let tests = named("Run cargo test");
+    assert_eq!(
+        flaky(None, &[]).as_deref(),
+        Some("No step failed, as when a runner is lost.")
+    );
+    assert_eq!(flaky(Some(&tests), &["test it_works ... FAILED"]), None);
+    assert_eq!(
+        flaky(
+            Some(&tests),
+            &["##[error]The runner has received a shutdown signal. This can happen when the runner service is stopped."]
+        )
+        .as_deref(),
+        Some("The runner went away.")
+    );
+    assert_eq!(
+        flaky(Some(&named("Set up job")), &[]).as_deref(),
+        Some("It failed setting up the job.")
+    );
+    for ready in [
+        "Run actions/checkout@v4",
+        "Run actions/setup-node@v4",
+        "Run \x1b[1mactions/cache@v4\x1b[0m",
+    ] {
+        assert_eq!(
+            flaky(Some(&named(ready)), &["##[error]boom"]).as_deref(),
+            Some("It failed getting the code or tools ready, before any test ran."),
+            "{ready}"
+        );
+    }
+    // Not someone else's action, nor a step named like one.
+    assert_eq!(flaky(Some(&named("Run someone/checkout@v4")), &[]), None);
+    assert_eq!(
+        flaky(Some(&named("Post Run actions/checkout@v4")), &[]),
+        None
+    );
+    assert_eq!(
+        flaky(Some(&tests), &["npm ERR! code ECONNRESET"]).as_deref(),
+        Some("A network or registry error (ECONNRESET).")
+    );
+    assert_eq!(
+        flaky(
+            Some(&tests),
+            &["Error response from daemon: toomanyrequests: You have reached your pull rate limit."]
+        )
+        .as_deref(),
+        Some("A network or registry error (toomanyrequests).")
+    );
+}
+
+/// Only the failed step's own lines count, so a network error an earlier
+/// step got past doesn't make a real failure look like bad luck; a job
+/// with no failed step does.
+#[test]
+fn only_the_failed_steps_own_lines_say_it_was_bad_luck() {
+    let mut log = log();
+    log.insert(
+        3,
+        at(0.5, "warning: Could not resolve host: github.com, retrying"),
+    );
+    assert_eq!(understood(&steps(), &log).flaky, None);
+    let test = log
+        .iter()
+        .position(|l| l.contains("test it_works"))
+        .unwrap();
+    log.insert(test, at(4.5, "error: Connection reset by peer"));
+    assert_eq!(
+        understood(&steps(), &log).flaky.as_deref(),
+        Some("A network or registry error (Connection reset by peer).")
+    );
+    let none_failed = [step("Set up job", "success", 0, 0)];
+    assert_eq!(
+        understood(&none_failed, &log).flaky.as_deref(),
+        Some("No step failed, as when a runner is lost.")
+    );
+}
+
+/// The command GitHub echoes at the start of a step, and its settings,
+/// aren't what the step said, so a network error named there doesn't
+/// excuse a real failure.
+#[test]
+fn the_command_a_step_ran_isnt_bad_luck() {
+    let mut log = log();
+    let group = log
+        .iter()
+        .position(|l| l.contains("cargo test --locked"))
+        .unwrap();
+    for (n, line) in [
+        "grep -q 'ECONNRESET' out.log && echo 'Could not resolve host'",
+        "env:",
+        "  ERRORS: 503 Service Unavailable",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        log.insert(group + 1 + n, at(2.015, line));
+    }
+    assert_eq!(understood(&steps(), &log).flaky, None);
+    // What the step itself printed still counts.
+    let test = log
+        .iter()
+        .position(|l| l.contains("test it_works"))
+        .unwrap();
+    log.insert(test, at(4.5, "curl: (6) Could not resolve host: x.org"));
+    assert!(understood(&steps(), &log).flaky.is_some());
+}
+
 /// An earlier step that logged an error but succeeded, or that continued
 /// on error, isn't the one shown, nor is the end of a step that ran in
 /// the same second before the failing one.
