@@ -1816,6 +1816,14 @@ fn answer(
                 if let Some(ci) = ci {
                     text.push_str(&ci_sentence(ci));
                 }
+                let storage = s
+                    .actions_storage
+                    .iter()
+                    .find(|r| same_repo(&r.repo, &repo.name))
+                    .filter(|_| s.settings.watch_ci);
+                if let Some(storage) = storage {
+                    text.push_str(&crate::actions_storage::sentence(storage));
+                }
                 // A failing sync first: CI can't be read without one.
                 let about = |kind: AttentionKind| {
                     items.iter().find(|a| {

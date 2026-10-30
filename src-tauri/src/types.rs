@@ -1360,6 +1360,9 @@ pub struct Snapshot {
     /// organization that owns one, as Orbit last read them (see
     /// `crate::runners`).
     pub runners: Vec<crate::runners::Place>,
+    /// Each connected repository's GitHub Actions caches and artifacts, as
+    /// Orbit last read them (see `crate::actions_storage`).
+    pub actions_storage: Vec<crate::actions_storage::Storage>,
 }
 /// How reading the pull-request history is going.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

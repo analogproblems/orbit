@@ -951,9 +951,91 @@ pub async fn set_status(repo: &str, sha: &str, status: &CommitStatus) -> Result<
     .map(|_| ())
 }
 
+/// A list GitHub gives a page at a time, with how many it holds in all,
+/// as Orbit has read it.
+pub struct Pages {
+    /// The field of each page that holds the list, such as `artifacts`.
+    field: &'static str,
+    /// What the list holds, for errors, such as "queued runs".
+    what: &'static str,
+    pub items: Vec<Value>,
+    /// How many GitHub says there are, the most it said on any page.
+    total: u64,
+}
+impl Pages {
+    pub fn new(field: &'static str, what: &'static str) -> Self {
+        Pages {
+            field,
+            what,
+            items: vec![],
+            total: 0,
+        }
+    }
+    /// Adds a page of GitHub's answer, each item once, as one can move to
+    /// the next page while Orbit reads, and says whether to read the next
+    /// page: not after a short one, nor once Orbit has every item GitHub
+    /// counts.
+    pub fn add(&mut self, v: &Value) -> Result<bool, String> {
+        let what = self.what;
+        let list = v[self.field]
+            .as_array()
+            .ok_or_else(|| format!("GitHub didn't return the {what}."))?;
+        let total = v["total_count"]
+            .as_u64()
+            .ok_or_else(|| format!("GitHub didn't count the {what}."))?;
+        self.total = self.total.max(total);
+        for item in list {
+            if !self.items.iter().any(|i| i["id"] == item["id"]) {
+                self.items.push(item.clone());
+            }
+        }
+        Ok(list.len() >= PAGE && !self.all())
+    }
+    /// Whether Orbit has read every item GitHub counts.
+    pub fn all(&self) -> bool {
+        self.items.len() as u64 >= self.total
+    }
+}
+/// The most Orbit asks for in one page of a list.
+pub const PAGE: usize = 100;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_list_is_read_a_page_at_a_time_until_orbit_has_all_github_counts() {
+        let items = |from: u64, n: u64| -> Vec<Value> {
+            (from..from + n).map(|id| json!({ "id": id })).collect()
+        };
+        let page = |total: u64, list: Vec<Value>| json!({ "total_count": total, "runs": list });
+        let mut p = Pages::new("runs", "runs");
+        assert!(p.add(&page(250, items(0, 100))).unwrap(), "more to read");
+        assert!(!p.all());
+        // An item that moved to the next page counts once.
+        assert!(p.add(&page(250, items(99, 100))).unwrap());
+        assert_eq!(p.items.len(), 199);
+        assert!(!p.all());
+        // A short page is the last. The list shrank meanwhile, so an item
+        // may have moved to a page Orbit read already: GitHub's largest
+        // count stands.
+        assert!(!p.add(&page(230, items(199, 40))).unwrap());
+        assert!(!p.all(), "GitHub counted more than Orbit read");
+        // A full page that brings every item GitHub counts is the last too.
+        let mut p = Pages::new("runs", "runs");
+        assert!(!p.add(&page(100, items(0, 100))).unwrap());
+        assert!(p.all());
+        let mut p = Pages::new("runs", "runs");
+        assert!(!p.add(&page(0, vec![])).unwrap());
+        assert!(p.all(), "none");
+        assert_eq!(
+            p.add(&json!({ "total_count": 1 })),
+            Err("GitHub didn't return the runs.".into())
+        );
+        assert_eq!(
+            p.add(&json!({ "runs": [] })),
+            Err("GitHub didn't count the runs.".into())
+        );
+    }
     #[tokio::test]
     async fn enforces_the_given_timeout() {
         let args = ["-c".to_string(), "sleep 5".to_string()];

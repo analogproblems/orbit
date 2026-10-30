@@ -647,3 +647,215 @@ async fn runners_read_after_a_change_are_dropped() {
     assert_eq!(sent(d.path(), "GET repos/a/b/actions/runners"), 0);
     assert_eq!(sent(d.path(), "GET users/a"), 0);
 }
+
+/// `n` artifacts of `a/b`, a megabyte each, the first `expired` of them
+/// expired, by ID from `from`.
+fn artifacts(dir: &Path, from: u64, n: u64, expired: u64) {
+    let list: Vec<_> = (from..from + n)
+        .map(|id| json!({ "id": id, "size_in_bytes": 1 << 20, "expired": id < from + expired }))
+        .collect();
+    std::fs::write(dir.join("artifacts.json"), json!(list).to_string()).unwrap();
+}
+/// Makes every repository's storage due to be read again.
+async fn storage_read_long_ago(e: &Engine) {
+    e.update(|s| {
+        for r in &mut s.actions_storage {
+            r.read_at = "2020-01-01T00:00:00.000Z".into();
+        }
+    })
+    .await;
+}
+
+/// Orbit reads a repository's caches and the artifacts it keeps, every
+/// page of them, then again only half an hour later. A read GitHub doesn't
+/// answer keeps what Orbit saw, and turning Watch CI off forgets it.
+#[cfg(unix)]
+#[tokio::test]
+async fn actions_storage_is_read_and_kept_when_github_fails() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    std::fs::write(
+        d.path().join("answer.json"),
+        answer(&"1".repeat(40), "SUCCESS"),
+    )
+    .unwrap();
+    let usage =
+        json!({ "active_caches_size_in_bytes": 9_800_000_000u64, "active_caches_count": 42 });
+    std::fs::write(d.path().join("cache.json"), usage.to_string()).unwrap();
+    artifacts(d.path(), 1, 150, 10);
+    let e = connected(d.path()).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let shown = e.shown_snapshot().await;
+    let s = &shown.actions_storage[0];
+    assert_eq!(s.repo, "a/b");
+    assert_eq!((s.caches, s.cache_bytes), (42, 9_800_000_000));
+    assert_eq!((s.artifacts, s.artifact_bytes), (140, 140 << 20));
+    assert!(!s.more_artifacts);
+    assert!(s.unseen.is_none() && s.error.is_none());
+    assert_eq!(sent(d.path(), "GET repos/a/b/actions/artifacts"), 2);
+    assert!(writes(d.path()).is_empty());
+
+    // A moment later, nothing is due.
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!(sent(d.path(), "GET repos/a/b/actions/cache/usage"), 1);
+
+    // GitHub fails: what was read is kept.
+    std::fs::write(d.path().join("cache-error"), "gh: Bad Gateway (HTTP 502)\n").unwrap();
+    storage_read_long_ago(&e).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let s = e.shown_snapshot().await.actions_storage[0].clone();
+    assert_eq!(s.caches, 42);
+    assert_eq!(s.tries, 1);
+    assert_eq!(
+        s.error.as_deref(),
+        Some("Orbit couldn't read the storage yet: Bad Gateway (HTTP 502). It tries again later.")
+    );
+    assert_eq!(sent(d.path(), "GET repos/a/b/actions/artifacts"), 2);
+
+    e.update(|s| s.settings.watch_ci = false).await;
+    crate::github::GH.scope(gh, e.watch_ci()).await;
+    assert!(e.shown_snapshot().await.actions_storage.is_empty());
+}
+
+/// Storage GitHub won't show is said so, and more artifacts than Orbit
+/// reads are said so too. Disconnected, a repository's storage is
+/// forgotten.
+#[cfg(unix)]
+#[tokio::test]
+async fn storage_orbit_cant_see_or_read_in_full_is_said_so() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    std::fs::write(
+        d.path().join("answer.json"),
+        answer(&"1".repeat(40), "SUCCESS"),
+    )
+    .unwrap();
+    let hidden =
+        "Orbit can't see the Actions storage of a/b: GitHub doesn't show it to Orbit's sign-in.";
+    // Its artifacts hidden.
+    std::fs::write(
+        d.path().join("artifacts-error"),
+        "gh: Not Found (HTTP 404)\n",
+    )
+    .unwrap();
+    let e = connected(d.path()).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let s = e.shown_snapshot().await.actions_storage[0].clone();
+    assert_eq!(s.unseen.as_deref(), Some(hidden));
+    assert!(s.error.is_none());
+    assert_eq!(sent(d.path(), "GET repos/a/b/actions/artifacts"), 1);
+
+    // Its caches hidden: nothing more is asked.
+    std::fs::remove_file(d.path().join("artifacts-error")).unwrap();
+    std::fs::write(
+        d.path().join("cache-error"),
+        "gh: Resource not accessible by integration (HTTP 403)\n",
+    )
+    .unwrap();
+    storage_read_long_ago(&e).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let s = e.shown_snapshot().await.actions_storage[0].clone();
+    assert_eq!(s.unseen.as_deref(), Some(hidden));
+    assert!(s.error.is_none());
+    assert_eq!(sent(d.path(), "GET repos/a/b/actions/cache/usage"), 2);
+    assert_eq!(sent(d.path(), "GET repos/a/b/actions/artifacts"), 1);
+
+    // More than three pages: Orbit reads three, and says there's more.
+    std::fs::remove_file(d.path().join("cache-error")).unwrap();
+    artifacts(d.path(), 1, 301, 0);
+    storage_read_long_ago(&e).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let s = e.shown_snapshot().await.actions_storage[0].clone();
+    assert!(s.unseen.is_none());
+    assert_eq!(s.artifacts, 300);
+    assert!(s.more_artifacts);
+    assert_eq!(sent(d.path(), "GET repos/a/b/actions/artifacts"), 4);
+
+    e.update(|s| s.settings.repositories.clear()).await;
+    crate::github::GH.scope(gh, e.watch_ci()).await;
+    assert!(e.shown_snapshot().await.actions_storage.is_empty());
+}
+
+/// After GitHub's rate limit, the other repositories wait for the next
+/// pass, and with Watch CI off nothing is asked.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_rate_limit_stops_the_storage_pass() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    std::fs::write(
+        d.path().join("answer.json"),
+        answer(&"1".repeat(40), "SUCCESS"),
+    )
+    .unwrap();
+    std::fs::write(
+        d.path().join("cache-error"),
+        "gh: API rate limit exceeded for user ID 1. (HTTP 403)\n",
+    )
+    .unwrap();
+    let e = connected(d.path()).await;
+    e.update(|s| {
+        let mut other = s.settings.repositories[0].clone();
+        other.name = "a/c".into();
+        s.settings.repositories.push(other);
+    })
+    .await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let shown = e.shown_snapshot().await;
+    assert_eq!(shown.actions_storage.len(), 1);
+    assert!(
+        shown.actions_storage[0].unseen.is_none(),
+        "a rate limit hides nothing"
+    );
+    assert!(shown.actions_storage[0].error.is_some());
+    assert_eq!(sent(d.path(), "GET repos/a/c/actions/cache/usage"), 0);
+
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    let e = connected(d.path()).await;
+    e.update(|s| s.settings.watch_ci = false).await;
+    crate::github::GH.scope(gh, e.watch_ci()).await;
+    assert_eq!(sent(d.path(), "GET repos/a/b/actions/cache/usage"), 0);
+}
+
+/// Storage read while the repository is disconnected, or Watch CI turned
+/// off, is dropped.
+#[cfg(unix)]
+#[tokio::test]
+async fn storage_read_after_a_change_is_dropped() {
+    for change in ["disconnect", "watch off"] {
+        let d = tempfile::tempdir().unwrap();
+        let gh = fixture_gh(d.path());
+        std::fs::write(
+            d.path().join("answer.json"),
+            answer(&"1".repeat(40), "SUCCESS"),
+        )
+        .unwrap();
+        // GitHub takes its time over the caches.
+        std::fs::write(d.path().join("hold"), "repos/a/b/actions/cache/usage").unwrap();
+        let e = connected(d.path()).await;
+        let reading = tokio::spawn(crate::github::GH.scope(gh.clone(), {
+            let e = e.clone();
+            async move { e.watch_ci().await }
+        }));
+        let held = d.path().join("held");
+        for _ in 0..500 {
+            if held.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(held.exists(), "{change}");
+        e.update(|s| match change {
+            "disconnect" => s.settings.repositories.clear(),
+            _ => s.settings.watch_ci = false,
+        })
+        .await;
+        std::fs::remove_file(d.path().join("hold")).unwrap();
+        reading.await.unwrap();
+        assert!(
+            e.shown_snapshot().await.actions_storage.is_empty(),
+            "{change}"
+        );
+    }
+}

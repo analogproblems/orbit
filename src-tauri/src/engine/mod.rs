@@ -182,6 +182,8 @@ pub struct Engine {
     /// Self-hosted runners are being read; another read skips rather than
     /// waits.
     reading_runners: AtomicBool,
+    /// Actions storage is being read; another read skips rather than waits.
+    reading_storage: AtomicBool,
     /// The pull-request history is being read; another read skips rather
     /// than waits.
     refreshing_ledger: AtomicBool,
@@ -389,6 +391,7 @@ impl Engine {
             watching_ci: AtomicBool::new(false),
             telling: AtomicBool::new(false),
             reading_runners: AtomicBool::new(false),
+            reading_storage: AtomicBool::new(false),
             refreshing_ledger: AtomicBool::new(false),
             ledger_full_at: std::sync::Mutex::new(HashMap::new()),
             queue_retry: std::sync::Mutex::new(HashMap::new()),

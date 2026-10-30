@@ -21,6 +21,7 @@ import {
   sameRepo,
   shortSha,
   trustedSource,
+  type ActionsStorage,
   type AttentionHandlers,
   type Broke,
   type CiFailure,
@@ -43,6 +44,12 @@ const EVENTS = 5;
 /** How many waiting runs a problem lists, and runners a place lists. */
 const RUNS = 5;
 const RUNNERS = 10;
+/** A gigabyte as GitHub counts storage, GitHub's usual limit for a
+ * repository's caches, and how near it counts as near, as the engine has
+ * them (`actions_storage`). */
+const GB = 2 ** 30;
+const CACHE_LIMIT = 10 * GB;
+const NEAR = 9 * GB;
 
 const dots: Record<
   CiState,
@@ -248,6 +255,37 @@ export function runnersText(p: RunnerPlace) {
   return `${count}, ${state}.${more}`;
 }
 
+/** Bytes in plain words: "9.4 GB", "640 MB", or "under 1 MB". */
+export function size(bytes: number) {
+  if (bytes >= GB) return `${(bytes / GB).toFixed(1)} GB`;
+  if (bytes >= 2 ** 20) return `${Math.round(bytes / 2 ** 20)} MB`;
+  return "under 1 MB";
+}
+/** A repository's caches in a sentence: "42 caches holding 9.4 GB, near
+ * GitHub's usual 10 GB limit." */
+export function cachesText(s: ActionsStorage) {
+  if (!s.caches && !s.cacheBytes) return "No caches.";
+  const what = `${s.caches} ${s.caches === 1 ? "cache" : "caches"} holding ${size(s.cacheBytes)}`;
+  return s.cacheBytes >= NEAR
+    ? `${what}, near GitHub’s usual ${CACHE_LIMIT / GB} GB limit.`
+    : `${what}.`;
+}
+/** The artifacts a repository keeps in a sentence: "52 artifacts kept,
+ * holding 640 MB." */
+export function artifactsText(s: ActionsStorage) {
+  const more = s.moreArtifacts ? ", and more Orbit didn’t read" : "";
+  if (!s.artifacts)
+    return s.moreArtifacts
+      ? "Orbit didn’t read all its artifacts."
+      : "No artifacts kept.";
+  const n = `${s.artifacts} ${s.artifacts === 1 ? "artifact" : "artifacts"}`;
+  return `${n} kept, holding ${size(s.artifactBytes)}${more}.`;
+}
+/** What a job that couldn't upload an artifact as the account's storage is
+ * full says. */
+export const quotaText =
+  "GitHub’s artifact storage for this account is full, so the job couldn’t upload. Only a person can fix it: let old artifacts expire, delete some, or raise the account’s storage. GitHub counts it again every 6 to 12 hours.";
+
 /** A runner in a line: its name, system, state and labels. */
 function runnerLine(r: Runner) {
   const state = !r.online ? "offline" : r.busy ? "busy" : "free";
@@ -377,6 +415,7 @@ function Why({ s, p, t }: { s: Snapshot; p: Problem; t?: OpsThread }) {
         {f.flaky && (
           <Text color="secondary">Looks like bad luck: {f.flaky}</Text>
         )}
+        {f.quota && <Text color="secondary">{quotaText}</Text>}
         {rerun && <Text color="secondary">{rerun}</Text>}
         {!f.held && !f.error && f.lines.length > 0 && (
           <CodeBlock
@@ -792,6 +831,88 @@ function Runners() {
   );
 }
 
+/** Each repository's GitHub Actions caches and the artifacts it keeps,
+ * and where Orbit can't see them. */
+function StorageUse() {
+  const { snapshot: s } = useOrbit();
+  const read = (s.actionsStorage ?? []).filter((r) => r.readAt || r.error);
+  if (!read.length) return null;
+  return (
+    <VStack gap={3}>
+      <Heading level={3}>Actions storage</Heading>
+      <Text color="secondary">
+        Artifacts in private repositories count toward the account’s storage,
+        which Orbit can’t see.
+      </Text>
+      <Card padding={0}>
+        <List hasDividers aria-label="Actions storage">
+          {read.map((r) => {
+            // A job of it failed for want of artifact storage.
+            const full = (s.failures ?? []).some(
+              (f) =>
+                f.quota &&
+                f.url
+                  .toLowerCase()
+                  .startsWith(`https://github.com/${r.repo.toLowerCase()}/`),
+            );
+            const near = !r.unseen && r.cacheBytes >= NEAR;
+            const dot = full
+              ? { variant: "error" as const, label: "Full" }
+              : near
+                ? { variant: "warning" as const, label: "Near the limit" }
+                : r.unseen || !r.readAt
+                  ? { variant: "neutral" as const, label: "Not seen" }
+                  : { variant: "success" as const, label: "Has room" };
+            return (
+              <ListItem
+                key={r.repo}
+                startContent={
+                  <StatusDot variant={dot.variant} label={dot.label} />
+                }
+                label={<Text weight="medium">{r.repo}</Text>}
+                description={
+                  <VStack gap={1}>
+                    {r.readAt && !r.unseen && (
+                      <>
+                        <Text>{cachesText(r)}</Text>
+                        <Text>{artifactsText(r)}</Text>
+                      </>
+                    )}
+                    {near && (
+                      <Text color="secondary">
+                        Past its limit, GitHub drops the caches used least,
+                        which can slow builds. A repository can have a higher
+                        limit, which Orbit can’t see.
+                      </Text>
+                    )}
+                    {full && (
+                      <Text color="secondary">
+                        A job failed as the account’s artifact storage is full.
+                      </Text>
+                    )}
+                    {r.unseen && <Text color="secondary">{r.unseen}</Text>}
+                    {r.error && (
+                      <HStack gap={2} vAlign="center">
+                        <StatusDot variant="warning" label="Not read" />
+                        <Text color="secondary">{r.error}</Text>
+                      </HStack>
+                    )}
+                  </VStack>
+                }
+                endContent={
+                  r.readAt ? (
+                    <Timestamp value={r.readAt} format="relative_short" />
+                  ) : undefined
+                }
+              />
+            );
+          })}
+        </List>
+      </Card>
+    </VStack>
+  );
+}
+
 function RecentlyFixed() {
   const { snapshot: s } = useOrbit();
   const closed = (s.problems ?? [])
@@ -931,6 +1052,7 @@ export function Operations(go: AttentionHandlers) {
             <Repositories go={go} />
           </VStack>
           <Runners />
+          <StorageUse />
           <RecentlyFixed />
           <Posted />
         </>

@@ -26,6 +26,7 @@ import {
   type Review,
   type RepositorySummary,
   type RunnerPlace,
+  type ActionsStorage,
   type SecurityScan,
 } from "./types";
 
@@ -841,7 +842,14 @@ export function demoCi(
   prs: PullRequest[],
 ): Pick<
   Snapshot,
-  "ci" | "problems" | "ops" | "journal" | "failures" | "setups" | "runners"
+  | "ci"
+  | "problems"
+  | "ops"
+  | "journal"
+  | "failures"
+  | "setups"
+  | "runners"
+  | "actionsStorage"
 > {
   const failingPr = prs[2];
   const behindPr = prs[4];
@@ -1025,6 +1033,37 @@ export function demoCi(
         "X64",
       ]),
     ]),
+  ];
+  const GB = 2 ** 30;
+  const stored = (
+    repo: string,
+    caches: number,
+    cacheBytes: number,
+    artifacts: number,
+    artifactBytes: number,
+  ): ActionsStorage => ({
+    repo,
+    readAt: ago(12),
+    caches,
+    cacheBytes,
+    artifacts,
+    artifactBytes,
+    tries: 0,
+  });
+  // Orbit's caches are near the usual limit, and api keeps more artifacts
+  // than Orbit reads.
+  const actionsStorage: ActionsStorage[] = [
+    stored("acme/orbit", 118, 9.6 * GB, 52, 0.62 * GB),
+    {
+      ...stored("acme/api", 14, 1.3 * GB, 280, 2.1 * GB),
+      moreArtifacts: true,
+    },
+    {
+      ...stored("acme/dashboard", 0, 0, 0, 0),
+      unseen:
+        "Orbit can't see the Actions storage of acme/dashboard: GitHub doesn't show it to Orbit's sign-in.",
+    },
+    stored("acme/docs", 0, 0, 0, 0),
   ];
   const problems: Problem[] = [
     {
@@ -1388,6 +1427,7 @@ export function demoCi(
     failures,
     setups,
     runners,
+    actionsStorage,
   };
 }
 /** The browser demo: the fresh workspace plus two weeks of history. */

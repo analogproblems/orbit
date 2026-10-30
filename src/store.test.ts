@@ -181,12 +181,16 @@ describe("demo ci", () => {
     localStorage.setItem("orbit-demo-v3", JSON.stringify(old));
     await useOrbit.getState().init();
     expect(useOrbit.getState().snapshot.runners?.length).toBeGreaterThan(0);
+    expect(useOrbit.getState().snapshot.actionsStorage?.length).toBeGreaterThan(
+      0,
+    );
     const result = await useOrbit.getState().updateSettings({ watchCi: false });
     expect(result.ok).toBe(true);
     const s = useOrbit.getState().snapshot;
     expect(s.settings.watchCi).toBe(false);
     expect(s.ci).toEqual([]);
     expect(s.runners).toEqual([]);
+    expect(s.actionsStorage).toEqual([]);
     expect(s.problems?.every((p) => p.closedAt)).toBe(true);
     expect(s.attention?.some((a) => a.kind === "ci_failing")).toBe(false);
     expect(s.attention?.some((a) => a.kind === "runs_waiting")).toBe(false);

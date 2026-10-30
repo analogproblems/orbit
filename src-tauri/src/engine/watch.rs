@@ -1,10 +1,11 @@
 //! Watching CI: after each sync, the checks on every connected repository's
 //! default branch and open pull requests, and the problems they open or
 //! close (see `crate::ci` and `crate::problems`), whether CI runs on each
-//! repository's pull requests (`crate::workflows`), and the self-hosted
-//! runners its runs wait for (`crate::runners`).
+//! repository's pull requests (`crate::workflows`), the self-hosted
+//! runners its runs wait for (`crate::runners`), and its Actions storage
+//! (`crate::actions_storage`).
 use super::Engine;
-use crate::{broke, ci, logs, problems, runners, types::*, workflows};
+use crate::{actions_storage as storage, broke, ci, logs, problems, runners, types::*, workflows};
 use std::sync::atomic::Ordering;
 
 impl Engine {
@@ -29,8 +30,9 @@ impl Engine {
         self.watching_ci.store(false, Ordering::SeqCst);
         // Also with Watch CI off, so what Orbit posted is closed.
         self.tell_agents().await;
-        // Last, so telling agents never waits for runners.
+        // Last, so telling agents never waits for runners or storage.
         self.read_runners().await;
+        self.read_storage().await;
     }
     async fn watch_ci_now(&self) {
         let (watch, repos) = {
@@ -95,6 +97,7 @@ impl Engine {
             s.ci.retain(|c| connected.iter().any(|r| same_repo(r, &c.repo)));
             workflows::prune(&mut s.setups, &connected);
             runners::prune(&mut s.runners, &connected);
+            storage::prune(&mut s.actions_storage, &connected);
             problems::close_unwatched(&mut s.problems, &connected, false, now);
         })
         .await;
@@ -246,6 +249,42 @@ impl Engine {
         self.reading_runners.store(false, Ordering::SeqCst);
         let _ = self.flush().await;
     }
+    /// Reads each connected repository's caches and the artifacts it keeps,
+    /// a few repositories a pass. One GitHub didn't answer for keeps what
+    /// was read before and is tried again after a wait.
+    async fn read_storage(&self) {
+        if self.reading_storage.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let wanted = {
+            let s = self.state.lock().await;
+            if s.settings.watch_ci {
+                storage::wanted(&repos_of(&s), &s.actions_storage, chrono::Utc::now())
+            } else {
+                vec![]
+            }
+        };
+        for repo in &wanted {
+            let result = storage::read(repo).await;
+            // After a rate limit, the rest wait for the next pass.
+            let limited = result.as_ref().is_err_and(|e| logs::rate_limited(e));
+            self.update(|s| {
+                // Watch CI went off, or the repository went, meanwhile.
+                if !s.settings.watch_ci {
+                    return;
+                }
+                let connected = repos_of(s);
+                storage::record(&mut s.actions_storage, repo, result, chrono::Utc::now());
+                storage::prune(&mut s.actions_storage, &connected);
+            })
+            .await;
+            if limited {
+                break;
+            }
+        }
+        self.reading_storage.store(false, Ordering::SeqCst);
+        let _ = self.flush().await;
+    }
 }
 /// The pull requests of a repository whose CI Orbit follows: open, not
 /// drafts, and from a source Orbit trusts.
@@ -259,6 +298,7 @@ fn stop_watching(s: &mut Snapshot) {
     s.ci.clear();
     s.setups.clear();
     s.runners.clear();
+    s.actions_storage.clear();
     problems::close_unwatched(&mut s.problems, &[], true, chrono::Utc::now());
 }
 fn repos_of(s: &Snapshot) -> Vec<String> {
