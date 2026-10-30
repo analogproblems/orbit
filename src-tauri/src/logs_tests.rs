@@ -185,6 +185,23 @@ fn a_full_artifact_storage_is_said_so_and_isnt_bad_luck() {
     let full = understood(&upload, &lines("##[error]Failed to CreateArtifact: Artifact storage quota has been hit. Unable to upload any new artifacts. Usage is recalculated every 6-12 hours."));
     assert!(full.quota);
     assert_eq!(full.flaky, None);
+    // A network error on the way there, which alone would be bad luck,
+    // doesn't make it so.
+    let retried =
+        "Attempt 1 of 5 failed with error: read ECONNRESET. Retrying request in 3000 ms...";
+    let network = understood(&upload, &lines(retried));
+    assert_eq!(
+        network.flaky.as_deref(),
+        Some("A network or registry error (ECONNRESET).")
+    );
+    let mut both = lines(retried);
+    both.push(at(
+        4.0,
+        "##[error]Failed to CreateArtifact: Artifact storage quota has been hit.",
+    ));
+    let both = understood(&upload, &both);
+    assert!(both.quota);
+    assert_eq!(both.flaky, None);
     assert!(!understood(&upload, &lines("##[error]No files were found")).quota);
     assert!(!understood(&steps(), &log()).quota);
 }

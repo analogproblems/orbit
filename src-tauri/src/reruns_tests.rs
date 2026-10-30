@@ -146,6 +146,43 @@ fn a_job_that_looks_like_bad_luck_is_rerun_once() {
     );
 }
 
+/// A job that found the account's artifact storage full isn't rerun, even
+/// when its upload hit a network error on the way there: a rerun would
+/// fail the same way.
+#[test]
+fn a_full_artifact_storage_is_never_rerun() {
+    let answer = json!({ "steps": [{
+        "name": "Run actions/upload-artifact@v4",
+        "conclusion": "failure",
+        "started_at": "2026-10-29T12:00:00Z",
+        "completed_at": "2026-10-29T12:00:10Z",
+    }]});
+    let read = |end: &str| {
+        let log = [
+            "2026-10-29T12:00:01.0000000Z ##[group]Run actions/upload-artifact@v4",
+            "2026-10-29T12:00:01.1000000Z ##[endgroup]",
+            "2026-10-29T12:00:02.0000000Z Attempt 1 of 5 failed with error: read ECONNRESET. Retrying request in 3000 ms...",
+            &format!("2026-10-29T12:00:09.0000000Z ##[error]{end}"),
+        ];
+        let failure = Failure {
+            url: job(2),
+            check: "CI / Rust".into(),
+            ..Default::default()
+        };
+        logs::understand(failure, &answer, &log.join("\n"))
+    };
+    let mut s = state(None);
+    s.failures = vec![read(
+        "Failed to CreateArtifact: Artifact storage quota has been hit.",
+    )];
+    explain(&mut s.ops, &s.failures);
+    assert!(all(&s, t0()).is_empty());
+    // The network error alone looks like bad luck.
+    s.failures = vec![read("read ECONNRESET")];
+    explain(&mut s.ops, &s.failures);
+    assert_eq!(all(&s, t0()).len(), 1);
+}
+
 /// Bit's rule decides, and nothing is rerun while Bit is off, Orbit no
 /// longer watches the repository, or a newer commit is out.
 #[test]

@@ -277,8 +277,10 @@ pub fn understand(mut failure: Failure, job: &Value, log: &str) -> Failure {
     // What the step printed, not the script GitHub echoed before running it.
     let own: Vec<&str> = shown.iter().map(|l| l.text.as_str()).collect();
     let said = output(&own);
-    failure.flaky = flaky(step, &said);
+    // A full artifact storage fails every rerun the same way, whatever else
+    // the step said on the way there, so it is never bad luck.
     failure.quota = said.iter().any(|l| l.contains(QUOTA));
+    failure.flaky = flaky(step, &said).filter(|_| !failure.quota);
     let text: Vec<&str> = checked.iter().map(|l| l.text.as_str()).collect();
     if !credential_kinds(&format!("{name}\n{}", text.join("\n"))).is_empty() {
         failure.held = true;
