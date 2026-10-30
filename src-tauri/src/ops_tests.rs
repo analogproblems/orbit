@@ -269,6 +269,147 @@ fn a_pull_request_keeps_one_comment_and_its_numbers() {
     assert_eq!(next(&threads[0], Some(&second), true, t0()), None);
 }
 
+/// Pull request 12's checks pass at `at`, but `main` moved on since.
+fn moved(id: &str, at: char, opened: DateTime<Utc>) -> Problem {
+    Problem {
+        key: "base:a/b#12".into(),
+        kind: ProblemKind::BaseMoved,
+        base: "main".into(),
+        base_sha: sha('9'),
+        ..pull(id, &[], at, opened)
+    }
+}
+/// The item in the hidden line of a body, by its number.
+fn data_item(body: &str, number: u32) -> serde_json::Value {
+    let json = body
+        .split_once("<!-- orbit-ops thread=pr:a/b#12 ")
+        .unwrap()
+        .1;
+    let v: serde_json::Value = serde_json::from_str(json.split_once(" -->").unwrap().0).unwrap();
+    let id = format!("I{number}");
+    v["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == id.as_str())
+        .unwrap()
+        .clone()
+}
+
+/// A pull request whose checks passed before `main` moved on gets an item
+/// on its one comment, numbered after its checks, until CI runs again.
+#[test]
+fn a_base_that_moved_on_is_an_item_on_the_pull_requests_comment() {
+    let mut failed = pull("p1", &["A"], '1', t0());
+    let mut threads = vec![];
+    let mut journal = vec![];
+    refresh(&mut threads, std::slice::from_ref(&failed), t0());
+    send(&mut threads, &mut journal, &failed, true, t0());
+    pass(&mut failed, '2', t0());
+    let mut base = moved("p2", '2', t0() + Duration::minutes(5));
+    refresh(&mut threads, &[failed.clone(), base.clone()], t0());
+    assert_eq!(threads.len(), 1);
+    assert_eq!(threads[0].problem_id, "p2");
+    let items: Vec<(u32, ItemKind, &str, bool)> = threads[0]
+        .items
+        .iter()
+        .map(|i| (i.number, i.kind, i.check.as_str(), i.failing))
+        .collect();
+    assert_eq!(
+        items,
+        [
+            (1, ItemKind::Check, "A", false),
+            (2, ItemKind::BaseMoved, "main", true)
+        ]
+    );
+    let body = comment_body(&threads[0], &base);
+    assert!(body.contains("\n\nEvery check passes at `2222222`, but `main` has moved on since they began. Merge `main` in and let CI run again, so they run with its latest changes.\n\n"), "{body}");
+    assert!(body.contains(
+        "- **I2** · `main` moved on since the checks at `2222222` began · merge it in and let CI run again\n- **I1** · `A` · passes at `2222222`\n"
+    ));
+    let item = data_item(&body, 2);
+    assert_eq!(item["kind"], "base_moved");
+    assert_eq!(item["base"], "main");
+    assert_eq!(item["failing"], true);
+    assert!(item.get("check").is_none());
+    assert!(data_item(&body, 1).get("kind").is_none(), "as before");
+    let planned = send(&mut threads, &mut journal, &base, true, t0()).unwrap();
+    assert_eq!(planned.action, Action::EditComment);
+    let posted = event_text(
+        &threads,
+        std::slice::from_ref(&base),
+        &Event::Posted(threads[0].key.clone()),
+    );
+    assert_eq!(
+        posted.unwrap().2,
+        "Orbit told the agent on a/b #12 that main moved on since its checks began."
+    );
+
+    // Agents answer it like any item, but CI settles it, not a check.
+    on_github(&mut threads[0]);
+    let heard = hear(
+        &mut threads[0],
+        &[reply(20, "Fixed I2 in abc1234\nDeclined I1: no")],
+        None,
+    );
+    assert_eq!(heard.len(), 1);
+    assert_eq!(heard[0].check, "main moved on");
+    assert!(to_verify(&threads, &[base.clone()]).is_empty());
+    assert!(comment_body(&threads[0], &base)
+        .contains("merge it in and let CI run again · said to be fixed in `abc1234`; Orbit is waiting for its checks there"));
+
+    // CI runs again with main's latest.
+    pass(&mut base, '3', t0());
+    refresh(&mut threads, &[failed.clone(), base.clone()], t0());
+    let body = comment_body(&threads[0], &base);
+    assert!(body.contains("Every check passes at `3333333`. Nothing is left to fix here."));
+    assert!(body.contains(
+        "- **I1** · `A` · passes at `3333333`\n- **I2** · `main` moved on · done at `3333333`\n"
+    ));
+
+    // main moves on again later: the same item, from the start, named for
+    // the base as it is now.
+    let again = Problem {
+        base: "trunk".into(),
+        ..moved("p3", '3', t0() + Duration::hours(1))
+    };
+    refresh(&mut threads, &[failed, base, again.clone()], t0());
+    let i2 = &threads[0].items[1];
+    assert_eq!(
+        (i2.number, i2.failing, i2.since.as_str()),
+        (2, true, sha('3').as_str())
+    );
+    assert_eq!(i2.answer, None);
+    assert_eq!(i2.check, "trunk");
+    assert_eq!(threads[0].items.len(), 2);
+}
+
+/// When the checks fail instead, the failure is what the comment is about,
+/// and the base's item is over.
+#[test]
+fn a_failure_takes_over_from_a_base_that_moved_on() {
+    let mut base = moved("p1", '1', t0());
+    let mut threads = vec![];
+    refresh(&mut threads, std::slice::from_ref(&base), t0());
+    base.closed_at = Some(stamp(t0()));
+    base.closed_reason = Some("Its checks fail at 2222222 now.".into());
+    let failing = pull("p2", &["A"], '2', t0() + Duration::minutes(5));
+    refresh(&mut threads, &[base, failing.clone()], t0());
+    assert_eq!(threads[0].problem_id, "p2");
+    let items: Vec<(u32, ItemKind, bool)> = threads[0]
+        .items
+        .iter()
+        .map(|i| (i.number, i.kind, i.failing))
+        .collect();
+    assert_eq!(
+        items,
+        [(1, ItemKind::BaseMoved, false), (2, ItemKind::Check, true)]
+    );
+    let body = comment_body(&threads[0], &failing);
+    assert!(body.contains("1 check fails on this pull request at `2222222`."));
+    assert!(body.contains("- **I1** · `main` moved on · done at `2222222`"));
+}
+
 /// A check's name can't break out of its code span, mention anyone, or end
 /// the hidden line early; only GitHub links are linked.
 #[test]

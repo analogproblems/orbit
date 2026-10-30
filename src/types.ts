@@ -1103,6 +1103,11 @@ export interface CommitCi {
   passing: number;
   /** Orbit couldn't read all of its checks, so it can fail but not pass. */
   incomplete?: boolean;
+  /** When the earliest of its passing checks began, by GitHub's clock;
+   * empty when one of them doesn't say. */
+  ranAt?: string;
+  /** When the commit was made, for a default branch's latest. */
+  committedAt?: string;
 }
 export interface PullCi {
   number: number;
@@ -1125,14 +1130,15 @@ export interface RepoCi {
   /** Why the latest read failed; what was read before is kept. */
   error?: string | null;
 }
-export type ProblemKind = "default_branch" | "pull_request";
+export type ProblemKind = "default_branch" | "pull_request" | "base_moved";
 export interface ProblemEvent {
   at: string;
   text: string;
 }
 /** One thing wrong with CI, from when Orbit first saw it until it saw it
  * fixed. A default branch's problem needs you; a pull request's is its
- * author's to fix. */
+ * author's to fix, as is a pull request whose checks passed before its base
+ * moved on (`base_moved`). */
 export interface Problem {
   id: string;
   key: string;
@@ -1157,6 +1163,10 @@ export interface Problem {
   alerts: number;
   /** Where a default branch broke, once Orbit has read its history. */
   broke?: Broke | null;
+  /** For `base_moved`: the base branch, and its latest commit, which the
+   * checks ran without. */
+  base?: string;
+  baseSha?: string;
 }
 /** Where a default branch broke: the commits after the last one whose
  * checks passed, up to the first that failed. */
@@ -1184,6 +1194,9 @@ export interface Broke {
 export interface OpsItem {
   /** 1 for I1. Never reused within its comment or issue. */
   number: number;
+  /** A failing check, or a pull request's base moving on since its checks
+   * began; then `check` is the base branch. */
+  kind?: "check" | "base_moved";
   check: string;
   url: string;
   /** Whether it failed at `at`, the latest commit Orbit saw. */

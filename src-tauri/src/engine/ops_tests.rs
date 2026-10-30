@@ -350,6 +350,99 @@ async fn a_branch_that_breaks_again_soon_names_what_broke_it_this_time() {
     assert_eq!(calls(d.path(), "GET history/"), 4);
 }
 
+/// Adds to the CI `answer` gave when `main`'s latest commit was made and
+/// when pull request 12's checks began.
+fn timed(dir: &Path, made: &str, began: &str) {
+    let path = dir.join("answer.json");
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let r = &mut v["data"]["repository"];
+    r["defaultBranchRef"]["target"]["committedDate"] = json!(made);
+    for pull in r["pullRequests"]["nodes"].as_array_mut().unwrap() {
+        let checks = &mut pull["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"];
+        for check in checks["nodes"].as_array_mut().unwrap() {
+            check["checkSuite"]["createdAt"] = json!(began);
+        }
+    }
+    std::fs::write(path, v.to_string()).unwrap();
+}
+
+/// A pull request whose checks passed before `main` moved on is asked, on
+/// Orbit's one comment, to merge it in, until its checks run again with
+/// it.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_pull_request_green_before_main_moved_on_is_asked_to_merge_it_in() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let e = connected(d.path()).await;
+    e.update(|s| s.prs = vec![pr('5')]).await;
+    let green: &[(&str, &str)] = &[("Rust", "SUCCESS")];
+    answer(d.path(), '1', green, Some(('5', green)));
+    timed(d.path(), "2026-10-30T10:00:00Z", "2026-10-30T10:05:00Z");
+    watch(&e, &gh).await;
+    assert!(github(d.path())["comments"].as_array().unwrap().is_empty());
+
+    // main moves on after the checks began.
+    answer(d.path(), '2', green, Some(('5', green)));
+    timed(d.path(), "2026-10-30T10:10:00Z", "2026-10-30T10:05:00Z");
+    watch(&e, &gh).await;
+    let comments = github(d.path())["comments"].clone();
+    assert_eq!(comments.as_array().unwrap().len(), 1);
+    assert_eq!(comments[0]["issue"], 12);
+    let body = comments[0]["body"].as_str().unwrap();
+    assert!(body.contains(
+        "Every check passes at `5555555`, but `main` has moved on since they began. Merge `main` in and let CI run again"
+    ));
+    assert!(body.contains(
+        "- **I1** · `main` moved on since the checks at `5555555` began · merge it in and let CI run again"
+    ));
+    let s = e.snapshot().await;
+    assert_eq!(s.problems[0].kind, crate::problems::ProblemKind::BaseMoved);
+    assert_eq!(
+        s.buddy_feed.notes.last().unwrap().text,
+        "Orbit told the agent on a/b #12 that main moved on since its checks began. 📮"
+    );
+    assert!(
+        e.shown_snapshot().await.attention.is_empty(),
+        "the agent's to do"
+    );
+    // Nothing new while it stays the same.
+    watch(&e, &gh).await;
+    assert_eq!(writes(d.path()).len(), 1);
+    // The agent answers it like any item.
+    say(
+        d.path(),
+        "agent",
+        "Need a person on I1: may I merge main in now?",
+    );
+    watch(&e, &gh).await;
+    let shown = e.shown_snapshot().await;
+    assert_eq!(
+        shown.attention[0].reason,
+        "The agent on a/b #12 needs a person for I1 (main moved on): may I merge main in now?"
+    );
+    assert_eq!(writes(d.path()).len(), 2);
+
+    // The agent merges main in and CI runs again with it.
+    e.update(|s| s.prs = vec![pr('6')]).await;
+    answer(d.path(), '2', green, Some(('6', green)));
+    timed(d.path(), "2026-10-30T10:10:00Z", "2026-10-30T10:15:00Z");
+    watch(&e, &gh).await;
+    let g = github(d.path());
+    assert_eq!(
+        g["comments"].as_array().unwrap().len(),
+        2,
+        "Orbit's and the reply"
+    );
+    let body = g["comments"][0]["body"].as_str().unwrap();
+    assert!(body.contains("Every check passes at `6666666`. Nothing is left to fix here."));
+    assert!(body.contains("- **I1** · `main` moved on · done at `6666666`"));
+    let s = e.snapshot().await;
+    assert!(s.problems[0].passed());
+    assert!(e.shown_snapshot().await.attention.is_empty());
+    assert_eq!(writes(d.path()).len(), 3);
+}
+
 /// A write GitHub got just before Orbit stopped, before Orbit heard back,
 /// is found on GitHub and not sent twice.
 #[cfg(unix)]

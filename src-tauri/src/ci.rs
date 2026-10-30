@@ -52,9 +52,19 @@ pub struct CommitCi {
     pub passing: u32,
     /// Orbit couldn't read all of its checks.
     pub incomplete: bool,
+    /// When the earliest of the checks that passed began, by GitHub's
+    /// clock: when its check suite or status was made. Empty when one of
+    /// them doesn't say.
+    pub ran_at: String,
+    /// When the commit was made, by GitHub's clock, for a default branch's
+    /// latest commit.
+    pub committed_at: String,
     /// Where the next page of its checks starts, while one is still to read.
     #[serde(skip)]
     pub cursor: Option<String>,
+    /// A check that passed didn't say when it began.
+    #[serde(skip)]
+    pub untimed: bool,
 }
 /// An open pull request's latest commit and its checks.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,15 +100,15 @@ impl RepoCi {
 }
 
 pub(crate) const NODES: &str = "pageInfo { hasNextPage endCursor } nodes { __typename \
-... on CheckRun { name status conclusion detailsUrl checkSuite { workflowRun { workflow { name } } } } \
-... on StatusContext { context state targetUrl } }";
+... on CheckRun { name status conclusion detailsUrl checkSuite { createdAt workflowRun { workflow { name } } } } \
+... on StatusContext { context state targetUrl createdAt } }";
 
 /// The GraphQL query for one repository's CI.
 pub fn query() -> String {
     let contexts = format!("statusCheckRollup {{ contexts(first: {CHECKS}) {{ {NODES} }} }}");
     format!(
         "query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ \
-defaultBranchRef {{ name target {{ ... on Commit {{ oid messageHeadline {contexts} }} }} }} \
+defaultBranchRef {{ name target {{ ... on Commit {{ oid committedDate messageHeadline {contexts} }} }} }} \
 pullRequests(states: OPEN, first: {PULLS}, orderBy: {{ field: UPDATED_AT, direction: DESC }}) {{ \
 pageInfo {{ hasNextPage }} nodes {{ number isDraft headRefOid \
 commits(last: 1) {{ nodes {{ commit {{ oid {contexts} }} }} }} }} }} }} }}"
@@ -310,6 +320,7 @@ fn commit(v: &Value) -> Result<CommitCi, String> {
     }
     let mut ci = CommitCi {
         sha,
+        committed_at: v["committedDate"].as_str().unwrap_or("").to_string(),
         ..Default::default()
     };
     add_checks(&mut ci, &v["statusCheckRollup"]["contexts"]);
@@ -330,7 +341,18 @@ pub fn add_checks(ci: &mut CommitCi, contexts: &Value) {
                 }
             }
             CiState::Running => ci.running += 1,
-            CiState::Passing => ci.passing += 1,
+            CiState::Passing => {
+                ci.passing += 1;
+                match began(node) {
+                    Some(at) => {
+                        let earlier = crate::problems::time(&ci.ran_at).is_none_or(|t| at < t);
+                        if earlier {
+                            ci.ran_at = crate::problems::stamp(at);
+                        }
+                    }
+                    None => ci.untimed = true,
+                }
+            }
             CiState::None => {}
         }
     }
@@ -349,6 +371,9 @@ pub fn add_checks(ci: &mut CommitCi, contexts: &Value) {
 /// keep it from passing: one failure fails it, otherwise it is running.
 pub fn settle(ci: &mut CommitCi) {
     let unread = ci.incomplete || ci.cursor.is_some();
+    if ci.untimed {
+        ci.ran_at.clear();
+    }
     ci.state = if !ci.failing.is_empty() {
         CiState::Failing
     } else if ci.running > 0 || unread {
@@ -416,6 +441,17 @@ fn check(node: &Value) -> Option<(Check, CiState)> {
         }
         _ => None,
     }
+}
+
+/// When a check began: when GitHub made its check suite, which for GitHub
+/// Actions is when its workflow was started, or for a commit status, when
+/// it was set.
+fn began(node: &Value) -> Option<chrono::DateTime<chrono::Utc>> {
+    let at = match node["__typename"].as_str()? {
+        "CheckRun" => &node["checkSuite"]["createdAt"],
+        _ => &node["createdAt"],
+    };
+    crate::problems::time(at.as_str()?)
 }
 
 /// A commit's first seven characters, as GitHub shows them.

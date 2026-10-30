@@ -167,13 +167,23 @@ export function toldText(s: Snapshot, p: Problem, t: OpsThread | undefined) {
   return "Orbit tells the agent on GitHub after this sync.";
 }
 
+/** What an item is about: its check, or "main moved on". */
+function itemName(item: OpsItem) {
+  return item.kind === "base_moved" ? `${item.check} moved on` : item.check;
+}
+
+/** What a pull request's checks ran without, when its base moved on. */
+export function movedText(p: Problem) {
+  return `Its checks pass, but ${p.base || "its base"} moved on to ${shortSha(p.baseSha ?? "")} after they began. Its author’s to merge it in and let CI run again.`;
+}
+
 /** What an agent said about a failing item, and for a fix, what Orbit
  * found. The agent's words are shown as plain text. */
 export function answerText(t: OpsThread, item: OpsItem) {
   const a = item.answer;
   if (!a) return undefined;
   const who = a.author || "The agent";
-  const about = `I${item.number} · ${item.check}:`;
+  const about = `I${item.number} · ${itemName(item)}:`;
   const said = (text?: string | null) => (text ? `: ${text}` : ".");
   switch (a.kind) {
     case "taking":
@@ -457,7 +467,9 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
                   <Text>
                     {yours
                       ? `Failing: ${checkNames(p.failing)}.`
-                      : `Failing: ${checkNames(p.failing)}. Its author’s to fix.`}
+                      : p.kind === "base_moved"
+                        ? movedText(p)
+                        : `Failing: ${checkNames(p.failing)}. Its author’s to fix.`}
                   </Text>
                   {broke && <Text>{broke}</Text>}
                   <Why s={s} p={p} t={t} />

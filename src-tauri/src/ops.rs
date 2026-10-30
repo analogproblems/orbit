@@ -3,6 +3,7 @@
 //! edited in place, and one issue labelled `orbit` for each default branch
 //! that fails. Each failing check is an item, I1, I2 and so on, numbered
 //! once in its comment or issue and never reused, so an agent can name it.
+//! So is a pull request's base branch moving on since its checks began.
 //!
 //! Everything here is worked out from the problems Orbit keeps
 //! (`crate::problems`). The engine sends each write (`engine::ops`) after
@@ -142,16 +143,38 @@ pub fn note_tag(key: &str, closed_at: &str) -> String {
     format!("<!-- orbit-ops-note thread={key} closed={closed_at} -->")
 }
 
-/// One failing check, as a comment or issue lists it.
+/// What an item is about.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ItemKind {
+    /// A check that fails.
+    #[default]
+    Check,
+    /// A pull request's base branch moved on since its checks began (see
+    /// `ProblemKind::BaseMoved`).
+    BaseMoved,
+}
+impl ItemKind {
+    fn is_check(&self) -> bool {
+        *self == ItemKind::Check
+    }
+}
+/// One failing check, as a comment or issue lists it, or a pull request's
+/// base moving on.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Item {
     /// 1 for I1. Never reused within its thread.
     pub number: u32,
-    /// The check, such as "CI / Rust tests".
+    #[serde(skip_serializing_if = "ItemKind::is_check")]
+    pub kind: ItemKind,
+    /// The check, such as "CI / Rust tests", or for `BaseMoved`, the base
+    /// branch.
     pub check: String,
     pub url: String,
-    /// Whether it failed at `at`, the latest commit Orbit saw.
+    /// Whether it failed at `at`, the latest commit Orbit saw; for
+    /// `BaseMoved`, whether the base has moved on since the checks there
+    /// began.
     pub failing: bool,
     /// The commit it started failing at, this time.
     pub since: String,
@@ -173,6 +196,16 @@ pub struct Item {
     /// The job you said to rerun, by its link, while Bit asks first.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub rerun_ok: String,
+}
+
+impl Item {
+    /// What it is about, in a few words: the check, or "main moved on".
+    pub fn name(&self) -> String {
+        match self.kind {
+            ItemKind::Check => self.check.clone(),
+            ItemKind::BaseMoved => format!("{} moved on", self.check),
+        }
+    }
 }
 
 /// What an agent says about an item.
@@ -252,6 +285,7 @@ pub struct Answer {
 pub struct Heard {
     pub thread: String,
     pub number: u32,
+    /// What the item is about (`Item::name`).
     pub check: String,
     pub answer: Answer,
 }
@@ -406,12 +440,14 @@ pub fn refresh(threads: &mut Vec<Thread>, problems: &[Problem], now: DateTime<Ut
                     key,
                     kind: match p.kind {
                         ProblemKind::DefaultBranch => ThreadKind::Issue,
-                        ProblemKind::PullRequest => ThreadKind::Comment,
+                        ProblemKind::PullRequest | ProblemKind::BaseMoved => ThreadKind::Comment,
                     },
                     repo: p.repo.clone(),
                     number: match p.kind {
                         ProblemKind::DefaultBranch => None,
-                        ProblemKind::PullRequest => p.pr_id.as_deref().and_then(pr_number),
+                        ProblemKind::PullRequest | ProblemKind::BaseMoved => {
+                            p.pr_id.as_deref().and_then(pr_number)
+                        }
                     },
                     pr_id: p.pr_id.clone(),
                     branch: p.branch.clone(),
@@ -452,14 +488,18 @@ pub fn refresh(threads: &mut Vec<Thread>, problems: &[Problem], now: DateTime<Ut
 fn key_of(p: &Problem) -> String {
     match p.kind {
         ProblemKind::DefaultBranch => format!("issue:{}", p.id),
-        ProblemKind::PullRequest => format!("pr:{}", p.pr_id.as_deref().unwrap_or(&p.repo)),
+        // A pull request's problems share its one comment.
+        ProblemKind::PullRequest | ProblemKind::BaseMoved => {
+            format!("pr:{}", p.pr_id.as_deref().unwrap_or(&p.repo))
+        }
     }
 }
 fn pr_number(id: &str) -> Option<u64> {
     id.rsplit_once('#').and_then(|(_, n)| n.parse().ok())
 }
 /// Marks each item failing or not as the problem stands now, adding one for
-/// each check that fails for the first time.
+/// each check that fails for the first time, or for a pull request's base
+/// moving on the first time.
 fn items_from(t: &mut Thread, p: &Problem) {
     // Only a passing commit says a check stopped failing; when Orbit stops
     // watching for another reason, items stay as it last saw them.
@@ -472,8 +512,15 @@ fn items_from(t: &mut Thread, p: &Problem) {
         }
         return;
     }
+    let moved = p.kind == ProblemKind::BaseMoved;
     for item in &mut t.items {
-        let failing = p.failing.iter().any(|c| c.name == item.check);
+        let failing = match item.kind {
+            ItemKind::Check => p.failing.iter().any(|c| c.name == item.check),
+            ItemKind::BaseMoved => moved,
+        };
+        if failing && item.kind == ItemKind::BaseMoved {
+            item.check = p.base.clone();
+        }
         if failing && !item.failing {
             // Failing again: what was said about it before is over.
             item.since = p.sha.clone();
@@ -483,26 +530,32 @@ fn items_from(t: &mut Thread, p: &Problem) {
         item.failing = failing;
         at(item, &p.sha);
     }
+    let new = |t: &Thread, kind: ItemKind, check: &str, url: &str| Item {
+        number: t.items.iter().map(|i| i.number).max().unwrap_or(0) + 1,
+        kind,
+        check: check.to_string(),
+        url: url.to_string(),
+        failing: true,
+        since: p.sha.clone(),
+        at: p.sha.clone(),
+        ..Default::default()
+    };
     for check in &p.failing {
-        match t.items.iter_mut().find(|i| i.check == check.name) {
+        let found = t
+            .items
+            .iter_mut()
+            .find(|i| i.kind == ItemKind::Check && i.check == check.name);
+        match found {
             Some(item) => item.url = check.url.clone(),
             None => {
-                let number = t.items.iter().map(|i| i.number).max().unwrap_or(0) + 1;
-                t.items.push(Item {
-                    number,
-                    check: check.name.clone(),
-                    url: check.url.clone(),
-                    failing: true,
-                    since: p.sha.clone(),
-                    at: p.sha.clone(),
-                    answer: None,
-                    heard_from: String::new(),
-                    why: None,
-                    reruns: vec![],
-                    rerun_ok: String::new(),
-                });
+                let item = new(t, ItemKind::Check, &check.name, &check.url);
+                t.items.push(item);
             }
         }
+    }
+    if moved && !t.items.iter().any(|i| i.kind == ItemKind::BaseMoved) {
+        let item = new(t, ItemKind::BaseMoved, &p.base, "");
+        t.items.push(item);
     }
 }
 /// Moves an item to a commit. Reruns are of one commit's jobs, so they
@@ -663,7 +716,7 @@ pub fn hear(t: &mut Thread, replies: &[Reply], more: Option<u32>) -> Vec<Heard> 
                 heard.push(Heard {
                     thread: t.key.clone(),
                     number,
-                    check: item.check.clone(),
+                    check: item.name(),
                     answer,
                 });
             }
@@ -684,7 +737,9 @@ pub fn to_verify(threads: &[Thread], problems: &[Problem]) -> Vec<Verify> {
         else {
             continue;
         };
-        for item in t.items.iter().filter(|i| i.failing) {
+        // A base that moved on settles itself once CI runs again.
+        let checks = t.items.iter().filter(|i| i.kind == ItemKind::Check);
+        for item in checks.filter(|i| i.failing) {
             let Some(a) = &item.answer else { continue };
             let (Some(commit), Some(check)) = (&a.commit, a.check) else {
                 continue;
@@ -723,6 +778,7 @@ pub fn verified(
 ) -> Option<Heard> {
     let t = threads.iter_mut().find(|t| t.key == v.thread)?;
     let item = t.items.iter_mut().find(|i| i.number == v.number)?;
+    let name = item.name();
     let a = item
         .answer
         .as_mut()
@@ -735,7 +791,7 @@ pub fn verified(
     (was != Some(check) && check != FixCheck::Waiting).then(|| Heard {
         thread: t.key.clone(),
         number: v.number,
-        check: item.check.clone(),
+        check: name,
         answer: a.clone(),
     })
 }
@@ -901,6 +957,9 @@ fn answer_text(item: &Item, t: &Thread) -> String {
     reply(what)
 }
 fn item_line(item: &Item, t: &Thread, p: &Problem) -> String {
+    if item.kind == ItemKind::BaseMoved {
+        return base_line(item, t, p);
+    }
     let state = if item.failing && !p.is_open() {
         format!(
             "failing at {} when Orbit stopped watching",
@@ -922,7 +981,9 @@ fn item_line(item: &Item, t: &Thread, p: &Problem) -> String {
         } else {
             ""
         };
-        let state = if p.passed() { "passes" } else { "not failing" };
+        // A base that moved on is only ever about checks that pass.
+        let passes = p.passed() || p.kind == ProblemKind::BaseMoved;
+        let state = if passes { "passes" } else { "not failing" };
         format!("{state} at {}{rerun}", code(short(&item.at)))
     };
     let (link, answer) = if item.failing && p.is_open() {
@@ -937,6 +998,22 @@ fn item_line(item: &Item, t: &Thread, p: &Problem) -> String {
         item.number,
         code(&item.check)
     )
+}
+/// The line about a pull request's base moving on since its checks began.
+fn base_line(item: &Item, t: &Thread, p: &Problem) -> String {
+    let base = code(&item.check);
+    let ran = code(short(&item.at));
+    let state = if item.failing && p.is_open() {
+        format!(
+            "{base} moved on since the checks at {ran} began · merge it in and let CI run again{}",
+            answer_text(item, t)
+        )
+    } else if item.failing {
+        format!("{base} moved on since the checks at {ran} began, when Orbit stopped watching")
+    } else {
+        format!("{base} moved on · done at {ran}")
+    };
+    format!("- **I{}** · {state}", item.number)
 }
 /// Why an item's job failed, under its line: the step, and the end of its
 /// log in a code block that nothing in it can close. The log is someone
@@ -1012,6 +1089,15 @@ fn data(t: &Thread, p: &Problem) -> String {
                 "since": i.since,
                 "at": i.at,
             });
+            // Only for a base that moved on, so older bodies stay as they
+            // were: its base branch, and no check.
+            if i.kind == ItemKind::BaseMoved {
+                item["kind"] = json!(i.kind);
+                item["base"] = json!(i.check);
+                if let Some(o) = item.as_object_mut() {
+                    o.remove("check");
+                }
+            }
             // Only with an answer, so older bodies stay as they were.
             if let Some(a) = &i.answer {
                 item["answer"] = json!({
@@ -1059,7 +1145,13 @@ fn checks(n: usize) -> String {
 
 /// Orbit's comment on a pull request.
 pub fn comment_body(t: &Thread, p: &Problem) -> String {
-    let status = if p.is_open() {
+    let status = if p.is_open() && p.kind == ProblemKind::BaseMoved {
+        let base = code(&p.base);
+        format!(
+            "Every check passes at {}, but {base} has moved on since they began. Merge {base} in and let CI run again, so they run with its latest changes.",
+            code(short(&p.sha))
+        )
+    } else if p.is_open() {
         format!(
             "{} on this pull request at {}.",
             checks(failing_count(t)),
@@ -1410,6 +1502,11 @@ pub fn event_text(
             .map_or("its issue".to_string(), |n| format!("issue #{n}"))
     };
     let text = match e {
+        Event::Posted(_) if p?.kind == ProblemKind::BaseMoved => format!(
+            "Orbit told the agent on {} that {} moved on since its checks began.",
+            place(t),
+            p?.base
+        ),
         Event::Posted(_) => {
             let failing = &p?.failing;
             let names = crate::problems::names(failing);
@@ -1467,7 +1564,7 @@ pub fn event_text(
         Event::Reran { number, .. } => {
             let item = t.items.iter().find(|i| i.number == *number)?;
             let r = item.reruns.iter().rfind(|r| r.done)?;
-            let what = format!("I{} ({})", item.number, item.check);
+            let what = format!("I{} ({})", item.number, item.name());
             if crate::reruns::done(item) > 1 {
                 format!(
                     "Orbit reran {what} on {} a second time, as it still looks like bad luck: {}",
@@ -1484,7 +1581,7 @@ pub fn event_text(
         }
         Event::FailedAgain { number, ask, .. } => {
             let item = t.items.iter().find(|i| i.number == *number)?;
-            let what = format!("I{} ({})", item.number, item.check);
+            let what = format!("I{} ({})", item.number, item.name());
             let flaky = item.why.as_ref().and_then(|w| w.flaky.as_deref());
             match flaky.filter(|_| *ask) {
                 Some(reason) => format!(

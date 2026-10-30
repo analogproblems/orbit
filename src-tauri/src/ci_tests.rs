@@ -278,3 +278,52 @@ fn the_query_reads_every_part_parse_needs() {
         assert_eq!(q.matches('{').count(), q.matches('}').count());
     }
 }
+
+/// When a commit's passing checks began, the earliest, and when the
+/// default branch's latest commit was made: what tells Orbit whether a
+/// pull request's checks ran with its base's latest.
+#[test]
+fn when_the_checks_that_passed_began() {
+    let timed = |mut v: Value, at: &str| {
+        match v["__typename"].as_str() {
+            Some("CheckRun") => v["checkSuite"]["createdAt"] = json!(at),
+            _ => v["createdAt"] = json!(at),
+        }
+        v
+    };
+    let mut head = commit(
+        A,
+        vec![
+            timed(
+                run("CI", "Lint", "COMPLETED", Some("SUCCESS")),
+                "2026-10-30T10:05:00Z",
+            ),
+            timed(
+                run("CI", "Test", "COMPLETED", Some("SUCCESS")),
+                "2026-10-30T10:01:00Z",
+            ),
+            timed(status("legacy", "SUCCESS"), "2026-10-30T10:03:00Z"),
+            // Skipped: it didn't pass, so it doesn't count.
+            timed(
+                run("CI", "Deploy", "COMPLETED", Some("SKIPPED")),
+                "2026-10-30T09:00:00Z",
+            ),
+        ],
+    );
+    head["committedDate"] = json!("2026-10-30T09:30:00Z");
+    let ci = parse("o/r", &answer(head.clone(), vec![], false)).unwrap();
+    assert_eq!(ci.head.state, CiState::Passing);
+    assert_eq!(ci.head.ran_at, "2026-10-30T10:01:00.000Z");
+    assert_eq!(ci.head.committed_at, "2026-10-30T09:30:00Z");
+    // One that passed without saying when it began: Orbit can't tell.
+    head["statusCheckRollup"]["contexts"]["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .push(run("CI", "Docs", "COMPLETED", Some("SUCCESS")));
+    let ci = parse("o/r", &answer(head, vec![], false)).unwrap();
+    assert_eq!(ci.head.state, CiState::Passing);
+    assert_eq!(ci.head.ran_at, "");
+    assert!(query().contains("committedDate"));
+    assert!(NODES.contains("checkSuite { createdAt"));
+    assert!(NODES.contains("targetUrl createdAt"));
+}
