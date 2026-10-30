@@ -822,12 +822,13 @@ export function freshDemo(): Snapshot {
 }
 const sha = (start: string) => start + "0".repeat(40 - start.length);
 /** CI as Orbit last read it: orbit's main fails, api's passes after failing
- * yesterday, dashboard can't be read, and one pull request fails its own
- * checks. */
+ * yesterday, dashboard can't be read, one pull request fails its own
+ * checks, and one passed before orbit's main moved on. */
 export function demoCi(
   prs: PullRequest[],
 ): Pick<Snapshot, "ci" | "problems" | "ops" | "journal" | "failures"> {
   const failingPr = prs[2];
+  const behindPr = prs[4];
   const check = (name: string, url = "") => ({ name, url });
   const rustJob = "https://github.com/acme/orbit/actions/runs/1001/job/2001";
   const frontendJob = `https://github.com/${failingPr.repo}/actions/runs/1002/job/2002`;
@@ -845,9 +846,23 @@ export function demoCi(
         failing: [check("CI / Rust tests", rustJob)],
         running: 0,
         passing: 3,
+        committedAt: ago(19),
       },
       title: "Merge pull request #146 from acme/bump-tokio",
-      pulls: [],
+      pulls: [
+        {
+          number: behindPr.number,
+          draft: false,
+          ci: {
+            sha: behindPr.headSha,
+            state: "passing",
+            failing: [],
+            running: 0,
+            passing: 4,
+            ranAt: ago(70),
+          },
+        },
+      ],
       complete: true,
       checkedAt: ago(1),
     },
@@ -943,6 +958,29 @@ export function demoCi(
         { at: ago(9), text: "Now failing: CI / Frontend and CI / End-to-end." },
       ],
       alerts: 0,
+    },
+    {
+      id: "demo-problem-4",
+      key: `base:${behindPr.id}`,
+      kind: "base_moved",
+      repo: behindPr.repo,
+      prId: behindPr.id,
+      branch: behindPr.headRef,
+      sha: behindPr.headSha,
+      sinceSha: behindPr.headSha,
+      failing: [],
+      openedAt: ago(44),
+      updatedAt: ago(18),
+      timeline: [
+        {
+          at: ago(44),
+          text: `Passed at ${behindPr.headSha.slice(0, 7)}, but main moved on to 7d41e09 after its checks began.`,
+        },
+        { at: ago(18), text: "main moved on again, to 9f3c2a1." },
+      ],
+      alerts: 0,
+      base: "main",
+      baseSha: sha("9f3c2a1"),
     },
     {
       id: "demo-problem-3",
@@ -1087,6 +1125,24 @@ export function demoCi(
       closed: true,
       updatedAt: ago(25 * 60),
     }),
+    thread({
+      key: `pr:${behindPr.id}`,
+      kind: "comment",
+      repo: behindPr.repo,
+      number: behindPr.number,
+      prId: behindPr.id,
+      commentId: 902,
+      url: `${behindPr.url}#issuecomment-902`,
+      branch: behindPr.headRef,
+      problemId: "demo-problem-4",
+      items: [
+        {
+          ...item(1, "main", true, behindPr.headSha, behindPr.headSha),
+          kind: "base_moved",
+        },
+      ],
+      updatedAt: ago(44),
+    }),
   ];
   const write = (
     id: string,
@@ -1112,6 +1168,8 @@ export function demoCi(
     write("demo-write-5", "open_issue", ops[0], ago(44)),
     { ...write("demo-write-6", "rerun_job", ops[1], ago(19)), url: e2eFirst },
     write("demo-write-8", "post_comment", ops[1], ago(19)),
+    write("demo-write-9", "post_comment", ops[3], ago(44)),
+    write("demo-write-10", "edit_comment", ops[3], ago(18)),
     write("demo-write-7", "edit_issue", ops[0], ago(18)),
   ];
   const failures: CiFailure[] = [

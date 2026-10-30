@@ -273,7 +273,7 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
                 "The agent on {} needs a person for I{} ({})",
                 crate::ops::place(t),
                 i.number,
-                i.check
+                i.name()
             );
             let reason = match &a.text {
                 Some(question) => format!("{about}: {question}"),

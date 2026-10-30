@@ -2,7 +2,8 @@
 //! whose CI fails, kept from when Orbit first sees it until Orbit sees it
 //! fixed. Each has a short timeline of what changed. A failing default
 //! branch tells you once, through `crate::alerts`; failing checks on a pull
-//! request are its author's to fix, so they are only listed.
+//! request are its author's to fix, so they are only listed, as is a pull
+//! request whose checks passed before its base branch moved on.
 //!
 //! Everything here is worked out from what Orbit read; nothing reaches
 //! GitHub.
@@ -34,6 +35,9 @@ pub enum ProblemKind {
     DefaultBranch,
     /// CI fails on a pull request's latest commit.
     PullRequest,
+    /// A pull request's checks pass, but they began before its base
+    /// branch's latest commit, so they ran without it.
+    BaseMoved,
 }
 /// Something that happened to a problem.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,7 +57,8 @@ pub struct Problem {
     pub kind: ProblemKind,
     pub repo: String,
     pub pr_id: Option<String>,
-    /// The default branch, for a default branch's problem.
+    /// The default branch, for a default branch's problem; the pull
+    /// request's branch for a pull request's.
     pub branch: String,
     /// The latest commit seen failing, and the first since it last passed.
     pub sha: String,
@@ -83,6 +88,12 @@ pub struct Problem {
     /// `crate::broke`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub broke: Option<crate::broke::Broke>,
+    /// For a pull request whose base moved: the base branch, and its latest
+    /// commit, which the checks ran without.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub base: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub base_sha: String,
 }
 impl Problem {
     pub fn is_open(&self) -> bool {
@@ -157,6 +168,10 @@ pub fn branch_key(repo: &str) -> String {
 pub fn pull_key(pr_id: &str) -> String {
     format!("ci:{pr_id}")
 }
+/// The key of a pull request's problem about its base moving on.
+pub fn base_key(pr_id: &str) -> String {
+    format!("base:{pr_id}")
+}
 
 /// What Orbit saw of one thing that can fail.
 struct Seen<'a> {
@@ -210,13 +225,16 @@ pub fn observe(
             },
             now,
         );
+        see_base(problems, ci, pr, &pull.ci, now);
     }
     if !ci.complete {
         return;
     }
-    for p in problems.iter_mut().filter(|p| {
-        p.is_open() && p.kind == ProblemKind::PullRequest && same_repo(&p.repo, &ci.repo)
-    }) {
+    let pulls = [ProblemKind::PullRequest, ProblemKind::BaseMoved];
+    for p in problems
+        .iter_mut()
+        .filter(|p| p.is_open() && pulls.contains(&p.kind) && same_repo(&p.repo, &ci.repo))
+    {
         let number = p
             .pr_id
             .as_deref()
@@ -232,6 +250,91 @@ pub fn observe(
             Some(_) => continue,
         };
         p.close(&at, reason.into());
+    }
+}
+
+/// Whether a pull request's checks that passed began before its base
+/// branch's latest commit was made, so they ran without it, or None when
+/// Orbit can't tell: its base isn't the default branch, or GitHub didn't
+/// say when.
+fn behind(ci: &RepoCi, pr: &PullRequest, pull: &CommitCi) -> Option<bool> {
+    if ci.branch.is_empty() || pr.base_ref != ci.branch {
+        return None;
+    }
+    let ran = time(&pull.ran_at)?;
+    let made = time(&ci.head.committed_at)?;
+    Some(made > ran)
+}
+
+/// Opens, updates or closes the problem about a pull request's base moving
+/// on since its checks began. It closes once they run again with the
+/// base's latest, or fail, or when its base is another branch now, such as
+/// after the default branch was renamed; then one about the new base may
+/// open at once.
+fn see_base(
+    problems: &mut Vec<Problem>,
+    ci: &RepoCi,
+    pr: &PullRequest,
+    pull: &CommitCi,
+    now: DateTime<Utc>,
+) {
+    let at = stamp(now);
+    let key = base_key(&pr.id);
+    let short = ci::short(&pull.sha).to_string();
+    let base = ci.branch.as_str();
+    let renamed = |p: &Problem| p.base != base || pr.base_ref != p.base;
+    if let Some(p) = problems
+        .iter_mut()
+        .find(|p| p.key == key && p.is_open() && renamed(p))
+    {
+        p.close(&at, format!("Its base is no longer {}.", p.base));
+    }
+    let open = problems.iter_mut().find(|p| p.key == key && p.is_open());
+    match (pull.state, behind(ci, pr, pull), open) {
+        (CiState::Passing, Some(true), Some(p)) => {
+            if p.sha != pull.sha {
+                p.note(
+                    &at,
+                    format!("Passed again at {short}, still without {base}'s latest."),
+                );
+            } else if p.base_sha != ci.head.sha {
+                let moved = ci::short(&ci.head.sha);
+                p.note(&at, format!("{base} moved on again, to {moved}."));
+            }
+            p.sha = pull.sha.clone();
+            p.base_sha = ci.head.sha.clone();
+        }
+        (CiState::Passing, Some(true), None) => {
+            let mut p = Problem {
+                id: id(),
+                key,
+                kind: ProblemKind::BaseMoved,
+                repo: ci.repo.clone(),
+                pr_id: Some(pr.id.clone()),
+                branch: pr.head_ref.clone(),
+                sha: pull.sha.clone(),
+                since_sha: pull.sha.clone(),
+                opened_at: at.clone(),
+                base: base.to_string(),
+                base_sha: ci.head.sha.clone(),
+                ..Default::default()
+            };
+            p.note(
+                &at,
+                format!(
+                    "Passed at {short}, but {base} moved on to {} after its checks began.",
+                    ci::short(&ci.head.sha)
+                ),
+            );
+            problems.push(p);
+        }
+        (CiState::Passing, Some(false), Some(p)) => {
+            p.close(&at, format!("Passed at {short} with {base}'s latest."));
+            p.closed_sha = pull.sha.clone();
+        }
+        (CiState::Failing, _, Some(p)) => p.close(&at, format!("Its checks fail at {short} now.")),
+        // Running, or Orbit can't tell yet: wait.
+        _ => {}
     }
 }
 

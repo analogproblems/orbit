@@ -53,7 +53,7 @@ describe("operations page", () => {
     const go = show(s);
     const open = screen.getByRole("list", { name: "Open problems" });
     const items = within(open).getAllByRole("listitem");
-    expect(items).toHaveLength(2);
+    expect(items).toHaveLength(3);
     expect(items[0].textContent).toContain("acme/orbit: main");
     expect(items[0].textContent).toContain("Failing: CI / Rust tests.");
     expect(items[0].textContent).toContain("Still failing at 9f3c2a1.");
@@ -270,6 +270,38 @@ describe("operations page", () => {
       "CI / Frontend: Orbit held back its log, as it looks like it holds a secret.",
     );
     expect(pull.textContent).not.toContain("hidden");
+  });
+
+  it("says when a pull request passed before its base moved on", () => {
+    const s = freshDemo();
+    show(s);
+    const open = screen.getByRole("list", { name: "Open problems" });
+    const behind = within(open).getAllByRole("listitem")[2];
+    expect(behind.textContent).toContain(s.prs[4].id);
+    expect(behind.textContent).toContain(
+      "Its checks pass, but main moved on to 9f3c2a1 after they began. Its author’s to merge it in and let CI run again.",
+    );
+    expect(behind.textContent).toContain("main moved on again, to 9f3c2a1.");
+    expect(behind.textContent).not.toContain("Failing:");
+    expect(within(behind).getByLabelText("Author’s to fix")).toBeTruthy();
+    expect(
+      within(behind).getByRole("button", { name: "Open on GitHub" }),
+    ).toBeTruthy();
+    // An answer about it names it the same way.
+    const moved = s.problems!.find((p) => p.kind === "base_moved")!;
+    const t = s.ops!.find((t) => t.problemId === moved.id)!;
+    const item = {
+      ...t.items[0],
+      answer: {
+        kind: "taking",
+        author: "morgan",
+        at: "",
+        url: "",
+        replyId: 1,
+        head: "",
+      },
+    } as OpsItem;
+    expect(answerText(t, item)).toBe("I1 · main moved on: morgan is on it.");
   });
 
   it("names the pull request that broke a default branch", () => {

@@ -226,6 +226,207 @@ fn a_pull_requests_failing_checks_are_listed_but_never_need_you() {
     assert_eq!(problems[0].sha, A);
 }
 
+const D: &str = "4444444444444444444444444444444444444444";
+const E: &str = "5555555555555555555555555555555555555555";
+const F: &str = "6666666666666666666666666666666666666666";
+/// A pull request's commit whose passing checks began at minute `began`.
+fn ran(sha: &str, state: CiState, failing: &[&str], began: i64) -> CommitCi {
+    CommitCi {
+        ran_at: stamp(at(began)),
+        ..commit(sha, state, failing)
+    }
+}
+/// `main` at `head`, made at minute `made`, with pull request 7 at `pull`.
+fn based(head: &str, made: i64, pull: CommitCi) -> RepoCi {
+    let mut ci = passing(head);
+    ci.head.committed_at = stamp(at(made));
+    with_pull(ci, 7, false, pull)
+}
+
+#[test]
+fn a_pull_request_that_passed_before_its_base_moved_on_is_listed_until_ci_runs_again() {
+    let mut problems = vec![];
+    let p = followed(7, A);
+    // main's latest is older than the checks: they ran with it.
+    observe(
+        &mut problems,
+        &based(C, -5, ran(A, CiState::Passing, &[], 0)),
+        &[&p],
+        at(1),
+    );
+    assert!(problems.is_empty());
+    // main moves on after they began.
+    observe(
+        &mut problems,
+        &based(B, 10, ran(A, CiState::Passing, &[], 0)),
+        &[&p],
+        at(11),
+    );
+    assert_eq!(problems.len(), 1);
+    let b = &problems[0];
+    assert_eq!(b.kind, ProblemKind::BaseMoved);
+    assert_eq!(b.key, "base:a/b#7");
+    assert_eq!(b.pr_id.as_deref(), Some("a/b#7"));
+    assert_eq!((b.branch.as_str(), b.base.as_str()), ("topic-7", "main"));
+    assert_eq!((b.sha.as_str(), b.since_sha.as_str()), (A, A));
+    assert_eq!(b.base_sha, B);
+    assert!(!b.needs_you());
+    assert_eq!(b.alerts, 0);
+    assert_eq!(
+        timeline(b),
+        ["Passed at 1111111, but main moved on to 2222222 after its checks began."]
+    );
+    // main moves on again.
+    observe(
+        &mut problems,
+        &based(D, 20, ran(A, CiState::Passing, &[], 0)),
+        &[&p],
+        at(21),
+    );
+    assert_eq!(problems.len(), 1);
+    assert_eq!(problems[0].base_sha, D);
+    assert_eq!(
+        timeline(&problems[0]).last(),
+        Some(&"main moved on again, to 4444444.")
+    );
+    // The author pushes again, but its checks began before main's latest.
+    let pushed = followed(7, E);
+    observe(
+        &mut problems,
+        &based(D, 20, ran(E, CiState::Passing, &[], 15)),
+        &[&pushed],
+        at(22),
+    );
+    assert_eq!(
+        (problems[0].sha.as_str(), problems[0].since_sha.as_str()),
+        (E, A)
+    );
+    assert_eq!(
+        timeline(&problems[0]).last(),
+        Some(&"Passed again at 5555555, still without main's latest.")
+    );
+    // Then CI runs again: running waits, and passing with it closes it.
+    let again = followed(7, F);
+    observe(
+        &mut problems,
+        &based(D, 20, commit(F, CiState::Running, &[])),
+        &[&again],
+        at(23),
+    );
+    assert!(problems[0].is_open());
+    observe(
+        &mut problems,
+        &based(D, 20, ran(F, CiState::Passing, &[], 24)),
+        &[&again],
+        at(30),
+    );
+    assert_eq!(problems.len(), 1);
+    assert!(problems[0].passed());
+    assert_eq!(problems[0].closed_sha, F);
+    assert_eq!(
+        problems[0].closed_reason.as_deref(),
+        Some("Passed at 6666666 with main's latest.")
+    );
+    // main moving on later is a new problem.
+    observe(
+        &mut problems,
+        &based(C, 40, ran(F, CiState::Passing, &[], 24)),
+        &[&again],
+        at(41),
+    );
+    assert_eq!(problems.len(), 2);
+    assert_eq!(open(&problems)[0].since_sha, F);
+    assert_ne!(problems[0].id, problems[1].id);
+}
+
+#[test]
+fn a_base_that_moved_on_is_over_when_the_checks_fail_or_the_pull_request_goes() {
+    let p = followed(7, A);
+    let behind = |problems: &mut Vec<Problem>| {
+        observe(
+            problems,
+            &based(B, 10, ran(A, CiState::Passing, &[], 0)),
+            &[&p],
+            at(11),
+        );
+        assert_eq!(open(problems).len(), 1);
+    };
+    // Its checks fail at a new commit: the failure is the problem now.
+    let mut problems = vec![];
+    behind(&mut problems);
+    let pushed = followed(7, E);
+    let failing = ran(E, CiState::Failing, &["Test"], 20);
+    observe(&mut problems, &based(B, 10, failing), &[&pushed], at(21));
+    assert_eq!(
+        problems[0].closed_reason.as_deref(),
+        Some("Its checks fail at 5555555 now.")
+    );
+    assert!(!problems[0].passed());
+    assert_eq!(open(&problems)[0].kind, ProblemKind::PullRequest);
+    // The pull request closes, once the list is whole.
+    let mut problems = vec![];
+    behind(&mut problems);
+    observe(&mut problems, &passing(B), &[], at(12));
+    assert_eq!(
+        problems[0].closed_reason.as_deref(),
+        Some("The pull request closed.")
+    );
+    // It goes into another branch.
+    let mut problems = vec![];
+    behind(&mut problems);
+    let mut elsewhere = p.clone();
+    elsewhere.base_ref = "release".into();
+    observe(
+        &mut problems,
+        &based(B, 10, ran(A, CiState::Passing, &[], 0)),
+        &[&elsewhere],
+        at(12),
+    );
+    assert_eq!(
+        problems[0].closed_reason.as_deref(),
+        Some("Its base is no longer main.")
+    );
+    // The default branch is renamed, and the pull request's base with it:
+    // the problem about main is over, and one about trunk opens at once.
+    let mut problems = vec![];
+    behind(&mut problems);
+    let mut renamed = p.clone();
+    renamed.base_ref = "trunk".into();
+    let mut trunk = based(B, 10, ran(A, CiState::Passing, &[], 0));
+    trunk.branch = "trunk".into();
+    observe(&mut problems, &trunk, &[&renamed], at(12));
+    assert_eq!(
+        problems[0].closed_reason.as_deref(),
+        Some("Its base is no longer main.")
+    );
+    assert_eq!(open(&problems).len(), 1);
+    assert_eq!(open(&problems)[0].base, "trunk");
+    assert_eq!(
+        timeline(open(&problems)[0]),
+        ["Passed at 1111111, but trunk moved on to 2222222 after its checks began."]
+    );
+    // Before Orbit's list of pull requests catches up, only the old one ends.
+    let mut problems = vec![];
+    behind(&mut problems);
+    observe(&mut problems, &trunk, &[&p], at(12));
+    assert!(open(&problems).is_empty());
+    // Nothing is listed when Orbit can't tell: into another branch, a
+    // check that didn't say when it began, or main's latest without a time.
+    let mut problems = vec![];
+    observe(
+        &mut problems,
+        &based(B, 10, ran(A, CiState::Passing, &[], 0)),
+        &[&elsewhere],
+        at(11),
+    );
+    let untimed = commit(A, CiState::Passing, &[]);
+    observe(&mut problems, &based(B, 10, untimed), &[&p], at(11));
+    let mut no_time = based(B, 10, ran(A, CiState::Passing, &[], 0));
+    no_time.head.committed_at.clear();
+    observe(&mut problems, &no_time, &[&p], at(11));
+    assert!(problems.is_empty());
+}
+
 #[test]
 fn a_pull_request_problem_closes_with_its_pull_request_only_when_the_list_is_whole() {
     let mut problems = vec![];
