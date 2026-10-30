@@ -1151,9 +1151,9 @@ fn links(dir: &Path, links: &[(&str, &str)]) {
 }
 /// A GitHub Actions job whose step `step` failed, and its log.
 fn job(dir: &Path, id: u32, step: &str, log: &[&str]) {
-    let at = "2026-10-29T12:00:00Z";
+    let (before, at) = ("2026-10-29T11:59:59Z", "2026-10-29T12:00:00Z");
     let steps = json!({ "steps": [
-        { "name": "Set up job", "conclusion": "success", "started_at": at, "completed_at": at },
+        { "name": "Set up job", "conclusion": "success", "started_at": before, "completed_at": before },
         { "name": step, "conclusion": "failure", "started_at": at, "completed_at": at }
     ] });
     std::fs::write(dir.join(format!("job-{id}.json")), steps.to_string()).unwrap();

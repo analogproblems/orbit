@@ -44,6 +44,9 @@ pub struct Failure {
     /// from `retry_at`.
     pub tries: u32,
     pub retry_at: Option<String>,
+    /// GitHub's rate limit stopped the last try, so Orbit reads no log
+    /// until `retry_at`.
+    pub limited: bool,
 }
 
 /// The job a check's link names, when it is a GitHub Actions job in
@@ -71,13 +74,23 @@ pub fn job_of(url: &str, repo: &str) -> Option<u64> {
 /// The failing checks on open problems whose logs Orbit should read now,
 /// at most `PER_PASS`: first those it hasn't tried, default branches
 /// first, then those due to be tried again, the longest waiting first, so
-/// a log GitHub keeps failing on never holds up the others. Each check's
-/// repository, name and link.
+/// a log GitHub keeps failing on never holds up the others. None while
+/// GitHub's rate limit is still waited out. Each check's repository, name
+/// and link.
 pub fn wanted(
     problems: &[Problem],
     read: &[Failure],
     now: DateTime<Utc>,
 ) -> Vec<(String, String, String)> {
+    let waiting = |f: &Failure| {
+        f.retry_at
+            .as_deref()
+            .and_then(time)
+            .is_some_and(|at| at > now)
+    };
+    if read.iter().any(|f| f.limited && waiting(f)) {
+        return vec![];
+    }
     let mut open: Vec<&Problem> = problems.iter().filter(|p| p.is_open()).collect();
     open.sort_by_key(|p| p.kind != ProblemKind::DefaultBranch);
     let mut fresh: Vec<(String, String, String)> = vec![];
@@ -144,6 +157,7 @@ pub fn retry_later(
             read_at: stamp(now),
             tries,
             retry_at: Some(stamp(now + wait)),
+            limited: rate_limited(error),
             ..Default::default()
         },
     );
@@ -238,10 +252,11 @@ pub fn understand(mut failure: Failure, job: &Value, log: &str) -> Failure {
         .and_then(|s| s["name"].as_str())
         .map(plain)
         .unwrap_or_default();
-    // Without the step's times, the whole log is checked and its last
-    // step shown.
-    let (checked, shown) = match step.and_then(|s| section(&lines, s)) {
-        Some(section) => (section, section),
+    // All the step's seconds are checked, and only its own lines shown.
+    // Without the step's times, the whole log is checked and its last step
+    // shown.
+    let (checked, shown) = match step.and_then(|s| Some((s, section(&lines, s)?))) {
+        Some((s, window)) => (window, own(window, shared_end(job, s))),
         None => (&lines[..], last_step(&lines)),
     };
     let text: Vec<&str> = checked.iter().map(|l| l.text.as_str()).collect();
@@ -254,10 +269,11 @@ pub fn understand(mut failure: Failure, job: &Value, log: &str) -> Failure {
     failure
 }
 
-/// The step that failed the job, from GitHub's answer about it: the first
-/// step marked failed or timed out after which none of the workflow's own
-/// steps succeeded, as a step that continued on error is followed by ones
-/// that did; otherwise the last one marked failed.
+/// The step most likely to have failed the job, from GitHub's answer about
+/// it, which doesn't say which steps were allowed to fail: the first step
+/// marked failed or timed out after which none of the workflow's own steps
+/// succeeded, as a step that continued on error is usually followed by
+/// ones that did; otherwise the last one marked failed.
 pub fn failed_step(job: &Value) -> Option<&Value> {
     let steps: Vec<&Value> = job["steps"].as_array().into_iter().flatten().collect();
     let failed = |s: &Value| matches!(s["conclusion"].as_str(), Some("failure" | "timed_out"));
@@ -338,6 +354,54 @@ fn section<'a>(lines: &'a [Line], step: &Value) -> Option<&'a [Line]> {
         (Some(first), Some(last)) => &lines[first..=last],
         _ => &[],
     })
+}
+/// The second `step` completed in, when another step that ran started in
+/// it, so lines from that second may be either's.
+fn shared_end(job: &Value, step: &Value) -> Option<DateTime<Utc>> {
+    let end = step["completed_at"]
+        .as_str()
+        .and_then(time)?
+        .trunc_subsecs(0);
+    let steps = job["steps"].as_array()?;
+    steps
+        .iter()
+        .filter(|s| !std::ptr::eq(*s, step) && s["conclusion"] != "skipped")
+        .filter_map(|s| s["started_at"].as_str().and_then(time))
+        .any(|t| t.trunc_subsecs(0) == end)
+        .then_some(end)
+}
+/// A step's own lines in its seconds: from its command up to the next
+/// step's command, or to its own last line when it ran a command that
+/// failed, `##[error]Process completed with exit code`. When neither marks
+/// its end and another step started in the second it completed, that
+/// second is left out, as its lines may be the other step's.
+fn own(window: &[Line], shared: Option<DateTime<Utc>>) -> &[Line] {
+    let start = window
+        .iter()
+        .position(|l| l.text.starts_with("##[group]Run "))
+        .unwrap_or(0);
+    let lines = &window[start..];
+    let next = lines
+        .iter()
+        .skip(1)
+        .position(|l| l.text.starts_with("##[group]Run "))
+        .map(|i| i + 1);
+    let done = lines
+        .iter()
+        .position(|l| {
+            l.text
+                .starts_with("##[error]Process completed with exit code")
+        })
+        .map(|i| i + 1);
+    let end = match (next.into_iter().chain(done).min(), shared) {
+        (Some(end), _) => end,
+        (None, Some(second)) => lines
+            .iter()
+            .position(|l| l.at.is_some_and(|t| t >= second))
+            .unwrap_or(lines.len()),
+        (None, None) => lines.len(),
+    };
+    &lines[..end]
 }
 /// The last step of a whole log: from the last command before its last
 /// error.

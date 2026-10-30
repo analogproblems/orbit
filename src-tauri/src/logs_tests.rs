@@ -43,8 +43,8 @@ fn log() -> Vec<String> {
         at(4.0, ""),
         at(5.0, "test it_works ...\t\x1b[31mFAILED\x1b[0m"),
         at(6.0, "##[warning]Something odd"),
+        at(6.5, "##[error]An annotation"),
         at(7.0, "##[error]Process completed with exit code 101."),
-        at(7.1, "##[error]Second error"),
         at(8.0, "Post job cleanup."),
         at(9.0, "##[error]A later step's error"),
     ]
@@ -72,8 +72,8 @@ fn an_excerpt_is_the_end_of_the_failing_step() {
             "   Compiling orbit v0.1.0",
             "test it_works ... FAILED",
             "Warning: Something odd",
+            "Error: An annotation",
             "Error: Process completed with exit code 101.",
-            "Error: Second error",
         ]
     );
     assert!(!failure.held);
@@ -123,6 +123,84 @@ fn only_the_step_that_failed_the_job_is_shown() {
             "FAIL src/a.test.ts",
             "Error: Process completed with exit code 1."
         ]
+    );
+}
+
+/// A step that starts in the second the failed one completed, such as a
+/// clean-up step that always runs or a post step, is left out: up to the
+/// next step's command or the failed command's last line, or else without
+/// that second.
+#[test]
+fn a_step_starting_as_the_failed_one_ends_is_left_out() {
+    let test = |last: &str| {
+        vec![
+            at(5.0, "##[group]Run npm test"),
+            at(5.01, "##[endgroup]"),
+            at(6.0, "FAIL src/a.test.ts"),
+            at(7.1, last),
+        ]
+    };
+    let shown = |log: Vec<String>, next_from: i64| {
+        let steps = [
+            step("Test", "failure", 5, 7),
+            step("Clean up", "success", next_from, next_from),
+        ];
+        understood(&steps, &log).lines
+    };
+    // A clean-up command, then a post step without one.
+    let mut log = test("##[error]Process completed with exit code 1.");
+    log.extend([
+        at(7.2, "##[group]Run ./clean-up.sh"),
+        at(7.3, "##[endgroup]"),
+        at(7.4, "cleaning up"),
+        at(7.5, "##[error]a clean-up annotation"),
+    ]);
+    let ran = [
+        "FAIL src/a.test.ts",
+        "Error: Process completed with exit code 1.",
+    ];
+    assert_eq!(shown(log, 7), ran);
+    let mut log = test("##[error]Process completed with exit code 1.");
+    log.extend([
+        at(7.2, "Post job cleanup."),
+        at(7.5, "##[error]a clean-up annotation"),
+    ]);
+    assert_eq!(shown(log, 7), ran);
+    // An action that failed has no last line to go by, so its last second
+    // is left out while another step shares it, and kept otherwise.
+    let mut log = test("##[error]Tests failed");
+    log.extend([
+        at(7.2, "Post job cleanup."),
+        at(7.5, "##[error]a clean-up annotation"),
+    ]);
+    assert_eq!(shown(log, 7), ["FAIL src/a.test.ts"]);
+    let mut log = test("##[error]Tests failed");
+    log.extend([
+        at(7.2, "##[group]Run ./clean-up.sh"),
+        at(7.5, "##[error]a clean-up annotation"),
+    ]);
+    assert_eq!(shown(log, 7), ["FAIL src/a.test.ts", "Error: Tests failed"]);
+    let mut log = test("##[error]Tests failed");
+    log.extend([
+        at(9.2, "Post job cleanup."),
+        at(9.5, "##[error]a clean-up annotation"),
+    ]);
+    assert_eq!(shown(log, 9), ["FAIL src/a.test.ts", "Error: Tests failed"]);
+    // A step that ran within one second shares it with no other.
+    let log = vec![
+        at(7.0, "##[group]Run ./check.sh"),
+        at(7.01, "##[endgroup]"),
+        at(7.05, "FAIL quick"),
+        at(7.1, "##[error]Tests failed"),
+    ];
+    let steps = [
+        step("Before", "success", 5, 6),
+        step("Check", "failure", 7, 7),
+        step("After", "success", 9, 9),
+    ];
+    assert_eq!(
+        understood(&steps, &log).lines,
+        ["FAIL quick", "Error: Tests failed"]
     );
 }
 
@@ -362,6 +440,23 @@ fn a_log_github_wont_give_waits_without_holding_up_others() {
     let mut more = problems.clone();
     more[0].failing.push(check("E", &job(6)));
     assert_eq!(urls(wanted(&more, &read, due)), [job(6), job(1), job(2)]);
+
+    // After GitHub's rate limit, nothing is read until its wait is over.
+    let mut limited = read.clone();
+    retry_later(
+        &mut limited,
+        "A",
+        &job(1),
+        "gh: gh: API rate limit exceeded for user ID 1. (HTTP 403)",
+        due,
+    );
+    assert!(limited[0].limited && !read[0].limited);
+    assert!(wanted(&more, &limited, due).is_empty());
+    let over = due + Duration::minutes(2);
+    assert_eq!(
+        urls(wanted(&more, &limited, over)),
+        [job(6), job(2), job(3)]
+    );
 
     let mut later = due;
     for wait in [2, 4, 8, 16, 32, 60, 60] {

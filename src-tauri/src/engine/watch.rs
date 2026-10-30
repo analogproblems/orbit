@@ -102,14 +102,14 @@ impl Engine {
 impl Engine {
     /// Reads why the jobs failing on open problems failed, a few a pass,
     /// and forgets the ones no longer failing. A log GitHub didn't answer
-    /// for is tried again after a wait; after a rate limit, the rest of the
-    /// pass waits too.
+    /// for is tried again after a wait; after a rate limit, none is read
+    /// until the wait is over.
     async fn read_failures(&self) {
         let wanted = {
             let s = self.state.lock().await;
             logs::wanted(&s.problems, &s.failures, chrono::Utc::now())
         };
-        for (i, (repo, check, url)) in wanted.iter().enumerate() {
+        for (repo, check, url) in &wanted {
             let error = match logs::read(repo, check, url).await {
                 Ok(failure) => {
                     self.update(|s| logs::record(&mut s.failures, failure))
@@ -118,18 +118,10 @@ impl Engine {
                 }
                 Err(error) => error,
             };
-            // After a rate limit the rest wait as long, as GitHub would
-            // refuse them too.
+            // After a rate limit, no log is read until its wait is over.
             let limited = logs::rate_limited(&error);
-            let waiting = if limited {
-                &wanted[i..]
-            } else {
-                &wanted[i..=i]
-            };
             self.update(|s| {
-                for (_, check, url) in waiting {
-                    logs::retry_later(&mut s.failures, check, url, &error, chrono::Utc::now());
-                }
+                logs::retry_later(&mut s.failures, check, url, &error, chrono::Utc::now())
             })
             .await;
             if limited {

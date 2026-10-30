@@ -1183,6 +1183,9 @@ export interface CiFailure {
   tries?: number;
   /** When Orbit tries again. */
   retryAt?: string | null;
+  /** GitHub's rate limit stopped the last try, so Orbit reads no log until
+   * `retryAt`. */
+  limited?: boolean;
 }
 /** What an agent says about an item: `Taking I2`, `Fixed I2 in <commit>`,
  * `Declined I2: <reason>` or `Need a person on I2: <question>`. */
