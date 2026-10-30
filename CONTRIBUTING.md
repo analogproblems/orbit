@@ -26,7 +26,7 @@ npm ci
 npm run check
 ```
 
-`npm run check` runs the linters, the frontend build, the frontend and Rust tests, and a build check of the desktop app. The pieces on their own:
+`npm run check` runs the linters, the frontend build, the frontend and Rust tests, and a build check of the desktop app. The [CI workflow](.github/workflows/ci.yml) runs the same parts on every pull request and on each push to `master`, one step for each, so a failed run names the part that failed. The pieces on their own:
 
 ```sh
 npm run dev        # Browser-only demo with sample data at http://127.0.0.1:1420
