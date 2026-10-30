@@ -41,6 +41,7 @@ impl Engine {
             // as sending was cut off when Orbit stopped.
             let mut changed = ops::interrupted(&mut s.journal, &mut s.ops, now);
             changed |= ops::refresh(&mut s.ops, &s.problems, now);
+            changed |= ops::explain(&mut s.ops, &s.failures);
             if changed {
                 self.dirty.store(true, Ordering::SeqCst);
             }

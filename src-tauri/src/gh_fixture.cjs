@@ -4,7 +4,9 @@
 // GraphQL answers with <dir>/answer.json, <dir>/commit-<oid>.json for a
 // query about one commit, or when a comment or issue was made and last
 // edited for a query about one by its node ID. Compare answers from <dir>/compare.json, keyed by
-// "base...head", or 404. While <dir>/down exists every call
+// "base...head", or 404. A job is <dir>/job-<id>.json and its log
+// <dir>/log-<id>.txt, or 404; while <dir>/limit exists they answer as past
+// GitHub's rate limit. While <dir>/down exists every call
 // fails. While <dir>/hold exists a GET waits, after writing <dir>/held. Each
 // call is logged to <dir>/calls as "METHOD endpoint".
 const fs = require("node:fs");
@@ -91,6 +93,18 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
     : {};
   if (!known[m[1]]) missing();
   answer(known[m[1]]);
+} else if (
+  (m = endpoint.match(/^repos\/a\/b\/actions\/jobs\/(\d+)(\/logs)?$/))
+) {
+  const job = path.join(dir, m[2] ? `log-${m[1]}.txt` : `job-${m[1]}.json`);
+  if (fs.existsSync(path.join(dir, "limit"))) {
+    process.stderr.write(
+      "gh: API rate limit exceeded for user ID 1. (HTTP 403)\n",
+    );
+    process.exit(1);
+  }
+  if (!fs.existsSync(job)) missing();
+  process.stdout.write(fs.readFileSync(job, "utf8"));
 } else if ((m = endpoint.match(/^repos\/a\/b\/issues\/(\d+)\/comments$/))) {
   const n = Number(m[1]);
   if (method === "GET")

@@ -2,7 +2,7 @@
 //! default branch and open pull requests, and the problems they open or
 //! close (see `crate::ci` and `crate::problems`).
 use super::Engine;
-use crate::{ci, problems, types::*};
+use crate::{ci, logs, problems, types::*};
 use std::sync::atomic::Ordering;
 
 impl Engine {
@@ -21,6 +21,7 @@ impl Engine {
             return;
         }
         self.watch_ci_now().await;
+        self.read_failures().await;
         self.watching_ci.store(false, Ordering::SeqCst);
         // Also with Watch CI off, so what Orbit posted is closed.
         self.tell_agents().await;
@@ -95,6 +96,46 @@ impl Engine {
             problems::close_unwatched(&mut s.problems, &connected, false, now);
         })
         .await;
+        let _ = self.flush().await;
+    }
+}
+impl Engine {
+    /// Reads why the jobs failing on open problems failed, a few a pass,
+    /// and forgets the ones no longer failing. A log GitHub didn't answer
+    /// for is tried again after a wait; after a rate limit, none is read
+    /// until the wait is over.
+    async fn read_failures(&self) {
+        let wanted = {
+            let s = self.state.lock().await;
+            logs::wanted(&s.problems, &s.failures, chrono::Utc::now())
+        };
+        for (repo, check, url) in &wanted {
+            let error = match logs::read(repo, check, url).await {
+                Ok(failure) => {
+                    self.update(|s| logs::record(&mut s.failures, failure))
+                        .await;
+                    continue;
+                }
+                Err(error) => error,
+            };
+            // After a rate limit, no log is read until its wait is over.
+            let limited = logs::rate_limited(&error);
+            self.update(|s| {
+                logs::retry_later(&mut s.failures, check, url, &error, chrono::Utc::now())
+            })
+            .await;
+            if limited {
+                break;
+            }
+        }
+        let pruned = {
+            let mut s = self.state.lock().await;
+            let s = &mut *s;
+            logs::prune(&mut s.failures, &s.problems)
+        };
+        if pruned {
+            self.dirty.store(true, Ordering::SeqCst);
+        }
         let _ = self.flush().await;
     }
 }

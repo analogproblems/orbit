@@ -117,6 +117,21 @@ pub async fn api(
     let out = run(&gh(), &args, None, body.map(|v| v.to_string())).await?;
     serde_json::from_str(&out).map_err(|e| format!("Invalid GitHub response: {e}"))
 }
+/// A GitHub API answer that is text rather than JSON, such as a job's log.
+pub async fn api_text(endpoint: &str) -> Result<String, String> {
+    let args: Vec<String> = [
+        "api",
+        "--hostname",
+        "github.com",
+        "--method",
+        "GET",
+        endpoint,
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    run(&gh(), &args, None, None).await
+}
 /// What Orbit says when gh isn't installed. It starts with "Cannot start",
 /// like any program Orbit can't find.
 pub const GH_MISSING: &str =

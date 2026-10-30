@@ -35,6 +35,9 @@ pub const CLOSE_AFTER: Duration = FLAP_QUIET;
 pub const WRITES_PER_PASS: usize = 10;
 /// The most items a comment or issue lists; the rest are counted.
 pub const MAX_ITEMS: usize = 50;
+/// The failing items whose failed step and log lines a comment or issue
+/// shows; the rest are on Operations.
+pub const MAX_WHY: usize = 5;
 /// The most journal entries kept; the oldest go first, and none are kept
 /// longer than closed problems are.
 pub const MAX_JOURNAL: usize = 200;
@@ -160,6 +163,9 @@ pub struct Item {
     /// only replies from then on are about this failure. Empty until
     /// Orbit's text that shows it is on GitHub.
     pub heard_from: String,
+    /// Why its job failed at `at`, once Orbit has read its log.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub why: Option<crate::logs::Failure>,
 }
 
 /// What an agent says about an item.
@@ -475,12 +481,29 @@ fn items_from(t: &mut Thread, p: &Problem) {
                     at: p.sha.clone(),
                     answer: None,
                     heard_from: String::new(),
+                    why: None,
                 });
             }
         }
     }
 }
 
+/// Gives each failing item what Orbit read about why its job failed.
+/// Returns whether any changed.
+pub fn explain(threads: &mut [Thread], failures: &[crate::logs::Failure]) -> bool {
+    let mut changed = false;
+    for item in threads.iter_mut().flat_map(|t| t.items.iter_mut()) {
+        let why = failures
+            .iter()
+            .find(|f| item.failing && !item.url.is_empty() && f.url == item.url)
+            .cloned();
+        if item.why != why {
+            item.why = why;
+            changed = true;
+        }
+    }
+    changed
+}
 /// Records that GitHub has Orbit's text for a thread from `at` on, by
 /// GitHub's clock. Each failing item it shows for the first time this time
 /// hears replies from then on, and as no reply from before the earliest of
@@ -799,7 +822,8 @@ fn code(text: &str) -> String {
         })
         .take(200)
         .collect();
-    format!("`{text}`")
+    // Nothing in it can start a hidden line.
+    format!("`{}`", text.replace("<!--", "<! --"))
 }
 /// A link's address, only to GitHub and only when it is safe in Markdown.
 fn safe(url: &str) -> Option<&str> {
@@ -881,6 +905,39 @@ fn item_line(item: &Item, t: &Thread, p: &Problem) -> String {
         code(&item.check)
     )
 }
+/// Why an item's job failed, under its line: the step, and the end of its
+/// log in a code block that nothing in it can close. The log is someone
+/// else's words, so it is only ever code, and anything that reads like
+/// one of Orbit's hidden lines is broken up.
+fn why_text(item: &Item) -> String {
+    let Some(why) = &item.why else {
+        return String::new();
+    };
+    if why.held {
+        return "\n  Orbit held back this job's log: it looks like it holds a secret.".into();
+    }
+    if why.lines.is_empty() {
+        return String::new();
+    }
+    let step = if why.step.is_empty() {
+        "Its log ends:".to_string()
+    } else {
+        format!("Failed at step {}:", code(&why.step))
+    };
+    let lines: Vec<String> = why
+        .lines
+        .iter()
+        .map(|l| l.replace("<!--", "<! --"))
+        .collect();
+    let ticks = lines
+        .iter()
+        .flat_map(|l| l.split(|c| c != '`').map(str::len))
+        .max()
+        .unwrap_or(0);
+    let fence = "`".repeat((ticks + 1).max(3));
+    let body: Vec<String> = lines.iter().map(|l| format!("  {l}")).collect();
+    format!("\n  {step}\n  {fence}text\n{}\n  {fence}", body.join("\n"))
+}
 fn items_text(t: &Thread, p: &Problem) -> String {
     // Failing first, then by number.
     let mut items: Vec<&Item> = t.items.iter().collect();
@@ -888,7 +945,15 @@ fn items_text(t: &Thread, p: &Problem) -> String {
     let mut lines: Vec<String> = items
         .iter()
         .take(MAX_ITEMS)
-        .map(|i| item_line(i, t, p))
+        .enumerate()
+        .map(|(n, i)| {
+            let line = item_line(i, t, p);
+            if i.failing && p.is_open() && n < MAX_WHY {
+                line + &why_text(i)
+            } else {
+                line
+            }
+        })
         .collect();
     if items.len() > MAX_ITEMS {
         lines.push(format!("- and {} more", items.len() - MAX_ITEMS));

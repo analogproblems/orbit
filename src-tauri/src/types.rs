@@ -1350,6 +1350,9 @@ pub struct Snapshot {
     /// Each write Orbit made on GitHub for them, recorded before it was
     /// sent; the newest last.
     pub journal: Vec<crate::ops::Write>,
+    /// Why the jobs still failing on open problems failed, as Orbit read
+    /// them (see `crate::logs`).
+    pub failures: Vec<crate::logs::Failure>,
 }
 /// How reading the pull-request history is going.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

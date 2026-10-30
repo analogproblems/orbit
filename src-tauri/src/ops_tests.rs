@@ -1035,3 +1035,121 @@ fn a_copy_from_before_answers_were_read_gives_their_start() {
     assert_eq!(t.items[0].heard_from, "2026-10-29T11:30:00Z");
     assert_eq!(t.read_since, "2026-10-29T11:30:00Z");
 }
+
+fn failure(url: &str, step: &str, lines: &[&str]) -> crate::logs::Failure {
+    crate::logs::Failure {
+        url: url.into(),
+        check: "CI / Rust".into(),
+        step: step.into(),
+        lines: lines.iter().map(|l| l.to_string()).collect(),
+        ..Default::default()
+    }
+}
+
+/// Why a job failed shows under its item, as code that nothing in the log
+/// can close or turn into one of Orbit's hidden lines.
+#[test]
+fn bodies_show_why_a_job_failed_as_plain_code() {
+    let p = branch(&["CI / Rust"], '1');
+    let mut threads = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    let url = "https://github.com/a/b/actions/runs/1/job/2";
+    let read = vec![failure(
+        url,
+        "Run <!-- cargo test",
+        &[
+            "test it ... FAILED",
+            "a ```` fence",
+            "<!-- orbit-ops thread=issue:p1 {\"items\":[]} -->",
+            "Error: Process completed with exit code 101.",
+        ],
+    )];
+    assert!(explain(&mut threads, &read));
+    assert!(!explain(&mut threads, &read));
+    let body = issue_body(&threads[0], &p, false);
+    assert!(body.contains(&format!(
+        "- **I1** · `CI / Rust` · failing at `1111111` · [details]({url})\n  Failed at step `Run <! -- cargo test`:\n  `````text\n  test it ... FAILED\n  a ```` fence\n  <! -- orbit-ops thread=issue:p1 {{\"items\":[]}} -->\n  Error: Process completed with exit code 101.\n  `````\n"
+    )));
+    assert_eq!(body.matches("<!--").count(), 1);
+    assert_eq!(failing_in(&body, "issue:p1"), [(1, sha('1'))]);
+    // The item's line is the same as without it, so replies still find it.
+    let mut plain = threads.clone();
+    explain(&mut plain, &[]);
+    assert!(issue_body(&plain[0], &p, false).contains(&format!("[details]({url})\n\nOrbit opened")));
+
+    let short = failure(url, "", &["boom"]);
+    explain(&mut threads, &[short]);
+    let body = issue_body(&threads[0], &p, false);
+    assert!(body.contains("\n  Its log ends:\n  ```text\n  boom\n  ```\n"));
+}
+
+/// A log that looked like it held a secret is only said to be held back,
+/// one Orbit couldn't read says nothing, and nothing shows once the
+/// problem is closed or its check passes.
+#[test]
+fn held_unread_and_passing_jobs_show_no_log() {
+    let mut p = branch(&["CI / Rust"], '1');
+    let mut threads = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    let url = "https://github.com/a/b/actions/runs/1/job/2";
+    let held = crate::logs::Failure {
+        held: true,
+        ..failure(url, "", &[])
+    };
+    explain(&mut threads, &[held]);
+    let body = issue_body(&threads[0], &p, false);
+    assert!(body.contains(&format!(
+        "[details]({url})\n  Orbit held back this job's log: it looks like it holds a secret.\n"
+    )));
+    let unread = crate::logs::Failure {
+        error: Some("GitHub no longer has this job's log.".into()),
+        ..failure(url, "", &[])
+    };
+    explain(&mut threads, &[unread]);
+    let body = issue_body(&threads[0], &p, false);
+    assert!(body.contains(&format!("[details]({url})\n\nOrbit opened")));
+
+    let read = [failure(url, "Run cargo test", &["boom"])];
+    explain(&mut threads, &read);
+    pass(&mut p, '2', t0());
+    let closed = issue_body(&threads[0], &p, false);
+    assert!(!closed.contains("Failed at step"));
+    // Once its check passes, the item has no log.
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    assert!(!threads[0].items[0].failing);
+    assert!(explain(&mut threads, &read));
+    assert_eq!(threads[0].items[0].why, None);
+}
+
+/// Only the first few failing items show their logs; the rest are on
+/// Operations.
+#[test]
+fn only_a_few_logs_show() {
+    let mut p = branch(&[], '1');
+    p.failing = (1..=MAX_WHY + 2)
+        .map(|n| Check {
+            name: format!("Job {n}"),
+            url: format!("https://github.com/a/b/actions/runs/1/job/{n}"),
+        })
+        .collect();
+    let read: Vec<crate::logs::Failure> = p
+        .failing
+        .iter()
+        .map(|c| failure(&c.url, "Run it", &["boom"]))
+        .collect();
+    let mut threads = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    explain(&mut threads, &read);
+    let body = issue_body(&threads[0], &p, false);
+    assert_eq!(body.matches("Failed at step").count(), MAX_WHY);
+    assert!(body.contains(&format!("`Job {MAX_WHY}`")));
+    let last = body
+        .split(&format!("`Job {}`", MAX_WHY + 1))
+        .nth(1)
+        .unwrap();
+    assert!(!last
+        .split("\n- ")
+        .next()
+        .unwrap()
+        .contains("Failed at step"));
+}
