@@ -177,6 +177,9 @@ pub struct Rules {
     pub rerun_flaky: String,
     /// Rerunning the same check a second time on the same commit.
     pub rerun_again: String,
+    /// Opening an `orbit` issue that proposes CI for a repository where
+    /// none runs on pull requests.
+    pub propose_ci: String,
 }
 impl Default for Rules {
     fn default() -> Self {
@@ -189,6 +192,7 @@ impl Default for Rules {
             open_issues: "do_it".into(),
             rerun_flaky: "do_it".into(),
             rerun_again: "ask_first".into(),
+            propose_ci: "ask_first".into(),
         }
     }
 }
@@ -203,7 +207,7 @@ impl Rules {
             Fix::TurnOnAutopilot | Fix::CheckConnections => "ask_first",
         }
     }
-    fn each(&self) -> [&str; 8] {
+    fn each(&self) -> [&str; 9] {
         [
             &self.continue_loop,
             &self.review_again,
@@ -213,9 +217,10 @@ impl Rules {
             &self.open_issues,
             &self.rerun_flaky,
             &self.rerun_again,
+            &self.propose_ci,
         ]
     }
-    fn each_mut(&mut self) -> [&mut String; 8] {
+    fn each_mut(&mut self) -> [&mut String; 9] {
         [
             &mut self.continue_loop,
             &mut self.review_again,
@@ -225,6 +230,7 @@ impl Rules {
             &mut self.open_issues,
             &mut self.rerun_flaky,
             &mut self.rerun_again,
+            &mut self.propose_ci,
         ]
     }
 }
@@ -240,6 +246,7 @@ pub struct RulesPatch {
     pub open_issues: Option<String>,
     pub rerun_flaky: Option<String>,
     pub rerun_again: Option<String>,
+    pub propose_ci: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -477,6 +484,7 @@ impl BuddyPatch {
                 rules.open_issues,
                 rules.rerun_flaky,
                 rules.rerun_again,
+                rules.propose_ci,
             ];
             for (rule, v) in buddy.rules.each_mut().into_iter().zip(patch) {
                 if let Some(v) = v {

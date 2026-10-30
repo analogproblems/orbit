@@ -2190,3 +2190,216 @@ async fn every_page_of_a_runs_jobs_is_read() {
     );
     assert_eq!(calls(d.path(), "actions/runs/7/jobs") - before, 3);
 }
+
+/// What the fake GitHub says is at the top of `a/b` at `at`, with these
+/// workflow files and `package.json`.
+fn files(dir: &Path, at: char, workflows: &[(&str, &str)], top: &[&str], package: Option<&str>) {
+    let entries: Vec<Value> = workflows
+        .iter()
+        .map(|(name, text)| json!({ "name": name, "type": "blob", "object": { "text": text, "isTruncated": false } }))
+        .collect();
+    let top: Vec<Value> = top
+        .iter()
+        .map(|n| json!({ "name": n, "type": "blob" }))
+        .collect();
+    let v = json!({ "data": { "repository": {
+        "workflows": if entries.is_empty() { Value::Null } else { json!({ "entries": entries }) },
+        "root": { "entries": top },
+        "package": package.map(|text| json!({ "text": text, "isTruncated": false })),
+    } } });
+    std::fs::write(dir.join(format!("setup-{}.json", sha(at))), v.to_string()).unwrap();
+}
+
+/// A repository with no CI on pull requests: once Orbit is sure, Bit
+/// offers an issue with a workflow to start from, opens it when you say
+/// yes, and closes it as done once a workflow there runs on pull
+/// requests. Each commit's files are read once.
+#[cfg(unix)]
+#[tokio::test]
+async fn bit_proposes_ci_for_a_repository_with_none_on_pull_requests() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let e = connected(d.path()).await;
+    answer(d.path(), '1', &[], None);
+    let package = r#"{"scripts":{"lint":"eslint .","test":"vitest run"}}"#;
+    files(
+        d.path(),
+        '1',
+        &[("release.yml", "on:\n  push:\n    tags: ['v*']\n")],
+        &["package.json", "package-lock.json", "README.md"],
+        Some(package),
+    );
+    watch(&e, &gh).await;
+    let s = e.snapshot().await;
+    assert_eq!(s.setups.len(), 1);
+    assert_eq!(s.setups[0].sha, sha('1'));
+    assert!(s.problems.is_empty(), "not sure yet");
+    watch(&e, &gh).await;
+    assert_eq!(calls(d.path(), "GET setup/"), 1, "read once a commit");
+
+    // Long enough after reading for checks from elsewhere to show up.
+    e.update(|s| {
+        let ago = chrono::Utc::now() - crate::workflows::QUIET;
+        s.setups[0].read_at = crate::problems::stamp(ago);
+    })
+    .await;
+    watch(&e, &gh).await;
+    let s = e.snapshot().await;
+    assert_eq!(s.problems.len(), 1);
+    assert_eq!(s.problems[0].kind, crate::problems::ProblemKind::NoCi);
+    assert!(writes(d.path()).is_empty(), "Bit asks first");
+    let offered: Vec<&str> = s
+        .buddy_feed
+        .notes
+        .iter()
+        .map(|n| n.text.as_str())
+        .filter(|t| t.contains("Propose CI"))
+        .collect();
+    assert_eq!(offered.len(), 1);
+    assert!(
+        offered[0].starts_with("No CI runs on a/b's pull requests. Tap Propose CI on Operations")
+    );
+    assert!(
+        e.shown_snapshot().await.attention.is_empty(),
+        "not a Needs you item"
+    );
+    watch(&e, &gh).await;
+    let notes = e.snapshot().await.buddy_feed.notes;
+    assert_eq!(
+        notes
+            .iter()
+            .filter(|n| n.text.contains("Propose CI"))
+            .count(),
+        1,
+        "once"
+    );
+
+    // You tap Propose CI.
+    let key = e.snapshot().await.ops[0].key.clone();
+    e.allow_telling(&key).await.unwrap();
+    crate::github::GH.scope(gh.clone(), e.tell_agents()).await;
+    assert_eq!(writes(d.path()), ["POST repos/a/b/issues"]);
+    let g = github(d.path());
+    let issue = &g["issues"][0];
+    assert_eq!(issue["title"], "Add CI that runs on pull requests");
+    assert_eq!(issue["labels"][0]["name"], "orbit");
+    let body = issue["body"].as_str().unwrap();
+    assert!(body.contains(
+        "None of the workflows on `main` runs on pull requests (`.github/workflows/release.yml`), so nothing checks a change before it merges."
+    ), "{body}");
+    assert!(
+        body.contains("Orbit built it from `package.json` and `package-lock.json` at `1111111`")
+    );
+    assert!(
+        body.contains("      - run: npm ci\n      - run: npm run lint\n      - run: npm test\n```"),
+        "{body}"
+    );
+    assert!(body.contains("- **I1** · add a workflow that runs on pull requests"));
+    let number = issue["number"].as_u64().unwrap();
+    let notes = e.snapshot().await.buddy_feed.notes;
+    assert!(notes.last().unwrap().text.starts_with(&format!(
+        "Orbit opened issue #{number} for the agent on a/b, with a workflow to start from"
+    )));
+
+    // The agent adds a workflow that runs on pull requests.
+    answer(d.path(), '2', &[], None);
+    files(
+        d.path(),
+        '2',
+        &[
+            ("release.yml", "on: release"),
+            ("ci.yml", "on: [pull_request]"),
+        ],
+        &["package.json", "package-lock.json"],
+        Some(package),
+    );
+    watch(&e, &gh).await;
+    let g = github(d.path());
+    assert_eq!(g["issues"][0]["state"], "closed");
+    assert_eq!(g["issues"][0]["state_reason"], "completed");
+    let note = g["comments"].as_array().unwrap().last().unwrap()["body"].clone();
+    assert!(note.as_str().unwrap().starts_with(
+        "A workflow on `main` runs on pull requests at `2222222`, so Orbit is closing this issue."
+    ));
+    let s = e.snapshot().await;
+    assert!(s.problems[0].passed());
+    assert!(s
+        .buddy_feed
+        .notes
+        .last()
+        .unwrap()
+        .text
+        .starts_with(&format!(
+            "Orbit closed issue #{number}: a workflow runs on a/b's pull requests now."
+        )));
+    assert_eq!(calls(d.path(), "GET setup/"), 2);
+    // Nothing more once it's done.
+    let sent = writes(d.path()).len();
+    watch(&e, &gh).await;
+    assert_eq!(writes(d.path()).len(), sent);
+}
+
+/// Checks from another service, and workflows Orbit can't read, mean CI
+/// runs: nothing is proposed.
+#[cfg(unix)]
+#[tokio::test]
+async fn nothing_is_proposed_where_something_runs_checks() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let e = connected(d.path()).await;
+    e.update(|s| s.settings.buddy.rules.propose_ci = "do_it".into())
+        .await;
+    let quiet = || async {
+        e.update(|s| {
+            let ago = chrono::Utc::now() - crate::workflows::QUIET;
+            for setup in &mut s.setups {
+                setup.read_at = crate::problems::stamp(ago);
+            }
+        })
+        .await;
+    };
+    // A workflow Orbit can't read.
+    answer(d.path(), '1', &[], None);
+    files(
+        d.path(),
+        '1',
+        &[("odd.yml", "on: {pull_request: {}}")],
+        &[],
+        None,
+    );
+    watch(&e, &gh).await;
+    quiet().await;
+    watch(&e, &gh).await;
+    assert!(e.snapshot().await.problems.is_empty());
+    // No workflows, but a status from elsewhere on the default branch.
+    answer(d.path(), '2', &[("ci/jenkins", "SUCCESS")], None);
+    files(d.path(), '2', &[], &["Cargo.toml"], None);
+    watch(&e, &gh).await;
+    quiet().await;
+    watch(&e, &gh).await;
+    assert!(e.snapshot().await.problems.is_empty());
+    // Orbit remembers it saw checks, so a newer commit without them
+    // doesn't open one either.
+    answer(d.path(), '3', &[], None);
+    files(d.path(), '3', &[], &["Cargo.toml"], None);
+    watch(&e, &gh).await;
+    quiet().await;
+    watch(&e, &gh).await;
+    assert!(e.snapshot().await.problems.is_empty());
+    assert!(writes(d.path()).is_empty());
+    // Without either, as after Watch CI went off, the issue is opened at
+    // once under Do it.
+    e.update(|s| s.settings.watch_ci = false).await;
+    watch(&e, &gh).await;
+    assert!(e.snapshot().await.setups.is_empty());
+    e.update(|s| s.settings.watch_ci = true).await;
+    watch(&e, &gh).await;
+    quiet().await;
+    watch(&e, &gh).await;
+    assert_eq!(writes(d.path()), ["POST repos/a/b/issues"]);
+    let body = github(d.path())["issues"][0]["body"].clone();
+    assert!(body
+        .as_str()
+        .unwrap()
+        .contains("      - run: cargo test\n```"));
+}

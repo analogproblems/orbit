@@ -93,13 +93,17 @@ function threadOf(s: Snapshot, p: Problem) {
   return s.ops?.find((t) => t.problemId === p.id);
 }
 
+/** The rule for posting about a problem. */
+function ruleOf(s: Snapshot, p: Problem) {
+  const { rules } = buddyOf(s.settings);
+  if (p.kind === "no_ci") return rules.propose_ci;
+  return p.kind === "default_branch" ? rules.open_issues : rules.comment_on_prs;
+}
+
 /** Whether Bit waits for your tap before it posts about a problem. */
 function asksFirst(s: Snapshot, p: Problem, t: OpsThread | undefined) {
   const buddy = buddyOf(s.settings);
-  const rule =
-    p.kind === "default_branch"
-      ? buddy.rules.open_issues
-      : buddy.rules.comment_on_prs;
+  const rule = ruleOf(s, p);
   return (
     !!t &&
     !t.url &&
@@ -142,12 +146,15 @@ export function brokeText(b: Broke | null | undefined) {
 /** Where Orbit told the problem's agent, or why it hasn't. */
 export function toldText(s: Snapshot, p: Problem, t: OpsThread | undefined) {
   const buddy = buddyOf(s.settings);
-  const issue = p.kind === "default_branch";
+  const proposal = p.kind === "no_ci";
+  const issue = p.kind === "default_branch" || proposal;
   if (t?.gone) return t.error ?? "";
   if (t?.url) {
-    const where = issue
-      ? `Orbit told the repository’s agent in issue #${t.number}.`
-      : "Orbit told the agent in a comment on the pull request.";
+    const where = proposal
+      ? `Orbit proposed a workflow to the repository’s agent in issue #${t.number}.`
+      : issue
+        ? `Orbit told the repository’s agent in issue #${t.number}.`
+        : "Orbit told the agent in a comment on the pull request.";
     return t.error
       ? `${where} Its latest update didn’t go through: ${t.error}`
       : where;
@@ -155,21 +162,38 @@ export function toldText(s: Snapshot, p: Problem, t: OpsThread | undefined) {
   if (t?.error) return `Orbit couldn’t tell the agent yet: ${t.error}`;
   if (t?.unsure)
     return "Orbit stopped before GitHub answered its post, so it looks on GitHub for it before posting again.";
-  const rule = issue ? buddy.rules.open_issues : buddy.rules.comment_on_prs;
+  const rule = ruleOf(s, p);
   if (!buddy.enabled)
     return `${buddy.name} is off, so Orbit doesn’t tell the agent.`;
   if (rule === "leave_it")
     return "Your rule is Leave it to me, so Orbit doesn’t tell the agent.";
   if (asksFirst(s, p, t))
-    return issue
-      ? `${buddy.name} asks before opening an issue for the repository’s agent.`
-      : `${buddy.name} asks before commenting for the pull request’s agent.`;
+    return proposal
+      ? `${buddy.name} asks before opening an issue with a workflow for the repository’s agent.`
+      : issue
+        ? `${buddy.name} asks before opening an issue for the repository’s agent.`
+        : `${buddy.name} asks before commenting for the pull request’s agent.`;
   return "Orbit tells the agent on GitHub after this sync.";
 }
 
-/** What an item is about: its check, or "main moved on". */
+/** What an item is about: its check, "main moved on", or "CI on pull
+ * requests". */
 function itemName(item: OpsItem) {
+  if (item.kind === "no_ci") return "CI on pull requests";
   return item.kind === "base_moved" ? `${item.check} moved on` : item.check;
+}
+
+/** What Orbit found in a repository where no CI runs on pull requests. */
+export function noCiText(p: Problem) {
+  const at = shortSha(p.sha);
+  const found = p.found;
+  const why = found?.workflows.length
+    ? `None of its workflows on ${p.branch || "the default branch"} runs on pull requests, at ${at}.`
+    : `It has no workflows on ${p.branch || "the default branch"}, at ${at}.`;
+  const proposal = found?.proposal
+    ? ` Orbit can propose one built from ${and(found.from)}.`
+    : " Orbit can’t tell how it builds, so its issue only asks for one.";
+  return `No CI runs on its pull requests. ${why}${proposal}`;
 }
 
 /** What a pull request's checks ran without, when its base moved on. */
@@ -193,6 +217,12 @@ export function answerText(t: OpsThread, item: OpsItem) {
     case "question":
       return `${about} ${who} needs a person${said(a.text)}`;
     case "fixed": {
+      // Orbit doesn't check a commit for a proposal: it closes once a
+      // workflow on the default branch runs on pull requests.
+      if (item.kind === "no_ci") {
+        const where = a.commit ? ` in ${a.commit.slice(0, 7)}` : "";
+        return `${about} ${who} says it’s added${where}. Orbit is waiting to see a workflow that runs on pull requests on ${t.branch || "the default branch"}.`;
+      }
       if (!a.commit)
         return `${about} ${who} says it’s fixed. Orbit is waiting to see it pass.`;
       const fixed = `${about} ${who} says it’s fixed in ${a.commit.slice(0, 7)}`;
@@ -307,6 +337,7 @@ function Why({ s, p, t }: { s: Snapshot; p: Problem; t?: OpsThread }) {
 
 /** A problem's name: its repository and branch, or its pull request. */
 function title(s: Snapshot, p: Problem) {
+  if (p.kind === "no_ci") return `${p.repo}: CI on pull requests`;
   if (p.kind === "default_branch")
     return `${p.repo}: ${p.branch || "default branch"}`;
   const pr = s.prs.find((pr) => pr.id === p.prId);
@@ -314,7 +345,7 @@ function title(s: Snapshot, p: Problem) {
 }
 
 function Repositories({ go }: { go: AttentionHandlers }) {
-  const { snapshot: s } = useOrbit();
+  const { snapshot: s, action } = useOrbit();
   const repos = s.settings.repositories;
   if (!repos.length)
     return (
@@ -343,6 +374,12 @@ function Repositories({ go }: { go: AttentionHandlers }) {
               sameRepo(p.repo, r.name),
           ).length;
           const dot = ci?.head.sha ? dots[ci.head.state] : dots.none;
+          const noCi = (s.problems ?? []).find(
+            (p) =>
+              !p.closedAt && p.kind === "no_ci" && sameRepo(p.repo, r.name),
+          );
+          const t = noCi && threadOf(s, noCi);
+          const told = noCi && toldText(s, noCi, t);
           return (
             <ListItem
               key={r.name}
@@ -364,6 +401,22 @@ function Repositories({ go }: { go: AttentionHandlers }) {
                         : `${failingPulls} pull requests are failing.`}
                     </Text>
                   )}
+                  {noCi && (
+                    <HStack gap={2} vAlign="start">
+                      <StatusDot variant="warning" label="No CI" />
+                      <VStack gap={1}>
+                        <Text>{noCiText(noCi)}</Text>
+                        {told && <Text color="secondary">{told}</Text>}
+                        {t?.items
+                          .filter((i) => i.failing && i.answer)
+                          .map((i) => (
+                            <Text key={i.number} color="secondary">
+                              {answerText(t, i)}
+                            </Text>
+                          ))}
+                      </VStack>
+                    </HStack>
+                  )}
                   {ci?.error && (
                     <HStack gap={2} vAlign="center">
                       <StatusDot variant="warning" label="Not read" />
@@ -375,9 +428,28 @@ function Repositories({ go }: { go: AttentionHandlers }) {
                 </VStack>
               }
               endContent={
-                ci?.checkedAt ? (
-                  <Timestamp value={ci.checkedAt} format="relative_short" />
-                ) : undefined
+                <VStack gap={2} hAlign="end">
+                  {noCi && t && asksFirst(s, noCi, t) ? (
+                    <Button
+                      label="Propose CI"
+                      size="sm"
+                      variant="primary"
+                      onClick={() => void action("tell_agent", { key: t.key })}
+                    />
+                  ) : (
+                    t?.url && (
+                      <Button
+                        label="Open issue"
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => openLink(t.url)}
+                      />
+                    )
+                  )}
+                  {ci?.checkedAt && (
+                    <Timestamp value={ci.checkedAt} format="relative_short" />
+                  )}
+                </VStack>
               }
             />
           );
@@ -404,8 +476,9 @@ function Timeline({ p }: { p: Problem }) {
 
 function OpenProblems({ go }: { go: AttentionHandlers }) {
   const { snapshot: s, action } = useOrbit();
+  // A repository with no CI is listed with the repository: nothing fails.
   const open = (s.problems ?? [])
-    .filter((p) => !p.closedAt)
+    .filter((p) => !p.closedAt && p.kind !== "no_ci")
     .sort(
       (a, b) =>
         Number(a.kind !== "default_branch") -

@@ -363,6 +363,7 @@ describe("Bit's fixes", () => {
       open_issues: "do_it",
       rerun_flaky: "do_it",
       rerun_again: "ask_first",
+      propose_ci: "ask_first",
     });
     expect(
       buddyOf(withPatch(patched, { buddy: { name: "Orbie" } })).rules.publish,

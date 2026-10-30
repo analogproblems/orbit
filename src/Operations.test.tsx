@@ -14,6 +14,7 @@ import {
   asksToRerun,
   branchSummary,
   brokeText,
+  noCiText,
   rerunText,
   whyText,
 } from "./Operations";
@@ -27,6 +28,7 @@ import {
   type OpsItem,
   type OpsRerun,
   type OpsThread,
+  type Problem,
   type RepoCi,
   type Snapshot,
 } from "./types";
@@ -76,6 +78,7 @@ describe("operations page", () => {
       expect.stringContaining(
         "Not read yet.Couldn’t read CI: Could not resolve",
       ),
+      expect.stringContaining("No checks ran on main at e7a51c3."),
     ]);
   });
 
@@ -234,6 +237,70 @@ describe("operations page", () => {
     expect(row().textContent).toContain(
       "Orbit's issue is gone from GitHub, so Orbit stopped updating it.",
     );
+  });
+
+  it("lists a repository with no CI with its repository, with a tap to propose some", () => {
+    const action = vi.fn().mockResolvedValue({ ok: true });
+    useOrbit.setState({ action });
+    const s = freshDemo();
+    show(s);
+    const docs = () =>
+      within(screen.getByRole("list", { name: "CI by repository" }))
+        .getAllByRole("listitem")
+        .find((i) => i.textContent?.includes("acme/docs"))!;
+    expect(docs().textContent).toContain(
+      "No CI runs on its pull requests. None of its workflows on main runs on pull requests, at e7a51c3. Orbit can propose one built from package.json and package-lock.json.",
+    );
+    expect(docs().textContent).toContain(
+      "Bit asks before opening an issue with a workflow for the repository’s agent.",
+    );
+    expect(within(docs()).getByLabelText("No CI")).toBeTruthy();
+    fireEvent.click(within(docs()).getByRole("button", { name: "Propose CI" }));
+    expect(action).toHaveBeenCalledWith("tell_agent", {
+      key: "issue:demo-problem-5",
+    });
+    // Nothing fails, so it isn't an open problem.
+    const open = screen.getByRole("list", { name: "Open problems" });
+    expect(within(open).getAllByRole("listitem")).toHaveLength(3);
+    expect(open.textContent).not.toContain("acme/docs");
+    cleanup();
+    // Once posted, it links the issue.
+    const t = s.ops!.find((o) => o.key === "issue:demo-problem-5")!;
+    t.url = "https://github.com/acme/docs/issues/7";
+    t.number = 7;
+    show(s);
+    expect(docs().textContent).toContain(
+      "Orbit proposed a workflow to the repository’s agent in issue #7.",
+    );
+    expect(within(docs()).queryByRole("button", { name: "Propose CI" })).toBe(
+      null,
+    );
+    expect(
+      within(docs()).getByRole("button", { name: "Open issue" }),
+    ).toBeTruthy();
+    cleanup();
+    // Its own rule decides, not the rule for failing branches.
+    t.url = "";
+    t.number = null;
+    s.settings.buddy = {
+      ...s.settings.buddy!,
+      rules: {
+        ...s.settings.buddy!.rules,
+        open_issues: "ask_first",
+        propose_ci: "leave_it",
+      },
+    };
+    show(s);
+    expect(docs().textContent).toContain(
+      "Your rule is Leave it to me, so Orbit doesn’t tell the agent.",
+    );
+    expect(within(docs()).queryByRole("button")).toBeNull();
+    cleanup();
+    // Once closed, it's gone from the row.
+    s.problems!.find((p) => p.id === "demo-problem-5")!.closedAt =
+      new Date().toISOString();
+    show(s);
+    expect(docs().textContent).not.toContain("No CI runs");
   });
 
   it("shows what each agent answered", () => {
@@ -499,6 +566,70 @@ describe("ci sentences", () => {
     expect(fixed("passes")).toContain("abc1234, and it passes there.");
     expect(fixed("not_on_branch")).toContain("abc1234, which isn’t on fix-it.");
     expect(fixed("not_found")).toContain("abc1234, which Orbit can’t find.");
+    const proposal = answerText(t, {
+      number: 1,
+      kind: "no_ci",
+      check: "main",
+      url: "",
+      failing: true,
+      since: "",
+      at: "",
+      answer: {
+        kind: "taking",
+        author: "morgan",
+        at: "",
+        url: "",
+        replyId: 1,
+        head: "",
+      },
+    });
+    expect(proposal).toBe("I1 · CI on pull requests: morgan is on it.");
+    const added = (commit: string | null) =>
+      answerText({ branch: "main" } as OpsThread, {
+        number: 1,
+        kind: "no_ci",
+        check: "main",
+        url: "",
+        failing: true,
+        since: "",
+        at: "",
+        answer: {
+          kind: "fixed",
+          author: "morgan",
+          at: "",
+          url: "",
+          replyId: 1,
+          head: "",
+          commit,
+          check: commit ? "waiting" : null,
+        },
+      });
+    expect(added("abc1234def")).toBe(
+      "I1 · CI on pull requests: morgan says it’s added in abc1234. Orbit is waiting to see a workflow that runs on pull requests on main.",
+    );
+    expect(added(null)).toBe(
+      "I1 · CI on pull requests: morgan says it’s added. Orbit is waiting to see a workflow that runs on pull requests on main.",
+    );
+  });
+  it("say what Orbit found where no CI runs on pull requests", () => {
+    const p = {
+      kind: "no_ci",
+      repo: "a/b",
+      branch: "main",
+      sha: "a".repeat(40),
+      found: { workflows: [], proposal: "", from: [] },
+    } as unknown as Problem;
+    expect(noCiText(p)).toBe(
+      "No CI runs on its pull requests. It has no workflows on main, at aaaaaaa. Orbit can’t tell how it builds, so its issue only asks for one.",
+    );
+    p.found = {
+      workflows: [".github/workflows/release.yml"],
+      proposal: "name: CI\n",
+      from: ["Cargo.toml"],
+    };
+    expect(noCiText(p)).toBe(
+      "No CI runs on its pull requests. None of its workflows on main runs on pull requests, at aaaaaaa. Orbit can propose one built from Cargo.toml.",
+    );
   });
   it("say why a job failed", () => {
     const f: CiFailure = {

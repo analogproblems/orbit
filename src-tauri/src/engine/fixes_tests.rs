@@ -468,6 +468,7 @@ async fn turning_autopilot_back_on_is_a_button() {
             open_issues: "do_it".into(),
             rerun_flaky: "do_it".into(),
             rerun_again: "do_it".into(),
+            propose_ci: "do_it".into(),
         };
     })
     .await;

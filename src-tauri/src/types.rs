@@ -1353,6 +1353,9 @@ pub struct Snapshot {
     /// Why the jobs still failing on open problems failed, as Orbit read
     /// them (see `crate::logs`).
     pub failures: Vec<crate::logs::Failure>,
+    /// What each connected repository's files say about its CI, as Orbit
+    /// last read them (see `crate::workflows`).
+    pub setups: Vec<crate::workflows::Setup>,
 }
 /// How reading the pull-request history is going.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

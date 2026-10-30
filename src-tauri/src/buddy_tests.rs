@@ -223,6 +223,7 @@ fn bit_never_does_a_settings_change_on_its_own() {
             open_issues: rule.into(),
             rerun_flaky: rule.into(),
             rerun_again: rule.into(),
+            propose_ci: rule.into(),
         };
         assert_eq!(will_fix(&s, &item), None, "{rule}");
     }
@@ -638,7 +639,7 @@ fn rules_use_the_names_the_app_sends() {
     }
     // So are the rules for what Bit does on GitHub about failing CI.
     let posts = fixture["posts"].as_array().unwrap();
-    assert_eq!(posts.len(), 4);
+    assert_eq!(posts.len(), 5);
     for name in posts {
         let name = name.as_str().unwrap();
         assert!(defaults.get(name).is_some(), "{name} has no rule");
@@ -655,9 +656,10 @@ fn rules_use_the_names_the_app_sends() {
             b.rules.comment_on_prs.as_str(),
             b.rules.open_issues.as_str(),
             b.rules.rerun_flaky.as_str(),
-            b.rules.rerun_again.as_str()
+            b.rules.rerun_again.as_str(),
+            b.rules.propose_ci.as_str()
         ),
-        ("do_it", "do_it", "do_it", "ask_first")
+        ("do_it", "do_it", "do_it", "ask_first", "ask_first")
     );
 }
 

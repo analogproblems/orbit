@@ -3,7 +3,9 @@
 // --method <METHOD> <endpoint> [-f key=value ...] [--input -]
 // GraphQL answers with <dir>/answer.json, <dir>/commit-<oid>.json for a
 // query about one commit, <dir>/history-<oid>.json for one about a
-// commit's history (or no such commit), or when a comment or issue was
+// commit's history (or no such commit), <dir>/setup-<oid>.json for one
+// about a commit's workflow files (or a workflow that runs on pull
+// requests), or when a comment or issue was
 // made and last edited for a query about one by its node ID. Compare answers from <dir>/compare.json, keyed by
 // "base...head", or 404. A job is <dir>/job-<id>.json and its log
 // <dir>/log-<id>.txt, or 404; while <dir>/limit exists they answer as past
@@ -85,6 +87,32 @@ if (endpoint === "graphql" && (fields.query || "").includes("history(")) {
   if (fs.existsSync(history))
     process.stdout.write(fs.readFileSync(history, "utf8"));
   else answer({ data: { repository: { object: null } } });
+  process.exit(0);
+}
+if (endpoint === "graphql" && fields.workflows) {
+  const oid = fields.workflows.split(":")[0];
+  fs.appendFileSync(path.join(dir, "calls"), `GET setup/${oid}\n`);
+  const setup = path.join(dir, `setup-${oid}.json`);
+  if (fs.existsSync(setup))
+    process.stdout.write(fs.readFileSync(setup, "utf8"));
+  else
+    answer({
+      data: {
+        repository: {
+          workflows: {
+            entries: [
+              {
+                name: "ci.yml",
+                type: "blob",
+                object: { text: "on: pull_request\n", isTruncated: false },
+              },
+            ],
+          },
+          root: { entries: [{ name: ".github", type: "tree" }] },
+          package: null,
+        },
+      },
+    });
   process.exit(0);
 }
 if (endpoint === "graphql") {

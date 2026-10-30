@@ -1,8 +1,9 @@
 //! Watching CI: after each sync, the checks on every connected repository's
 //! default branch and open pull requests, and the problems they open or
-//! close (see `crate::ci` and `crate::problems`).
+//! close (see `crate::ci` and `crate::problems`), and whether CI runs on
+//! each repository's pull requests (`crate::workflows`).
 use super::Engine;
-use crate::{broke, ci, logs, problems, types::*};
+use crate::{broke, ci, logs, problems, types::*, workflows};
 use std::sync::atomic::Ordering;
 
 impl Engine {
@@ -23,6 +24,7 @@ impl Engine {
         self.watch_ci_now().await;
         self.read_failures().await;
         self.read_breaks().await;
+        self.read_setups().await;
         self.watching_ci.store(false, Ordering::SeqCst);
         // Also with Watch CI off, so what Orbit posted is closed.
         self.tell_agents().await;
@@ -67,16 +69,10 @@ impl Engine {
                 let known = s.ci.iter().position(|c| same_repo(&c.repo, &repo));
                 match result {
                     Ok(fresh) => {
-                        let followed: Vec<&PullRequest> = s
-                            .prs
-                            .iter()
-                            .filter(|p| {
-                                same_repo(&p.repo, &repo)
-                                    && !p.draft
-                                    && trusted_source(p, &s.settings.trusted_authors)
-                            })
-                            .collect();
+                        let followed = followed(&s.prs, &s.settings.trusted_authors, &repo);
                         problems::observe(&mut s.problems, &fresh, &followed, now);
+                        let setup = s.setups.iter_mut().find(|w| same_repo(&w.repo, &repo));
+                        problems::see_setup(&mut s.problems, setup, &fresh, &followed, now);
                         match known {
                             Some(i) => s.ci[i] = fresh,
                             None => s.ci.push(fresh),
@@ -94,6 +90,7 @@ impl Engine {
             }
             let connected = repos_of(s);
             s.ci.retain(|c| connected.iter().any(|r| same_repo(r, &c.repo)));
+            workflows::prune(&mut s.setups, &connected);
             problems::close_unwatched(&mut s.problems, &connected, false, now);
         })
         .await;
@@ -158,12 +155,55 @@ impl Engine {
         let _ = self.flush().await;
     }
 }
+impl Engine {
+    /// Reads what each repository's files say about its CI, a few a pass,
+    /// at each new commit on its default branch, then opens or closes its
+    /// problem. Files GitHub didn't answer for are tried again after a
+    /// wait.
+    async fn read_setups(&self) {
+        let wanted = {
+            let s = self.state.lock().await;
+            if !s.settings.watch_ci {
+                return;
+            }
+            workflows::wanted(&s.ci, &s.setups, chrono::Utc::now())
+        };
+        for (repo, branch, sha) in &wanted {
+            let result = workflows::read(repo, branch, sha).await;
+            self.update(|s| {
+                // Watch CI went off, or the repository went, meanwhile.
+                let watched = repos_of(s).iter().any(|r| same_repo(r, repo));
+                if !s.settings.watch_ci || !watched {
+                    return;
+                }
+                let now = chrono::Utc::now();
+                workflows::record(&mut s.setups, repo, branch, sha, result, now);
+                let Some(ci) = s.ci.iter().find(|c| same_repo(&c.repo, repo)) else {
+                    return;
+                };
+                let followed = followed(&s.prs, &s.settings.trusted_authors, repo);
+                let setup = s.setups.iter_mut().find(|w| same_repo(&w.repo, repo));
+                problems::see_setup(&mut s.problems, setup, ci, &followed, now);
+            })
+            .await;
+        }
+        let _ = self.flush().await;
+    }
+}
+/// The pull requests of a repository whose CI Orbit follows: open, not
+/// drafts, and from a source Orbit trusts.
+fn followed<'a>(prs: &'a [PullRequest], trusted: &[String], repo: &str) -> Vec<&'a PullRequest> {
+    prs.iter()
+        .filter(|p| same_repo(&p.repo, repo) && !p.draft && trusted_source(p, trusted))
+        .collect()
+}
 /// With Watch CI off, Orbit forgets what it read and closes what was open.
 fn stop_watching(s: &mut Snapshot) {
-    if s.ci.is_empty() && !s.problems.iter().any(|p| p.is_open()) {
+    if s.ci.is_empty() && s.setups.is_empty() && !s.problems.iter().any(|p| p.is_open()) {
         return;
     }
     s.ci.clear();
+    s.setups.clear();
     problems::close_unwatched(&mut s.problems, &[], true, chrono::Utc::now());
 }
 fn repos_of(s: &Snapshot) -> Vec<String> {

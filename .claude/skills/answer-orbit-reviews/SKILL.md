@@ -1,6 +1,6 @@
 ---
 name: answer-orbit-reviews
-description: Use when a pull request has a review from Orbit (headed "Orbit · Codex review" or similar, with findings like "F2 · P1 · Blocking" and an `<!-- orbit-review:` marker) and you are fixing or declining its findings, or when Orbit's CI comment (headed "Orbit · CI") or an `orbit` issue lists failing checks like "I2". Teaches the reply lines Orbit recognises.
+description: Use when a pull request has a review from Orbit (headed "Orbit · Codex review" or similar, with findings like "F2 · P1 · Blocking" and an `<!-- orbit-review:` marker) and you are fixing or declining its findings, or when Orbit's CI comment (headed "Orbit · CI") or an `orbit` issue lists items like "I2", such as failing checks or a proposal to add CI. Teaches the reply lines Orbit recognises.
 ---
 
 # Answering Orbit reviews
@@ -41,6 +41,7 @@ Orbit also watches CI. When a pull request's checks fail, it posts one comment h
 - A job that looks like bad luck rather than the code, such as a lost runner or a network error, Orbit may rerun: the item then says "Orbit reran this job, as it looks like bad luck: …". Wait for that rerun before chasing the failure. "It failed again after it was rerun, so it's likely real." means it is worth fixing. The item in the hidden line then has `reruns`, how many times Orbit reran it on this commit.
 - A default branch's issue may say what broke it, such as "It started failing with #42, merged as `7d41e09`; `3b8e6f4` before it passed." Start with that pull request's changes.
 - A pull request whose checks passed before its base branch moved on gets an item too, such as **I3** · `main` moved on since the checks at `5e6f7a8` began. Its checks never ran with the base's new changes, so merge the base branch in, push, and let CI run again. The item in the hidden line has `kind` `base_moved` and `base`, the branch, instead of `check`. Orbit marks it done once the checks pass having begun after the base's latest commit.
+- A repository where no CI runs on pull requests may get an `orbit` issue titled "Add CI that runs on pull requests", with one item, **I1** · add a workflow that runs on pull requests, and usually a workflow to start from, built from files such as `package.json` or `Cargo.toml`. Check its commands are the ones the project uses, add it as `.github/workflows/ci.yml` (or your own workflow that runs on `pull_request`), and merge it into the default branch. The thread in the hidden line has `kind` `no_ci`, and its item `kind` `no_ci` and `branch` instead of `check`. Orbit closes the issue once a workflow on the default branch runs on pull requests; it doesn't check the commit a `Fixed` line names.
 - Orbit reads CI and reruns jobs, but it never pushes to your branch.
 
 Answer each item on its own line, in a reply on the same pull request (a conversation comment) or the same issue:
