@@ -10,7 +10,7 @@
 //! (`read`) only once nothing else is in the way, a few a pass, and again
 //! when its head or its base's latest commit moves.
 use crate::{
-    ci::{short, CiState},
+    ci::{short, CiState, RepoCi},
     logs,
     problems::{stamp, time},
     types::*,
@@ -144,14 +144,28 @@ pub fn of(s: &Snapshot, pr: &PullRequest) -> Readiness {
         waits: vec![],
     };
     let mut wait = |kind, text: String| answer.waits.push(Wait { kind, text });
-    if let Some((kind, text)) = review(s, pr) {
-        wait(kind, text);
+    let reviewed = review(s, pr);
+    if let Some((kind, text)) = &reviewed {
+        wait(*kind, text.clone());
     }
     let checked = checks(s, pr);
     for (kind, text) in &checked.waits {
         wait(*kind, text.clone());
     }
     let base_sha = checked.base_sha.clone();
+    // A clean loop reviewed the pull request with the base commit GitHub
+    // gave Orbit for it; the checks must have run with that same commit.
+    if reviewed.is_none() && checked.waits.is_empty() && base_sha != pr.base_sha {
+        let base = &pr.base_ref;
+        wait(
+            WaitKind::Review,
+            format!(
+                "Orbit reviewed it with {base} at {}, and {base} is at {} now, so it waits for a review with the latest {base}.",
+                short(&pr.base_sha),
+                short(&base_sha)
+            ),
+        );
+    }
     if answer.waits.is_empty() {
         let merge = s.merges.iter().find(|m| asked(m, pr, &base_sha));
         if let Some(text) = merging(merge, pr) {
@@ -250,7 +264,7 @@ fn checks(s: &Snapshot, pr: &PullRequest) -> Checked {
     let ci = &pull.ci;
     let base = &pr.base_ref;
     let on_default = *base == repo.branch;
-    match ci.state {
+    let waived = match ci.state {
         CiState::Failing => {
             let verb = if ci.failing.len() == 1 {
                 "fails"
@@ -276,24 +290,16 @@ fn checks(s: &Snapshot, pr: &PullRequest) -> Checked {
         }
         // Without CI on pull requests there are no checks to wait for, nor
         // a run to have missed the base.
-        CiState::None if no_ci(s, &pr.repo) => {
-            return Checked {
-                waits: vec![],
-                base_sha: if on_default {
-                    repo.head.sha.clone()
-                } else {
-                    pr.base_sha.clone()
-                },
-            };
-        }
+        CiState::None if no_ci(s, repo) => true,
         CiState::None => {
             return waiting(
                 WaitKind::Checks,
                 format!("No checks have reported on {head} yet."),
             );
         }
-        CiState::Passing => {}
-    }
+        CiState::Passing => false,
+    };
+    // What Orbit knows of CI is the default branch's.
     if !on_default {
         return waiting(
             WaitKind::Base,
@@ -301,6 +307,12 @@ fn checks(s: &Snapshot, pr: &PullRequest) -> Checked {
                 "Orbit can't tell whether its checks ran with the latest {base}: it only follows the default branch."
             ),
         );
+    }
+    if waived {
+        return Checked {
+            waits: vec![],
+            base_sha: repo.head.sha.clone(),
+        };
     }
     match crate::problems::behind(repo, pr, ci) {
         Some(false) => Checked {
@@ -319,17 +331,27 @@ fn checks(s: &Snapshot, pr: &PullRequest) -> Checked {
         ),
     }
 }
-/// Whether Orbit read that no CI runs on the repository's pull requests,
-/// and has never seen checks run there.
-fn no_ci(s: &Snapshot, repo: &str) -> bool {
-    let setup = s.setups.iter().find(|w| same_repo(&w.repo, repo));
-    setup.is_some_and(|w| {
-        w.ran.is_none()
+/// Whether Orbit is sure no CI runs on the repository's pull requests: it
+/// read so at the default branch's latest commit, has never seen checks
+/// run there, and its problem about it is open at that commit, which
+/// `problems::see_setup` opens only once other services have had time to
+/// report checks.
+fn no_ci(s: &Snapshot, ci: &RepoCi) -> bool {
+    let now = |sha: &str, branch: &str| sha == ci.head.sha && branch == ci.branch;
+    let read = s.setups.iter().any(|w| {
+        same_repo(&w.repo, &ci.repo)
+            && now(&w.sha, &w.branch)
+            && w.ran.is_none()
             && matches!(
                 w.verdict(),
                 Some(workflows::Verdict::NoWorkflows | workflows::Verdict::NotOnPulls)
             )
-    })
+    });
+    let key = crate::problems::setup_key(&ci.repo);
+    read && s
+        .problems
+        .iter()
+        .any(|p| p.key == key && p.is_open() && now(&p.sha, &p.branch))
 }
 
 /// Whether Orbit's question to GitHub was about this head and base.
@@ -406,7 +428,8 @@ pub fn wanted(s: &Snapshot, now: DateTime<Utc>) -> Vec<(String, u64, String, Str
 }
 
 /// Asks GitHub whether a pull request can merge. An answer about another
-/// head is an error, as the pull request moved since Orbit last synced.
+/// head or base commit is an error, as the pull request moved since Orbit
+/// last synced.
 pub async fn read(
     repo: &str,
     number: u64,
@@ -425,7 +448,7 @@ pub fn understand(
     base_sha: &str,
     now: DateTime<Utc>,
 ) -> Result<Merge, String> {
-    if v["head"]["sha"] != head_sha {
+    if v["head"]["sha"] != head_sha || v["base"]["sha"] != base_sha {
         return Err("GitHub's answer was about another commit.".into());
     }
     Ok(Merge {

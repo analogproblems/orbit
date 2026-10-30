@@ -902,17 +902,24 @@ fn passing_pulls(dir: &Path, pulls: &[(u64, &str)]) {
     } } });
     std::fs::write(dir.join("answer.json"), v.to_string()).unwrap();
 }
-/// What GitHub says about pull request 1 at `head`.
+/// What GitHub says about pull request 1 at `head`, against main's latest
+/// commit in `passing_pulls`.
 fn mergeable(dir: &Path, head: &str, mergeable: serde_json::Value, state: &str) {
-    let v = json!({ "head": { "sha": head }, "mergeable": mergeable, "mergeable_state": state });
+    let v = json!({
+        "head": { "sha": head },
+        "base": { "sha": "1".repeat(40) },
+        "mergeable": mergeable,
+        "mergeable_state": state
+    });
     std::fs::write(dir.join("pull-1.json"), v.to_string()).unwrap();
 }
-/// Pull request 1, by a member from a branch in `a/b`, and a clean round
-/// of it as it is.
+/// Pull request 1, by a member from a branch in `a/b` against main's latest
+/// commit in `passing_pulls`, and a clean round of it as it is.
 async fn reviewed(e: &Engine) -> PullRequest {
     let mut p = crate::types::tests::pr();
     p.head_repo = "a/b".into();
     p.author_association = "MEMBER".into();
+    p.base_sha = "1".repeat(40);
     e.update(|s| {
         s.prs = vec![p.clone()];
         let mut r = Review::new(&p, &s.settings, true);

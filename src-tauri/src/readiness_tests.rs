@@ -1,5 +1,6 @@
 use super::*;
 use crate::ci::{Check, CommitCi, PullCi, RepoCi};
+use crate::problems::{Problem, ProblemKind};
 use crate::review_loop::decide;
 use crate::types::tests::pr;
 use crate::workflows::Setup;
@@ -30,10 +31,12 @@ fn repository(automatic: bool) -> Repository {
         dev_container: Default::default(),
     }
 }
+/// A pull request Orbit trusts, opened against main's latest commit.
 fn trusted() -> PullRequest {
     let mut p = pr();
     p.head_repo = "a/b".into();
     p.author_association = "OWNER".into();
+    p.base_sha = MAIN.into();
     p
 }
 /// A finished automatic round of the pull request as it is, with
@@ -205,6 +208,33 @@ fn orbits_loop_comes_first() {
             "Orbit hasn't reviewed aaaaaaa yet.".into()
         )
     );
+    // A clean review with an older main than the checks ran with, as when
+    // Orbit read CI after main moved on but before GitHub gave the pull
+    // request the newer base: never clear against the newer one.
+    let (mut s, p) = ready();
+    let mut older = p.clone();
+    older.base_sha = "e".repeat(40);
+    s.prs = vec![older.clone()];
+    s.reviews = vec![round(&older, 0)];
+    let answer = of(&s, &s.prs[0]);
+    assert!(!answer.clear);
+    assert_eq!(
+        answer.waits,
+        [Wait {
+            kind: WaitKind::Review,
+            text: "Orbit reviewed it with main at eeeeeee, and main is at ccccccc now, so it waits for a review with the latest main.".into()
+        }]
+    );
+    assert!(wanted(&s, now()).is_empty());
+    // Findings in the way say so alone, whatever main the review was with.
+    s.reviews = vec![round(&older, 2)];
+    assert_eq!(
+        waits(&s),
+        [(
+            WaitKind::Findings,
+            "2 blocking findings from Orbit's review of aaaaaaa wait on the author.".into()
+        )]
+    );
     // A loop that needs you, or that you stopped.
     let (mut s, p) = ready();
     s.reviews[0].status = "failed".into();
@@ -283,21 +313,35 @@ fn every_check_on_the_head_must_pass_and_be_read() {
 fn no_checks_wait_only_where_ci_runs() {
     let (mut s, _) = ready();
     *pull(&mut s) = commit(HEAD, CiState::None);
-    assert_eq!(
-        waits(&s),
-        [(
+    let none = || {
+        vec![(
             WaitKind::Checks,
-            "No checks have reported on aaaaaaa yet.".into()
+            "No checks have reported on aaaaaaa yet.".to_string(),
         )]
-    );
-    // Orbit read that no workflow runs on pull requests here.
+    };
+    assert_eq!(waits(&s), none());
+    // Orbit read at main's latest commit that no workflow runs on pull
+    // requests here, but hasn't yet waited for another service's checks.
     let mut setup = Setup {
         repo: "a/b".into(),
+        branch: "main".into(),
+        sha: MAIN.into(),
         ..Default::default()
     };
     s.setups = vec![setup.clone()];
+    assert_eq!(waits(&s), none());
+    // Once it has, it opens a problem about it, and nothing waits on checks.
+    let mut problem = Problem {
+        key: crate::problems::setup_key("a/b"),
+        kind: ProblemKind::NoCi,
+        repo: "a/b".into(),
+        branch: "main".into(),
+        sha: MAIN.into(),
+        ..Default::default()
+    };
+    s.problems = vec![problem.clone()];
     assert!(of(&s, &s.prs[0]).clear);
-    // Or that its workflows don't run on them.
+    // Or its workflows don't run on them.
     let mut not_on_pulls = setup.clone();
     not_on_pulls.workflows = vec![workflows::Workflow {
         path: ".github/workflows/release.yml".into(),
@@ -306,24 +350,48 @@ fn no_checks_wait_only_where_ci_runs() {
     s.setups = vec![not_on_pulls];
     assert!(of(&s, &s.prs[0]).clear);
     s.setups = vec![setup.clone()];
-    // Into another branch, it waits for GitHub at that branch's commit.
+    // Into another branch, whose workflows Orbit didn't read, it can't tell.
     s.prs[0].base_ref = "release".into();
-    let answer = of(&s, &s.prs[0]);
-    assert_eq!(answer.base_sha, s.prs[0].base_sha);
     assert_eq!(
-        answer.waits[0].text,
-        "Orbit hasn't asked GitHub yet whether it merges."
+        waits(&s),
+        [(
+            WaitKind::Base,
+            "Orbit can't tell whether its checks ran with the latest release: it only follows the default branch.".into()
+        )]
     );
     s.prs[0].base_ref = "main".into();
+    // What was read, or the problem, at an older commit of main tells
+    // nothing, as main may have added CI since.
+    let older = |sha: &mut String| *sha = "e".repeat(40);
+    let mut stale = setup.clone();
+    older(&mut stale.sha);
+    s.setups = vec![stale];
+    assert_eq!(waits(&s), none());
+    s.setups = vec![setup.clone()];
+    older(&mut problem.sha);
+    s.problems = vec![problem.clone()];
+    assert_eq!(waits(&s), none());
+    problem.sha = MAIN.into();
+    // Nor a closed problem, or one about another branch.
+    problem.closed_at = Some(ago(1));
+    s.problems = vec![problem.clone()];
+    assert_eq!(waits(&s), none());
+    problem.closed_at = None;
+    problem.branch = "trunk".into();
+    s.problems = vec![problem.clone()];
+    assert_eq!(waits(&s), none());
+    problem.branch = "main".into();
+    s.problems = vec![problem];
+    assert!(of(&s, &s.prs[0]).clear);
     // Checks seen there before mean CI runs after all, and a failed read
     // tells nothing.
     setup.ran = Some("Checks ran on a pull request.".into());
     s.setups = vec![setup.clone()];
-    assert_eq!(waits(&s)[0].1, "No checks have reported on aaaaaaa yet.");
+    assert_eq!(waits(&s), none());
     setup.ran = None;
     setup.error = Some("down".into());
     s.setups = vec![setup];
-    assert_eq!(waits(&s)[0].1, "No checks have reported on aaaaaaa yet.");
+    assert_eq!(waits(&s), none());
 }
 
 #[test]
@@ -489,8 +557,12 @@ fn github_is_asked_once_nothing_else_is_in_the_way() {
         ..merge(Some(true), "clean")
     }];
     assert!(wanted(&s, now()).is_empty());
-    // A new base commit is a new question.
+    // A new base commit is a new question, once the pull request is on it
+    // and reviewed with it.
     s.ci[0].head.sha = "9".repeat(40);
+    assert!(wanted(&s, now()).is_empty());
+    s.prs[0].base_sha = "9".repeat(40);
+    s.reviews = vec![round(&s.prs[0], 0)];
     assert_eq!(
         wanted(&s, now()),
         [("a/b".to_string(), 1, HEAD.to_string(), "9".repeat(40))]
@@ -538,19 +610,32 @@ fn a_few_are_asked_a_pass_never_asked_first_then_the_oldest() {
 
 #[test]
 fn githubs_answer_is_read_for_the_head_orbit_asked_about() {
-    let v = json!({ "head": { "sha": HEAD }, "mergeable": true, "mergeable_state": "clean" });
+    let v = json!({
+        "head": { "sha": HEAD },
+        "base": { "sha": MAIN },
+        "mergeable": true,
+        "mergeable_state": "clean"
+    });
     let m = understand(&v, "a/b#1", HEAD, MAIN, now()).unwrap();
     let read = Merge {
         read_at: stamp(now()),
         ..merge(Some(true), "clean")
     };
     assert_eq!(m, read);
-    let pending = json!({ "head": { "sha": HEAD }, "mergeable": null });
+    let pending = json!({ "head": { "sha": HEAD }, "base": { "sha": MAIN }, "mergeable": null });
     let m = understand(&pending, "a/b#1", HEAD, MAIN, now()).unwrap();
     assert_eq!((m.mergeable, m.state.as_str()), (None, "unknown"));
-    let moved = json!({ "head": { "sha": "d".repeat(40) }, "mergeable": true });
+    // The pull request moved on, or its base did, since Orbit synced.
+    let moved =
+        json!({ "head": { "sha": "d".repeat(40) }, "base": { "sha": MAIN }, "mergeable": true });
     assert_eq!(
         understand(&moved, "a/b#1", HEAD, MAIN, now()),
+        Err("GitHub's answer was about another commit.".into())
+    );
+    let rebased =
+        json!({ "head": { "sha": HEAD }, "base": { "sha": "e".repeat(40) }, "mergeable": true });
+    assert_eq!(
+        understand(&rebased, "a/b#1", HEAD, MAIN, now()),
         Err("GitHub's answer was about another commit.".into())
     );
 }
