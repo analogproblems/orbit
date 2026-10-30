@@ -249,6 +249,9 @@ export default function App() {
   const ciFailing = (s.attention ?? []).filter(
     (a) => a.kind === "ci_failing",
   ).length;
+  const runsWaiting = (s.attention ?? []).filter(
+    (a) => a.kind === "runs_waiting",
+  ).length;
   const choose = (p: PullRequest, r?: Review) => {
     setSelected(p.id);
     setSelectedReview(r?.id ?? null);
@@ -468,6 +471,8 @@ export default function App() {
                 endContent={
                   ciFailing > 0 ? (
                     <StatusDot variant="error" label="CI failing" />
+                  ) : runsWaiting > 0 ? (
+                    <StatusDot variant="warning" label="Runs waiting" />
                   ) : undefined
                 }
                 onClick={() => setPage("operations")}

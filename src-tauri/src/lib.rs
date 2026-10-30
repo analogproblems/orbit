@@ -25,6 +25,7 @@ pub mod reruns;
 pub mod review_instructions;
 pub mod review_loop;
 pub mod rpc;
+pub mod runners;
 pub mod scans;
 pub mod setup;
 pub mod storage;

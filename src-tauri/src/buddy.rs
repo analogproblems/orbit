@@ -1823,7 +1823,9 @@ fn answer(
                             && a.repo.as_deref().is_some_and(|r| same_repo(r, &repo.name))
                     })
                 };
-                let item = about(AttentionKind::SyncFailing).or(about(AttentionKind::CiFailing));
+                let item = about(AttentionKind::SyncFailing)
+                    .or(about(AttentionKind::CiFailing))
+                    .or(about(AttentionKind::RunsWaiting));
                 lines.push(line(text, None, item));
             }
             let text = say::repositories_answer(tone, s.settings.repositories.len() as u32);

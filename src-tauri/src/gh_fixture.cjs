@@ -14,6 +14,11 @@
 // are the newest try of each job in it, by name, in pages: a job rerun
 // whose next try (<id> + 1000) has no file yet has it queued. While
 // <dir>/more-jobs exists, the list claims that many jobs more than it has.
+// The account `a` is a person, or an organization while <dir>/org exists.
+// The runners of a/b and of the organization a are <dir>/runners-repo.json
+// and <dir>/runners-org.json, or none; while <dir>/runners-repo-error or
+// <dir>/runners-org-error exists, reading them fails with its text. The
+// queued runs of a/b are <dir>/queued.json, or none.
 // While <dir>/down exists every call
 // fails. While <dir>/hold exists a GET waits, after writing <dir>/held. Each
 // call is logged to <dir>/calls as "METHOD endpoint".
@@ -263,6 +268,24 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
     save(db);
   }
   answer(i);
+} else if (endpoint === "users/a") {
+  const org = fs.existsSync(path.join(dir, "org"));
+  answer({ login: "a", type: org ? "Organization" : "User" });
+} else if ((m = endpoint.match(/^(repos\/a\/b|orgs\/a)\/actions\/runners$/))) {
+  const which = m[1] === "orgs/a" ? "org" : "repo";
+  const refused = path.join(dir, `runners-${which}-error`);
+  if (fs.existsSync(refused)) {
+    process.stderr.write(fs.readFileSync(refused, "utf8"));
+    process.exit(1);
+  }
+  const list = path.join(dir, `runners-${which}.json`);
+  if (fs.existsSync(list)) process.stdout.write(fs.readFileSync(list, "utf8"));
+  else answer({ total_count: 0, runners: [] });
+} else if (endpoint === "repos/a/b/actions/runs") {
+  const queued = path.join(dir, "queued.json");
+  if (fs.existsSync(queued))
+    process.stdout.write(fs.readFileSync(queued, "utf8"));
+  else answer({ total_count: 0, workflow_runs: [] });
 } else {
   answer([]);
 }

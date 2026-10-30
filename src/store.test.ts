@@ -168,15 +168,28 @@ describe("demo ci", () => {
   it("lets an older demo turn Watch CI off, which closes what was open", async () => {
     const old = structuredClone(useOrbit.getState().snapshot);
     delete old.settings.watchCi;
+    old.attention?.push({
+      key: "problem:waits:1",
+      kind: "runs_waiting",
+      prId: null,
+      reviewId: null,
+      approvalId: null,
+      repo: "acme/api",
+      reason:
+        "A run of Release in acme/api has waited more than 30 minutes for a runner.",
+    });
     localStorage.setItem("orbit-demo-v3", JSON.stringify(old));
     await useOrbit.getState().init();
+    expect(useOrbit.getState().snapshot.runners?.length).toBeGreaterThan(0);
     const result = await useOrbit.getState().updateSettings({ watchCi: false });
     expect(result.ok).toBe(true);
     const s = useOrbit.getState().snapshot;
     expect(s.settings.watchCi).toBe(false);
     expect(s.ci).toEqual([]);
+    expect(s.runners).toEqual([]);
     expect(s.problems?.every((p) => p.closedAt)).toBe(true);
     expect(s.attention?.some((a) => a.kind === "ci_failing")).toBe(false);
+    expect(s.attention?.some((a) => a.kind === "runs_waiting")).toBe(false);
   });
 });
 

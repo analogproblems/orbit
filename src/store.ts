@@ -650,6 +650,7 @@ async function demoAction(
       const at = new Date().toISOString();
       const text = "Orbit stopped watching CI.";
       demo.ci = [];
+      demo.runners = [];
       demo.problems = demo.problems?.map((p) =>
         p.closedAt
           ? p
@@ -660,7 +661,9 @@ async function demoAction(
               timeline: [...p.timeline, { at, text }],
             },
       );
-      demo.attention = demo.attention?.filter((a) => a.kind !== "ci_failing");
+      demo.attention = demo.attention?.filter(
+        (a) => a.kind !== "ci_failing" && a.kind !== "runs_waiting",
+      );
     }
     demo.modelConfigurationError = selectionError(demo.models, next);
     if (

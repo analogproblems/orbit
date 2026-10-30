@@ -1356,6 +1356,10 @@ pub struct Snapshot {
     /// What each connected repository's files say about its CI, as Orbit
     /// last read them (see `crate::workflows`).
     pub setups: Vec<crate::workflows::Setup>,
+    /// The self-hosted runners of each connected repository, and of each
+    /// organization that owns one, as Orbit last read them (see
+    /// `crate::runners`).
+    pub runners: Vec<crate::runners::Place>,
 }
 /// How reading the pull-request history is going.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -1504,6 +1508,8 @@ pub enum AttentionKind {
     CiFailing,
     /// An agent asks for a person about a failing check.
     CiQuestion,
+    /// A repository's runs have waited a long time for a runner.
+    RunsWaiting,
 }
 /// Something only the developer can resolve.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

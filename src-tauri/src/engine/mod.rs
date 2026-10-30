@@ -179,6 +179,9 @@ pub struct Engine {
     /// Orbit's comments and issues about failing CI are being brought up to
     /// date.
     telling: AtomicBool,
+    /// Self-hosted runners are being read; another read skips rather than
+    /// waits.
+    reading_runners: AtomicBool,
     /// The pull-request history is being read; another read skips rather
     /// than waits.
     refreshing_ledger: AtomicBool,
@@ -385,6 +388,7 @@ impl Engine {
             updating_clones: AtomicBool::new(false),
             watching_ci: AtomicBool::new(false),
             telling: AtomicBool::new(false),
+            reading_runners: AtomicBool::new(false),
             refreshing_ledger: AtomicBool::new(false),
             ledger_full_at: std::sync::Mutex::new(HashMap::new()),
             queue_retry: std::sync::Mutex::new(HashMap::new()),

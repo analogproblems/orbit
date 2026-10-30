@@ -10,6 +10,7 @@ import {
   type RepositoryPatch,
 } from "./types";
 import {
+  attentionAction,
   categoryLabels,
   claimSummary,
   countNote,
@@ -439,5 +440,36 @@ describe("editedOver", () => {
       editedOver(current, opened, { ...edited, setupCommand: "pnpm i" })
         .setupCommand,
     ).toBe("pnpm i");
+  });
+});
+
+describe("what needs you", () => {
+  it("opens Operations for failing CI and runs waiting for a runner", () => {
+    const s = freshDemo();
+    const go = {
+      onChoose: () => {},
+      onRepositories: () => {},
+      onSettings: () => {},
+      onApproval: () => {},
+      onPublish: () => {},
+      onOperations: () => {},
+    };
+    const open = (kind: "ci_failing" | "ci_question" | "runs_waiting") =>
+      attentionAction(
+        s,
+        {
+          key: "k",
+          kind,
+          prId: null,
+          reviewId: null,
+          approvalId: null,
+          repo: "acme/api",
+          reason: "",
+        },
+        go,
+      );
+    expect(open("ci_failing")).toBe(go.onOperations);
+    expect(open("ci_question")).toBe(go.onOperations);
+    expect(open("runs_waiting")).toBe(go.onOperations);
   });
 });

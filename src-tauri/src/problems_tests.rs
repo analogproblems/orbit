@@ -765,3 +765,124 @@ fn checks_or_files_orbit_cant_rule_out_mean_ci_runs() {
     close_unwatched(&mut problems, &[], false, at(12));
     assert!(open(&problems).is_empty());
 }
+
+fn run(id: u64, name: &str) -> Waiting {
+    Waiting {
+        id,
+        name: name.into(),
+        url: format!("https://github.com/a/b/actions/runs/{id}"),
+        since: String::new(),
+    }
+}
+
+#[test]
+fn runs_waiting_for_a_runner_tell_you_once_and_close_when_none_wait() {
+    let mut problems = vec![];
+    see_waiting(&mut problems, "a/b", &[], at(0));
+    assert!(problems.is_empty(), "nothing waits");
+    see_waiting(&mut problems, "a/b", &[run(1, "CI")], at(0));
+    assert_eq!(problems.len(), 1);
+    let p = &problems[0];
+    assert_eq!(p.key, "wait:a/b");
+    assert_eq!(p.kind, ProblemKind::Waiting);
+    assert!(p.needs_you());
+    assert_eq!(p.alerts, 1);
+    assert_eq!(p.waiting, [run(1, "CI")]);
+    assert_eq!(
+        timeline(p),
+        ["A run of CI in a/b has waited more than 30 minutes for a runner."]
+    );
+    let key = p.item_key();
+    // More runs wait: an update, not news.
+    let more = [run(1, "CI"), run(2, "Release"), run(3, "CI")];
+    see_waiting(&mut problems, "A/B", &more, at(5));
+    assert_eq!(problems.len(), 1);
+    assert_eq!(problems[0].item_key(), key);
+    assert_eq!(problems[0].waiting.len(), 3);
+    assert_eq!(
+        timeline(&problems[0]).last(),
+        Some(&"Now 3 runs wait for a runner.")
+    );
+    // Other runs, as many: nothing to note.
+    see_waiting(
+        &mut problems,
+        "a/b",
+        &[run(4, "CI"), run(5, "CI"), run(6, "CI")],
+        at(6),
+    );
+    assert_eq!(problems[0].timeline.len(), 2);
+    assert_eq!(problems[0].waiting[0].id, 4);
+    see_waiting(&mut problems, "a/b", &[run(4, "CI")], at(7));
+    assert_eq!(
+        timeline(&problems[0]).last(),
+        Some(&"Now 1 run waits for a runner.")
+    );
+    // Still waiting a day later: it reminds you.
+    see_waiting(&mut problems, "a/b", &[run(4, "CI")], at(24 * 60 - 1));
+    assert_eq!(problems[0].alerts, 1);
+    see_waiting(&mut problems, "a/b", &[run(4, "CI")], at(24 * 60));
+    assert_eq!(problems[0].alerts, 2);
+    see_waiting(&mut problems, "a/b", &[], at(24 * 60 + 5));
+    assert!(open(&problems).is_empty());
+    assert_eq!(
+        problems[0].closed_reason.as_deref(),
+        Some("No runs wait for a runner now.")
+    );
+    // Another repository's runs are another problem.
+    see_waiting(&mut problems, "a/c", &[run(7, "CI")], at(24 * 60 + 5));
+    assert_eq!(open(&problems)[0].key, "wait:a/c");
+}
+
+#[test]
+fn runs_that_wait_again_soon_after_are_the_same_problem_and_stay_quiet() {
+    let mut problems = vec![];
+    see_waiting(&mut problems, "a/b", &[run(1, "CI")], at(0));
+    let key = problems[0].item_key();
+    see_waiting(&mut problems, "a/b", &[], at(20));
+    assert_eq!(quiet_keys(&problems, at(30)), std::slice::from_ref(&key));
+    see_waiting(&mut problems, "a/b", &[run(2, "Release")], at(30));
+    assert_eq!(problems.len(), 1, "the same problem, back again");
+    let p = &problems[0];
+    assert!(p.is_open());
+    assert_eq!(p.item_key(), key);
+    assert_eq!(p.waiting, [run(2, "Release")]);
+    assert_eq!(
+        timeline(p).last(),
+        Some(&"Again: A run of Release in a/b has waited more than 30 minutes for a runner.")
+    );
+    // Still waiting an hour after the first alert: it tells you then.
+    see_waiting(&mut problems, "a/b", &[run(2, "Release")], at(59));
+    assert_eq!(problems[0].alerts, 1);
+    see_waiting(&mut problems, "a/b", &[run(2, "Release")], at(60));
+    assert_eq!(problems[0].alerts, 2);
+    // Back later than that, it's a new problem.
+    see_waiting(&mut problems, "a/b", &[], at(70));
+    see_waiting(&mut problems, "a/b", &[run(3, "CI")], at(70 + 61));
+    assert_eq!(problems.len(), 2);
+    assert_eq!(open(&problems)[0].alerts, 1);
+}
+
+#[test]
+fn waiting_runs_read_as_a_sentence() {
+    let text = |runs: &[Waiting]| waiting_text("a/b", runs);
+    assert_eq!(
+        text(&[run(1, "")]),
+        "A run in a/b has waited more than 30 minutes for a runner."
+    );
+    assert_eq!(
+        text(&[run(1, "CI"), run(2, "CI")]),
+        "2 runs in a/b have waited more than 30 minutes for a runner: CI."
+    );
+    assert_eq!(
+        text(&[run(1, "CI"), run(2, ""), run(3, "Docs")]),
+        "3 runs in a/b have waited more than 30 minutes for a runner: CI and Docs."
+    );
+    assert_eq!(
+        text(&[run(1, "A"), run(2, "B"), run(3, "C"), run(4, "D")]),
+        "4 runs in a/b have waited more than 30 minutes for a runner: A, B and 2 more."
+    );
+    assert_eq!(
+        text(&[run(1, ""), run(2, "")]),
+        "2 runs in a/b have waited more than 30 minutes for a runner."
+    );
+}

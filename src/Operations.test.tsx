@@ -16,6 +16,8 @@ import {
   brokeText,
   noCiText,
   rerunText,
+  runnersText,
+  waitingText,
   whyText,
 } from "./Operations";
 import { freshDemo } from "./demo";
@@ -30,7 +32,9 @@ import {
   type OpsThread,
   type Problem,
   type RepoCi,
+  type RunnerPlace,
   type Snapshot,
+  type WaitingRun,
 } from "./types";
 
 afterEach(cleanup);
@@ -452,6 +456,129 @@ describe("operations page", () => {
     expect(row().textContent).not.toContain("asks before");
   });
 
+  it("lists runs waiting for a runner as yours, with the run to open", () => {
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    const s = freshDemo();
+    const since = new Date(Date.now() - 42 * 60000).toISOString();
+    const run = (id: number, name: string): WaitingRun => ({
+      id,
+      name,
+      url: `https://github.com/acme/api/actions/runs/${id}`,
+      since,
+    });
+    s.problems!.push({
+      id: "waits",
+      key: "wait:acme/api",
+      kind: "waiting",
+      repo: "acme/api",
+      branch: "",
+      sha: "",
+      sinceSha: "",
+      failing: [],
+      openedAt: since,
+      updatedAt: since,
+      timeline: [
+        {
+          at: since,
+          text: "2 runs in acme/api have waited more than 30 minutes for a runner: Release.",
+        },
+      ],
+      alerts: 1,
+      waiting: [run(9120, "Release"), run(9121, "")],
+    });
+    show(s);
+    const items = within(
+      screen.getByRole("list", { name: "Open problems" }),
+    ).getAllByRole("listitem");
+    expect(items).toHaveLength(4);
+    // With the default branch, before the pull requests.
+    const row = items.find((i) => i.textContent?.includes("acme/api: runs"))!;
+    expect(items.indexOf(row)).toBeLessThan(2);
+    expect(row.textContent).toContain("acme/api: runs waiting for a runner");
+    expect(within(row).getByLabelText("Needs you")).toBeTruthy();
+    expect(row.textContent).toContain(
+      "2 runs have waited more than 30 minutes for a runner: Release.",
+    );
+    expect(row.textContent).toContain("Release · queued");
+    expect(row.textContent).toContain("A run · queued");
+    expect(row.textContent).toContain(
+      "Only a person can add or fix a runner, so Orbit doesn’t tell an agent.",
+    );
+    fireEvent.click(within(row).getByRole("button", { name: "Open run" }));
+    expect(open).toHaveBeenCalledWith(
+      "https://github.com/acme/api/actions/runs/9120",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    open.mockRestore();
+  });
+
+  it("lists the self-hosted runners Orbit sees, and where it can't see them", () => {
+    const s = freshDemo();
+    show(s);
+    const list = screen.getByRole("list", { name: "Self-hosted runners" });
+    const rows = within(list)
+      .getAllByRole("listitem")
+      .map((i) => i.textContent);
+    // Places with none aren't listed.
+    expect(rows).toEqual([
+      expect.stringContaining(
+        "acme/api1 runner, offline.mac-mini-1 · macOS · offline · self-hosted, macOS, ARM64",
+      ),
+      expect.stringContaining(
+        "acme/dashboardOrbit can't see the self-hosted runners of acme/dashboard: that needs admin rights on it.",
+      ),
+      expect.stringContaining(
+        "acme · organization2 runners, 2 online, 1 busy.linux-big-1 · Linux · busy · self-hosted, Linux, X64linux-big-2 · Linux · free",
+      ),
+    ]);
+    const api = within(list).getAllByRole("listitem")[0];
+    expect(within(api).getByLabelText("Offline")).toBeTruthy();
+    cleanup();
+    // A read that failed says so.
+    s.runners![0].error =
+      "Orbit couldn't read the runners yet: Bad Gateway (HTTP 502). It tries again later.";
+    show(s);
+    expect(
+      within(
+        screen.getByRole("list", { name: "Self-hosted runners" }),
+      ).getAllByRole("listitem")[0].textContent,
+    ).toContain("acme/orbitOrbit couldn't read the runners yet: Bad Gateway");
+    cleanup();
+    // With none anywhere, one line says so.
+    s.runners = s.runners!.map((p) => ({
+      ...p,
+      runners: [],
+      total: 0,
+      unseen: null,
+      error: null,
+    }));
+    show(s);
+    expect(screen.queryByRole("list", { name: "Self-hosted runners" })).toBe(
+      null,
+    );
+    expect(
+      screen.getByText(
+        /Orbit sees no self-hosted runners on your repositories/,
+      ),
+    ).toBeTruthy();
+    cleanup();
+    // Nothing read yet, or only a person's account: no section.
+    s.runners = [
+      {
+        name: "acme",
+        kind: "person",
+        readAt: new Date().toISOString(),
+        runners: [],
+        total: 0,
+        waiting: [],
+        tries: 0,
+      },
+    ];
+    show(s);
+    expect(screen.queryByText("Self-hosted runners")).toBe(null);
+  });
+
   it("asks you to connect a repository first", () => {
     const s = freshDemo();
     s.settings.repositories = [];
@@ -462,6 +589,70 @@ describe("operations page", () => {
 });
 
 describe("ci sentences", () => {
+  it("say which runs wait for a runner, as the engine does", () => {
+    const run = (name: string): WaitingRun => ({
+      id: 1,
+      name,
+      url: "",
+      since: "",
+    });
+    const text = (names: string[]) =>
+      waitingText({ waiting: names.map(run) } as Problem);
+    expect(text(["CI"])).toBe(
+      "A run of CI has waited more than 30 minutes for a runner.",
+    );
+    expect(text([""])).toBe(
+      "A run has waited more than 30 minutes for a runner.",
+    );
+    expect(text(["CI", "CI"])).toBe(
+      "2 runs have waited more than 30 minutes for a runner: CI.",
+    );
+    expect(text(["CI", "", "Docs"])).toBe(
+      "3 runs have waited more than 30 minutes for a runner: CI and Docs.",
+    );
+    expect(text(["A", "B", "C", "D"])).toBe(
+      "4 runs have waited more than 30 minutes for a runner: A, B and 2 more.",
+    );
+    expect(text(["", ""])).toBe(
+      "2 runs have waited more than 30 minutes for a runner.",
+    );
+  });
+
+  it("say how a place's runners stand", () => {
+    const runner = (online: boolean, busy = false) => ({
+      name: "r",
+      os: "",
+      online,
+      busy,
+      labels: [],
+    });
+    const place = (
+      runners: RunnerPlace["runners"],
+      total = runners.length,
+    ): RunnerPlace => ({
+      name: "a/b",
+      kind: "repository",
+      readAt: "",
+      runners,
+      total,
+      waiting: [],
+      tries: 0,
+    });
+    expect(runnersText(place([runner(false)]))).toBe("1 runner, offline.");
+    expect(runnersText(place([runner(false), runner(false)]))).toBe(
+      "2 runners, all offline.",
+    );
+    expect(runnersText(place([runner(true), runner(false)]))).toBe(
+      "2 runners, 1 online.",
+    );
+    expect(runnersText(place([runner(true, true), runner(true)]))).toBe(
+      "2 runners, 2 online, 1 busy.",
+    );
+    expect(runnersText(place([runner(true)], 150))).toBe(
+      "150 runners, 1 online. Orbit read the first 1.",
+    );
+  });
+
   const ci = (
     state: RepoCi["head"]["state"],
     sha = "a".repeat(40),

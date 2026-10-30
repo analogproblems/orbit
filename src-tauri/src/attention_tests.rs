@@ -374,3 +374,42 @@ fn a_failed_review_is_settled_by_a_later_finished_review_of_the_same_commits() {
     s.reviews.last_mut().unwrap().status = "ready".into();
     assert!(keys(&s).is_empty());
 }
+#[test]
+fn runs_waiting_for_a_runner_need_you_with_what_orbit_sees_of_its_runners() {
+    use crate::problems::{see_waiting, ProblemKind};
+    use crate::runners::{Place, PlaceKind, Waiting};
+    let (mut s, _) = snapshot();
+    let run = Waiting {
+        id: 1,
+        name: "CI".into(),
+        url: String::new(),
+        since: String::new(),
+    };
+    see_waiting(&mut s.problems, "a/b", &[run], chrono::Utc::now());
+    assert_eq!(s.problems[0].kind, ProblemKind::Waiting);
+    let all = items(&s);
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].kind, AttentionKind::RunsWaiting);
+    assert_eq!(all[0].key, s.problems[0].item_key());
+    assert_eq!(all[0].repo.as_deref(), Some("a/b"));
+    assert_eq!(all[0].fix, None, "only a person can add or fix a runner");
+    assert_eq!(
+        all[0].reason,
+        "A run of CI in a/b has waited more than 30 minutes for a runner."
+    );
+    s.runners.push(Place {
+        name: "a/b".into(),
+        kind: PlaceKind::Repository,
+        read_at: "2026-10-30T12:00:00.000Z".into(),
+        ..Default::default()
+    });
+    assert_eq!(
+        items(&s)[0].reason,
+        "A run of CI in a/b has waited more than 30 minutes for a runner. Orbit sees no self-hosted runners for it, so they wait for GitHub's own runners or for one it doesn't have."
+    );
+    let n = notice(&s, items(&s).remove(0));
+    assert_eq!(n.title, "Runs are waiting for a runner");
+    // Closed, it needs you no more.
+    see_waiting(&mut s.problems, "a/b", &[], chrono::Utc::now());
+    assert!(items(&s).is_empty());
+}

@@ -31,6 +31,8 @@ import {
   type OpsWrite,
   type Problem,
   type RepoCi,
+  type Runner,
+  type RunnerPlace,
   type Snapshot,
 } from "./types";
 
@@ -38,6 +40,9 @@ import {
 const RECENT = 10;
 /** How many of a problem's latest events it shows. */
 const EVENTS = 5;
+/** How many waiting runs a problem lists, and runners a place lists. */
+const RUNS = 5;
+const RUNNERS = 10;
 
 const dots: Record<
   CiState,
@@ -86,6 +91,12 @@ function partlyRead(s: Snapshot, repo: string) {
           trustedSource(pr, s.settings.trustedAuthors),
       ),
   );
+}
+
+/** Whether a problem is yours to see to: a failing default branch, or runs
+ * waiting for a runner. */
+function needsYou(p: Problem) {
+  return p.kind === "default_branch" || p.kind === "waiting";
 }
 
 /** Orbit's comment or issue about a problem. */
@@ -145,6 +156,8 @@ export function brokeText(b: Broke | null | undefined) {
 
 /** Where Orbit told the problem's agent, or why it hasn't. */
 export function toldText(s: Snapshot, p: Problem, t: OpsThread | undefined) {
+  if (p.kind === "waiting")
+    return "Only a person can add or fix a runner, so Orbit doesn’t tell an agent.";
   const buddy = buddyOf(s.settings);
   const proposal = p.kind === "no_ci";
   const issue = p.kind === "default_branch" || proposal;
@@ -194,6 +207,51 @@ export function noCiText(p: Problem) {
     ? ` Orbit can propose one built from ${and(found.from)}.`
     : " Orbit can’t tell how it builds, so its issue only asks for one.";
   return `No CI runs on its pull requests. ${why}${proposal}`;
+}
+
+/** Names in a sentence: "A", "A and B", "A, B and 2 more". */
+function some(names: string[]) {
+  return names.length > 2
+    ? `${names[0]}, ${names[1]} and ${names.length - 2} more`
+    : and(names);
+}
+
+/** Runs waiting for a runner, in a sentence, as Orbit's note says it. */
+export function waitingText(p: Problem) {
+  const runs = p.waiting ?? [];
+  const names = some([...new Set(runs.map((r) => r.name).filter(Boolean))]);
+  const waited = "waited more than 30 minutes for a runner";
+  if (runs.length === 1)
+    return names ? `A run of ${names} has ${waited}.` : `A run has ${waited}.`;
+  return names
+    ? `${runs.length} runs have ${waited}: ${names}.`
+    : `${runs.length} runs have ${waited}.`;
+}
+
+/** A place's self-hosted runners in a sentence: "2 runners, 2 online, 1
+ * busy." */
+export function runnersText(p: RunnerPlace) {
+  const online = p.runners.filter((r) => r.online);
+  const busy = online.filter((r) => r.busy).length;
+  const count = `${p.total} ${p.total === 1 ? "runner" : "runners"}`;
+  const state = !online.length
+    ? p.total === 1
+      ? "offline"
+      : "all offline"
+    : busy
+      ? `${online.length} online, ${busy} busy`
+      : `${online.length} online`;
+  const more =
+    p.total > p.runners.length
+      ? ` Orbit read the first ${p.runners.length}.`
+      : "";
+  return `${count}, ${state}.${more}`;
+}
+
+/** A runner in a line: its name, system, state and labels. */
+function runnerLine(r: Runner) {
+  const state = !r.online ? "offline" : r.busy ? "busy" : "free";
+  return [r.name, r.os, state, r.labels.join(", ")].filter(Boolean).join(" · ");
 }
 
 /** What a pull request's checks ran without, when its base moved on. */
@@ -338,6 +396,7 @@ function Why({ s, p, t }: { s: Snapshot; p: Problem; t?: OpsThread }) {
 /** A problem's name: its repository and branch, or its pull request. */
 function title(s: Snapshot, p: Problem) {
   if (p.kind === "no_ci") return `${p.repo}: CI on pull requests`;
+  if (p.kind === "waiting") return `${p.repo}: runs waiting for a runner`;
   if (p.kind === "default_branch")
     return `${p.repo}: ${p.branch || "default branch"}`;
   const pr = s.prs.find((pr) => pr.id === p.prId);
@@ -481,8 +540,7 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
     .filter((p) => !p.closedAt && p.kind !== "no_ci")
     .sort(
       (a, b) =>
-        Number(a.kind !== "default_branch") -
-          Number(b.kind !== "default_branch") ||
+        Number(!needsYou(a)) - Number(!needsYou(b)) ||
         b.openedAt.localeCompare(a.openedAt),
     );
   // All clear only once every check Orbit follows was read.
@@ -515,10 +573,14 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
       <List hasDividers aria-label="Open problems">
         {open.map((p) => {
           const pr = s.prs.find((pr) => pr.id === p.prId);
-          const yours = p.kind === "default_branch";
+          const yours = needsYou(p);
+          const waiting = p.kind === "waiting";
           const t = threadOf(s, p);
           const told = toldText(s, p, t);
-          const broke = yours ? brokeText(p.broke) : undefined;
+          const broke =
+            p.kind === "default_branch" ? brokeText(p.broke) : undefined;
+          // The run that has waited longest, to open on GitHub.
+          const longest = waiting ? p.waiting?.find((r) => r.url) : undefined;
           // The jobs Bit asks before rerunning.
           const reruns = t?.items.filter((i) => asksToRerun(s, p, i)) ?? [];
           return (
@@ -538,12 +600,23 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
               description={
                 <VStack gap={2}>
                   <Text>
-                    {yours
-                      ? `Failing: ${checkNames(p.failing)}.`
-                      : p.kind === "base_moved"
-                        ? movedText(p)
-                        : `Failing: ${checkNames(p.failing)}. Its author’s to fix.`}
+                    {waiting
+                      ? waitingText(p)
+                      : yours
+                        ? `Failing: ${checkNames(p.failing)}.`
+                        : p.kind === "base_moved"
+                          ? movedText(p)
+                          : `Failing: ${checkNames(p.failing)}. Its author’s to fix.`}
                   </Text>
+                  {waiting &&
+                    p.waiting?.slice(0, RUNS).map((r) => (
+                      <HStack key={r.id} gap={1} vAlign="center">
+                        <Text color="secondary">
+                          {r.name || "A run"} · queued
+                        </Text>
+                        <Timestamp value={r.since} format="relative_short" />
+                      </HStack>
+                    ))}
                   {broke && <Text>{broke}</Text>}
                   <Why s={s} p={p} t={t} />
                   {told && <Text color="secondary">{told}</Text>}
@@ -593,6 +666,13 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
                       variant="secondary"
                       onClick={() => openLink(t.url)}
                     />
+                  ) : longest ? (
+                    <Button
+                      label="Open run"
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => openLink(longest.url)}
+                    />
                   ) : (
                     !reruns.length && (
                       <Timestamp value={p.openedAt} format="relative_short" />
@@ -605,6 +685,92 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
         })}
       </List>
     </Card>
+  );
+}
+
+/** The self-hosted runners Orbit sees for each repository, and for each
+ * organization that owns one, and where it can't see them. Places with
+ * none aren't listed. */
+function Runners() {
+  const { snapshot: s } = useOrbit();
+  const read = (s.runners ?? []).filter(
+    (p) =>
+      (p.kind === "repository" || p.kind === "organization") &&
+      (p.readAt || p.error),
+  );
+  if (!read.length) return null;
+  const listed = read.filter((p) => p.runners.length || p.unseen || p.error);
+  return (
+    <VStack gap={3}>
+      <Heading level={3}>Self-hosted runners</Heading>
+      {!listed.length ? (
+        <Card padding={3}>
+          <HStack gap={3} vAlign="center">
+            <StatusDot variant="neutral" label="None" />
+            <Text>
+              Orbit sees no self-hosted runners on your repositories or the
+              organizations that own them, so their runs use GitHub’s own
+              runners.
+            </Text>
+          </HStack>
+        </Card>
+      ) : (
+        <Card padding={0}>
+          <List hasDividers aria-label="Self-hosted runners">
+            {listed.map((p) => {
+              const online = p.runners.some((r) => r.online);
+              const dot = !p.runners.length
+                ? { variant: "neutral" as const, label: "None seen" }
+                : online
+                  ? { variant: "success" as const, label: "Online" }
+                  : { variant: "warning" as const, label: "Offline" };
+              return (
+                <ListItem
+                  key={`${p.kind} ${p.name}`}
+                  startContent={
+                    <StatusDot variant={dot.variant} label={dot.label} />
+                  }
+                  label={
+                    <Text weight="medium">
+                      {p.kind === "organization"
+                        ? `${p.name} · organization`
+                        : p.name}
+                    </Text>
+                  }
+                  description={
+                    <VStack gap={1}>
+                      {p.runners.length > 0 && <Text>{runnersText(p)}</Text>}
+                      {p.runners.slice(0, RUNNERS).map((r, i) => (
+                        <Text key={`${r.name}-${i}`} color="secondary">
+                          {runnerLine(r)}
+                        </Text>
+                      ))}
+                      {p.runners.length > RUNNERS && (
+                        <Text color="secondary">
+                          And {p.runners.length - RUNNERS} more.
+                        </Text>
+                      )}
+                      {p.unseen && <Text color="secondary">{p.unseen}</Text>}
+                      {p.error && (
+                        <HStack gap={2} vAlign="center">
+                          <StatusDot variant="warning" label="Not read" />
+                          <Text color="secondary">{p.error}</Text>
+                        </HStack>
+                      )}
+                    </VStack>
+                  }
+                  endContent={
+                    p.readAt ? (
+                      <Timestamp value={p.readAt} format="relative_short" />
+                    ) : undefined
+                  }
+                />
+              );
+            })}
+          </List>
+        </Card>
+      )}
+    </VStack>
   );
 }
 
@@ -716,7 +882,8 @@ export function Operations(go: AttentionHandlers) {
           Orbit reads CI after each sync. A failing default branch needs you; a
           failing pull request is its author’s to fix. Either way, Orbit tells
           the project’s agent on GitHub: an issue for a default branch, one
-          comment on a pull request.
+          comment on a pull request. Runs that wait more than half an hour for a
+          runner need you too, as only a person can add or fix a runner.
         </Text>
       </VStack>
       {!watching ? (
@@ -745,6 +912,7 @@ export function Operations(go: AttentionHandlers) {
             <Heading level={3}>CI by repository</Heading>
             <Repositories go={go} />
           </VStack>
+          <Runners />
           <RecentlyFixed />
           <Posted />
         </>

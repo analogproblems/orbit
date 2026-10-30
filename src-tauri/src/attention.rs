@@ -230,6 +230,17 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
         });
     }
     for p in s.problems.iter().filter(|p| p.is_open() && p.needs_you()) {
+        if p.kind == crate::problems::ProblemKind::Waiting {
+            let mut reason = crate::problems::waiting_text(&p.repo, &p.waiting);
+            if let Some(seen) = crate::runners::seen_text(&s.runners, &p.repo) {
+                reason.push_str(&format!(" {seen}"));
+            }
+            out.push(Attention {
+                repo: Some(p.repo.clone()),
+                ..item(p.item_key(), AttentionKind::RunsWaiting, None, None, reason)
+            });
+            continue;
+        }
         let mut reason = format!(
             "CI is failing on {} in {} since {}: {}.",
             if p.branch.is_empty() {
@@ -383,6 +394,7 @@ pub fn notice(s: &Snapshot, a: Attention) -> Notice {
         AttentionKind::Disconnected => "A connection needs you",
         AttentionKind::CiFailing => "CI is failing",
         AttentionKind::CiQuestion => "An agent needs a person",
+        AttentionKind::RunsWaiting => "Runs are waiting for a runner",
     };
     let pr = s.prs.iter().find(|p| Some(&p.id) == a.pr_id.as_ref());
     let body = match pr {
