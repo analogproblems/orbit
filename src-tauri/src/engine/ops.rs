@@ -1,24 +1,29 @@
 //! Telling agents about failing CI: after each CI read, Orbit reads the
 //! agents' answers on its comments and issues, checks the fixes they name
-//! against CI, then posts, updates and closes its comments on pull requests
-//! and its issues about default branches as their problems need (see
-//! `crate::ops`). Each write is recorded in the journal, and the journal
-//! saved, before it is sent.
+//! against CI, reruns jobs that failed by bad luck (`crate::reruns`), then
+//! posts, updates and closes its comments on pull requests and its issues
+//! about default branches as their problems need (see `crate::ops`). Each
+//! write is recorded in the journal, and the journal saved, before it is
+//! sent.
 use super::{claims, Engine};
 use crate::{
     ci::CiState,
     github,
     ops::{self, Action, Event, FixCheck, Planned, Posted},
+    reruns::{self, Look},
     types::{trusted_source, Snapshot},
 };
 use serde_json::Value;
 use std::sync::{atomic::Ordering, Arc};
 
-/// The next thing any thread needs, as things stand now.
+/// The next thing any thread needs, as things stand now: reruns first, so
+/// what Orbit posts says it reran a job.
 fn plan(s: &Snapshot, now: chrono::DateTime<chrono::Utc>) -> Option<Planned> {
-    s.ops.iter().find_map(|t| {
-        let problem = s.problems.iter().find(|p| p.id == t.problem_id);
-        ops::next(t, problem, ops::may_post(s, t), now)
+    reruns::all(s, now).into_iter().next().or_else(|| {
+        s.ops.iter().find_map(|t| {
+            let problem = s.problems.iter().find(|p| p.id == t.problem_id);
+            ops::next(t, problem, ops::may_post(s, t), now)
+        })
     })
 }
 
@@ -33,7 +38,7 @@ impl Engine {
         self.telling.store(false, Ordering::SeqCst);
     }
     async fn tell_agents_now(&self) {
-        {
+        let mut events = {
             let mut s = self.state.lock().await;
             let s = &mut *s;
             let now = chrono::Utc::now();
@@ -42,11 +47,14 @@ impl Engine {
             let mut changed = ops::interrupted(&mut s.journal, &mut s.ops, now);
             changed |= ops::refresh(&mut s.ops, &s.problems, now);
             changed |= ops::explain(&mut s.ops, &s.failures);
+            let again = reruns::noticed(s);
+            changed |= !again.is_empty();
             if changed {
                 self.dirty.store(true, Ordering::SeqCst);
             }
-        }
-        let mut events = self.read_answers().await;
+            again
+        };
+        events.extend(self.read_answers().await);
         for _ in 0..ops::WRITES_PER_PASS {
             let next = {
                 let s = self.state.lock().await;
@@ -57,7 +65,27 @@ impl Engine {
             let Some((planned, login)) = next else {
                 break;
             };
-            if ops::looks_first(planned.action) {
+            if let Some(job) = &planned.rerun {
+                // An earlier try may have rerun it before Orbit heard back,
+                // and GitHub reruns a job only once its workflow is done.
+                let look = reruns::look(&planned.repo, &job.url).await;
+                if look != Ok(Look::Ready) {
+                    let failed = look.is_err();
+                    self.update(|s| reruns::looked(&mut s.ops, &planned, look, chrono::Utc::now()))
+                        .await;
+                    if self.flush().await.is_err() || failed {
+                        break;
+                    }
+                    continue;
+                }
+                let wanted = {
+                    let s = self.state.lock().await;
+                    plan(&s, chrono::Utc::now()).as_ref() == Some(&planned)
+                };
+                if !wanted {
+                    continue;
+                }
+            } else if ops::looks_first(planned.action) {
                 // An earlier try may have got there before Orbit heard back.
                 let found = find(&planned, &login).await;
                 if !matches!(found, Ok(None)) || planned.action == Action::Find {
@@ -101,14 +129,14 @@ impl Engine {
                 }
             }
             self.update(|s| {
-                ops::settle(
-                    &mut s.ops,
-                    &mut s.journal,
-                    &id,
-                    &planned,
-                    result,
-                    chrono::Utc::now(),
-                )
+                let now = chrono::Utc::now();
+                if planned.rerun.is_some() {
+                    let reran =
+                        reruns::settle(&mut s.ops, &mut s.journal, &id, &planned, result, now);
+                    events.extend(reran);
+                } else {
+                    ops::settle(&mut s.ops, &mut s.journal, &id, &planned, result, now);
+                }
             })
             .await;
             if self.flush().await.is_err() || !sent {
@@ -260,6 +288,38 @@ impl Engine {
         }
         self.flush().await
     }
+    /// Lets Bit rerun an item's job it asks about first, and reruns it.
+    pub async fn rerun_job(self: &Arc<Self>, key: &str, number: u32) -> Result<(), String> {
+        self.allow_rerun(key, number).await?;
+        let e = self.clone();
+        tokio::spawn(async move { e.tell_agents().await });
+        Ok(())
+    }
+    /// Lets Bit rerun an item's job it asks about first.
+    pub(super) async fn allow_rerun(&self, key: &str, number: u32) -> Result<(), String> {
+        let mut found = false;
+        self.update(|s| {
+            let item = s
+                .ops
+                .iter_mut()
+                .find(|t| t.key == key)
+                .and_then(|t| t.items.iter_mut().find(|i| i.number == number && i.failing));
+            if let Some(item) = item {
+                item.rerun_ok = item.url.clone();
+                // Tried now, rather than after the wait.
+                let url = &item.url;
+                for r in item.reruns.iter_mut().filter(|r| &r.url == url) {
+                    r.retry_at = None;
+                }
+                found = true;
+            }
+        })
+        .await;
+        if !found {
+            return Err("Orbit has nothing to rerun there any more.".into());
+        }
+        self.flush().await
+    }
 }
 
 /// A comment as a reply Orbit reads: what it says about items, when it is
@@ -324,6 +384,7 @@ async fn send(p: &Planned) -> Result<Posted, String> {
         |n: Option<u64>| n.ok_or_else(|| "Orbit doesn't know where this is on GitHub.".to_string());
     match p.action {
         Action::Find => Err("Looking isn't a write.".into()),
+        Action::RerunJob => reruns::send(p).await,
         Action::PostComment | Action::NoteOnIssue => {
             github::post_comment(&p.repo, known(p.number)?, &p.body, &p.marker).await
         }

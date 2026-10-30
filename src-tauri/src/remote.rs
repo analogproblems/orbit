@@ -60,6 +60,7 @@ pub const COMMANDS: &[&str] = &[
     "continue_loop",
     "use_fix",
     "tell_agent",
+    "rerun_job",
     "ask_buddy",
     "ask_buddy_anything",
     "use_proposal",
@@ -306,6 +307,9 @@ async fn dispatch(e: &Arc<Engine>, name: &str, a: &Value) -> Result<Value, Strin
             .await?),
         "use_fix" => out(e.fix(&arg::<String>(a, "key")?).await?),
         "tell_agent" => out(e.tell_agent(&arg::<String>(a, "key")?).await?),
+        "rerun_job" => out(e
+            .rerun_job(&arg::<String>(a, "key")?, arg(a, "number")?)
+            .await?),
         "ask_buddy" => out(e.ask_buddy(arg(a, "question")?).await?),
         "ask_buddy_anything" => out(e.ask_buddy_anything(&arg::<String>(a, "question")?).await?),
         "use_proposal" => out(e

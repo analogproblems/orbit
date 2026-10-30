@@ -47,6 +47,9 @@ pub struct Failure {
     /// GitHub's rate limit stopped the last try, so Orbit reads no log
     /// until `retry_at`.
     pub limited: bool,
+    /// Why it looks like bad luck rather than the code, such as a lost
+    /// runner or a network error, when it does (see `flaky`).
+    pub flaky: Option<String>,
 }
 
 /// The job a check's link names, when it is a GitHub Actions job in
@@ -163,7 +166,7 @@ pub fn retry_later(
     );
 }
 /// The first line of an error, without gh's name and cut short.
-fn short(error: &str) -> String {
+pub fn short(error: &str) -> String {
     let line = error.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
     // Orbit names the program, and gh names itself.
     let line = match line.trim().split_once(": ") {
@@ -223,7 +226,11 @@ pub async fn read(repo: &str, check: &str, url: &str) -> Result<Failure, String>
     };
     let log = match crate::github::api_text(&format!("{endpoint}/logs")).await {
         Ok(log) => log,
-        Err(e) => return lasting(e, failure),
+        Err(e) => {
+            // The job alone can still say it was bad luck.
+            failure.flaky = flaky(failed_step(&job), &[]);
+            return lasting(e, failure);
+        }
     };
     Ok(understand(failure, &job, &log))
 }
@@ -259,6 +266,8 @@ pub fn understand(mut failure: Failure, job: &Value, log: &str) -> Failure {
         Some((s, window)) => (window, own(window, s, job)),
         None => (&lines[..], last_step(&lines)),
     };
+    let own: Vec<&str> = shown.iter().map(|l| l.text.as_str()).collect();
+    failure.flaky = flaky(step, &own);
     let text: Vec<&str> = checked.iter().map(|l| l.text.as_str()).collect();
     if !credential_kinds(&format!("{name}\n{}", text.join("\n"))).is_empty() {
         failure.held = true;
@@ -267,6 +276,59 @@ pub fn understand(mut failure: Failure, job: &Value, log: &str) -> Failure {
     failure.step = cut(&name);
     failure.lines = tail(shown).iter().map(|l| cut(l)).collect();
     failure
+}
+
+/// What a log says when the runner went away.
+const LOST: [&str; 4] = [
+    "The runner has received a shutdown signal",
+    "lost communication with the server",
+    "The hosted runner encountered an error",
+    "Runner connection is lost",
+];
+/// What a log says when the network or a registry failed.
+const NETWORK: [&str; 14] = [
+    "ECONNRESET",
+    "ETIMEDOUT",
+    "EAI_AGAIN",
+    "ENOTFOUND",
+    "socket hang up",
+    "Connection reset by peer",
+    "Could not resolve host",
+    "Temporary failure in name resolution",
+    "TLS handshake timeout",
+    "i/o timeout",
+    "502 Bad Gateway",
+    "503 Service Unavailable",
+    "504 Gateway Time",
+    "toomanyrequests",
+];
+/// Why a failure looks like bad luck rather than the code, from the step
+/// that failed the job and its own lines: no step failed, as when a runner is
+/// lost; the runner went away; the job failed setting up, or getting the
+/// code or tools ready, before any test ran; or a network or registry
+/// error. A guess that costs at most one rerun.
+pub fn flaky(step: Option<&Value>, lines: &[&str]) -> Option<String> {
+    let Some(step) = step else {
+        return Some("No step failed, as when a runner is lost.".into());
+    };
+    if LOST.iter().any(|p| lines.iter().any(|l| l.contains(p))) {
+        return Some("The runner went away.".into());
+    }
+    let name = plain(step["name"].as_str().unwrap_or_default());
+    if name == "Set up job" {
+        return Some("It failed setting up the job.".into());
+    }
+    let ready = ["actions/checkout@", "actions/setup-", "actions/cache@"];
+    if name
+        .strip_prefix("Run ")
+        .is_some_and(|action| ready.iter().any(|r| action.starts_with(r)))
+    {
+        return Some("It failed getting the code or tools ready, before any test ran.".into());
+    }
+    NETWORK
+        .iter()
+        .find(|p| lines.iter().any(|l| l.contains(*p)))
+        .map(|p| format!("A network or registry error ({p})."))
 }
 
 /// The step most likely to have failed the job, from GitHub's answer about

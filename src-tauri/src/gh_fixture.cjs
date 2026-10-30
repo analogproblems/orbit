@@ -6,7 +6,10 @@
 // edited for a query about one by its node ID. Compare answers from <dir>/compare.json, keyed by
 // "base...head", or 404. A job is <dir>/job-<id>.json and its log
 // <dir>/log-<id>.txt, or 404; while <dir>/limit exists they answer as past
-// GitHub's rate limit. While <dir>/down exists every call
+// GitHub's rate limit. Rerunning a job writes <dir>/rerun-<id>, or fails
+// with the text of <dir>/rerun-error while that exists. A run's latest jobs
+// are the jobs in it, each one rerun replaced by its next try, queued.
+// While <dir>/down exists every call
 // fails. While <dir>/hold exists a GET waits, after writing <dir>/held. Each
 // call is logged to <dir>/calls as "METHOD endpoint".
 const fs = require("node:fs");
@@ -93,6 +96,38 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
     : {};
   if (!known[m[1]]) missing();
   answer(known[m[1]]);
+} else if ((m = endpoint.match(/^repos\/a\/b\/actions\/jobs\/(\d+)\/rerun$/))) {
+  const refused = path.join(dir, "rerun-error");
+  if (fs.existsSync(refused)) {
+    process.stderr.write(fs.readFileSync(refused, "utf8"));
+    process.exit(1);
+  }
+  fs.writeFileSync(path.join(dir, `rerun-${m[1]}`), "");
+} else if ((m = endpoint.match(/^repos\/a\/b\/actions\/runs\/(\d+)\/jobs$/))) {
+  const read = (f) => {
+    try {
+      return JSON.parse(fs.readFileSync(path.join(dir, f), "utf8"));
+    } catch {
+      return null;
+    }
+  };
+  const jobs = fs
+    .readdirSync(dir)
+    .filter((f) => /^job-\d+\.json$/.test(f))
+    .map(read)
+    .filter((j) => j && j.run_id === Number(m[1]))
+    .map((j) =>
+      fs.existsSync(path.join(dir, `rerun-${j.id}`))
+        ? {
+            ...j,
+            id: j.id + 1000,
+            run_attempt: (j.run_attempt || 1) + 1,
+            status: "queued",
+            conclusion: null,
+          }
+        : j,
+    );
+  answer({ total_count: jobs.length, jobs });
 } else if (
   (m = endpoint.match(/^repos\/a\/b\/actions\/jobs\/(\d+)(\/logs)?$/))
 ) {

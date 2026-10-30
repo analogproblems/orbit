@@ -466,6 +466,8 @@ async fn turning_autopilot_back_on_is_a_button() {
             sync_now: "do_it".into(),
             comment_on_prs: "do_it".into(),
             open_issues: "do_it".into(),
+            rerun_flaky: "do_it".into(),
+            rerun_again: "do_it".into(),
         };
     })
     .await;

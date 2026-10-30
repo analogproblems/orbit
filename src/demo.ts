@@ -831,6 +831,10 @@ export function demoCi(
   const check = (name: string, url = "") => ({ name, url });
   const rustJob = "https://github.com/acme/orbit/actions/runs/1001/job/2001";
   const frontendJob = `https://github.com/${failingPr.repo}/actions/runs/1002/job/2002`;
+  // Rerun once after its runner went away, it failed the same way again.
+  const e2eFirst = `https://github.com/${failingPr.repo}/actions/runs/1002/job/2003`;
+  const e2eJob = `https://github.com/${failingPr.repo}/actions/runs/1002/job/2104`;
+  const lost = "The runner went away.";
   const ci: RepoCi[] = [
     {
       repo: "acme/orbit",
@@ -880,7 +884,10 @@ export function demoCi(
     ci: {
       sha: failingPr.headSha,
       state: "failing",
-      failing: [check("CI / Frontend", frontendJob)],
+      failing: [
+        check("CI / Frontend", frontendJob),
+        check("CI / End-to-end", e2eJob),
+      ],
       running: 0,
       passing: 2,
     },
@@ -912,14 +919,18 @@ export function demoCi(
       branch: failingPr.headRef,
       sha: failingPr.headSha,
       sinceSha: failingPr.headSha,
-      failing: [check("CI / Frontend", frontendJob)],
+      failing: [
+        check("CI / Frontend", frontendJob),
+        check("CI / End-to-end", e2eJob),
+      ],
       openedAt: ago(20),
-      updatedAt: ago(20),
+      updatedAt: ago(9),
       timeline: [
         {
           at: ago(20),
-          text: `Failing on ${failingPr.headRef} at ${failingPr.headSha.slice(0, 7)}: CI / Frontend.`,
+          text: `Failing on ${failingPr.headRef} at ${failingPr.headSha.slice(0, 7)}: CI / Frontend and CI / End-to-end.`,
         },
+        { at: ago(9), text: "Now failing: CI / Frontend and CI / End-to-end." },
       ],
       alerts: 0,
     },
@@ -1029,8 +1040,30 @@ export function demoCi(
             head: failingPr.headSha,
           },
         },
+        {
+          ...item(
+            2,
+            "CI / End-to-end",
+            true,
+            failingPr.headSha,
+            failingPr.headSha,
+            e2eJob,
+          ),
+          reruns: [
+            {
+              url: e2eFirst,
+              reason: lost,
+              at: ago(19),
+              done: true,
+              already: false,
+              tries: 0,
+              lasting: false,
+              failedAgain: true,
+            },
+          ],
+        },
       ],
-      updatedAt: ago(20),
+      updatedAt: ago(9),
     }),
     thread({
       key: "issue:demo-problem-3",
@@ -1066,7 +1099,8 @@ export function demoCi(
     write("demo-write-3", "note_on_issue", ops[2], ago(25 * 60)),
     write("demo-write-4", "close_issue", ops[2], ago(25 * 60)),
     write("demo-write-5", "open_issue", ops[0], ago(44)),
-    write("demo-write-6", "post_comment", ops[1], ago(19)),
+    { ...write("demo-write-6", "rerun_job", ops[1], ago(19)), url: e2eFirst },
+    write("demo-write-8", "post_comment", ops[1], ago(19)),
     write("demo-write-7", "edit_issue", ops[0], ago(18)),
   ];
   const failures: CiFailure[] = [
@@ -1102,6 +1136,18 @@ export function demoCi(
       ],
       held: false,
       readAt: ago(19),
+    },
+    {
+      url: e2eJob,
+      check: "CI / End-to-end",
+      step: "Run npx playwright test",
+      lines: [
+        "Running 42 tests using 4 workers",
+        "Error: The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.",
+      ],
+      held: false,
+      readAt: ago(9),
+      flaky: lost,
     },
   ];
   for (const t of ops)

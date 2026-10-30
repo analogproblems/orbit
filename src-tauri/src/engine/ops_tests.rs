@@ -1426,3 +1426,316 @@ async fn a_long_private_key_is_never_kept() {
         assert!(!text.contains("keybody") && !text.contains("PRIVATE KEY"));
     }
 }
+
+/// Job `id` in run 1, try `attempt` of the check `name`, which failed at
+/// `step` with this log.
+fn actions_job(dir: &Path, id: u32, name: &str, attempt: u32, step: &str, log: &[&str]) {
+    in_run(dir, 1, id, name, attempt, step, log);
+}
+/// The same in run `run`, as for another commit.
+fn in_run(dir: &Path, run: u32, id: u32, name: &str, attempt: u32, step: &str, log: &[&str]) {
+    job(dir, id, step, log);
+    let file = dir.join(format!("job-{id}.json"));
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    for (key, value) in [
+        ("id", json!(id)),
+        ("run_id", json!(run)),
+        ("name", json!(name)),
+        ("run_attempt", json!(attempt)),
+        ("status", json!("completed")),
+        ("conclusion", json!("failure")),
+    ] {
+        v[key] = value;
+    }
+    std::fs::write(file, v.to_string()).unwrap();
+}
+/// As if GitHub finished rerunning job `id` as job `next`, try `attempt`,
+/// which failed when the runner went away.
+fn rerun_lost(dir: &Path, id: u32, next: u32, attempt: u32) {
+    std::fs::remove_file(dir.join(format!("rerun-{id}"))).unwrap();
+    std::fs::remove_file(dir.join(format!("job-{id}.json"))).unwrap();
+    actions_job(
+        dir,
+        next,
+        "Rust",
+        attempt,
+        "Run cargo test",
+        &["##[error]The runner has received a shutdown signal."],
+    );
+    links(dir, &[("Rust", &job_url(next))]);
+}
+fn reruns_sent(dir: &Path) -> Vec<String> {
+    writes(dir)
+        .into_iter()
+        .filter(|w| w.ends_with("/rerun"))
+        .collect()
+}
+fn comment(dir: &Path) -> String {
+    github(dir)["comments"][0]["body"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+/// Whether Bit has a note that says `text`.
+async fn noted(e: &Engine, text: &str) -> bool {
+    let notes = e.snapshot().await.buddy_feed.notes;
+    notes.iter().any(|n| n.text.contains(text))
+}
+
+/// A job that failed getting the code is rerun once, through the journal,
+/// before the comment says so; when it fails again Bit asks before a second
+/// rerun, and there is never a third at one commit. A new commit starts
+/// again.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_flaky_job_is_rerun_once_and_never_twice_without_a_tap() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let e = connected(d.path()).await;
+    e.update(|s| s.prs = vec![pr('5')]).await;
+    answer(
+        d.path(),
+        '1',
+        &[("Rust", "SUCCESS")],
+        Some(('5', &[("Rust", "FAILURE")])),
+    );
+    links(d.path(), &[("Rust", &job_url(2))]);
+    actions_job(
+        d.path(),
+        2,
+        "Rust",
+        1,
+        "Run actions/checkout@v4",
+        &[
+            "fatal: unable to access 'https://github.com/a/b/': Could not resolve host: github.com",
+            "##[error]Process completed with exit code 128.",
+        ],
+    );
+    watch(&e, &gh).await;
+    assert_eq!(
+        writes(d.path()),
+        [
+            "POST repos/a/b/actions/jobs/2/rerun",
+            "POST repos/a/b/issues/12/comments"
+        ],
+        "rerun first, so the comment says so"
+    );
+    assert!(comment(d.path()).contains(&format!(
+        "[details]({})\n  Orbit reran this job, as it looks like bad luck: It failed getting the code or tools ready, before any test ran.\n  Failed at step `Run actions/checkout@v4`:",
+        job_url(2)
+    )));
+    let s = e.snapshot().await;
+    let w = &s.journal[0];
+    assert_eq!(w.action, crate::ops::Action::RerunJob);
+    assert_eq!((w.state, w.url.as_str()), (WriteState::Done, &*job_url(2)));
+    assert_eq!(w.number, Some(12));
+    assert!(noted(&e, "Orbit reran I1 (CI / Rust) on a/b #12, as it looks like bad luck: It failed getting the code or tools ready, before any test ran.").await);
+    // Once.
+    watch(&e, &gh).await;
+    assert_eq!(reruns_sent(d.path()).len(), 1);
+
+    // It fails again, when the runner goes away: Bit asks first.
+    rerun_lost(d.path(), 2, 1002, 2);
+    watch(&e, &gh).await;
+    assert_eq!(reruns_sent(d.path()).len(), 1);
+    assert!(comment(d.path()).contains(&format!(
+        "[details]({})\n  It failed again after it was rerun, so it's likely real.\n",
+        job_url(1002)
+    )));
+    assert!(noted(&e, "I1 (CI / Rust) failed again on a/b #12 after a rerun. It still looks like bad luck: The runner went away. Tap Rerun again on Operations to try once more.").await);
+    assert!(e.allow_rerun("pr:a/b#12", 9).await.is_err());
+    e.allow_rerun("pr:a/b#12", 1).await.unwrap();
+    crate::github::GH.scope(gh.clone(), e.tell_agents()).await;
+    assert_eq!(
+        reruns_sent(d.path()),
+        [
+            "POST repos/a/b/actions/jobs/2/rerun",
+            "POST repos/a/b/actions/jobs/1002/rerun"
+        ]
+    );
+    assert!(comment(d.path()).contains(
+        "Orbit reran this job a second time, as it still looks like bad luck: The runner went away.\n"
+    ));
+
+    // Never a third, even with a tap.
+    rerun_lost(d.path(), 1002, 2002, 3);
+    watch(&e, &gh).await;
+    e.allow_rerun("pr:a/b#12", 1).await.unwrap();
+    crate::github::GH.scope(gh.clone(), e.tell_agents()).await;
+    assert_eq!(reruns_sent(d.path()).len(), 2);
+    assert!(comment(d.path()).contains("It failed again after two reruns, so it's likely real.\n"));
+    assert!(
+        noted(
+            &e,
+            "I1 (CI / Rust) failed again on a/b #12 after a rerun, so it's likely real."
+        )
+        .await
+    );
+
+    // A new commit starts again.
+    e.update(|s| s.prs = vec![pr('6')]).await;
+    answer(
+        d.path(),
+        '1',
+        &[("Rust", "SUCCESS")],
+        Some(('6', &[("Rust", "FAILURE")])),
+    );
+    let url = "https://github.com/a/b/actions/runs/3/job/3".to_string();
+    links(d.path(), &[("Rust", &url)]);
+    in_run(d.path(), 3, 3, "Rust", 1, "Set up job", &["##[error]boom"]);
+    // The job alone says it failed setting up, without its log.
+    std::fs::remove_file(d.path().join("log-3.txt")).unwrap();
+    watch(&e, &gh).await;
+    assert_eq!(
+        reruns_sent(d.path()).last().unwrap(),
+        "POST repos/a/b/actions/jobs/3/rerun"
+    );
+}
+
+/// Orbit waits for a job's workflow to finish before rerunning it; a rerun
+/// cut off by a restart is found on GitHub rather than sent again; a rerun
+/// GitHub refuses isn't asked again, and the rules decide.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_rerun_is_never_sent_twice() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let e = connected(d.path()).await;
+    e.update(|s| s.prs = vec![pr('5')]).await;
+    answer(
+        d.path(),
+        '1',
+        &[("Rust", "SUCCESS")],
+        Some(('5', &[("Rust", "FAILURE")])),
+    );
+    links(d.path(), &[("Rust", &job_url(2))]);
+    actions_job(d.path(), 2, "Rust", 1, "Set up job", &["##[error]boom"]);
+    let docs = json!({ "id": 9, "run_id": 1, "name": "Docs", "status": "in_progress" });
+    std::fs::write(d.path().join("job-9.json"), docs.to_string()).unwrap();
+    watch(&e, &gh).await;
+    assert!(reruns_sent(d.path()).is_empty());
+    let s = e.snapshot().await;
+    let r = &s.ops[0].items[0].reruns[0];
+    assert_eq!(
+        r.error.as_deref(),
+        Some("Its workflow is still running, so Orbit reruns it once that finishes.")
+    );
+    assert!(s
+        .journal
+        .iter()
+        .all(|w| w.action != crate::ops::Action::RerunJob));
+
+    // Once it has finished.
+    let docs = json!({ "id": 9, "run_id": 1, "name": "Docs", "status": "completed" });
+    std::fs::write(d.path().join("job-9.json"), docs.to_string()).unwrap();
+    let due = |s: &mut Snapshot| {
+        for r in s
+            .ops
+            .iter_mut()
+            .flat_map(|t| &mut t.items)
+            .flat_map(|i| &mut i.reruns)
+        {
+            r.retry_at = r
+                .retry_at
+                .as_ref()
+                .map(|_| "2026-01-01T00:00:00.000Z".into());
+        }
+    };
+    e.update(due).await;
+    watch(&e, &gh).await;
+    assert_eq!(
+        reruns_sent(d.path()),
+        ["POST repos/a/b/actions/jobs/2/rerun"]
+    );
+
+    // As if Orbit stopped once the rerun reached GitHub, before it answered.
+    e.update(|s| {
+        s.ops[0].items[0].reruns.clear();
+        let w = s
+            .journal
+            .iter_mut()
+            .find(|w| w.action == crate::ops::Action::RerunJob)
+            .unwrap();
+        w.state = WriteState::Sending;
+        w.done_at = None;
+    })
+    .await;
+    e.flush().await.unwrap();
+    drop(e);
+    let e = connected(d.path()).await;
+    e.update(|s| s.prs = vec![pr('5')]).await;
+    watch(&e, &gh).await;
+    assert_eq!(reruns_sent(d.path()).len(), 1, "found, not sent again");
+    let s = e.snapshot().await;
+    let r = &s.ops[0].items[0].reruns[0];
+    assert!(r.done && r.already);
+    assert!(comment(d.path()).contains("This job was already rerun on GitHub.\n"));
+    let cut = s
+        .journal
+        .iter()
+        .find(|w| w.action == crate::ops::Action::RerunJob)
+        .unwrap();
+    assert_eq!(cut.state, WriteState::Failed);
+
+    // A new commit whose rerun GitHub refuses.
+    e.update(|s| s.prs = vec![pr('6')]).await;
+    answer(
+        d.path(),
+        '1',
+        &[("Rust", "SUCCESS")],
+        Some(('6', &[("Rust", "FAILURE")])),
+    );
+    let url = "https://github.com/a/b/actions/runs/3/job/3".to_string();
+    links(d.path(), &[("Rust", &url)]);
+    in_run(d.path(), 3, 3, "Rust", 1, "Set up job", &["##[error]boom"]);
+    std::fs::write(
+        d.path().join("rerun-error"),
+        "gh: Resource not accessible by integration (HTTP 403)\n",
+    )
+    .unwrap();
+    watch(&e, &gh).await;
+    e.update(due).await;
+    watch(&e, &gh).await;
+    assert_eq!(
+        reruns_sent(d.path())[1..],
+        ["POST repos/a/b/actions/jobs/3/rerun"],
+        "asked once"
+    );
+    let s = e.snapshot().await;
+    let r = &s.ops[0].items[0].reruns[0];
+    assert!(r.lasting && !r.done);
+    assert_eq!(
+        r.error.as_deref(),
+        Some("GitHub won't rerun this job: Resource not accessible by integration (HTTP 403).")
+    );
+    assert!(
+        !comment(d.path()).contains("rerun"),
+        "nothing to say on GitHub"
+    );
+
+    // The rules decide.
+    std::fs::remove_file(d.path().join("rerun-error")).unwrap();
+    e.update(|s| s.prs = vec![pr('7')]).await;
+    answer(
+        d.path(),
+        '1',
+        &[("Rust", "SUCCESS")],
+        Some(('7', &[("Rust", "FAILURE")])),
+    );
+    let url = "https://github.com/a/b/actions/runs/4/job/4".to_string();
+    links(d.path(), &[("Rust", &url)]);
+    in_run(d.path(), 4, 4, "Rust", 1, "Set up job", &["##[error]boom"]);
+    e.update(|s| s.settings.buddy.rules.rerun_flaky = "leave_it".into())
+        .await;
+    watch(&e, &gh).await;
+    e.update(|s| s.settings.buddy.rules.rerun_flaky = "ask_first".into())
+        .await;
+    watch(&e, &gh).await;
+    assert_eq!(reruns_sent(d.path()).len(), 2);
+    e.allow_rerun("pr:a/b#12", 1).await.unwrap();
+    crate::github::GH.scope(gh.clone(), e.tell_agents()).await;
+    assert_eq!(
+        reruns_sent(d.path()).last().unwrap(),
+        "POST repos/a/b/actions/jobs/4/rerun"
+    );
+}

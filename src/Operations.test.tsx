@@ -8,13 +8,22 @@ import {
   screen,
   within,
 } from "@testing-library/react";
-import { Operations, answerText, branchSummary, whyText } from "./Operations";
+import {
+  Operations,
+  answerText,
+  asksToRerun,
+  branchSummary,
+  rerunText,
+  whyText,
+} from "./Operations";
 import { freshDemo } from "./demo";
 import { useOrbit } from "./store";
 import {
   checkNames,
   type CiFailure,
   type OpsAnswer,
+  type OpsItem,
+  type OpsRerun,
   type OpsThread,
   type RepoCi,
   type Snapshot,
@@ -261,7 +270,7 @@ describe("operations page", () => {
     expect(pull.textContent).not.toContain("hidden");
   });
 
-  it("lists what Orbit posted, newest first", () => {
+  it("lists what Orbit did on GitHub, newest first", () => {
     const s = freshDemo();
     s.journal!.push({
       ...s.journal![0],
@@ -274,7 +283,9 @@ describe("operations page", () => {
       error: "HTTP 502: Bad Gateway",
     });
     show(s);
-    const posted = screen.getByRole("list", { name: "What Orbit posted" });
+    const posted = screen.getByRole("list", {
+      name: "What Orbit did on GitHub",
+    });
     const items = within(posted).getAllByRole("listitem");
     expect(items[0].textContent).toContain(
       "Updated its comment on acme/api #7.HTTP 502: Bad Gateway",
@@ -286,6 +297,48 @@ describe("operations page", () => {
     expect(items.map((i) => i.textContent)).toContainEqual(
       expect.stringContaining("Closed its issue on acme/api #88."),
     );
+    expect(items.map((i) => i.textContent)).toContainEqual(
+      expect.stringContaining(
+        `Reran a job on ${s.prs[2].id.replace("#", " #")}.`,
+      ),
+    );
+  });
+
+  it("says when a job looks like bad luck, and asks before a second rerun", () => {
+    const action = vi.fn().mockResolvedValue({ ok: true });
+    useOrbit.setState({ action });
+    const s = freshDemo();
+    show(s);
+    const row = () =>
+      within(screen.getByRole("list", { name: "Open problems" })).getAllByRole(
+        "listitem",
+      )[1];
+    expect(row().textContent).toContain(
+      "Looks like bad luck: The runner went away.",
+    );
+    expect(row().textContent).toContain(
+      "It failed again after a rerun, so it’s likely real. Bit asks before rerunning it again.",
+    );
+    // The comment is posted, so both buttons show.
+    expect(
+      within(row()).getByRole("button", { name: "Open on GitHub" }),
+    ).toBeTruthy();
+    fireEvent.click(within(row()).getByRole("button", { name: "Rerun again" }));
+    expect(action).toHaveBeenCalledWith("rerun_job", {
+      key: `pr:${s.prs[2].id}`,
+      number: 2,
+    });
+    // Do it reruns it without a button.
+    cleanup();
+    s.settings.buddy!.rules.rerun_again = "do_it";
+    show(s);
+    expect(
+      within(row()).queryByRole("button", { name: "Rerun again" }),
+    ).toBeNull();
+    expect(row().textContent).toContain(
+      "It failed again after a rerun, so it’s likely real.",
+    );
+    expect(row().textContent).not.toContain("asks before");
   });
 
   it("asks you to connect a repository first", () => {
@@ -380,6 +433,71 @@ describe("ci sentences", () => {
     expect(whyText({ ...f, held: true, step: "Run it" })).toBe(
       "CI / Lint: Orbit held back its log, as it looks like it holds a secret.",
     );
+  });
+  it("say what Orbit did about a job that looks like bad luck", () => {
+    const s = freshDemo();
+    const p = s.problems!.find((p) => p.kind === "pull_request")!;
+    const job = (n: number) => `https://github.com/a/b/actions/runs/1/job/${n}`;
+    const rerun = (url: string, more: Partial<OpsRerun> = {}): OpsRerun => ({
+      url,
+      reason: "The runner went away.",
+      at: "",
+      done: true,
+      already: false,
+      tries: 0,
+      lasting: false,
+      failedAgain: false,
+      ...more,
+    });
+    const item = (reruns: OpsRerun[], flaky = true): OpsItem => ({
+      number: 1,
+      check: "CI / E2E",
+      url: job(3),
+      failing: true,
+      since: "",
+      at: "",
+      why: {
+        url: job(3),
+        check: "CI / E2E",
+        step: "",
+        lines: [],
+        held: false,
+        readAt: "",
+        flaky: flaky ? "The runner went away." : null,
+      },
+      reruns,
+    });
+    // Rerun on its own by default: nothing to ask, nothing to say yet.
+    expect(asksToRerun(s, p, item([]))).toBe(false);
+    expect(rerunText(s, p, item([]))).toBeUndefined();
+    expect(rerunText(s, p, item([rerun(job(3))]))).toBe("Orbit reran it.");
+    expect(rerunText(s, p, item([rerun(job(2)), rerun(job(3))]))).toBe(
+      "Orbit reran it a second time.",
+    );
+    expect(rerunText(s, p, item([rerun(job(3), { already: true })]))).toBe(
+      "It was already rerun on GitHub.",
+    );
+    expect(rerunText(s, p, item([rerun(job(2))], false))).toBe(
+      "It failed again after a rerun, so it’s likely real.",
+    );
+    expect(rerunText(s, p, item([rerun(job(1)), rerun(job(2))]))).toBe(
+      "It failed again after two reruns, so it’s likely real.",
+    );
+    expect(asksToRerun(s, p, item([rerun(job(1)), rerun(job(2))]))).toBe(false);
+    const refused = "GitHub won’t rerun this job: Forbidden (HTTP 403).";
+    const failed = item([
+      rerun(job(3), { done: false, lasting: true, error: refused }),
+    ]);
+    expect(rerunText(s, p, failed)).toBe(refused);
+    expect(asksToRerun(s, p, failed)).toBe(false);
+    // Ask first, until you say yes.
+    s.settings.buddy!.rules.rerun_flaky = "ask_first";
+    expect(asksToRerun(s, p, item([]))).toBe(true);
+    expect(rerunText(s, p, item([]))).toBe("Bit asks before rerunning it.");
+    expect(asksToRerun(s, p, { ...item([]), rerunOk: job(3) })).toBe(false);
+    expect(asksToRerun(s, p, item([], false))).toBe(false);
+    s.settings.buddy!.enabled = false;
+    expect(asksToRerun(s, p, item([]))).toBe(false);
   });
   it("name checks as the engine does", () => {
     const checks = ["A", "B", "C", "D"].map((name) => ({ name, url: "" }));

@@ -132,6 +132,24 @@ pub async fn api_text(endpoint: &str) -> Result<String, String> {
     .collect();
     run(&gh(), &args, None, None).await
 }
+/// Asks GitHub Actions to rerun a job, and the jobs that need it. GitHub
+/// answers with no body.
+pub async fn rerun_job(repo: &str, job: u64) -> Result<(), String> {
+    validate_repo(repo)?;
+    let endpoint = format!("repos/{repo}/actions/jobs/{job}/rerun");
+    let args: Vec<String> = [
+        "api",
+        "--hostname",
+        "github.com",
+        "--method",
+        "POST",
+        &endpoint,
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    run(&gh(), &args, None, None).await.map(|_| ())
+}
 /// What Orbit says when gh isn't installed. It starts with "Cannot start",
 /// like any program Orbit can't find.
 pub const GH_MISSING: &str =

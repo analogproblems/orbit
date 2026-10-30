@@ -181,29 +181,85 @@ export function whyText(f: CiFailure) {
   return `${f.check} failed. Its log ends:`;
 }
 
+/** The reruns of an item's job that went through at its commit. */
+function doneReruns(i: OpsItem) {
+  return (i.reruns ?? []).filter((r) => r.done);
+}
+
+/** Whether Bit waits for your tap before rerunning a failing item's job:
+ * it looks like bad luck, Orbit hasn't rerun this job or given up on it,
+ * fewer than two reruns went through at this commit, and the rule for the
+ * next one is Ask first. */
+export function asksToRerun(s: Snapshot, p: Problem, i: OpsItem) {
+  const buddy = buddyOf(s.settings);
+  if (!buddy.enabled || p.closedAt || !i.failing) return false;
+  if (i.why?.url !== i.url || !i.why.flaky) return false;
+  const tried = i.reruns?.find((r) => r.url === i.url);
+  if (tried?.done || tried?.lasting) return false;
+  const done = doneReruns(i).length;
+  if (done >= 2) return false;
+  const rule = done ? buddy.rules.rerun_again : buddy.rules.rerun_flaky;
+  return rule === "ask_first" && i.rerunOk !== i.url;
+}
+
+/** What Orbit did about a failing item's job looking like bad luck: that
+ * it reran it, that it failed again, or why it hasn't rerun it yet. */
+export function rerunText(s: Snapshot, p: Problem, i: OpsItem) {
+  const name = buddyOf(s.settings).name;
+  const done = doneReruns(i);
+  const last = done.at(-1);
+  if (last?.url === i.url) {
+    if (last.already) return "It was already rerun on GitHub.";
+    return done.length === 1
+      ? "Orbit reran it."
+      : "Orbit reran it a second time.";
+  }
+  if (last) {
+    const real =
+      done.length === 1
+        ? "It failed again after a rerun, so it’s likely real."
+        : "It failed again after two reruns, so it’s likely real.";
+    return asksToRerun(s, p, i)
+      ? `${real} ${name} asks before rerunning it again.`
+      : real;
+  }
+  const tried = i.reruns?.find((r) => r.url === i.url);
+  if (tried?.error) return tried.error;
+  if (asksToRerun(s, p, i)) return `${name} asks before rerunning it.`;
+  return undefined;
+}
+
 /** Why each of a problem's failing checks failed, with the end of its log
- * as plain text. */
-function Why({ s, p }: { s: Snapshot; p: Problem }) {
+ * as plain text, and whether it looks like bad luck. */
+function Why({ s, p, t }: { s: Snapshot; p: Problem; t?: OpsThread }) {
   // Named as the problem names it, as checks may share a link.
   const read = p.failing.flatMap((c) => {
     const f = c.url && s.failures?.find((f) => f.url === c.url);
     return f ? [{ ...f, check: c.name }] : [];
   });
-  return read.map((f) => (
-    <VStack key={`${f.check} ${f.url}`} gap={1}>
-      <Text color="secondary">{whyText(f)}</Text>
-      {!f.held && !f.error && f.lines.length > 0 && (
-        <CodeBlock
-          code={f.lines.join("\n")}
-          isWrapped
-          width="100%"
-          size="sm"
-          hasCopyButton={false}
-          aria-label={`The end of ${f.check}’s log`}
-        />
-      )}
-    </VStack>
-  ));
+  return read.map((f) => {
+    const item = t?.items.find((i) => i.failing && i.url === f.url);
+    const rerun = item && rerunText(s, p, item);
+    return (
+      <VStack key={`${f.check} ${f.url}`} gap={1}>
+        <Text color="secondary">{whyText(f)}</Text>
+        {f.flaky && (
+          <Text color="secondary">Looks like bad luck: {f.flaky}</Text>
+        )}
+        {rerun && <Text color="secondary">{rerun}</Text>}
+        {!f.held && !f.error && f.lines.length > 0 && (
+          <CodeBlock
+            code={f.lines.join("\n")}
+            isWrapped
+            width="100%"
+            size="sm"
+            hasCopyButton={false}
+            aria-label={`The end of ${f.check}’s log`}
+          />
+        )}
+      </VStack>
+    );
+  });
 }
 
 /** A problem's name: its repository and branch, or its pull request. */
@@ -346,6 +402,8 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
           const yours = p.kind === "default_branch";
           const t = threadOf(s, p);
           const told = toldText(s, p, t);
+          // The jobs Bit asks before rerunning.
+          const reruns = t?.items.filter((i) => asksToRerun(s, p, i)) ?? [];
           return (
             <ListItem
               key={p.id}
@@ -367,7 +425,7 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
                       ? `Failing: ${checkNames(p.failing)}.`
                       : `Failing: ${checkNames(p.failing)}. Its author’s to fix.`}
                   </Text>
-                  <Why s={s} p={p} />
+                  <Why s={s} p={p} t={t} />
                   {told && <Text color="secondary">{told}</Text>}
                   {t?.items
                     .filter((i) => i.failing && i.answer)
@@ -381,23 +439,46 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
               }
               onClick={pr ? () => go.onChoose(pr) : undefined}
               endContent={
-                t && asksFirst(s, p, t) ? (
-                  <Button
-                    label={yours ? "Open issue" : "Post comment"}
-                    size="sm"
-                    variant="primary"
-                    onClick={() => void action("tell_agent", { key: t.key })}
-                  />
-                ) : t?.url ? (
-                  <Button
-                    label="Open on GitHub"
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => openLink(t.url)}
-                  />
-                ) : (
-                  <Timestamp value={p.openedAt} format="relative_short" />
-                )
+                // Stacked, so a narrow window keeps room for the text.
+                <VStack gap={2} hAlign="end">
+                  {t && reruns.length > 0 && (
+                    <Button
+                      label={
+                        reruns.some((i) => doneReruns(i).length)
+                          ? "Rerun again"
+                          : "Rerun"
+                      }
+                      size="sm"
+                      variant="primary"
+                      onClick={() => {
+                        for (const i of reruns)
+                          void action("rerun_job", {
+                            key: t.key,
+                            number: i.number,
+                          });
+                      }}
+                    />
+                  )}
+                  {t && asksFirst(s, p, t) ? (
+                    <Button
+                      label={yours ? "Open issue" : "Post comment"}
+                      size="sm"
+                      variant="primary"
+                      onClick={() => void action("tell_agent", { key: t.key })}
+                    />
+                  ) : t?.url ? (
+                    <Button
+                      label="Open on GitHub"
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => openLink(t.url)}
+                    />
+                  ) : (
+                    !reruns.length && (
+                      <Timestamp value={p.openedAt} format="relative_short" />
+                    )
+                  )}
+                </VStack>
               }
             />
           );
@@ -450,6 +531,7 @@ const writeText: Record<OpsAction, string> = {
   note_on_issue: "Left a closing note on",
   close_issue: "Closed its issue on",
   reopen_issue: "Reopened its issue on",
+  rerun_job: "Reran a job on",
 };
 /** A write in words, such as "Opened an issue on acme/api #45". */
 export function writeSummary(w: OpsWrite) {
@@ -464,9 +546,9 @@ function Posted() {
   if (!writes.length) return null;
   return (
     <VStack gap={3}>
-      <Heading level={3}>What Orbit posted</Heading>
+      <Heading level={3}>What Orbit did on GitHub</Heading>
       <Card padding={0}>
-        <List hasDividers aria-label="What Orbit posted">
+        <List hasDividers aria-label="What Orbit did on GitHub">
           {writes.map((w) => (
             <ListItem
               key={w.id}

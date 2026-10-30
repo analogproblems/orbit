@@ -1207,7 +1207,7 @@ function RuleSelector({
 }
 
 /** What the buddy does about each fix it can do on its own, and what it
- * posts to tell agents about failing CI. */
+ * does on GitHub about failing CI. */
 function BuddyRules() {
   const buddy = useBuddy();
   return (
@@ -1232,10 +1232,11 @@ function BuddyRules() {
         <RuleSelector key={fix} rule={fix} description={fixDescriptions[fix]} />
       ))}
       <VStack gap={2}>
-        <Heading level={4}>Telling agents about failing CI</Heading>
+        <Heading level={4}>Failing CI</Heading>
         <Text color="secondary">
           While Watch CI is on, {buddy.name} tells each project’s agent on
-          GitHub when its checks fail, so it can fix them. With{" "}
+          GitHub when its checks fail, so it can fix them, and reruns a job that
+          failed by bad luck, such as a lost runner or a network error. With{" "}
           <Text weight="semibold">Ask first</Text>, Operations shows a button
           for each one. Once something is posted, {buddy.name} keeps it up to
           date whatever the rule, so it never says something that stopped being
