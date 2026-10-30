@@ -9,6 +9,7 @@ import {
   type BuddyNote,
   type BuddyNoteLine,
   type CiFailure,
+  type CiSetup,
   type Fix,
   type LoopStatus,
   type Proposal,
@@ -670,6 +671,16 @@ export function freshDemo(): Snapshot {
     buddyFeed: {
       notes: [
         {
+          id: 7,
+          at: ago(2 * 24 * 60),
+          kind: "ci",
+          prId: null,
+          reviewId: null,
+          repo: "acme/docs",
+          text: "No CI runs on acme/docs's pull requests. Tap Propose CI on Operations and Orbit opens an issue for its agent, with a workflow to start from. 📮",
+          key: "problem:demo-problem-5",
+        },
+        {
           id: 6,
           at: ago(45),
           kind: "needs_you",
@@ -739,7 +750,7 @@ export function freshDemo(): Snapshot {
       model: "demo-review-model",
       effort: "medium",
       writeUps: { enabled: true, writer: "codex" },
-      repositories: ["orbit", "api", "dashboard"].map((n) => ({
+      repositories: ["orbit", "api", "dashboard", "docs"].map((n) => ({
         name: `acme/${n}`,
         path: `~/Projects/${n}`,
         automatic: n === "orbit",
@@ -822,11 +833,15 @@ export function freshDemo(): Snapshot {
 }
 const sha = (start: string) => start + "0".repeat(40 - start.length);
 /** CI as Orbit last read it: orbit's main fails, api's passes after failing
- * yesterday, dashboard can't be read, one pull request fails its own
- * checks, and one passed before orbit's main moved on. */
+ * yesterday, dashboard can't be read, docs has no CI on pull requests, one
+ * pull request fails its own checks, and one passed before orbit's main
+ * moved on. */
 export function demoCi(
   prs: PullRequest[],
-): Pick<Snapshot, "ci" | "problems" | "ops" | "journal" | "failures"> {
+): Pick<
+  Snapshot,
+  "ci" | "problems" | "ops" | "journal" | "failures" | "setups"
+> {
   const failingPr = prs[2];
   const behindPr = prs[4];
   const check = (name: string, url = "") => ({ name, url });
@@ -891,6 +906,61 @@ export function demoCi(
       checkedAt: "",
       error:
         "Could not resolve to a Repository with the name 'acme/dashboard'.",
+    },
+    {
+      repo: "acme/docs",
+      branch: "main",
+      head: {
+        sha: sha("e7a51c3"),
+        state: "none",
+        failing: [],
+        running: 0,
+        passing: 0,
+      },
+      title: "Add the getting started page",
+      pulls: [],
+      complete: true,
+      checkedAt: ago(1),
+    },
+  ];
+  // What Orbit proposes for acme/docs, built from its files.
+  const proposal = [
+    "name: CI",
+    "",
+    "on:",
+    "  pull_request:",
+    "  push:",
+    "    branches:",
+    "      - main",
+    "",
+    "permissions:",
+    "  contents: read",
+    "",
+    "jobs:",
+    "  check:",
+    "    runs-on: ubuntu-latest",
+    "    steps:",
+    "      - uses: actions/checkout@v5",
+    "      - uses: actions/setup-node@v5",
+    "        with:",
+    "          node-version: lts/*",
+    "          cache: npm",
+    "      - run: npm ci",
+    "      - run: npm run build",
+    "",
+  ].join("\n");
+  const docsFrom = ["package.json", "package-lock.json"];
+  const setups: CiSetup[] = [
+    {
+      repo: "acme/docs",
+      branch: "main",
+      sha: sha("e7a51c3"),
+      readAt: ago(3 * 60),
+      workflows: [{ path: ".github/workflows/deploy.yml", onPulls: "no" }],
+      others: [],
+      proposal,
+      from: docsFrom,
+      tries: 0,
     },
   ];
   ci.find((c) => sameRepo(c.repo, failingPr.repo))?.pulls.push({
@@ -981,6 +1051,30 @@ export function demoCi(
       alerts: 0,
       base: "main",
       baseSha: sha("9f3c2a1"),
+    },
+    {
+      id: "demo-problem-5",
+      key: "setup:acme/docs",
+      kind: "no_ci",
+      repo: "acme/docs",
+      branch: "main",
+      sha: sha("e7a51c3"),
+      sinceSha: sha("2c90b7f"),
+      failing: [],
+      openedAt: ago(2 * 24 * 60),
+      updatedAt: ago(3 * 60),
+      timeline: [
+        {
+          at: ago(2 * 24 * 60),
+          text: "No workflow on main runs on pull requests, at 2c90b7f.",
+        },
+      ],
+      alerts: 0,
+      found: {
+        workflows: [".github/workflows/deploy.yml"],
+        proposal,
+        from: docsFrom,
+      },
     },
     {
       id: "demo-problem-3",
@@ -1143,6 +1237,21 @@ export function demoCi(
       ],
       updatedAt: ago(44),
     }),
+    // Bit asks before proposing CI.
+    thread({
+      key: "issue:demo-problem-5",
+      kind: "issue",
+      repo: "acme/docs",
+      problemId: "demo-problem-5",
+      items: [
+        {
+          ...item(1, "main", true, sha("2c90b7f"), sha("e7a51c3")),
+          kind: "no_ci",
+        },
+      ],
+      offered: true,
+      updatedAt: ago(2 * 24 * 60),
+    }),
   ];
   const write = (
     id: string,
@@ -1222,7 +1331,7 @@ export function demoCi(
   for (const t of ops)
     for (const i of t.items)
       if (i.failing) i.why = failures.find((f) => f.url === i.url) ?? null;
-  return { ci, problems, ops, journal, failures };
+  return { ci, problems, ops, journal, failures, setups };
 }
 /** The browser demo: the fresh workspace plus two weeks of history. */
 export function demoWorkspace(): Snapshot {

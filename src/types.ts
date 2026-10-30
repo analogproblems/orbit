@@ -470,10 +470,14 @@ export type Fix =
  * connections always ask first. */
 export type RuledFix = Exclude<Fix, "turn_on_autopilot" | "check_connections">;
 export type FixRule = "do_it" | "ask_first" | "leave_it";
-/** What Bit does on GitHub about failing CI: telling agents, and rerunning
- * jobs that failed by bad luck. */
+/** What Bit does on GitHub about CI: telling agents, rerunning jobs that
+ * failed by bad luck, and proposing CI where none runs on pull requests. */
 export type RuledPost =
-  "comment_on_prs" | "open_issues" | "rerun_flaky" | "rerun_again";
+  | "comment_on_prs"
+  | "open_issues"
+  | "rerun_flaky"
+  | "rerun_again"
+  | "propose_ci";
 export type RuledAction = RuledFix | RuledPost;
 export type BuddyRules = Record<RuledAction, FixRule>;
 export const fixLabels: Record<Fix, string> = {
@@ -497,6 +501,7 @@ export const postLabels: Record<RuledPost, string> = {
   open_issues: "Open issues",
   rerun_flaky: "Rerun a failed job once when it looks flaky",
   rerun_again: "Rerun the same job a second time",
+  propose_ci: "Propose CI where none runs on pull requests",
 };
 export const postDescriptions: Record<RuledPost, string> = {
   comment_on_prs:
@@ -507,6 +512,8 @@ export const postDescriptions: Record<RuledPost, string> = {
     "When a job fails before any test ran, or because its runner went away or the network failed, rerun it once and say so on Orbit’s comment or issue.",
   rerun_again:
     "When a rerun job fails again and still looks like bad luck, rerun it one more time. Orbit never reruns a job a third time on the same commit.",
+  propose_ci:
+    "When no workflow runs on a repository’s pull requests, open an issue labelled orbit for its agent, with a workflow to start from, and close it once one runs.",
 };
 /** A rule's name, for a fix or a post. */
 export const ruleLabel = (rule: RuledAction) =>
@@ -535,6 +542,7 @@ export const defaultBuddy: Buddy = {
     open_issues: "do_it",
     rerun_flaky: "do_it",
     rerun_again: "ask_first",
+    propose_ci: "ask_first",
   },
   answerer: "codex",
   ollamaUrl: "http://localhost:11434",
@@ -1085,6 +1093,8 @@ export interface Snapshot {
   /** Why the jobs still failing on open problems failed, as Orbit read
    * them. */
   failures?: CiFailure[];
+  /** What each connected repository's files say about its CI. */
+  setups?: CiSetup[];
 }
 /** Where a commit's checks stand. "none" is no checks, or only ones that
  * were skipped or cancelled. */
@@ -1130,7 +1140,8 @@ export interface RepoCi {
   /** Why the latest read failed; what was read before is kept. */
   error?: string | null;
 }
-export type ProblemKind = "default_branch" | "pull_request" | "base_moved";
+export type ProblemKind =
+  "default_branch" | "pull_request" | "base_moved" | "no_ci";
 export interface ProblemEvent {
   at: string;
   text: string;
@@ -1138,7 +1149,8 @@ export interface ProblemEvent {
 /** One thing wrong with CI, from when Orbit first saw it until it saw it
  * fixed. A default branch's problem needs you; a pull request's is its
  * author's to fix, as is a pull request whose checks passed before its base
- * moved on (`base_moved`). */
+ * moved on (`base_moved`). A repository where no CI runs on pull requests
+ * (`no_ci`) is listed with the repository. */
 export interface Problem {
   id: string;
   key: string;
@@ -1167,6 +1179,36 @@ export interface Problem {
    * checks ran without. */
   base?: string;
   baseSha?: string;
+  /** For `no_ci`: what Orbit found at `sha`, and the workflow it proposes. */
+  found?: CiFound | null;
+}
+/** What Orbit found in a repository where no CI runs on pull requests. */
+export interface CiFound {
+  /** The workflows there, none of which run on pull requests; empty when
+   * there are none. */
+  workflows: string[];
+  /** The workflow Orbit proposes, empty when it can't tell how the
+   * repository builds, and the files it is built from. */
+  proposal: string;
+  from: string[];
+}
+/** What a repository's files say about its CI, read at its default
+ * branch's latest commit. */
+export interface CiSetup {
+  repo: string;
+  branch: string;
+  sha: string;
+  readAt: string;
+  workflows: { path: string; onPulls: "yes" | "no" | "unknown" }[];
+  /** Another CI service's files at the top, such as `.circleci`. */
+  others: string[];
+  proposal: string;
+  from: string[];
+  error?: string | null;
+  tries: number;
+  retryAt?: string | null;
+  /** Why Orbit knows something runs checks here, from checks it saw. */
+  ran?: string | null;
 }
 /** Where a default branch broke: the commits after the last one whose
  * checks passed, up to the first that failed. */
@@ -1194,9 +1236,10 @@ export interface Broke {
 export interface OpsItem {
   /** 1 for I1. Never reused within its comment or issue. */
   number: number;
-  /** A failing check, or a pull request's base moving on since its checks
-   * began; then `check` is the base branch. */
-  kind?: "check" | "base_moved";
+  /** A failing check, a pull request's base moving on since its checks
+   * began (then `check` is the base branch), or adding CI that runs on pull
+   * requests (then it is the default branch). */
+  kind?: "check" | "base_moved" | "no_ci";
   check: string;
   url: string;
   /** Whether it failed at `at`, the latest commit Orbit saw. */
@@ -1302,6 +1345,8 @@ export interface OpsThread {
   closed: boolean;
   /** You said to post it, while Bit asks first. */
   allowed: boolean;
+  /** Bit told you it can post it, for a proposal it asks about first. */
+  offered?: boolean;
   /** It is gone from GitHub, so Orbit leaves it be. */
   gone: boolean;
   /** A post may have reached GitHub without Orbit hearing back, so Orbit

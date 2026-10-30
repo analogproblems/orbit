@@ -85,7 +85,13 @@
   ],
   "helpActions": ["sign_in", "open_page"],
   "questions": ["needs_you", "running", "loops", "repositories", "setup"],
-  "posts": ["comment_on_prs", "open_issues", "rerun_flaky", "rerun_again"],
+  "posts": [
+    "comment_on_prs",
+    "open_issues",
+    "rerun_flaky",
+    "rerun_again",
+    "propose_ci"
+  ],
   "defaultRules": {
     "continue_loop": "ask_first",
     "review_again": "ask_first",
@@ -94,7 +100,8 @@
     "comment_on_prs": "do_it",
     "open_issues": "do_it",
     "rerun_flaky": "do_it",
-    "rerun_again": "ask_first"
+    "rerun_again": "ask_first",
+    "propose_ci": "ask_first"
   },
   "actions": [
     "continue_loop",

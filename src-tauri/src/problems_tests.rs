@@ -549,3 +549,219 @@ fn check_names_read_as_a_sentence() {
     assert_eq!(names(&checks[..2]), "A and B");
     assert_eq!(names(&checks), "A, B and 2 more");
 }
+
+fn setup(sha: &str, read: i64, workflows: &[(&str, crate::workflows::OnPulls)]) -> Setup {
+    Setup {
+        repo: "a/b".into(),
+        branch: "main".into(),
+        sha: sha.into(),
+        read_at: stamp(at(read)),
+        workflows: workflows
+            .iter()
+            .map(|(path, on)| crate::workflows::Workflow {
+                path: path.to_string(),
+                on_pulls: *on,
+            })
+            .collect(),
+        proposal: "name: CI\n".into(),
+        from: vec!["Cargo.toml".into()],
+        ..Default::default()
+    }
+}
+fn quiet(sha: &str) -> RepoCi {
+    branch(commit(sha, CiState::None, &[]))
+}
+
+#[test]
+fn a_repository_with_no_ci_on_pull_requests_is_listed_once_orbit_is_sure() {
+    use crate::workflows::OnPulls;
+    let mut problems = vec![];
+    let mut none = setup(A, 0, &[]);
+    // Not until a while after the files were read, so another service's
+    // checks can show up.
+    see_setup(&mut problems, Some(&mut none), &quiet(A), &[], at(9));
+    assert!(problems.is_empty());
+    // Files read at an older commit, or not read yet, say nothing.
+    see_setup(&mut problems, Some(&mut none), &quiet(B), &[], at(20));
+    see_setup(&mut problems, None, &quiet(A), &[], at(20));
+    let mut failed = Setup {
+        error: Some("down".into()),
+        ..none.clone()
+    };
+    see_setup(&mut problems, Some(&mut failed), &quiet(A), &[], at(20));
+    assert!(problems.is_empty());
+    see_setup(&mut problems, Some(&mut none), &quiet(A), &[], at(10));
+    assert_eq!(problems.len(), 1);
+    let p = &problems[0];
+    assert_eq!(p.key, "setup:a/b");
+    assert_eq!(p.kind, ProblemKind::NoCi);
+    assert_eq!((p.branch.as_str(), p.sha.as_str()), ("main", A));
+    assert!(!p.needs_you());
+    assert_eq!(p.alerts, 0);
+    assert_eq!(p.found, Some(none.found()));
+    assert_eq!(timeline(p), ["No workflows on main at 1111111."]);
+    // The same again changes nothing; a newer commit with other files is
+    // noted.
+    see_setup(&mut problems, Some(&mut none), &quiet(A), &[], at(11));
+    let mut deploy = setup(B, 12, &[(".github/workflows/deploy.yml", OnPulls::No)]);
+    see_setup(&mut problems, Some(&mut deploy), &quiet(B), &[], at(12));
+    assert_eq!(problems.len(), 1);
+    assert_eq!(problems[0].sha, B);
+    assert_eq!(
+        problems[0].found.as_ref().unwrap().workflows,
+        [".github/workflows/deploy.yml"]
+    );
+    assert_eq!(
+        timeline(&problems[0]),
+        [
+            "No workflows on main at 1111111.",
+            "What Orbit found changed at 2222222."
+        ]
+    );
+    // Checks on the default branch don't count when its workflows only run
+    // there.
+    let pushed = branch(commit(B, CiState::Passing, &[]));
+    see_setup(&mut problems, Some(&mut deploy), &pushed, &[], at(13));
+    assert!(problems[0].is_open());
+
+    // A workflow that runs on pull requests closes it as done.
+    let mut ci = setup(C, 14, &[(".github/workflows/ci.yml", OnPulls::Yes)]);
+    see_setup(&mut problems, Some(&mut ci), &quiet(C), &[], at(14));
+    let p = &problems[0];
+    assert!(p.passed());
+    assert_eq!(p.closed_sha, C);
+    assert_eq!(
+        p.closed_reason.as_deref(),
+        Some("CI runs on pull requests at 3333333.")
+    );
+    assert_eq!(
+        &timeline(p)[2..],
+        [
+            ".github/workflows/ci.yml runs on pull requests.",
+            "CI runs on pull requests at 3333333."
+        ]
+    );
+    // Files read before the branch was renamed say nothing until they are
+    // read again.
+    let mut trunk = quiet(C);
+    trunk.branch = "trunk".into();
+    let mut none = setup(C, 14, &[]);
+    let mut renamed = vec![];
+    see_setup(&mut renamed, Some(&mut none), &trunk, &[], at(40));
+    assert!(renamed.is_empty());
+    none.branch = "trunk".into();
+    see_setup(&mut renamed, Some(&mut none), &trunk, &[], at(40));
+    assert_eq!(renamed[0].branch, "trunk");
+    // Once closed, nothing opens while CI runs.
+    see_setup(&mut problems, Some(&mut ci), &quiet(C), &[], at(40));
+    assert_eq!(problems.len(), 1);
+}
+
+#[test]
+fn checks_or_files_orbit_cant_rule_out_mean_ci_runs() {
+    use crate::workflows::OnPulls;
+    let open_one = |problems: &mut Vec<Problem>| {
+        see_setup(
+            problems,
+            Some(&mut setup(A, 0, &[])),
+            &quiet(A),
+            &[],
+            at(10),
+        );
+        assert_eq!(open(problems).len(), 1);
+    };
+    // Checks on the default branch, with no workflows at all: another
+    // service runs them. Never opened, and an open one closes, not done.
+    let mut problems = vec![];
+    let checked = branch(commit(A, CiState::Running, &[]));
+    see_setup(
+        &mut problems,
+        Some(&mut setup(A, 0, &[])),
+        &checked,
+        &[],
+        at(10),
+    );
+    assert!(problems.is_empty());
+    open_one(&mut problems);
+    see_setup(
+        &mut problems,
+        Some(&mut setup(A, 0, &[])),
+        &checked,
+        &[],
+        at(11),
+    );
+    assert!(!problems[0].is_open() && !problems[0].passed());
+    assert_eq!(
+        problems[0].closed_reason.as_deref(),
+        Some("Checks ran on the default branch at 1111111, so something runs them.")
+    );
+
+    // Checks on a followed pull request's latest commit, whatever the
+    // workflows say; not on an older commit, a draft's or one not followed.
+    let mut deploy = setup(A, 0, &[(".github/workflows/deploy.yml", OnPulls::No)]);
+    let pr = followed(7, B);
+    let older = with_pull(quiet(A), 7, false, commit(C, CiState::Passing, &[]));
+    let mut problems = vec![];
+    see_setup(&mut problems, Some(&mut deploy), &older, &[&pr], at(10));
+    see_setup(&mut problems, Some(&mut deploy), &older, &[], at(10));
+    assert_eq!(open(&problems).len(), 1);
+    let unchecked = with_pull(quiet(A), 7, false, commit(B, CiState::None, &[]));
+    see_setup(&mut problems, Some(&mut deploy), &unchecked, &[&pr], at(11));
+    assert_eq!(open(&problems).len(), 1);
+    let checked = with_pull(quiet(A), 7, false, commit(B, CiState::Failing, &["x"]));
+    see_setup(&mut problems, Some(&mut deploy), &checked, &[&pr], at(12));
+    assert!(open(&problems).is_empty());
+    assert_eq!(
+        problems[0].closed_reason.as_deref(),
+        Some("Checks ran on #7, so something runs them.")
+    );
+    // Once seen, checks count from then on: the pull request closing, or
+    // a newer commit without them, opens nothing again.
+    see_setup(&mut problems, Some(&mut deploy), &quiet(A), &[], at(20));
+    assert_eq!((problems.len(), open(&problems).len()), (1, 0));
+    let mut setups = vec![deploy];
+    let newer = setup(B, 20, &[(".github/workflows/deploy.yml", OnPulls::No)]);
+    crate::workflows::record(&mut setups, "a/b", "main", B, Ok(newer), at(20));
+    see_setup(&mut problems, setups.first_mut(), &quiet(B), &[], at(40));
+    assert_eq!((problems.len(), open(&problems).len()), (1, 0));
+    // Never opened where a pull request has checks.
+    let mut problems = vec![];
+    let mut fresh = setup(A, 0, &[(".github/workflows/deploy.yml", OnPulls::No)]);
+    see_setup(&mut problems, Some(&mut fresh), &checked, &[&pr], at(20));
+    assert!(problems.is_empty());
+    assert_eq!(
+        fresh.ran.as_deref(),
+        Some("Checks ran on #7, so something runs them.")
+    );
+
+    // A workflow Orbit can't read, or another service's files.
+    let mut problems = vec![];
+    open_one(&mut problems);
+    let mut odd = setup(A, 0, &[(".github/workflows/odd.yml", OnPulls::Unknown)]);
+    see_setup(&mut problems, Some(&mut odd), &quiet(A), &[], at(11));
+    assert!(!problems[0].passed());
+    assert_eq!(
+        &timeline(&problems[0])[1..],
+        [
+            "Orbit can't tell whether .github/workflows/odd.yml runs on pull requests.",
+            "Orbit can't tell any more that nothing runs on pull requests, at 1111111."
+        ]
+    );
+    let mut problems = vec![];
+    open_one(&mut problems);
+    let mut circle = Setup {
+        others: vec![".circleci".into()],
+        ..setup(A, 0, &[])
+    };
+    see_setup(&mut problems, Some(&mut circle), &quiet(A), &[], at(11));
+    assert!(problems[0].passed());
+    assert_eq!(
+        timeline(&problems[0])[1],
+        ".circleci sets up another CI service."
+    );
+    // Disconnecting closes it like any other.
+    let mut problems = vec![];
+    open_one(&mut problems);
+    close_unwatched(&mut problems, &[], false, at(12));
+    assert!(open(&problems).is_empty());
+}

@@ -4,6 +4,8 @@
 //! that fails. Each failing check is an item, I1, I2 and so on, numbered
 //! once in its comment or issue and never reused, so an agent can name it.
 //! So is a pull request's base branch moving on since its checks began.
+//! A repository where no CI runs on pull requests gets an issue too, with
+//! a workflow to start from, which Bit offers before it opens.
 //!
 //! Everything here is worked out from the problems Orbit keeps
 //! (`crate::problems`). The engine sends each write (`engine::ops`) after
@@ -92,6 +94,9 @@ pub struct Thread {
     pub noted: Option<String>,
     /// You said to post it, while Bit asks first.
     pub allowed: bool,
+    /// Bit told you it can post it, for a proposal it asks about first.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub offered: bool,
     /// The comment or issue is gone from GitHub, so Orbit leaves it be.
     pub gone: bool,
     /// A try to post it may have reached GitHub without Orbit hearing
@@ -153,6 +158,9 @@ pub enum ItemKind {
     /// A pull request's base branch moved on since its checks began (see
     /// `ProblemKind::BaseMoved`).
     BaseMoved,
+    /// No CI runs on the repository's pull requests (see
+    /// `ProblemKind::NoCi`).
+    NoCi,
 }
 impl ItemKind {
     fn is_check(&self) -> bool {
@@ -169,7 +177,7 @@ pub struct Item {
     #[serde(skip_serializing_if = "ItemKind::is_check")]
     pub kind: ItemKind,
     /// The check, such as "CI / Rust tests", or for `BaseMoved`, the base
-    /// branch.
+    /// branch, and for `NoCi`, the default branch.
     pub check: String,
     pub url: String,
     /// Whether it failed at `at`, the latest commit Orbit saw; for
@@ -204,6 +212,7 @@ impl Item {
         match self.kind {
             ItemKind::Check => self.check.clone(),
             ItemKind::BaseMoved => format!("{} moved on", self.check),
+            ItemKind::NoCi => "CI on pull requests".into(),
         }
     }
 }
@@ -396,11 +405,48 @@ pub fn rule_allows(rule: &str, allowed: bool, bit_on: bool) -> bool {
 /// and Orbit is `watching`. Checked again right before each post.
 pub fn may_post(s: &Snapshot, t: &Thread) -> bool {
     let buddy = &s.settings.buddy;
-    let rule = match t.kind {
-        ThreadKind::Comment => &buddy.rules.comment_on_prs,
-        ThreadKind::Issue => &buddy.rules.open_issues,
-    };
-    rule_allows(rule, t.allowed, buddy.enabled) && watching(s, t)
+    rule_allows(rule_of(s, t), t.allowed, buddy.enabled) && watching(s, t)
+}
+/// The rule for posting a thread: proposing CI for a repository with none
+/// on pull requests, opening an issue about a default branch, or
+/// commenting on a pull request.
+pub fn rule_of<'a>(s: &'a Snapshot, t: &Thread) -> &'a str {
+    let rules = &s.settings.buddy.rules;
+    match t.kind {
+        ThreadKind::Comment => &rules.comment_on_prs,
+        ThreadKind::Issue if proposes(s, t) => &rules.propose_ci,
+        ThreadKind::Issue => &rules.open_issues,
+    }
+}
+/// Whether a thread is Orbit's proposal of CI for a repository.
+pub fn proposes(s: &Snapshot, t: &Thread) -> bool {
+    s.problems
+        .iter()
+        .any(|p| p.id == t.problem_id && p.kind == ProblemKind::NoCi)
+}
+/// Marks each open proposal that Bit asks about first, and hasn't posted,
+/// as offered, and returns what Bit tells you about each, once.
+pub fn offer(s: &mut Snapshot) -> Vec<Event> {
+    let keys: Vec<String> = s
+        .ops
+        .iter()
+        .filter(|t| !t.offered && !t.is_posted() && !t.unsure && !t.allowed)
+        .filter(|t| {
+            let open = s
+                .problems
+                .iter()
+                .any(|p| p.id == t.problem_id && p.is_open());
+            open && proposes(s, t)
+                && s.settings.buddy.enabled
+                && rule_of(s, t) == "ask_first"
+                && watching(s, t)
+        })
+        .map(|t| t.key.clone())
+        .collect();
+    for t in s.ops.iter_mut().filter(|t| keys.contains(&t.key)) {
+        t.offered = true;
+    }
+    keys.into_iter().map(Event::Offered).collect()
 }
 /// Whether Orbit watches what a thread is about: Watch CI is on, its
 /// repository is connected, and for a comment, Orbit still follows the pull
@@ -439,12 +485,12 @@ pub fn refresh(threads: &mut Vec<Thread>, problems: &[Problem], now: DateTime<Ut
                 threads.push(Thread {
                     key,
                     kind: match p.kind {
-                        ProblemKind::DefaultBranch => ThreadKind::Issue,
+                        ProblemKind::DefaultBranch | ProblemKind::NoCi => ThreadKind::Issue,
                         ProblemKind::PullRequest | ProblemKind::BaseMoved => ThreadKind::Comment,
                     },
                     repo: p.repo.clone(),
                     number: match p.kind {
-                        ProblemKind::DefaultBranch => None,
+                        ProblemKind::DefaultBranch | ProblemKind::NoCi => None,
                         ProblemKind::PullRequest | ProblemKind::BaseMoved => {
                             p.pr_id.as_deref().and_then(pr_number)
                         }
@@ -487,7 +533,7 @@ pub fn refresh(threads: &mut Vec<Thread>, problems: &[Problem], now: DateTime<Ut
 }
 fn key_of(p: &Problem) -> String {
     match p.kind {
-        ProblemKind::DefaultBranch => format!("issue:{}", p.id),
+        ProblemKind::DefaultBranch | ProblemKind::NoCi => format!("issue:{}", p.id),
         // A pull request's problems share its one comment.
         ProblemKind::PullRequest | ProblemKind::BaseMoved => {
             format!("pr:{}", p.pr_id.as_deref().unwrap_or(&p.repo))
@@ -498,8 +544,9 @@ fn pr_number(id: &str) -> Option<u64> {
     id.rsplit_once('#').and_then(|(_, n)| n.parse().ok())
 }
 /// Marks each item failing or not as the problem stands now, adding one for
-/// each check that fails for the first time, or for a pull request's base
-/// moving on the first time.
+/// each check that fails for the first time, for a pull request's base
+/// moving on the first time, or for a repository with no CI on pull
+/// requests.
 fn items_from(t: &mut Thread, p: &Problem) {
     // Only a passing commit says a check stopped failing; when Orbit stops
     // watching for another reason, items stay as it last saw them.
@@ -513,13 +560,19 @@ fn items_from(t: &mut Thread, p: &Problem) {
         return;
     }
     let moved = p.kind == ProblemKind::BaseMoved;
+    let no_ci = p.kind == ProblemKind::NoCi;
     for item in &mut t.items {
         let failing = match item.kind {
             ItemKind::Check => p.failing.iter().any(|c| c.name == item.check),
             ItemKind::BaseMoved => moved,
+            ItemKind::NoCi => no_ci,
         };
+        // Its branch follows a rename.
         if failing && item.kind == ItemKind::BaseMoved {
             item.check = p.base.clone();
+        }
+        if failing && item.kind == ItemKind::NoCi {
+            item.check = p.branch.clone();
         }
         if failing && !item.failing {
             // Failing again: what was said about it before is over.
@@ -555,6 +608,10 @@ fn items_from(t: &mut Thread, p: &Problem) {
     }
     if moved && !t.items.iter().any(|i| i.kind == ItemKind::BaseMoved) {
         let item = new(t, ItemKind::BaseMoved, &p.base, "");
+        t.items.push(item);
+    }
+    if no_ci && !t.items.iter().any(|i| i.kind == ItemKind::NoCi) {
+        let item = new(t, ItemKind::NoCi, &p.branch, "");
         t.items.push(item);
     }
 }
@@ -859,7 +916,7 @@ pub fn next(
         ThreadKind::Issue => {
             if t.number.is_none() {
                 return (p.is_open() && may_post).then(|| Planned {
-                    title: issue_title(t),
+                    title: issue_title(t, p),
                     ..plan(Action::OpenIssue, issue_body(t, p, false))
                 });
             }
@@ -892,7 +949,8 @@ fn closes(p: &Problem, now: DateTime<Utc>) -> bool {
     let Some(closed) = p.closed_at.as_deref().and_then(time) else {
         return false;
     };
-    !p.passed() || now - closed >= CLOSE_AFTER
+    // A workflow once added doesn't flap like a failing check.
+    !p.passed() || p.kind == ProblemKind::NoCi || now - closed >= CLOSE_AFTER
 }
 
 /// A check's name as code, so nothing in it is read as Markdown or
@@ -933,6 +991,16 @@ fn answer_text(item: &Item, t: &Thread) -> String {
         None => format!(" · {what}"),
     };
     let what = match (a.kind, &a.commit) {
+        // Orbit doesn't check a commit for a proposal: it closes once a
+        // workflow on the default branch runs on pull requests.
+        (AnswerKind::Fixed, commit) if item.kind == ItemKind::NoCi => {
+            let at = commit.as_ref().map(|c| format!(" in {}", code(short(c))));
+            format!(
+                "said to be added{}; Orbit is waiting to see a workflow that runs on pull requests on {}",
+                at.unwrap_or_default(),
+                branch(t)
+            )
+        }
         (AnswerKind::Taking, _) => "someone is on it".to_string(),
         (AnswerKind::Declined, _) => "declined".to_string(),
         (AnswerKind::Question, _) => "waiting for a person".to_string(),
@@ -957,8 +1025,10 @@ fn answer_text(item: &Item, t: &Thread) -> String {
     reply(what)
 }
 fn item_line(item: &Item, t: &Thread, p: &Problem) -> String {
-    if item.kind == ItemKind::BaseMoved {
-        return base_line(item, t, p);
+    match item.kind {
+        ItemKind::BaseMoved => return base_line(item, t, p),
+        ItemKind::NoCi => return setup_line(item, t, p),
+        ItemKind::Check => {}
     }
     let state = if item.failing && !p.is_open() {
         format!(
@@ -1012,6 +1082,23 @@ fn base_line(item: &Item, t: &Thread, p: &Problem) -> String {
         format!("{base} moved on since the checks at {ran} began, when Orbit stopped watching")
     } else {
         format!("{base} moved on · done at {ran}")
+    };
+    format!("- **I{}** · {state}", item.number)
+}
+/// The line about adding CI that runs on pull requests.
+fn setup_line(item: &Item, t: &Thread, p: &Problem) -> String {
+    let state = if item.failing && p.is_open() {
+        format!(
+            "add a workflow that runs on pull requests{}",
+            answer_text(item, t)
+        )
+    } else if item.failing {
+        "add a workflow that runs on pull requests, when Orbit stopped watching".to_string()
+    } else {
+        format!(
+            "a workflow runs on pull requests · done at {}",
+            code(short(&item.at))
+        )
     };
     format!("- **I{}** · {state}", item.number)
 }
@@ -1089,11 +1176,16 @@ fn data(t: &Thread, p: &Problem) -> String {
                 "since": i.since,
                 "at": i.at,
             });
-            // Only for a base that moved on, so older bodies stay as they
-            // were: its base branch, and no check.
-            if i.kind == ItemKind::BaseMoved {
+            // Only for a base that moved on or a repository with no CI, so
+            // older bodies stay as they were: the branch, and no check.
+            let branch = match i.kind {
+                ItemKind::Check => None,
+                ItemKind::BaseMoved => Some("base"),
+                ItemKind::NoCi => Some("branch"),
+            };
+            if let Some(name) = branch {
                 item["kind"] = json!(i.kind);
-                item["base"] = json!(i.check);
+                item[name] = json!(i.check);
                 if let Some(o) = item.as_object_mut() {
                     o.remove("check");
                 }
@@ -1116,9 +1208,10 @@ fn data(t: &Thread, p: &Problem) -> String {
         .collect();
     let v = json!({
         "version": 1,
-        "kind": match t.kind {
-            ThreadKind::Comment => "pull_request",
-            ThreadKind::Issue => "default_branch",
+        "kind": match (t.kind, p.kind) {
+            (_, ProblemKind::NoCi) => "no_ci",
+            (ThreadKind::Comment, _) => "pull_request",
+            (ThreadKind::Issue, _) => "default_branch",
         },
         "repo": t.repo,
         "open": p.is_open(),
@@ -1188,8 +1281,11 @@ fn branch(t: &Thread) -> String {
         code(&t.branch)
     }
 }
-/// The title of Orbit's issue about a default branch.
-pub fn issue_title(t: &Thread) -> String {
+/// The title of Orbit's issue about a default branch, or its proposal.
+pub fn issue_title(t: &Thread, p: &Problem) -> String {
+    if p.kind == ProblemKind::NoCi {
+        return "Add CI that runs on pull requests".into();
+    }
     let branch = if t.branch.is_empty() {
         "the default branch"
     } else {
@@ -1199,6 +1295,9 @@ pub fn issue_title(t: &Thread) -> String {
 }
 /// Orbit's issue about a default branch; `closing` once Orbit closes it.
 pub fn issue_body(t: &Thread, p: &Problem, closing: bool) -> String {
+    if p.kind == ProblemKind::NoCi {
+        return proposal_body(t, p);
+    }
     let on = branch(t);
     let status = if p.is_open() {
         let since = if p.since_sha == p.sha {
@@ -1237,10 +1336,70 @@ pub fn issue_body(t: &Thread, p: &Problem, closing: bool) -> String {
         data(t, p)
     )
 }
+/// Orbit's issue proposing CI for a repository where none runs on pull
+/// requests, with the workflow Orbit built from its files. The paths and
+/// branch are the repository's words, so they are only ever code, and the
+/// workflow holds only Orbit's own text.
+fn proposal_body(t: &Thread, p: &Problem) -> String {
+    let on = branch(t);
+    let found = p.found.clone().unwrap_or_default();
+    let status = if p.is_open() {
+        let why = if found.workflows.is_empty() {
+            format!("This repository has no workflows on {on}")
+        } else {
+            let paths: Vec<String> = found.workflows.iter().map(|w| code(w)).collect();
+            format!(
+                "None of the workflows on {on} runs on pull requests ({})",
+                paths.join(", ")
+            )
+        };
+        let proposal = if found.proposal.is_empty() {
+            "Orbit couldn't tell from the files at the top of this repository how it builds and tests, so it has no workflow to suggest. One in `.github/workflows` that runs the project's tests on `pull_request` is enough.".to_string()
+        } else {
+            let from: Vec<String> = found.from.iter().map(|f| code(f)).collect();
+            format!(
+                "Here is a workflow to start from, as `.github/workflows/ci.yml`. Orbit built it from {} at {}, so check its commands are the ones this project uses.\n\n```yaml\n{}```",
+                and(&from),
+                code(short(&p.sha)),
+                found.proposal
+            )
+        };
+        format!("{why}, so nothing checks a change before it merges.\n\n{proposal}")
+    } else if p.passed() {
+        format!(
+            "A workflow on {on} runs on pull requests at {}. Nothing is left to do here.",
+            code(short(&p.closed_sha))
+        )
+    } else {
+        format!(
+            "Orbit has stopped proposing CI here. {}",
+            p.closed_reason.as_deref().unwrap_or_default()
+        )
+    };
+    format!(
+        "## Orbit · CI\n\n{status}\n\n{}\n\nOrbit opened this issue because no CI runs on pull requests here. It edits this issue as it reads new commits on {on}, and closes it once a workflow there runs on pull requests.\n\n{}",
+        items_text(t, p),
+        data(t, p)
+    )
+}
+/// "A", "A and B", "A, B and C".
+fn and(parts: &[String]) -> String {
+    match parts {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
 /// The note Orbit leaves on an issue as it closes it.
 pub fn closing_note(t: &Thread, p: &Problem) -> String {
     let closed_at = p.closed_at.as_deref().unwrap_or_default();
-    let text = if p.passed() {
+    let text = if p.passed() && p.kind == ProblemKind::NoCi {
+        format!(
+            "A workflow on {} runs on pull requests at {}, so Orbit is closing this issue.",
+            branch(t),
+            code(short(&p.closed_sha))
+        )
+    } else if p.passed() {
         format!(
             "Every check passed on {} at {} and stayed green for an hour, so Orbit is closing this issue.",
             branch(t),
@@ -1469,6 +1628,9 @@ pub enum Event {
         number: u32,
         ask: bool,
     },
+    /// Bit can propose CI for a repository with none on pull requests, once
+    /// you tap.
+    Offered(String),
 }
 /// Where a thread is, in plain words: `acme/api #12` for a pull request's
 /// comment, `main in acme/api` for a default branch's issue.
@@ -1491,7 +1653,7 @@ pub fn event_text(
     e: &Event,
 ) -> Option<(String, String, String)> {
     let key = match e {
-        Event::Posted(key) | Event::Closed(key) => key,
+        Event::Posted(key) | Event::Closed(key) | Event::Offered(key) => key,
         Event::Heard(h) => &h.thread,
         Event::Reran { thread, .. } | Event::FailedAgain { thread, .. } => thread,
     };
@@ -1501,7 +1663,28 @@ pub fn event_text(
         t.number
             .map_or("its issue".to_string(), |n| format!("issue #{n}"))
     };
+    let proposal = p.is_some_and(|p| p.kind == ProblemKind::NoCi);
     let text = match e {
+        Event::Offered(_) => format!(
+            "No CI runs on {}'s pull requests. Tap Propose CI on Operations and Orbit opens an issue for its agent, with a workflow to start from.",
+            t.repo
+        ),
+        Event::Posted(_) if proposal => format!(
+            "Orbit opened {} for the agent on {}, with a workflow to start from, as no CI runs on its pull requests.",
+            issue(),
+            t.repo
+        ),
+        Event::Closed(_) if proposal && p.is_some_and(|p| p.passed()) => format!(
+            "Orbit closed {}: a workflow runs on {}'s pull requests now.",
+            issue(),
+            t.repo
+        ),
+        Event::Closed(_) if proposal => format!(
+            "Orbit closed {} on {}. {}",
+            issue(),
+            t.repo,
+            p?.closed_reason.as_deref().unwrap_or_default()
+        ),
         Event::Posted(_) if p?.kind == ProblemKind::BaseMoved => format!(
             "Orbit told the agent on {} that {} moved on since its checks began.",
             place(t),

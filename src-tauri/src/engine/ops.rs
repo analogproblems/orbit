@@ -47,7 +47,8 @@ impl Engine {
             let mut changed = ops::interrupted(&mut s.journal, &mut s.ops, now);
             changed |= ops::refresh(&mut s.ops, &s.problems, now);
             changed |= ops::explain(&mut s.ops, &s.failures);
-            let again = reruns::noticed(s);
+            let mut again = reruns::noticed(s);
+            again.extend(ops::offer(s));
             changed |= !again.is_empty();
             if changed {
                 self.dirty.store(true, Ordering::SeqCst);

@@ -1294,3 +1294,294 @@ fn only_a_few_logs_show() {
         .unwrap()
         .contains("Failed at step"));
 }
+
+/// A repository where no CI runs on pull requests.
+fn no_ci(workflows: &[&str], proposal: &str) -> Problem {
+    Problem {
+        id: "p9".into(),
+        key: "setup:a/b".into(),
+        kind: ProblemKind::NoCi,
+        repo: "a/b".into(),
+        branch: "main".into(),
+        sha: sha('1'),
+        since_sha: sha('1'),
+        opened_at: stamp(t0()),
+        found: Some(crate::workflows::Found {
+            workflows: workflows.iter().map(|w| w.to_string()).collect(),
+            proposal: proposal.into(),
+            from: if proposal.is_empty() {
+                vec![]
+            } else {
+                vec!["package.json".into(), "Cargo.toml".into()]
+            },
+        }),
+        ..Default::default()
+    }
+}
+fn hidden(body: &str, key: &str) -> serde_json::Value {
+    let json = body
+        .split_once(&format!("<!-- orbit-ops thread={key} "))
+        .unwrap()
+        .1;
+    serde_json::from_str(json.split_once(" -->").unwrap().0).unwrap()
+}
+
+/// Orbit's proposal is one issue with a workflow to start from and one
+/// item, edited as what Orbit finds changes, and closed at once as done
+/// once a workflow runs on pull requests.
+#[test]
+fn a_repository_with_no_ci_gets_an_issue_with_a_workflow_to_start_from() {
+    let mut p = no_ci(&[], "name: CI\non:\n  pull_request:\n");
+    let mut threads = vec![];
+    let mut journal = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    let t = &threads[0];
+    assert_eq!((t.key.as_str(), t.kind), ("issue:p9", ThreadKind::Issue));
+    assert_eq!((t.number, t.branch.as_str()), (None, "main"));
+    assert_eq!(t.items.len(), 1);
+    assert_eq!(t.items[0].kind, ItemKind::NoCi);
+    assert_eq!(t.items[0].name(), "CI on pull requests");
+    assert!(t.items[0].failing);
+    let open = send(&mut threads, &mut journal, &p, true, t0()).unwrap();
+    assert_eq!(open.action, Action::OpenIssue);
+    assert_eq!(open.title, "Add CI that runs on pull requests");
+    let (text, data) = open.body.split_once("<!-- orbit-ops").unwrap();
+    assert_eq!(
+        text,
+        "## Orbit · CI\n\nThis repository has no workflows on `main`, so nothing checks a change before it merges.\n\nHere is a workflow to start from, as `.github/workflows/ci.yml`. Orbit built it from `package.json` and `Cargo.toml` at `1111111`, so check its commands are the ones this project uses.\n\n```yaml\nname: CI\non:\n  pull_request:\n```\n\n- **I1** · add a workflow that runs on pull requests\n\nOrbit opened this issue because no CI runs on pull requests here. It edits this issue as it reads new commits on `main`, and closes it once a workflow there runs on pull requests.\n\n"
+    );
+    assert!(data.starts_with(" thread=issue:p9 "));
+    let v = hidden(&open.body, "issue:p9");
+    assert_eq!(v["kind"], "no_ci");
+    assert_eq!(
+        v["items"][0],
+        json!({ "id": "I1", "kind": "no_ci", "branch": "main", "failing": true, "since": sha('1'), "at": sha('1') })
+    );
+    assert_eq!(next(&threads[0], Some(&p), true, t0()), None);
+
+    // Workflows that don't run on pull requests are named, as code; with
+    // nothing to propose, it says what would do.
+    p.sha = sha('2');
+    p.found = no_ci(
+        &[".github/workflows/de`ploy.yml", ".github/workflows/x.yml"],
+        "",
+    )
+    .found;
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    let edit = send(&mut threads, &mut journal, &p, true, t0()).unwrap();
+    assert_eq!(edit.action, Action::EditIssue);
+    assert!(edit.body.contains(
+        "None of the workflows on `main` runs on pull requests (`.github/workflows/de'ploy.yml`, `.github/workflows/x.yml`), so nothing checks a change before it merges.\n\nOrbit couldn't tell from the files at the top of this repository how it builds and tests, so it has no workflow to suggest. One in `.github/workflows` that runs the project's tests on `pull_request` is enough.\n\n"
+    ), "{}", edit.body);
+    assert!(!edit.body.contains("```"));
+    // Its item and text follow a renamed branch.
+    p.branch = "trunk".into();
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    assert_eq!(
+        (
+            threads[0].branch.as_str(),
+            threads[0].items[0].check.as_str()
+        ),
+        ("trunk", "trunk")
+    );
+    let edit = send(&mut threads, &mut journal, &p, true, t0()).unwrap();
+    assert!(
+        edit.body.contains("None of the workflows on `trunk`"),
+        "{}",
+        edit.body
+    );
+    assert_eq!(
+        hidden(&edit.body, "issue:p9")["items"][0]["branch"],
+        "trunk"
+    );
+    p.branch = "main".into();
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    send(&mut threads, &mut journal, &p, true, t0()).unwrap();
+
+    // Done: the note and the close go at once, as completed.
+    let later = t0() + Duration::minutes(5);
+    p.timeline.clear();
+    p.closed_at = Some(stamp(later));
+    p.closed_reason = Some("CI runs on pull requests at 3333333.".into());
+    p.closed_sha = sha('3');
+    refresh(&mut threads, std::slice::from_ref(&p), later);
+    assert!(!threads[0].items[0].failing);
+    let note = send(&mut threads, &mut journal, &p, true, later).unwrap();
+    assert_eq!(note.action, Action::NoteOnIssue);
+    assert!(note.body.starts_with(
+        "A workflow on `main` runs on pull requests at `3333333`, so Orbit is closing this issue."
+    ));
+    let close = send(&mut threads, &mut journal, &p, true, later).unwrap();
+    assert_eq!(close.action, Action::CloseIssue);
+    assert!(close.completed);
+    assert!(close.body.contains(
+        "A workflow on `main` runs on pull requests at `3333333`. Nothing is left to do here.\n\n- **I1** · a workflow runs on pull requests · done at `3333333`\n"
+    ), "{}", close.body);
+    assert_eq!(hidden(&close.body, "issue:p9")["passed"], true);
+    assert_eq!(next(&threads[0], Some(&p), true, later), None);
+}
+
+/// One that closes for another reason closes as not planned, with Orbit's
+/// reason; agents answer its item like any other, and no fix is checked.
+#[test]
+fn a_proposal_that_ends_otherwise_says_why_and_takes_answers() {
+    let mut p = no_ci(&[], "name: CI\n");
+    let mut threads = vec![];
+    let mut journal = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    send(&mut threads, &mut journal, &p, true, t0());
+    on_github(&mut threads[0]);
+    // A fix isn't checked on its commit: the proposal closes once a
+    // workflow runs on pull requests.
+    let fixed = reply(1, "Fixed I1 in abcdef1");
+    hear(&mut threads[0], std::slice::from_ref(&fixed), None);
+    assert!(to_verify(&threads, std::slice::from_ref(&p)).is_empty());
+    let edit = send(&mut threads, &mut journal, &p, true, t0()).unwrap();
+    assert!(edit.body.contains("- **I1** · add a workflow that runs on pull requests · said to be added in `abcdef1`; Orbit is waiting to see a workflow that runs on pull requests on `main` ([reply]"), "{}", edit.body);
+    let heard = hear(
+        &mut threads[0],
+        &[fixed, reply(2, "Declined I1: we use Jenkins")],
+        None,
+    );
+    assert_eq!(heard.len(), 1);
+    let (_, _, text) = event_text(
+        &threads,
+        std::slice::from_ref(&p),
+        &Event::Heard(Box::new(heard[0].clone())),
+    )
+    .unwrap();
+    assert_eq!(
+        text,
+        "The agent on main in a/b declined I1 (CI on pull requests): we use Jenkins"
+    );
+    let edit = send(&mut threads, &mut journal, &p, true, t0()).unwrap();
+    assert!(edit.body.contains("- **I1** · add a workflow that runs on pull requests · declined ([reply](https://github.com/a/b/issues/12#issuecomment-2))"), "{}", edit.body);
+
+    p.closed_at = Some(stamp(t0()));
+    p.closed_reason = Some("Checks ran on #7, so something runs them.".into());
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    let note = send(&mut threads, &mut journal, &p, true, t0()).unwrap();
+    assert_eq!(
+        note.body.split_once("\n\n").unwrap().0,
+        "Orbit is closing this issue. Checks ran on #7, so something runs them."
+    );
+    let close = send(&mut threads, &mut journal, &p, true, t0()).unwrap();
+    assert!(!close.completed);
+    assert!(close.body.contains(
+        "Orbit has stopped proposing CI here. Checks ran on #7, so something runs them.\n\n- **I1** · add a workflow that runs on pull requests, when Orbit stopped watching\n"
+    ), "{}", close.body);
+}
+
+fn watched() -> Snapshot {
+    let mut s = Snapshot::default();
+    s.settings.watch_ci = true;
+    s.settings.buddy.enabled = true;
+    s.settings.repositories.push(crate::types::Repository {
+        name: "a/b".into(),
+        path: String::new(),
+        automatic: false,
+        setup_command: String::new(),
+        network_access: false,
+        round_limit: 4,
+        approval_minutes: 0,
+        keep_updated: false,
+        provider: Default::default(),
+        dev_container: Default::default(),
+    });
+    s
+}
+
+/// Proposing CI has its own rule, Ask first by default, and Bit offers
+/// each proposal once.
+#[test]
+fn bit_offers_a_proposal_once_and_posts_it_by_its_own_rule() {
+    let mut s = watched();
+    s.problems = vec![no_ci(&[], "name: CI\n"), branch(&["A"], '1')];
+    refresh(&mut s.ops, &s.problems, t0());
+    let key = "issue:p9".to_string();
+    let proposal = s.ops.iter().find(|t| t.key == key).unwrap().clone();
+    let failing = s.ops.iter().find(|t| t.key == "issue:p1").unwrap().clone();
+    assert!(proposes(&s, &proposal) && !proposes(&s, &failing));
+    assert_eq!(rule_of(&s, &proposal), "ask_first");
+    assert_eq!(rule_of(&s, &failing), "do_it");
+    assert!(!may_post(&s, &proposal));
+    assert!(may_post(&s, &failing));
+
+    let events = offer(&mut s);
+    assert_eq!(events, [Event::Offered(key.clone())]);
+    let (problem, repo, text) = event_text(&s.ops, &s.problems, &events[0]).unwrap();
+    assert_eq!((problem.as_str(), repo.as_str()), ("p9", "a/b"));
+    assert_eq!(
+        text,
+        "No CI runs on a/b's pull requests. Tap Propose CI on Operations and Orbit opens an issue for its agent, with a workflow to start from."
+    );
+    assert!(offer(&mut s).is_empty(), "once");
+
+    // You said yes.
+    s.ops.iter_mut().find(|t| t.key == key).unwrap().allowed = true;
+    let proposal = s.ops.iter().find(|t| t.key == key).unwrap().clone();
+    assert!(may_post(&s, &proposal));
+    s.settings.buddy.rules.propose_ci = "leave_it".into();
+    assert!(!may_post(&s, &proposal));
+    s.settings.buddy.rules.propose_ci = "do_it".into();
+    s.settings.buddy.rules.open_issues = "leave_it".into();
+    assert!(may_post(&s, &proposal));
+
+    // Nothing is offered under another rule, with Bit off, once posted or
+    // allowed, while unwatched, or once the problem closed.
+    let fresh = |s: &mut Snapshot| {
+        for t in &mut s.ops {
+            t.offered = false;
+            t.allowed = false;
+        }
+    };
+    fresh(&mut s);
+    assert!(offer(&mut s).is_empty(), "Do it posts instead");
+    s.settings.buddy.rules.propose_ci = "ask_first".into();
+    s.settings.buddy.enabled = false;
+    assert!(offer(&mut s).is_empty(), "Bit is off");
+    s.settings.buddy.enabled = true;
+    s.settings.watch_ci = false;
+    assert!(offer(&mut s).is_empty(), "not watching");
+    s.settings.watch_ci = true;
+    s.ops.iter_mut().find(|t| t.key == key).unwrap().allowed = true;
+    assert!(offer(&mut s).is_empty(), "allowed");
+    fresh(&mut s);
+    s.problems[0].closed_at = Some(stamp(t0()));
+    assert!(offer(&mut s).is_empty(), "closed");
+    s.problems[0].closed_at = None;
+    s.ops.iter_mut().find(|t| t.key == key).unwrap().number = Some(45);
+    assert!(offer(&mut s).is_empty(), "posted");
+    s.ops.iter_mut().find(|t| t.key == key).unwrap().number = None;
+    assert_eq!(offer(&mut s).len(), 1);
+}
+
+#[test]
+fn bit_says_what_orbit_did_about_a_proposal() {
+    let mut p = no_ci(&[], "name: CI\n");
+    let mut threads = vec![];
+    let mut journal = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    send(&mut threads, &mut journal, &p, true, t0());
+    let key = threads[0].key.clone();
+    let text = |e: &Event, threads: &[Thread], p: &Problem| {
+        event_text(threads, std::slice::from_ref(p), e).map(|(_, _, text)| text)
+    };
+    assert_eq!(
+        text(&Event::Posted(key.clone()), &threads, &p).as_deref(),
+        Some("Orbit opened issue #45 for the agent on a/b, with a workflow to start from, as no CI runs on its pull requests.")
+    );
+    p.closed_at = Some(stamp(t0()));
+    p.closed_reason = Some("CI runs on pull requests at 2222222.".into());
+    p.closed_sha = sha('2');
+    assert_eq!(
+        text(&Event::Closed(key.clone()), &threads, &p).as_deref(),
+        Some("Orbit closed issue #45: a workflow runs on a/b's pull requests now.")
+    );
+    p.closed_sha.clear();
+    p.closed_reason = Some("The repository was disconnected.".into());
+    assert_eq!(
+        text(&Event::Closed(key), &threads, &p).as_deref(),
+        Some("Orbit closed issue #45 on a/b. The repository was disconnected.")
+    );
+}

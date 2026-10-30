@@ -3,7 +3,8 @@
 //! fixed. Each has a short timeline of what changed. A failing default
 //! branch tells you once, through `crate::alerts`; failing checks on a pull
 //! request are its author's to fix, so they are only listed, as is a pull
-//! request whose checks passed before its base branch moved on.
+//! request whose checks passed before its base branch moved on, and a
+//! repository where no CI runs on pull requests.
 //!
 //! Everything here is worked out from what Orbit read; nothing reaches
 //! GitHub.
@@ -11,6 +12,7 @@ use crate::{
     alerts::{self, Raise, Standing},
     ci::{self, Check, CiState, CommitCi, RepoCi},
     types::*,
+    workflows::Setup,
 };
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -38,6 +40,8 @@ pub enum ProblemKind {
     /// A pull request's checks pass, but they began before its base
     /// branch's latest commit, so they ran without it.
     BaseMoved,
+    /// No CI runs on a repository's pull requests (see `crate::workflows`).
+    NoCi,
 }
 /// Something that happened to a problem.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,7 +56,8 @@ pub struct Problem {
     pub id: String,
     /// What the problem is about, the same while it stays the same thing:
     /// `ci:owner/name` for a default branch, `ci:owner/name#12` for a pull
-    /// request.
+    /// request, `base:owner/name#12` for its base moving on, and
+    /// `setup:owner/name` for a repository with no CI on pull requests.
     pub key: String,
     pub kind: ProblemKind,
     pub repo: String,
@@ -94,6 +99,10 @@ pub struct Problem {
     pub base: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub base_sha: String,
+    /// For a repository with no CI on pull requests: what Orbit found at
+    /// `sha` on `branch`, and the workflow it proposes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub found: Option<crate::workflows::Found>,
 }
 impl Problem {
     pub fn is_open(&self) -> bool {
@@ -171,6 +180,11 @@ pub fn pull_key(pr_id: &str) -> String {
 /// The key of a pull request's problem about its base moving on.
 pub fn base_key(pr_id: &str) -> String {
     format!("base:{pr_id}")
+}
+/// The key of a repository's problem about no CI running on its pull
+/// requests.
+pub fn setup_key(repo: &str) -> String {
+    format!("setup:{}", repo.to_ascii_lowercase())
 }
 
 /// What Orbit saw of one thing that can fail.
@@ -335,6 +349,127 @@ fn see_base(
         (CiState::Failing, _, Some(p)) => p.close(&at, format!("Its checks fail at {short} now.")),
         // Running, or Orbit can't tell yet: wait.
         _ => {}
+    }
+}
+
+/// Opens, updates or closes the problem about no CI running on a
+/// repository's pull requests, from what Orbit read of its files at the
+/// default branch's latest commit (`setup`) and the checks it just read.
+/// It opens only when the files say so for sure, nothing ran checks on a
+/// commit Orbit follows (the default branch's, when there are no
+/// workflows at all, and each followed pull request's), and `QUIET` has
+/// passed since Orbit read them, so another service's checks have time to
+/// show up. It closes once the files or the checks say otherwise. Checks
+/// Orbit saw are kept on `setup` (`Setup::ran`), so the problem doesn't
+/// open again once that pull request closes or the branch moves on.
+pub fn see_setup(
+    problems: &mut Vec<Problem>,
+    setup: Option<&mut Setup>,
+    ci: &RepoCi,
+    followed: &[&PullRequest],
+    now: DateTime<Utc>,
+) {
+    use crate::workflows::{Verdict, QUIET};
+    // Only what was read at the commit and branch Orbit sees now counts.
+    let now_read = |s: &&mut Setup| s.sha == ci.head.sha && s.branch == ci.branch;
+    let Some(setup) = setup.filter(|s| now_read(s) && !s.sha.is_empty()) else {
+        return;
+    };
+    let Some(verdict) = setup.verdict() else {
+        return;
+    };
+    let at = stamp(now);
+    let short = ci::short(&setup.sha).to_string();
+    let branch = if setup.branch.is_empty() {
+        "the default branch".to_string()
+    } else {
+        setup.branch.clone()
+    };
+    // A followed pull request whose latest commit has checks.
+    let checked = followed.iter().find_map(|pr| {
+        ci.pull(pr.number)
+            .filter(|p| p.ci.sha == pr.head_sha && p.ci.state != CiState::None)
+            .map(|_| pr.number)
+    });
+    let on_branch = ci.head.state != CiState::None;
+    // Checks show something runs them, at this commit or a later one.
+    let ran = match (&verdict, checked) {
+        (_, Some(n)) => Some(format!("Checks ran on #{n}, so something runs them.")),
+        (Verdict::NoWorkflows, None) if on_branch => Some(format!(
+            "Checks ran on the default branch at {short}, so something runs them."
+        )),
+        _ => None,
+    };
+    if setup.ran.is_none() {
+        setup.ran = ran;
+    }
+    let key = setup_key(&ci.repo);
+    let open = problems.iter_mut().find(|p| p.key == key && p.is_open());
+    // Why it closes: a note that names the file, and a reason in Orbit's
+    // own words, as the reason goes on GitHub.
+    let missing = match (&verdict, &setup.ran) {
+        (Verdict::Covered(path), _) => Err((
+            if path.starts_with(crate::workflows::FOLDER) {
+                format!("{path} runs on pull requests.")
+            } else {
+                format!("{path} sets up another CI service.")
+            },
+            format!("CI runs on pull requests at {short}."),
+        )),
+        (Verdict::Unknown(path), _) => Err((
+            format!("Orbit can't tell whether {path} runs on pull requests."),
+            format!("Orbit can't tell any more that nothing runs on pull requests, at {short}."),
+        )),
+        (_, Some(ran)) => Err((String::new(), ran.clone())),
+        _ => Ok(()),
+    };
+    match (missing, open) {
+        (Ok(()), Some(p)) => {
+            let found = setup.found();
+            if p.found.as_ref() != Some(&found) {
+                p.note(&at, format!("What Orbit found changed at {short}."));
+            }
+            p.sha = setup.sha.clone();
+            p.branch = setup.branch.clone();
+            p.found = Some(found);
+        }
+        (Ok(()), None) => {
+            let read = time(&setup.read_at);
+            if read.is_none_or(|read| now - read < QUIET) {
+                return;
+            }
+            let text = match verdict {
+                Verdict::NoWorkflows => format!("No workflows on {branch} at {short}."),
+                _ => format!("No workflow on {branch} runs on pull requests, at {short}."),
+            };
+            let mut p = Problem {
+                id: id(),
+                key,
+                kind: ProblemKind::NoCi,
+                repo: ci.repo.clone(),
+                branch: setup.branch.clone(),
+                sha: setup.sha.clone(),
+                since_sha: setup.sha.clone(),
+                opened_at: at.clone(),
+                found: Some(setup.found()),
+                ..Default::default()
+            };
+            p.note(&at, text);
+            problems.push(p);
+        }
+        (Err((why, reason)), Some(p)) => {
+            // The files say CI runs now; checks Orbit saw only say
+            // something ran them.
+            let covered = matches!(verdict, Verdict::Covered(_));
+            if !why.is_empty() {
+                p.note(&at, why);
+            }
+            p.close(&at, reason);
+            if covered {
+                p.closed_sha = setup.sha.clone();
+            }
+        }
+        (Err(_), None) => {}
     }
 }
 
