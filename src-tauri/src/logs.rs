@@ -50,6 +50,9 @@ pub struct Failure {
     /// Why it looks like bad luck rather than the code, such as a lost
     /// runner or a network error, when it does (see `flaky`).
     pub flaky: Option<String>,
+    /// The step couldn't upload an artifact as the account's artifact
+    /// storage is full (see `QUOTA`), which only a person can change.
+    pub quota: bool,
 }
 
 /// The job a check's link names, when it is a GitHub Actions job in
@@ -187,6 +190,11 @@ pub fn short(error: &str) -> String {
 }
 /// Whether GitHub said Orbit asked too often. It says so with a 403 or a
 /// 429.
+/// Whether GitHub refused, or wouldn't show, what Orbit asked for: a 404,
+/// or a 403 that isn't its rate limit, which waiting won't change.
+pub fn refused(error: &str) -> bool {
+    (error.contains("HTTP 403") && !rate_limited(error)) || error.contains("HTTP 404")
+}
 pub fn rate_limited(error: &str) -> bool {
     error.to_lowercase().contains("rate limit") || error.contains("HTTP 429")
 }
@@ -268,7 +276,9 @@ pub fn understand(mut failure: Failure, job: &Value, log: &str) -> Failure {
     };
     // What the step printed, not the script GitHub echoed before running it.
     let own: Vec<&str> = shown.iter().map(|l| l.text.as_str()).collect();
-    failure.flaky = flaky(step, &output(&own));
+    let said = output(&own);
+    failure.flaky = flaky(step, &said);
+    failure.quota = said.iter().any(|l| l.contains(QUOTA));
     let text: Vec<&str> = checked.iter().map(|l| l.text.as_str()).collect();
     if !credential_kinds(&format!("{name}\n{}", text.join("\n"))).is_empty() {
         failure.held = true;
@@ -279,6 +289,9 @@ pub fn understand(mut failure: Failure, job: &Value, log: &str) -> Failure {
     failure
 }
 
+/// What a log says when the account's artifact storage is full, as
+/// `actions/upload-artifact` puts it.
+pub const QUOTA: &str = "Artifact storage quota has been hit";
 /// What a log says when the runner went away.
 const LOST: [&str; 4] = [
     "The runner has received a shutdown signal",

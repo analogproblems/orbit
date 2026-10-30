@@ -1158,7 +1158,18 @@ fn a_failing_default_branch_is_one_heads_up_and_shows_in_how_are_my_repositories
         lines[0].ends_with("Orbit couldn't read every check on main."),
         "{lines:?}"
     );
-    // With Watch CI off, the answer says nothing about it.
+    // Caches near GitHub's usual limit, after CI.
+    s.actions_storage.push(crate::actions_storage::Storage {
+        repo: "A/B".into(),
+        cache_bytes: crate::actions_storage::NEAR,
+        ..Default::default()
+    });
+    let (_, lines, _) = ask_and_read(&mut s, Question::Repositories);
+    assert!(
+        lines[0].ends_with("Orbit couldn't read every check on main. Its caches hold 9.0 GB, near GitHub's usual 10 GB limit, so GitHub may soon drop the ones used least."),
+        "{lines:?}"
+    );
+    // With Watch CI off, the answer says nothing about either.
     s.settings.watch_ci = false;
     let (_, lines, _) = ask_and_read(&mut s, Question::Repositories);
     assert!(lines[0].ends_with("autopilot on."), "{lines:?}");

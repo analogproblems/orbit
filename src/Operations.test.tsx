@@ -17,6 +17,10 @@ import {
   noCiText,
   rerunText,
   runnersText,
+  size,
+  cachesText,
+  artifactsText,
+  quotaText,
   waitingText,
   whyText,
 } from "./Operations";
@@ -33,6 +37,7 @@ import {
   type Problem,
   type RepoCi,
   type RunnerPlace,
+  type ActionsStorage,
   type Snapshot,
   type WaitingRun,
 } from "./types";
@@ -419,6 +424,100 @@ describe("operations page", () => {
     );
   });
 
+  it("lists each repository's Actions storage, and where Orbit can't see it", () => {
+    const s = freshDemo();
+    show(s);
+    const rows = () =>
+      within(
+        screen.getByRole("list", { name: "Actions storage" }),
+      ).getAllByRole("listitem");
+    const near =
+      "Past its limit, GitHub drops the caches used least, which can slow builds. A repository can have a higher limit, which Orbit can’t see.";
+    expect(rows().map((i) => i.textContent)).toEqual([
+      expect.stringContaining(
+        `acme/orbit118 caches holding 9.6 GB, near GitHub’s usual 10 GB limit.52 artifacts kept, holding 635 MB.${near}`,
+      ),
+      expect.stringContaining(
+        "acme/api14 caches holding 1.3 GB.280 artifacts kept, holding 2.1 GB, and more Orbit didn’t read.",
+      ),
+      expect.stringContaining(
+        "acme/dashboardOrbit can't see the Actions storage of acme/dashboard: GitHub doesn't show it to Orbit's sign-in.",
+      ),
+      expect.stringContaining("acme/docsNo caches.No artifacts kept."),
+    ]);
+    expect(within(rows()[0]).getByLabelText("Near the limit")).toBeTruthy();
+    expect(within(rows()[1]).getByLabelText("Has room")).toBeTruthy();
+    expect(rows()[1].textContent).not.toContain("Past its limit");
+    expect(within(rows()[2]).getByLabelText("Not seen")).toBeTruthy();
+    expect(rows()[2].textContent).not.toContain("caches");
+    cleanup();
+    // Caches read before Orbit found its artifacts hidden aren't shown.
+    s.actionsStorage![2].cacheBytes = 10 * 2 ** 30;
+    show(s);
+    expect(within(rows()[2]).getByLabelText("Not seen")).toBeTruthy();
+    expect(rows()[2].textContent).not.toContain("Past its limit");
+    expect(screen.getByText(/count toward the account’s storage/)).toBeTruthy();
+    cleanup();
+    // A read that failed says so, keeping what was read before.
+    s.actionsStorage![1].error =
+      "Orbit couldn't read the storage yet: Bad Gateway (HTTP 502). It tries again later.";
+    s.actionsStorage!.push({
+      repo: "acme/new",
+      readAt: "",
+      caches: 0,
+      cacheBytes: 0,
+      artifacts: 0,
+      artifactBytes: 0,
+      error:
+        "Orbit couldn't read the storage yet: Bad Gateway (HTTP 502). It tries again later.",
+      tries: 1,
+    });
+    show(s);
+    expect(rows()[1].textContent).toContain(
+      "14 caches holding 1.3 GB.280 artifacts kept, holding 2.1 GB, and more Orbit didn’t read.Orbit couldn't read the storage yet",
+    );
+    expect(within(rows()[1]).getByLabelText("Not read")).toBeTruthy();
+    expect(rows()[4].textContent).toBe(
+      "acme/newOrbit couldn't read the storage yet: Bad Gateway (HTTP 502). It tries again later.",
+    );
+    expect(within(rows()[4]).getByLabelText("Not seen")).toBeTruthy();
+    cleanup();
+    // Nothing read yet: no section.
+    s.actionsStorage = [];
+    show(s);
+    expect(screen.queryByText("Actions storage")).toBe(null);
+  });
+
+  it("says when a job failed as the account's artifact storage is full", () => {
+    const s = freshDemo();
+    const f = s.failures!.find((f) => f.url.includes("acme/orbit/"))!;
+    f.quota = true;
+    // A repository whose name starts acme/orbit's isn't it.
+    s.actionsStorage!.push({
+      ...s.actionsStorage![0],
+      repo: "acme/orb",
+      cacheBytes: 0,
+    });
+    show(s);
+    const problems = within(
+      screen.getByRole("list", { name: "Open problems" }),
+    ).getAllByRole("listitem");
+    expect(
+      problems.filter((i) => i.textContent?.includes(quotaText)),
+    ).toHaveLength(1);
+    const storage = within(
+      screen.getByRole("list", { name: "Actions storage" }),
+    ).getAllByRole("listitem");
+    expect(within(storage[0]).getByLabelText("Full")).toBeTruthy();
+    expect(storage[0].textContent).toContain(
+      "A job failed as the account’s artifact storage is full.",
+    );
+    const other = storage.find((i) => i.textContent?.startsWith("acme/orb1"))!;
+    expect(within(other).getByLabelText("Has room")).toBeTruthy();
+    expect(other.textContent).not.toContain("artifact storage is full");
+    expect(storage[1].textContent).not.toContain("artifact storage is full");
+  });
+
   it("says when a job looks like bad luck, and asks before a second rerun", () => {
     const action = vi.fn().mockResolvedValue({ ok: true });
     useOrbit.setState({ action });
@@ -652,6 +751,45 @@ describe("ci sentences", () => {
     );
     expect(text(["", ""])).toBe(
       "2 runs have waited more than 30 minutes for a runner.",
+    );
+  });
+
+  it("say how much storage a repository uses", () => {
+    const GB = 2 ** 30;
+    const stored = (over: Partial<ActionsStorage>): ActionsStorage => ({
+      repo: "a/b",
+      readAt: "",
+      caches: 0,
+      cacheBytes: 0,
+      artifacts: 0,
+      artifactBytes: 0,
+      tries: 0,
+      ...over,
+    });
+    expect(size(0)).toBe("under 1 MB");
+    expect(size(2 ** 20 - 1)).toBe("under 1 MB");
+    expect(size(2 ** 20)).toBe("1 MB");
+    expect(size(GB - 1)).toBe("1024 MB");
+    expect(size(GB)).toBe("1.0 GB");
+    expect(cachesText(stored({}))).toBe("No caches.");
+    expect(cachesText(stored({ caches: 1, cacheBytes: 3 * 2 ** 20 }))).toBe(
+      "1 cache holding 3 MB.",
+    );
+    expect(cachesText(stored({ caches: 0, cacheBytes: 5 }))).toBe(
+      "0 caches holding under 1 MB.",
+    );
+    expect(cachesText(stored({ caches: 9, cacheBytes: 9 * GB - 1 }))).toBe(
+      "9 caches holding 9.0 GB.",
+    );
+    expect(cachesText(stored({ caches: 9, cacheBytes: 9 * GB }))).toBe(
+      "9 caches holding 9.0 GB, near GitHub’s usual 10 GB limit.",
+    );
+    expect(artifactsText(stored({}))).toBe("No artifacts kept.");
+    expect(artifactsText(stored({ moreArtifacts: true }))).toBe(
+      "Orbit didn’t read all its artifacts.",
+    );
+    expect(artifactsText(stored({ artifacts: 1, artifactBytes: GB }))).toBe(
+      "1 artifact kept, holding 1.0 GB.",
     );
   });
 

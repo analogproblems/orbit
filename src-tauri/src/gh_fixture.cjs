@@ -21,8 +21,12 @@
 // runs of a/b are the list in <dir>/queued.json, or none, listed newest
 // first in pages, those with the status asked for made before `created`
 // ("<time") when it is given.
+// The cache usage of a/b is <dir>/cache.json, or none, and its artifacts the
+// list in <dir>/artifacts.json, or none, in pages; while <dir>/cache-error or
+// <dir>/artifacts-error exists, reading them fails with its text.
 // While <dir>/down exists every call
-// fails. While <dir>/hold exists a GET waits, after writing <dir>/held. Each
+// fails. While <dir>/hold exists a GET waits, after writing <dir>/held, or
+// only a GET of the endpoint it names, when it names one. Each
 // call is logged to <dir>/calls as "METHOD endpoint".
 const fs = require("node:fs");
 const path = require("node:path");
@@ -128,7 +132,12 @@ if (endpoint === "graphql") {
   process.stdout.write(fs.readFileSync(path.resolve(dir, file), "utf8"));
   process.exit(0);
 }
-if (method === "GET" && fs.existsSync(path.join(dir, "hold"))) {
+const hold = path.join(dir, "hold");
+if (
+  method === "GET" &&
+  fs.existsSync(hold) &&
+  ["", endpoint].includes(fs.readFileSync(hold, "utf8").trim())
+) {
   fs.writeFileSync(path.join(dir, "held"), "");
   const nap = new Int32Array(new SharedArrayBuffer(4));
   while (fs.existsSync(path.join(dir, "hold"))) Atomics.wait(nap, 0, 0, 20);
@@ -283,6 +292,31 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
   const list = path.join(dir, `runners-${which}.json`);
   if (fs.existsSync(list)) process.stdout.write(fs.readFileSync(list, "utf8"));
   else answer({ total_count: 0, runners: [] });
+} else if (
+  (m = endpoint.match(/^repos\/a\/b\/actions\/(cache\/usage|artifacts)$/))
+) {
+  const which = m[1] === "artifacts" ? "artifacts" : "cache";
+  const refused = path.join(dir, `${which}-error`);
+  if (fs.existsSync(refused)) {
+    process.stderr.write(fs.readFileSync(refused, "utf8"));
+    process.exit(1);
+  }
+  const kept = path.join(dir, `${which}.json`);
+  const saved = fs.existsSync(kept)
+    ? JSON.parse(fs.readFileSync(kept, "utf8"))
+    : null;
+  if (which === "cache")
+    answer(
+      saved || {
+        full_name: "a/b",
+        active_caches_size_in_bytes: 0,
+        active_caches_count: 0,
+      },
+    );
+  else {
+    const list = saved || [];
+    answer({ total_count: list.length, artifacts: page(list) });
+  }
 } else if (endpoint === "repos/a/b/actions/runs") {
   const queued = path.join(dir, "queued.json");
   const before = Date.parse((fields.created || "").replace(/^</, ""));

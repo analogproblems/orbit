@@ -1104,6 +1104,9 @@ export interface Snapshot {
   /** The self-hosted runners of each connected repository, and of each
    * organization that owns one, as Orbit last read them. */
   runners?: RunnerPlace[];
+  /** Each connected repository's GitHub Actions caches and artifacts, as
+   * Orbit last read them. */
+  actionsStorage?: ActionsStorage[];
 }
 /** Where a commit's checks stand. "none" is no checks, or only ones that
  * were skipped or cancelled. */
@@ -1235,6 +1238,25 @@ export interface RunnerPlace {
   tries: number;
   retryAt?: string | null;
 }
+/** What Orbit read of one repository's GitHub Actions storage. */
+export interface ActionsStorage {
+  repo: string;
+  readAt: string;
+  /** Its caches: how many, and the bytes they hold. */
+  caches: number;
+  cacheBytes: number;
+  /** The artifacts it keeps, that haven't expired, of those Orbit read. */
+  artifacts: number;
+  artifactBytes: number;
+  /** GitHub has more artifacts than Orbit read, so it may keep more. */
+  moreArtifacts?: boolean;
+  /** Why Orbit can't see its storage. */
+  unseen?: string | null;
+  /** Why the last read failed; what was read before is kept. */
+  error?: string | null;
+  tries: number;
+  retryAt?: string | null;
+}
 /** What Orbit found in a repository where no CI runs on pull requests. */
 export interface CiFound {
   /** The workflows there, none of which run on pull requests; empty when
@@ -1336,6 +1358,9 @@ export interface CiFailure {
   /** Why it looks like bad luck rather than the code, such as a lost
    * runner or a network error, when it does. */
   flaky?: string | null;
+  /** The step couldn't upload an artifact as the account's artifact
+   * storage is full, which only a person can change. */
+  quota?: boolean;
 }
 /** One rerun of an item's job, or Orbit's tries at one. */
 export interface OpsRerun {

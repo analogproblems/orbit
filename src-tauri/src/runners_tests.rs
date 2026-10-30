@@ -185,42 +185,6 @@ fn runs_that_waited_half_an_hour_for_a_runner_are_kept_the_longest_first() {
 }
 
 #[test]
-fn queued_runs_are_read_a_page_at_a_time_until_orbit_has_all_github_counts() {
-    let runs = |from: u64, n: u64| -> Vec<Value> {
-        (from..from + n).map(|id| json!({ "id": id })).collect()
-    };
-    let page =
-        |total: u64, list: Vec<Value>| json!({ "total_count": total, "workflow_runs": list });
-    let mut q = Queue::default();
-    assert!(q.add(&page(250, runs(0, 100))).unwrap(), "more to read");
-    assert!(!q.all());
-    // A run that moved to the next page counts once.
-    assert!(q.add(&page(250, runs(99, 100))).unwrap());
-    assert_eq!(q.runs.len(), 199);
-    assert!(!q.all());
-    // A short page is the last. The queue shrank meanwhile, so a run may
-    // have moved to a page Orbit read already: GitHub's largest count
-    // stands.
-    assert!(!q.add(&page(230, runs(199, 40))).unwrap());
-    assert!(!q.all(), "GitHub counted more than Orbit read");
-    // A full page that brings every run GitHub counts is the last too.
-    let mut q = Queue::default();
-    assert!(!q.add(&page(100, runs(0, 100))).unwrap());
-    assert!(q.all());
-    let mut q = Queue::default();
-    assert!(!q.add(&page(0, vec![])).unwrap());
-    assert!(q.all(), "none queued");
-    assert_eq!(
-        q.add(&json!({ "total_count": 1 })),
-        Err("GitHub didn't return the queued runs.".into())
-    );
-    assert_eq!(
-        q.add(&json!({ "workflow_runs": [] })),
-        Err("GitHub didn't say how many runs are queued.".into())
-    );
-}
-
-#[test]
 fn runners_orbit_may_not_see_are_said_so_and_other_errors_are_tried_again() {
     let mut p = place("a/b", PlaceKind::Repository, 0);
     let refused = Err("gh: Must have admin rights to Repository. (HTTP 403)".to_string());

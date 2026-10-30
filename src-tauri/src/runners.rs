@@ -8,6 +8,7 @@
 //! A repository's waiting runs open a problem for you (see `crate::problems`
 //! `see_waiting`); nothing here reaches GitHub.
 use crate::{
+    github::{Pages, PAGE},
     logs,
     problems::{stamp, time},
     types::*,
@@ -22,8 +23,6 @@ pub const PER_PASS: usize = 4;
 pub const EVERY: Duration = Duration::minutes(5);
 /// How long a run waits for a runner before Orbit says it is stuck.
 pub const STUCK: Duration = Duration::minutes(30);
-/// Runners, and queued runs, read in one page.
-const PAGE: usize = 100;
 /// Pages of a repository's queued runs Orbit reads at most in one go.
 pub const RUN_PAGES: u32 = 3;
 /// The longest name Orbit keeps for a runner or a run.
@@ -163,7 +162,7 @@ pub async fn read(name: &str, kind: PlaceKind) -> Result<Place, String> {
             // long. GitHub lists the newest first, so those that waited
             // longest come last.
             let before = format!("<{}", (now - STUCK).format("%Y-%m-%dT%H:%M:%S+00:00"));
-            let mut queue = Queue::default();
+            let mut queue = Pages::new("workflow_runs", "queued runs");
             for n in 1..=RUN_PAGES {
                 let fields = [
                     ("status", "queued".to_string()),
@@ -178,7 +177,7 @@ pub async fn read(name: &str, kind: PlaceKind) -> Result<Place, String> {
                     break;
                 }
             }
-            place.waiting = waiting(&queue.runs, now);
+            place.waiting = waiting(&queue.items, now);
             place.more_queued = !queue.all();
         }
         PlaceKind::Owner | PlaceKind::Organization | PlaceKind::Person => {
@@ -213,7 +212,7 @@ fn seen(place: &mut Place, answer: Result<Value, String>) -> Result<(), String> 
             (place.runners, place.total) = runners(&v)?;
             Ok(())
         }
-        Err(e) if (e.contains("HTTP 403") && !logs::rate_limited(&e)) || e.contains("HTTP 404") => {
+        Err(e) if logs::refused(&e) => {
             place.unseen = Some(unseen(&place.name, place.kind));
             Ok(())
         }
@@ -257,38 +256,6 @@ pub fn runners(v: &Value) -> Result<(Vec<Runner>, u32), String> {
         .unwrap_or(0)
         .max(runners.len() as u64);
     Ok((runners, total.min(u32::MAX as u64) as u32))
-}
-/// The queued runs Orbit has read of a repository, a page at a time.
-#[derive(Default)]
-struct Queue {
-    runs: Vec<Value>,
-    /// How many GitHub says there are, the most it said on any page.
-    total: u64,
-}
-impl Queue {
-    /// Adds a page of GitHub's answer, each run once, as one can move to
-    /// the next page while Orbit reads, and says whether to read the next
-    /// page: not after a short one, nor once Orbit has every run GitHub
-    /// counts.
-    fn add(&mut self, v: &Value) -> Result<bool, String> {
-        let list = v["workflow_runs"]
-            .as_array()
-            .ok_or("GitHub didn't return the queued runs.")?;
-        let total = v["total_count"]
-            .as_u64()
-            .ok_or("GitHub didn't say how many runs are queued.")?;
-        self.total = self.total.max(total);
-        for run in list {
-            if !self.runs.iter().any(|r| r["id"] == run["id"]) {
-                self.runs.push(run.clone());
-            }
-        }
-        Ok(list.len() >= PAGE && !self.all())
-    }
-    /// Whether Orbit has read every run GitHub counts.
-    fn all(&self) -> bool {
-        self.runs.len() as u64 >= self.total
-    }
 }
 /// The queued runs among these that have waited for longer than `STUCK`
 /// since their latest try began, the longest first. A run GitHub gives no

@@ -651,6 +651,7 @@ async function demoAction(
       const text = "Orbit stopped watching CI.";
       demo.ci = [];
       demo.runners = [];
+      demo.actionsStorage = [];
       demo.problems = demo.problems?.map((p) =>
         p.closedAt
           ? p

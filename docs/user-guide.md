@@ -313,6 +313,7 @@ The sidebar's **Live** item shows a pulsing dot while reviews are running. Anima
 - **Open problems**: each thing failing now, with the checks that fail, for a default branch what broke it (see [What broke it](#what-broke-it)), why each failed (see [Why it failed](#why-it-failed)), whether one looks like bad luck and what Orbit did about it (see [Rerunning bad luck](#rerunning-bad-luck)) and its latest events, such as "Failing on main at 7d41e09: CI / Rust tests." and "Still failing at 9f3c2a1.". A failing default branch comes first and **needs you**, as do runs waiting for a runner (see [Runners](#runners)). A failing pull request is its author's to fix, so it is only listed, and only for pull requests Orbit follows: open, not drafts, and from a source Autopilot trusts. So is one whose checks passed before its base branch moved on (see [The base moved](#the-base-moved)). Select one to open the pull request. With nothing failing, it reads **All clear** once Orbit has read every check on each repository's default branch and on the pull requests it follows, and otherwise says on how many repositories it couldn't;
 - **CI by repository**: where each default branch stands (passing, failing, running, or no checks), how many followed pull requests fail, whether CI runs on its pull requests (see [Repositories with no CI](#repositories-with-no-ci)), and when Orbit last read it. When GitHub doesn't answer, the row says why and keeps what Orbit read before; a problem never closes because a read failed;
 - **Self-hosted runners**: the runners Orbit sees for each repository and for each organization that owns one, and where it can't see them (see [Runners](#runners));
+- **Actions storage**: each repository's caches and the artifacts it keeps (see [Actions storage](#actions-storage));
 - **Recently closed**: problems from the last two weeks, with why each closed. A problem stays longer while Orbit's issue about it is still open, or while its pull request is, so the comment keeps its item numbers;
 - **What Orbit did on GitHub**: Orbit's latest 10 comments, issues, edits and reruns on GitHub, newest first, with any that didn't go through and why. Select one to open it on GitHub.
 
@@ -342,6 +343,7 @@ After each CI read, Orbit reads why the checks on open problems failed, a few ea
 - A step whose log looks like it holds a secret anywhere, such as a GitHub token or a private key, is held back, even if the secret is outside the lines Orbit would show: the item says Orbit held back its log, and Orbit keeps none of it.
 - A check that isn't a GitHub Actions job, such as one from another CI service, says Orbit can only read the logs of GitHub Actions jobs. One whose log GitHub no longer has, or that Orbit's GitHub sign-in can't read, says so. Orbit doesn't ask again for these.
 - When GitHub doesn't answer, or says Orbit is asking too often, Operations says so and Orbit tries again after a minute, then waits twice as long after each failure, up to an hour. Meanwhile it reads the other checks. After GitHub's rate limit, it reads no more logs until the wait is over.
+- A step that couldn't upload an artifact because the account's artifact storage is full ("Artifact storage quota has been hit") says so, and that only a person can fix it: let old artifacts expire, delete some, or raise the account's storage. GitHub counts it again every 6 to 12 hours. It isn't bad luck, so Orbit doesn't rerun it (see [Actions storage](#actions-storage)).
 
 Orbit forgets what it read once the check stops failing or its problem closes. A check that fails again on a newer commit is a new job, so Orbit reads it afresh.
 
@@ -412,6 +414,17 @@ A job runs on a runner: one of GitHub's own, or a self-hosted one that a reposit
 - When GitHub doesn't answer, the place says why and keeps what Orbit read before, and its problem stays as it was. Orbit tries again after a minute, then waits twice as long each time, up to an hour.
 
 Orbit doesn't yet say which label a waiting job asks for, nor read runners an enterprise shares.
+
+#### Actions storage
+
+GitHub Actions keeps two kinds of files for a repository. Caches speed up builds; past a repository's limit, usually 10 GB, GitHub drops the ones used least. Artifacts are files a workflow uploads; in a private repository they count toward the account's storage, and once that is full no job can upload more. After each CI read, Orbit reads each connected repository's caches and the artifacts it keeps, a few repositories at a time, each one again every 30 minutes.
+
+- **Actions storage** on **Operations** lists each repository with how many caches it has and how much they hold, and how many artifacts it keeps that haven't expired and how much they hold, such as "118 caches holding 9.6 GB, near GitHub's usual 10 GB limit." and "52 artifacts kept, holding 635 MB.". Orbit reads the newest 300 artifacts; when there are more, it says so.
+- **Near the limit**: caches holding 9 GB or more are near GitHub's usual limit. The row says so, as GitHub soon drops the ones used least, which can slow builds, and Bit says so when you ask how your repositories are. A repository can have a higher limit, which Orbit can't see.
+- **Full**: when a job failed because the account's artifact storage is full (see [Why it failed](#why-it-failed)), its repository's row says so.
+- Orbit can't see an account's storage or its limit, as that is billing, which Orbit doesn't read. Where GitHub won't show a repository's storage to Orbit's sign-in, the row says so. When GitHub doesn't answer, the row says why and keeps what Orbit read before, and Orbit tries again after a minute, then waits twice as long each time, up to an hour.
+
+Orbit only reads storage: it never deletes a cache or an artifact.
 
 ### Review loops
 
