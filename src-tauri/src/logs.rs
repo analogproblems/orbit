@@ -256,7 +256,7 @@ pub fn understand(mut failure: Failure, job: &Value, log: &str) -> Failure {
     // Without the step's times, the whole log is checked and its last step
     // shown.
     let (checked, shown) = match step.and_then(|s| Some((s, section(&lines, s)?))) {
-        Some((s, window)) => (window, own(window, shared_end(job, s))),
+        Some((s, window)) => (window, own(window, s, job)),
         None => (&lines[..], last_step(&lines)),
     };
     let text: Vec<&str> = checked.iter().map(|l| l.text.as_str()).collect();
@@ -355,53 +355,52 @@ fn section<'a>(lines: &'a [Line], step: &Value) -> Option<&'a [Line]> {
         _ => &[],
     })
 }
-/// The second `step` completed in, when another step that ran started in
-/// it, so lines from that second may be either's.
-fn shared_end(job: &Value, step: &Value) -> Option<DateTime<Utc>> {
-    let end = step["completed_at"]
-        .as_str()
-        .and_then(time)?
-        .trunc_subsecs(0);
-    let steps = job["steps"].as_array()?;
-    steps
-        .iter()
-        .filter(|s| !std::ptr::eq(*s, step) && s["conclusion"] != "skipped")
-        .filter_map(|s| s["started_at"].as_str().and_then(time))
-        .any(|t| t.trunc_subsecs(0) == end)
-        .then_some(end)
-}
-/// A step's own lines in its seconds: from its command up to the next
-/// step's command, or to its own last line when it ran a command that
-/// failed, `##[error]Process completed with exit code`. When neither marks
-/// its end and another step started in the second it completed, that
-/// second is left out, as its lines may be the other step's.
-fn own(window: &[Line], shared: Option<DateTime<Utc>>) -> &[Line] {
-    let start = window
-        .iter()
-        .position(|l| l.text.starts_with("##[group]Run "))
-        .unwrap_or(0);
-    let lines = &window[start..];
-    let next = lines
-        .iter()
-        .skip(1)
-        .position(|l| l.text.starts_with("##[group]Run "))
-        .map(|i| i + 1);
-    let done = lines
-        .iter()
-        .position(|l| {
-            l.text
-                .starts_with("##[error]Process completed with exit code")
-        })
-        .map(|i| i + 1);
-    let end = match (next.into_iter().chain(done).min(), shared) {
-        (Some(end), _) => end,
-        (None, Some(second)) => lines
-            .iter()
-            .position(|l| l.at.is_some_and(|t| t >= second))
-            .unwrap_or(lines.len()),
-        (None, None) => lines.len(),
+/// A step's own lines in its seconds. GitHub gives step times only to the
+/// second and marks no step's end in the log, and a composite action runs
+/// several commands in one step, so a second another step that ran also
+/// spans is left out. The one exception is the end of the failed step's
+/// last second when its command failed: its lines up to its own last line,
+/// `##[error]Process completed with exit code`, when no other command
+/// starts before it.
+fn own<'a>(window: &'a [Line], step: &Value, job: &Value) -> &'a [Line] {
+    let second = |s: &Value, key: &str| s[key].as_str().and_then(time).map(|t| t.trunc_subsecs(0));
+    let (Some(start), Some(end)) = (second(step, "started_at"), second(step, "completed_at"))
+    else {
+        return window;
     };
-    &lines[..end]
+    let others: Vec<(DateTime<Utc>, DateTime<Utc>)> = job["steps"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|s| !std::ptr::eq(*s, step) && s["conclusion"] != "skipped")
+        .filter_map(|s| Some((second(s, "started_at")?, second(s, "completed_at")?)))
+        .collect();
+    let shared = |t: DateTime<Utc>| others.iter().any(|(from, to)| *from <= t && t <= *to);
+    let from = |t: DateTime<Utc>| {
+        window
+            .iter()
+            .position(|l| l.at.is_some_and(|at| at >= t))
+            .unwrap_or(window.len())
+    };
+    let first = if shared(start) {
+        from(start + Duration::seconds(1))
+    } else {
+        0
+    };
+    let mut last = window.len();
+    if shared(end) {
+        let at = from(end).max(first);
+        let mark = window[at..].iter().position(|l| {
+            l.text.starts_with("##[group]Run ")
+                || l.text
+                    .starts_with("##[error]Process completed with exit code")
+        });
+        last = match mark {
+            Some(m) if window[at + m].text.starts_with("##[error]") => at + m + 1,
+            _ => at,
+        };
+    }
+    &window[first..last.max(first)]
 }
 /// The last step of a whole log: from the last command before its last
 /// error.
@@ -423,36 +422,45 @@ pub fn excerpt(log: &str) -> Vec<String> {
         .map(|l| cut(l))
         .collect()
 }
-/// The end of a step's log: the lines after its command up to its last
-/// error, at most `MAX_LINES`. GitHub starts a step with its command in a
-/// `##[group]Run` group and marks an error with `##[error]`. A step with
-/// no error gives its end.
+/// The end of a step's log: its lines up to its last error, without the
+/// commands GitHub echoes, at most `MAX_LINES`. GitHub echoes each
+/// command in a `##[group]Run` group and marks an error with
+/// `##[error]`. A step with no error gives its end.
 fn tail(lines: &[Line]) -> Vec<String> {
     let text: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
-    let group = text.iter().position(|l| l.starts_with("##[group]Run "));
-    let start = group.map_or(0, |g| {
-        text[g..]
-            .iter()
-            .position(|l| l.starts_with("##[endgroup]"))
-            .map_or(g + 1, |e| g + e + 1)
-    });
     let end = text
         .iter()
         .rposition(|l| l.starts_with("##[error]"))
-        .map_or(text.len(), |e| e + 1)
-        .max(start);
-    let mut kept: Vec<String> = text[start..end]
-        .iter()
-        .filter(|l| {
-            !l.trim().is_empty() && !l.starts_with("##[group]") && !l.starts_with("##[endgroup]")
-        })
-        .map(|l| match l.strip_prefix("##[error]") {
+        .map_or(text.len(), |e| e + 1);
+    let mut kept: Vec<String> = vec![];
+    let mut i = 0;
+    while i < end {
+        let line = text[i];
+        if line.starts_with("##[group]Run ") {
+            // Up to its end, unless another group starts first.
+            let close = text[i + 1..end]
+                .iter()
+                .position(|l| l.starts_with("##[endgroup]") || l.starts_with("##[group]"));
+            i += match close {
+                Some(c) if text[i + 1 + c].starts_with("##[endgroup]") => c + 2,
+                _ => 1,
+            };
+            continue;
+        }
+        i += 1;
+        if line.trim().is_empty()
+            || line.starts_with("##[group]")
+            || line.starts_with("##[endgroup]")
+        {
+            continue;
+        }
+        kept.push(match line.strip_prefix("##[error]") {
             Some(rest) => format!("Error: {rest}"),
-            None => l
+            None => line
                 .strip_prefix("##[warning]")
-                .map_or_else(|| l.to_string(), |rest| format!("Warning: {rest}")),
-        })
-        .collect();
+                .map_or_else(|| line.to_string(), |rest| format!("Warning: {rest}")),
+        });
+    }
     if kept.len() > MAX_LINES {
         kept.drain(..kept.len() - MAX_LINES);
     }

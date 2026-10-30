@@ -127,9 +127,9 @@ fn only_the_step_that_failed_the_job_is_shown() {
 }
 
 /// A step that starts in the second the failed one completed, such as a
-/// clean-up step that always runs or a post step, is left out: up to the
-/// next step's command or the failed command's last line, or else without
-/// that second.
+/// clean-up step that always runs or a post step, is left out: that second
+/// is shown only up to the failed command's own last line, when no other
+/// command starts before it.
 #[test]
 fn a_step_starting_as_the_failed_one_ends_is_left_out() {
     let test = |last: &str| {
@@ -168,18 +168,19 @@ fn a_step_starting_as_the_failed_one_ends_is_left_out() {
     assert_eq!(shown(log, 7), ran);
     // An action that failed has no last line to go by, so its last second
     // is left out while another step shares it, and kept otherwise.
-    let mut log = test("##[error]Tests failed");
-    log.extend([
-        at(7.2, "Post job cleanup."),
-        at(7.5, "##[error]a clean-up annotation"),
-    ]);
-    assert_eq!(shown(log, 7), ["FAIL src/a.test.ts"]);
+    for next in ["Post job cleanup.", "##[group]Run ./clean-up.sh"] {
+        let mut log = test("##[error]Tests failed");
+        log.extend([at(7.2, next), at(7.5, "##[error]a clean-up annotation")]);
+        assert_eq!(shown(log, 7), ["FAIL src/a.test.ts"], "{next}");
+    }
+    // Nor is a command that starts and fails in that second.
     let mut log = test("##[error]Tests failed");
     log.extend([
         at(7.2, "##[group]Run ./clean-up.sh"),
-        at(7.5, "##[error]a clean-up annotation"),
+        at(7.3, "##[endgroup]"),
+        at(7.5, "##[error]Process completed with exit code 2."),
     ]);
-    assert_eq!(shown(log, 7), ["FAIL src/a.test.ts", "Error: Tests failed"]);
+    assert_eq!(shown(log, 7), ["FAIL src/a.test.ts"]);
     let mut log = test("##[error]Tests failed");
     log.extend([
         at(9.2, "Post job cleanup."),
@@ -196,11 +197,85 @@ fn a_step_starting_as_the_failed_one_ends_is_left_out() {
     let steps = [
         step("Before", "success", 5, 6),
         step("Check", "failure", 7, 7),
+        step("Skipped", "skipped", 7, 7),
         step("After", "success", 9, 9),
     ];
     assert_eq!(
         understood(&steps, &log).lines,
         ["FAIL quick", "Error: Tests failed"]
+    );
+}
+
+/// A fast step before the failed one in its first second is left out, as
+/// that second is the failed step's only from a point the log doesn't
+/// mark.
+#[test]
+fn a_step_ending_as_the_failed_one_starts_is_left_out() {
+    let log = vec![
+        at(5.0, "##[group]Run ./prepare.sh"),
+        at(5.01, "##[endgroup]"),
+        at(5.1, "prepared"),
+        at(5.5, "##[group]Run npm test"),
+        at(5.51, "##[endgroup]"),
+        at(5.6, "starting tests"),
+        at(6.0, "FAIL src/a.test.ts"),
+        at(7.0, "##[error]Process completed with exit code 1."),
+    ];
+    let steps = [
+        step("Prepare", "success", 5, 5),
+        step("Test", "failure", 5, 7),
+    ];
+    let failure = understood(&steps, &log);
+    assert_eq!(failure.step, "Test");
+    assert_eq!(
+        failure.lines,
+        [
+            "FAIL src/a.test.ts",
+            "Error: Process completed with exit code 1."
+        ]
+    );
+    // All its seconds are still checked for secrets.
+    let mut log = log;
+    log.insert(2, at(5.05, &format!("gh{}_{}", 'p', "A1".repeat(18))));
+    assert!(understood(&steps, &log).held);
+}
+
+/// A composite action runs several commands in one step, each echoed in
+/// its own group; the failure inside one of them is shown, and the
+/// commands are not.
+#[test]
+fn a_composite_action_shows_the_command_that_failed() {
+    let log = vec![
+        at(2.0, "##[group]Run ./.github/actions/test"),
+        at(2.01, "with:"),
+        at(2.02, "  node: 22"),
+        at(2.03, "##[endgroup]"),
+        at(2.1, "##[group]Run npm ci"),
+        at(2.11, "npm ci"),
+        at(
+            2.12,
+            "shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}",
+        ),
+        at(2.13, "##[endgroup]"),
+        at(3.0, "added 312 packages"),
+        at(4.0, "##[group]Run npm test"),
+        at(4.01, "npm test"),
+        at(4.02, "##[endgroup]"),
+        at(5.0, "FAIL src/a.test.ts"),
+        at(6.0, "##[error]Process completed with exit code 1."),
+    ];
+    let steps = [
+        step("Set up job", "success", 0, 1),
+        step("Run ./.github/actions/test", "failure", 2, 6),
+        step("Post Run actions/checkout@v4", "success", 8, 8),
+    ];
+    assert_eq!(
+        understood(&steps, &log).lines,
+        [
+            "added 312 packages",
+            "FAIL src/a.test.ts",
+            "Error: Process completed with exit code 1."
+        ]
     );
 }
 
@@ -301,6 +376,9 @@ fn an_excerpt_is_short() {
     let later = "##[group]Run one\n##[endgroup]\nfirst\n##[error]e\n##[group]Run two\nsecond";
     assert_eq!(excerpt(later), ["first", "Error: e"]);
     assert_eq!(excerpt("a\n\nb\n##[error]c"), ["a", "b", "Error: c"]);
+    // A command echo that doesn't end is just its first line.
+    let open = "##[group]Run x\nout\n##[group]Other\nmore\n##[endgroup]\n##[error]e";
+    assert_eq!(excerpt(open), ["out", "more", "Error: e"]);
     assert_eq!(excerpt(""), Vec::<String>::new());
     // A step GitHub logged nothing for in its times shows nothing.
     let failure = understood(&[step("Test", "failure", 30, 31)], &log());
