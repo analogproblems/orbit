@@ -443,6 +443,50 @@ async fn a_pull_request_green_before_main_moved_on_is_asked_to_merge_it_in() {
     assert_eq!(writes(d.path()).len(), 3);
 }
 
+/// When the default branch is renamed, GitHub moves open pull requests
+/// onto the new name, and Orbit's comment asks to merge that one in.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_renamed_base_is_named_as_it_is_now() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let e = connected(d.path()).await;
+    e.update(|s| s.prs = vec![pr('5')]).await;
+    let green: &[(&str, &str)] = &[("Rust", "SUCCESS")];
+    answer(d.path(), '2', green, Some(('5', green)));
+    timed(d.path(), "2026-10-30T10:10:00Z", "2026-10-30T10:05:00Z");
+    watch(&e, &gh).await;
+    let body = github(d.path())["comments"][0]["body"].to_string();
+    assert!(body.contains("- **I1** · `main` moved on"), "{body}");
+
+    // main is renamed trunk; nothing else changes.
+    e.update(|s| s.prs[0].base_ref = "trunk".into()).await;
+    let path = d.path().join("answer.json");
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    v["data"]["repository"]["defaultBranchRef"]["name"] = json!("trunk");
+    std::fs::write(&path, v.to_string()).unwrap();
+    watch(&e, &gh).await;
+    let g = github(d.path());
+    assert_eq!(g["comments"].as_array().unwrap().len(), 1);
+    let body = g["comments"][0]["body"].as_str().unwrap();
+    assert!(body.contains(
+        "Every check passes at `5555555`, but `trunk` has moved on since they began. Merge `trunk` in and let CI run again"
+    ));
+    assert!(body.contains(
+        "- **I1** · `trunk` moved on since the checks at `5555555` began · merge it in and let CI run again"
+    ));
+    assert!(!body.contains("`main`"), "{body}");
+    assert!(body.contains(r#""base":"trunk""#), "{body}");
+    let s = e.snapshot().await;
+    let open: Vec<&str> = s
+        .problems
+        .iter()
+        .filter(|p| p.is_open())
+        .map(|p| p.base.as_str())
+        .collect();
+    assert_eq!(open, ["trunk"]);
+}
+
 /// A write GitHub got just before Orbit stopped, before Orbit heard back,
 /// is found on GitHub and not sent twice.
 #[cfg(unix)]

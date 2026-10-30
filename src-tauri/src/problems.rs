@@ -268,7 +268,9 @@ fn behind(ci: &RepoCi, pr: &PullRequest, pull: &CommitCi) -> Option<bool> {
 
 /// Opens, updates or closes the problem about a pull request's base moving
 /// on since its checks began. It closes once they run again with the
-/// base's latest, or fail.
+/// base's latest, or fail, or when its base is another branch now, such as
+/// after the default branch was renamed; then one about the new base may
+/// open at once.
 fn see_base(
     problems: &mut Vec<Problem>,
     ci: &RepoCi,
@@ -280,6 +282,13 @@ fn see_base(
     let key = base_key(&pr.id);
     let short = ci::short(&pull.sha).to_string();
     let base = ci.branch.as_str();
+    let renamed = |p: &Problem| p.base != base || pr.base_ref != p.base;
+    if let Some(p) = problems
+        .iter_mut()
+        .find(|p| p.key == key && p.is_open() && renamed(p))
+    {
+        p.close(&at, format!("Its base is no longer {}.", p.base));
+    }
     let open = problems.iter_mut().find(|p| p.key == key && p.is_open());
     match (pull.state, behind(ci, pr, pull), open) {
         (CiState::Passing, Some(true), Some(p)) => {
@@ -324,9 +333,6 @@ fn see_base(
             p.closed_sha = pull.sha.clone();
         }
         (CiState::Failing, _, Some(p)) => p.close(&at, format!("Its checks fail at {short} now.")),
-        (_, _, Some(p)) if pr.base_ref != p.base => {
-            p.close(&at, format!("Its base is no longer {}.", p.base));
-        }
         // Running, or Orbit can't tell yet: wait.
         _ => {}
     }

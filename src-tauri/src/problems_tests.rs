@@ -386,6 +386,30 @@ fn a_base_that_moved_on_is_over_when_the_checks_fail_or_the_pull_request_goes() 
         problems[0].closed_reason.as_deref(),
         Some("Its base is no longer main.")
     );
+    // The default branch is renamed, and the pull request's base with it:
+    // the problem about main is over, and one about trunk opens at once.
+    let mut problems = vec![];
+    behind(&mut problems);
+    let mut renamed = p.clone();
+    renamed.base_ref = "trunk".into();
+    let mut trunk = based(B, 10, ran(A, CiState::Passing, &[], 0));
+    trunk.branch = "trunk".into();
+    observe(&mut problems, &trunk, &[&renamed], at(12));
+    assert_eq!(
+        problems[0].closed_reason.as_deref(),
+        Some("Its base is no longer main.")
+    );
+    assert_eq!(open(&problems).len(), 1);
+    assert_eq!(open(&problems)[0].base, "trunk");
+    assert_eq!(
+        timeline(open(&problems)[0]),
+        ["Passed at 1111111, but trunk moved on to 2222222 after its checks began."]
+    );
+    // Before Orbit's list of pull requests catches up, only the old one ends.
+    let mut problems = vec![];
+    behind(&mut problems);
+    observe(&mut problems, &trunk, &[&p], at(12));
+    assert!(open(&problems).is_empty());
     // Nothing is listed when Orbit can't tell: into another branch, a
     // check that didn't say when it began, or main's latest without a time.
     let mut problems = vec![];
