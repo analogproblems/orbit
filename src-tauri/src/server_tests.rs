@@ -86,6 +86,37 @@ fn reads_the_options_for_the_link() {
 }
 
 #[test]
+fn reads_the_service_commands() {
+    // Without --data, install keeps the folder the service had, which only
+    // the service knows.
+    assert_eq!(
+        parsed(&["install", "--port", "5000", "--web=dist"]),
+        Ok(Command::Install {
+            data: None,
+            port: Some(5000),
+            web: Some(here("dist"))
+        })
+    );
+    assert_eq!(
+        parse(args(&["install", "--data", "orbit"]), None),
+        Ok(Command::Install {
+            data: Some(here("orbit")),
+            port: None,
+            web: None
+        })
+    );
+    // These don't use a data folder, so they work without one.
+    for (list, command) in [
+        (&["uninstall"][..], Command::Uninstall),
+        (&["status"], Command::Status),
+        (&["logs"], Command::Logs { follow: false }),
+        (&["logs", "--follow"], Command::Logs { follow: true }),
+    ] {
+        assert_eq!(parse(args(list), None), Ok(command), "{list:?}");
+    }
+}
+
+#[test]
 fn refuses_options_it_does_not_know_or_that_do_not_fit() {
     for (list, error) in [
         (&["--port", "80"][..], "Choose a port from 1024 to 65535."),
@@ -126,6 +157,47 @@ fn refuses_options_it_does_not_know_or_that_do_not_fit() {
         (&["serve"], "Orbit doesn't know serve."),
         (&["--data", "/a", "link"], "Orbit doesn't know link."),
         (&["--verbose"], "Orbit doesn't know --verbose."),
+        (&["install", "--new"], "Only orbit-server link takes --new."),
+        (&["--follow"], "Only orbit-server logs takes --follow."),
+        (
+            &["link", "--follow"],
+            "Only orbit-server logs takes --follow.",
+        ),
+        (&["logs", "--follow=yes"], "--follow doesn't take a value."),
+        (
+            &["logs", "--follow", "--follow"],
+            "--follow is given more than once.",
+        ),
+        (
+            &["logs", "--data", "/a"],
+            "orbit-server logs doesn't take --data.",
+        ),
+        (
+            &["status", "--port", "5000"],
+            "orbit-server status doesn't take --port.",
+        ),
+        // The service has one data folder, so these don't ask for it.
+        (
+            &["status", "--data", "/a"],
+            "orbit-server status doesn't take --data.",
+        ),
+        (
+            &["uninstall", "--data", "/a"],
+            "orbit-server uninstall doesn't take --data.",
+        ),
+        (
+            &["uninstall", "--web", "/a"],
+            "orbit-server uninstall doesn't take --web.",
+        ),
+        (&["uninstall", "now"], "Orbit doesn't know now."),
+        (
+            &["install", "--port", "80"],
+            "Choose a port from 1024 to 65535.",
+        ),
+        (
+            &["install", "--data", "/a", "--data", "/b"],
+            "--data is given more than once.",
+        ),
     ] {
         assert_eq!(parsed(list), Err(error.into()), "{list:?}");
     }
@@ -380,7 +452,12 @@ fn help_names_every_option() {
         "--new",
         "--help",
         "--version",
+        "--follow",
         "link",
+        "install",
+        "status",
+        "logs",
+        "uninstall",
     ] {
         assert!(text.contains(option), "{option}");
     }

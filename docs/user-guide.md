@@ -752,8 +752,30 @@ Ctrl+C, or a stop signal from your system, saves and stops it. If it can't start
 | `orbit-server --web <folder>`  | Serves the browser page from another folder. `npm run build` makes it as `dist`.                                                                 |
 | `orbit-server link`            | Shows the link for your other devices.                                                                                                           |
 | `orbit-server link --new`      | Makes a new link, so browsers using the old one are signed out. Stop Orbit first, then start it again after.                                     |
+| `orbit-server install`         | Sets Orbit up as a service that keeps running. It takes `--data`, `--port` and `--web` too. See [Keep it running](#keep-it-running).             |
+| `orbit-server status`          | Says whether the service is running.                                                                                                             |
+| `orbit-server logs`            | Shows the service's log. `--follow` keeps showing new lines.                                                                                     |
+| `orbit-server uninstall`       | Stops and removes the service and its copy of Orbit. Your data folder stays.                                                                     |
 
 With `npm run server`, add options after `--`, such as `npm run server -- --port 5000`. The link works like a key, so Orbit only prints it when you run it in a terminal; anywhere else, such as a log, it says to run `orbit-server link` instead. The controls a browser can't use stay on that computer: the link is only shown and changed there, a repository's local clone is a path on that computer (leave it empty and Orbit downloads its own copy), and links open in a new tab on your device. Notifications only reach a desktop app, so check **Needs you** in the browser.
+
+### Keep it running
+
+Run in a terminal, Orbit stops when the terminal closes. `orbit-server install` sets it up as a service instead: it starts with the computer, comes back on its own if it crashes, and keeps a log. It's a user service on Linux (systemd) and a launch agent on macOS.
+
+From a fresh computer:
+
+1. Install [Tailscale](https://tailscale.com) and sign in with `tailscale up`.
+2. Install Node, Rust, Git, the GitHub CLI (`gh`) and your reviewer tools, so they are on your `PATH`. Run `claude` or `agy` once to sign in if you use them.
+3. Get Orbit's source with `git clone https://github.com/analogproblems/orbit`, and run `npm ci` in it.
+4. Run `npm run server -- install`. It builds Orbit, copies it and its browser page into a folder of their own (`~/.local/share/orbit-server` on Linux, `~/Library/Application Support/orbit-server` on macOS), sets up the service and starts it. It keeps your `PATH`, so the service finds `gh` and the reviewers, and says which of them it found.
+5. On Linux, if it says so, run `sudo loginctl enable-linger $USER` once. Without it, Linux stops your services when you log out and starts them only when you log in. On macOS, a launch agent runs while you're logged in, so keep the account logged in or turn on automatic login.
+6. Run `tailscale serve --bg 4317` once (or the port you chose), then the `link` command install shows, and open that link on your phone or laptop.
+7. Sign in to GitHub and Codex from the page, then connect your repositories. Orbit downloads its own copy of each when you leave the folder empty.
+
+The commands install shows name Orbit's copy in full, since it isn't on your `PATH`; from the source folder, `npm run server -- status` and the like work too. To update Orbit, get the new source (`git pull` and `npm ci`) and run `npm run server -- install` again: it replaces the copy and restarts the service. Run it again after installing a new tool too, so the service finds it. `orbit-server uninstall` removes the service and the copy, and keeps your data folder.
+
+The service starts Orbit with the data folder and port you gave install, or the desktop app's folder if you gave none. Installing again keeps them unless you give new ones. The data folder can't be inside the folder Orbit's copy goes in, since uninstall removes that copy. A stop from the system (shutting down, or `systemctl --user stop orbit`) saves and stops it like Ctrl+C. If Orbit can't start, such as while the desktop app has the same data folder open, it tries again every 10 seconds, and `orbit-server logs` shows why.
 
 ## Restart, retained data, and cleanup
 

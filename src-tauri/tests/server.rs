@@ -416,3 +416,176 @@ fn shows_the_link_in_a_terminal_and_stops_on_ctrl_c() {
     assert_eq!(rest, ["Stopping Orbit…", "Orbit stopped."]);
     assert!(data.join("state.json").is_file());
 }
+
+/// Sets Orbit up as a user service with fake systemd tools, which write down
+/// what they were asked, then checks on it, shows its log and removes it.
+#[cfg(target_os = "linux")]
+#[test]
+fn sets_itself_up_as_a_service_and_removes_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tempfile::tempdir().unwrap();
+    let (home, bin, web, data) = (
+        d.path().join("home"),
+        d.path().join("bin"),
+        d.path().join("web"),
+        d.path().join("data"),
+    );
+    for folder in [&home, &bin, &web.join("assets")] {
+        std::fs::create_dir_all(folder).unwrap();
+    }
+    std::fs::write(web.join("index.html"), "<html><head></head></html>").unwrap();
+    std::fs::write(web.join("assets/app.js"), "start()").unwrap();
+    let asked = d.path().join("asked.txt");
+    let fake = |name: &str, answer: &str| {
+        let file = bin.join(name);
+        std::fs::write(
+            &file,
+            format!("#!/bin/sh\necho \"{name} $*\" >> \"$ASKED\"\n{answer}\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    fake(
+        "systemctl",
+        r#"case "$2" in is-active) echo active;; is-enabled) echo enabled;; esac"#,
+    );
+    fake("loginctl", "echo yes");
+    fake("journalctl", "echo 'Orbit is running without a window.'");
+    fake("gh", "");
+    let server = |args: &[&str]| {
+        orbit_server(&home, args)
+            .env("PATH", &bin)
+            .env("ASKED", &asked)
+            .output()
+            .unwrap()
+    };
+
+    let installed = server(&[
+        "install",
+        "--data",
+        data.to_str().unwrap(),
+        "--web",
+        web.to_str().unwrap(),
+    ]);
+    assert!(installed.status.success(), "{}", text(&installed.stderr));
+    let said = text(&installed.stdout);
+    assert!(
+        said.starts_with("Orbit is set up as a service and running.\n"),
+        "{said}"
+    );
+    assert!(said.contains("\nFound on its PATH: gh.\n"), "{said}");
+    let programs = home.join(".local/share/orbit-server");
+    let program = programs.join("orbit-server");
+    assert_eq!(
+        std::fs::read(&program).unwrap(),
+        std::fs::read(PROGRAM).unwrap()
+    );
+    assert_eq!(
+        std::fs::read_to_string(programs.join("web/assets/app.js")).unwrap(),
+        "start()"
+    );
+    let unit = std::fs::read_to_string(home.join(".config/systemd/user/orbit.service")).unwrap();
+    assert!(
+        unit.contains(&format!(
+            "ExecStart=\"{}\" \"--data\" \"{}\" \"--web\" \"{}\"\n",
+            program.display(),
+            data.display(),
+            programs.join("web").display()
+        )),
+        "{unit}"
+    );
+    assert!(
+        unit.contains(&format!("Environment=\"PATH={}\"\n", bin.display())),
+        "{unit}"
+    );
+    // systemd reads the unit without a complaint, where its checker is
+    // installed (as on CI).
+    let checker = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|folder| folder.join("systemd-analyze"))
+        .find(|file| file.is_file());
+    if let Some(checker) = checker {
+        let checked = Command::new(checker)
+            .arg("verify")
+            .arg(home.join(".config/systemd/user/orbit.service"))
+            .output()
+            .unwrap();
+        assert!(checked.status.success(), "{}", text(&checked.stderr));
+        assert_eq!(text(&checked.stderr), "");
+    }
+    let uid = unsafe { libc::getuid() };
+    assert_eq!(
+        std::fs::read_to_string(&asked).unwrap(),
+        format!("systemctl --user daemon-reload\nsystemctl --user enable orbit.service\nsystemctl --user restart orbit.service\nloginctl show-user {uid} --property=Linger --value\n")
+    );
+    std::fs::remove_file(&asked).unwrap();
+
+    // The copy serves the page it was installed with.
+    let port = free_port();
+    let mut copy = Command::new(&program)
+        .args([
+            "--data",
+            data.to_str().unwrap(),
+            "--port",
+            &port.to_string(),
+        ])
+        .env_clear()
+        .env("HOME", &home)
+        .env("PATH", &bin)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let printed = lines(&mut copy);
+    assert_eq!(
+        wait_for_line(&printed, "Browser page: "),
+        format!("Browser page: {}", programs.join("web").display())
+    );
+    let _ = copy.kill();
+    let _ = copy.wait();
+
+    // Installing again without --data, as after an update, keeps the
+    // service on its folder rather than the desktop app's.
+    let again = server(&["install", "--web", web.to_str().unwrap()]);
+    assert!(again.status.success(), "{}", text(&again.stderr));
+    assert!(
+        text(&again.stdout).contains(&format!("\nData folder: {} (as before)\n", data.display())),
+        "{}",
+        text(&again.stdout)
+    );
+    let unit_again =
+        std::fs::read_to_string(home.join(".config/systemd/user/orbit.service")).unwrap();
+    assert_eq!(unit_again, unit);
+    std::fs::remove_file(&asked).unwrap();
+
+    let status = server(&["status"]);
+    assert_eq!(
+        text(&status.stdout),
+        format!(
+            "Orbit's service is running, and starts when you log in or the computer starts.\nService: {}\nSee its log with orbit-server logs.\n",
+            home.join(".config/systemd/user/orbit.service").display()
+        )
+    );
+    let logs = server(&["logs", "--follow"]);
+    assert!(logs.status.success());
+    assert_eq!(text(&logs.stdout), "Orbit is running without a window.\n");
+    assert_eq!(
+        std::fs::read_to_string(&asked).unwrap(),
+        "systemctl --user is-active orbit.service\nsystemctl --user is-enabled orbit.service\njournalctl -f --user --unit orbit.service --lines 200 --no-pager\n"
+    );
+    std::fs::remove_file(&asked).unwrap();
+
+    let removed = server(&["uninstall"]);
+    assert!(removed.status.success(), "{}", text(&removed.stderr));
+    assert!(!home.join(".config/systemd/user/orbit.service").exists());
+    assert!(!programs.exists());
+    assert_eq!(
+        std::fs::read_to_string(&asked).unwrap(),
+        "systemctl --user disable --now orbit.service\nsystemctl --user daemon-reload\n"
+    );
+    let status = server(&["status"]);
+    assert_eq!(
+        text(&status.stdout),
+        "Orbit isn't set up as a service here. Set it up with orbit-server install.\n"
+    );
+}
