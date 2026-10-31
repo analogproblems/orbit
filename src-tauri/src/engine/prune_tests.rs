@@ -80,7 +80,11 @@ fn what_orbit_read_about_other_orbits_goes_once_a_pull_request_closes() {
     let open = crate::types::tests::pr();
     let posting = |pr_id: &str| crate::orbits::Posting {
         pr_id: pr_id.into(),
-        mine: "2026-10-01T10:00:00Z".into(),
+        mine: Some(crate::orbits::Post {
+            url: "u".into(),
+            at: "2026-10-01T10:00:00Z".into(),
+            by: "0".repeat(32),
+        }),
         ..Default::default()
     };
     let mut s = Snapshot {

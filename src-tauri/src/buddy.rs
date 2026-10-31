@@ -1431,7 +1431,8 @@ pub fn observe_decisions(s: &mut Snapshot, items: &[ToDecide]) -> bool {
 }
 
 /// The fix Bit does on its own for an item that just opened: one whose rule
-/// is Do it, while Bit is on. A loop is continued on its own only once: a
+/// is Do it, while Bit is on, and not on a pull request Orbit stepped back
+/// from for another Orbit. A loop is continued on its own only once: a
 /// loop that has been given more rounds and used them up again waits for
 /// you, so a builder and reviewer that never agree can't go round forever.
 pub fn will_fix(s: &Snapshot, item: &Attention) -> Option<Fix> {
@@ -1441,10 +1442,18 @@ pub fn will_fix(s: &Snapshot, item: &Attention) -> Option<Fix> {
             .iter()
             .any(|c| Some(&*c.pr_id) == item.pr_id.as_deref() && c.extra_rounds > 0)
     };
+    // Where another Orbit posts, Bit leaves what it would do on its own to
+    // that one.
+    let elsewhere = || {
+        item.pr_id
+            .as_deref()
+            .is_some_and(|pr| crate::orbits::stepped_back(&s.posting, pr))
+    };
     item.fix.filter(|&fix| {
         buddy.enabled
             && buddy.rules.of(fix) == "do_it"
             && !(fix == Fix::ContinueLoop && continued())
+            && !elsewhere()
     })
 }
 fn pr_or_this(s: &Snapshot, item: &Attention) -> String {

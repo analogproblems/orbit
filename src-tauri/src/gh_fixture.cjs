@@ -77,7 +77,8 @@ const url = (n, id) =>
   `https://github.com/a/b/issues/${n}${id ? `#issuecomment-${id}` : ""}`;
 // Comments and issues are made a second apart, by ID, and an edit takes the
 // next second too. A list with `since` holds those posted or edited then or
-// later, by ID.
+// later, by ID. While <dir>/comments-error exists, listing an issue's
+// comments fails with its text; reading one comment still works.
 const made = (id) =>
   new Date(Date.UTC(2026, 9, 29, 12) + id * 1000)
     .toISOString()
@@ -220,6 +221,11 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
   process.stdout.write(fs.readFileSync(job, "utf8"));
 } else if ((m = endpoint.match(/^repos\/a\/b\/issues\/(\d+)\/comments$/))) {
   const n = Number(m[1]);
+  const refused = path.join(dir, "comments-error");
+  if (method === "GET" && fs.existsSync(refused)) {
+    process.stderr.write(fs.readFileSync(refused, "utf8"));
+    process.exit(1);
+  }
   if (method === "GET")
     answer(
       page(

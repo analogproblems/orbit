@@ -684,6 +684,84 @@ async fn only_one_orbit_posts_on_a_pull_request() {
     assert_eq!(github(d.path())["comments"].as_array().unwrap().len(), 1);
 }
 
+/// Two Orbits keep one comment on a pull request, each taking it over in
+/// turn. While GitHub can't list the comments, only the Orbit that wrote it
+/// last keeps it up to date; the other, which hasn't seen that yet, never
+/// writes over it.
+#[cfg(unix)]
+#[tokio::test]
+async fn while_comments_cant_be_read_only_the_orbit_that_wrote_last_edits() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let first = connected(&d.path().join("first")).await;
+    let second = connected(&d.path().join("second")).await;
+    for e in [&first, &second] {
+        e.update(|s| s.prs = vec![pr('5')]).await;
+    }
+    let failing = |check: &str| {
+        answer(
+            d.path(),
+            '1',
+            &[("Rust", "SUCCESS")],
+            Some(('5', &[(check, "FAILURE")])),
+        )
+    };
+    failing("Rust");
+    watch(&first, &gh).await;
+    watch(&second, &gh).await;
+    let key = second
+        .shown_snapshot()
+        .await
+        .attention
+        .into_iter()
+        .find(|a| a.kind == AttentionKind::AnotherOrbit)
+        .expect("the second stepped back")
+        .key;
+    failing("Lint");
+    watch(&first, &gh).await;
+    assert_eq!(writes(d.path()).len(), 2);
+    // You hand the pull request to the second, which edits the comment.
+    crate::github::GH
+        .scope(gh.clone(), second.fix(&key))
+        .await
+        .unwrap();
+    assert_eq!(writes(d.path()).len(), 3);
+    let second_name = second.snapshot().await.instance.name;
+    assert_eq!(signed_by(d.path()), second_name);
+
+    // GitHub stops listing comments before the first has seen that.
+    std::fs::write(
+        d.path().join("comments-error"),
+        "gh: Bad Gateway (HTTP 502)\n",
+    )
+    .unwrap();
+    failing("Rust");
+    watch(&first, &gh).await;
+    assert_eq!(writes(d.path()).len(), 3, "the first leaves it alone");
+    assert_eq!(signed_by(d.path()), second_name);
+    failing("Lint");
+    watch(&second, &gh).await;
+    assert_eq!(writes(d.path()).len(), 4, "the second keeps it true");
+    assert_eq!(signed_by(d.path()), second_name);
+    assert!(github(d.path())["comments"][0]["body"]
+        .as_str()
+        .unwrap()
+        .contains("`CI / Lint` · failing at `5555555`"));
+
+    // Once GitHub lists them again, the first sees it stepped back.
+    std::fs::remove_file(d.path().join("comments-error")).unwrap();
+    failing("Rust");
+    watch(&first, &gh).await;
+    assert_eq!(writes(d.path()).len(), 4);
+    assert!(first
+        .shown_snapshot()
+        .await
+        .attention
+        .iter()
+        .any(|a| a.kind == AttentionKind::AnotherOrbit));
+    assert_eq!(github(d.path())["comments"].as_array().unwrap().len(), 1);
+}
+
 /// While GitHub can't say who posted last, nothing new is posted on a pull
 /// request, but Orbit's own comment is still kept true.
 #[cfg(unix)]

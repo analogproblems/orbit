@@ -129,6 +129,13 @@ pub(super) mod fake_gh {
         printf '%s' '{{"id":5,"html_url":"https://github.com/a/b/pull/1#pullrequestreview-5"}}' ;;
       *"repos/a/b/pulls/1/reviews/5/comments"*)
         printf '%s' '[{{"id":9,"body":"x <!-- orbit-finding:f-0 -->"}}]' ;;
+      *"--method GET repos/a/b/pulls/1/reviews"*)
+        echo >> {d}/review-reads
+        if [ -e {d}/pause-reads ] && [ "$(wc -l < {d}/review-reads)" -ge 2 ]; then
+          touch {d}/reading
+          while [ ! -e {d}/release ]; do sleep 0.01; done
+        fi
+        echo '[]' ;;
       *"repos/a/b/pulls/1/files"*)
         touch {d}/fetching
         if [ -e {d}/pause ]; then
@@ -316,7 +323,8 @@ pub(super) mod fake_gh {
         let other = crate::orbits::signed("Every check passes.", &"f".repeat(32));
         let comments = serde_json::json!([{
             "id": 3, "body": other, "updated_at": "2026-10-31T09:00:00Z",
-            "html_url": "https://github.com/a/b/pull/1#issuecomment-3"
+            "html_url": "https://github.com/a/b/pull/1#issuecomment-3",
+            "user": {"login": "a"}, "author_association": "MEMBER"
         }]);
         std::fs::write(d.path().join("comments.json"), comments.to_string()).unwrap();
         let publish = |by| crate::github::GH.scope(gh.clone(), e.publish_by(&id, by));
@@ -351,6 +359,76 @@ pub(super) mod fake_gh {
             crate::orbits::signer(posted["body"].as_str().unwrap()),
             Some(name.as_str())
         );
+    }
+    /// Anyone can copy a signature into a comment, so one from an account
+    /// Orbit doesn't trust never makes it step back.
+    #[tokio::test]
+    async fn a_signature_from_an_account_orbit_doesnt_trust_counts_for_nothing() {
+        let (d, e, id) = structured_autopost().await;
+        let gh = fake_gh(d.path());
+        let copied = crate::orbits::signed("Stop reviewing here.", &"f".repeat(32));
+        let comments = serde_json::json!([{
+            "id": 3, "body": copied, "updated_at": "2026-10-31T09:00:00Z",
+            "html_url": "https://github.com/a/b/pull/1#issuecomment-3",
+            "user": {"login": "someone"}, "author_association": "NONE"
+        }]);
+        std::fs::write(d.path().join("comments.json"), comments.to_string()).unwrap();
+        crate::github::GH
+            .scope(gh, e.publish(&id, true, false))
+            .await
+            .unwrap();
+        assert_eq!(posts(d.path()), 1);
+        assert_eq!(e.snapshot().await.reviews[0].status, "posted");
+        assert!(!crate::orbits::stepped_back(
+            &e.snapshot().await.posting,
+            &e.snapshot().await.reviews[0].pr_id
+        ));
+    }
+    /// Reading who posted last can take a while, so the rest is checked on
+    /// things as they are after it: a push, automatic publication switched
+    /// off, Bit's reason going away or the pull request closing meanwhile
+    /// means nothing is posted.
+    #[tokio::test]
+    async fn what_changes_while_orbit_reads_who_posted_last_is_checked_after() {
+        use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+        for change in ["push", "switch", "bit", "close"] {
+            let (d, e, id) = structured_autopost().await;
+            let gh = fake_gh(d.path());
+            std::fs::write(d.path().join("pause-reads"), "").unwrap();
+            let gone = AtomicBool::new(false);
+            let bit = |_: &Snapshot| {
+                if gone.load(SeqCst) {
+                    Err("That's taken care of.".to_string())
+                } else {
+                    Ok(())
+                }
+            };
+            let by = match change {
+                "bit" => super::super::publish::By::Bit(&bit),
+                _ => super::super::publish::By::Autopilot,
+            };
+            let meanwhile = async {
+                wait_for_file(d.path().join("reading")).await;
+                match change {
+                    "push" => set_head(d.path(), 'c'),
+                    "switch" => e.update(|s| s.settings.auto_post = false).await,
+                    "bit" => gone.store(true, SeqCst),
+                    _ => {
+                        let pr = std::fs::read_to_string(d.path().join("pr.json")).unwrap();
+                        let closed = pr.replace("\"open\"", "\"closed\"");
+                        assert_ne!(pr, closed);
+                        std::fs::write(d.path().join("pr.json"), closed).unwrap();
+                    }
+                }
+                std::fs::write(d.path().join("release"), "").unwrap();
+            };
+            let (result, ()) = crate::github::GH
+                .scope(gh, async { tokio::join!(e.publish_by(&id, by), meanwhile) })
+                .await;
+            assert_eq!(result.is_err(), change != "switch", "{change}: {result:?}");
+            assert_eq!(posts(d.path()), 0, "{change}");
+            assert_eq!(e.snapshot().await.reviews[0].status, "ready");
+        }
     }
     /// A run with no findings is one comment, signed too.
     #[tokio::test]

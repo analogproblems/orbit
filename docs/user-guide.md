@@ -781,13 +781,15 @@ The service starts Orbit with the data folder and port you gave install, or the 
 
 ### One Orbit at a time
 
-Two Orbits following the same pull requests, such as the desktop app on your laptop and an always-on Orbit, would both tell the agent everything. So each Orbit signs what it posts on a pull request, its reviews and its comment about CI and merging, with a hidden line that names it, and checks what was posted there just before it posts. When another Orbit posted there after it did, it stops reviewing and posting on that pull request, and **Needs you** says so. The other Orbit carries on. If both post at once, each posts once, and then the later one carries on.
+Two Orbits following the same pull requests, such as the desktop app on your laptop and an always-on Orbit, would both tell the agent everything. So each Orbit signs what it posts on a pull request, its reviews and its comment about CI and merging, with a hidden line that names it, and checks what was posted there just before it posts. When another Orbit posted there after it did, it stops reviewing and posting on that pull request, and **Needs you** says so. The other Orbit carries on. If both post at once, each posts once, and then the later one carries on. Both Orbits put two posts made in the same second in the same order, so even then only one carries on.
+
+Only signatures that end a post count, so quoting one in a reply changes nothing. And only those from accounts Orbit trusts count: its own GitHub account, the repository's owners, members and collaborators, and the accounts you trust in Settings. Anyone else could copy a signature, so Orbit ignores theirs.
 
 If you've stopped the other Orbit, or want this one to take over, tap **Post here again**. This one posts what it held back, and the other steps back once it sees that. Only you can make an Orbit post again, since only you know whether the other one still runs. Publishing a report yourself always goes ahead.
 
-While GitHub can't say what was posted, Orbit posts nothing new on that pull request, but still keeps its own comment up to date, so a **Clear to merge** can always be taken back. Posts from before Orbit signed its own belong to no Orbit, and Orbit's issues about a failing default branch aren't signed.
+While GitHub can't say what was posted, Orbit posts nothing new on that pull request. It still keeps its own comment up to date, so a **Clear to merge** can always be taken back, but only while GitHub shows this Orbit wrote that comment last, so it never writes over another Orbit's. Posts from before Orbit signed its own belong to no Orbit, and Orbit's issues about a failing default branch aren't signed.
 
-An Orbit's name goes with its data folder on one computer. A copy of the folder, or the folder moved to another computer, is a new Orbit that counts the old one's posts as its own. So it carries on where the old one left off, and the old one steps back from a pull request once the copy posts there.
+An Orbit's name goes with its data folder on one computer. A copy of the folder, or the folder moved to another computer, is a new Orbit that counts what the old one posted until then as its own. So it carries on where the old one left off, and the old one steps back from a pull request once the copy posts there. What the old one posts after the copy was made is another Orbit's, so you can still hand a pull request back to it with **Post here again**.
 
 ## Restart, retained data, and cleanup
 

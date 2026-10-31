@@ -102,6 +102,45 @@ async fn bit_does_a_fix_on_its_own_only_when_its_rule_says_do_it() {
     assert!(e.fixing.lock().unwrap().is_empty());
     assert_eq!(shown.lock().unwrap().len(), 1);
 }
+/// Where Orbit stepped back for another Orbit, Bit leaves what it would do
+/// there on its own to that one, even a fix it was about to do.
+#[tokio::test]
+async fn bit_does_nothing_on_its_own_where_another_orbit_posts() {
+    let (_d, e, _) = at_round_limit("do_it").await;
+    let item = crate::attention::items(&e.snapshot().await)
+        .into_iter()
+        .find(|a| a.fix == Some(Fix::ContinueLoop))
+        .unwrap();
+    assert_eq!(
+        will_fix(&e.snapshot().await, &item),
+        Some(Fix::ContinueLoop)
+    );
+    let posting = crate::orbits::Posting {
+        pr_id: trusted_pr().id,
+        other: Some(crate::orbits::Post {
+            url: "u".into(),
+            at: "2026-10-31T09:00:00Z".into(),
+            by: "f".repeat(32),
+        }),
+        ..Default::default()
+    };
+    e.update(|s| s.posting.push(posting)).await;
+    assert_eq!(will_fix(&e.snapshot().await, &item), None);
+    assert_eq!(
+        e.run_fix(&item, Fix::ContinueLoop, true).await.unwrap_err(),
+        crate::orbits::STEPPED_BACK
+    );
+    e.flush().await.unwrap();
+    assert!(e.fixing.lock().unwrap().is_empty());
+    let s = e.snapshot().await;
+    assert!(s.loops.iter().all(|c| c.extra_rounds == 0));
+    assert!(notes(&s)
+        .iter()
+        .all(|(kind, _)| *kind == NoteKind::NeedsYou));
+    // You can still continue it yourself.
+    e.fix(&item.key).await.unwrap();
+    assert_eq!(e.snapshot().await.loops[0].extra_rounds, CONTINUE_ROUNDS);
+}
 #[tokio::test]
 async fn a_fix_that_fails_needs_you_after_all() {
     let (_d, e, shown) = at_round_limit("ask_first").await;

@@ -184,9 +184,10 @@ impl Engine {
     /// the reviewed head and base; for automatic publication, the switches
     /// still allow it; and for Bit, its check still passes and the fresh PR
     /// is one automatic publication would trust. Neither posts where another
-    /// Orbit posted later (`crate::orbits`); you can. Returns the fresh PR,
-    /// or None when automatic publication was switched off or stepped back,
-    /// which cancels it.
+    /// Orbit posted later (`crate::orbits`); you can. That read comes first,
+    /// as it may take a while, so the rest is checked on things as they are
+    /// after it. Returns the fresh PR, or None when automatic publication
+    /// was switched off or stepped back, which cancels it.
     async fn final_checks(
         &self,
         cached: &PullRequest,
@@ -194,6 +195,16 @@ impl Engine {
         by: By<'_>,
         sensitive: &[String],
     ) -> Result<Option<PullRequest>, String> {
+        let mine = matches!(by, By::You { .. })
+            || self
+                .clear_to_post(&cached.repo, cached.number, &cached.id)
+                .await?;
+        if !mine {
+            return match by {
+                By::Bit(_) => Err(crate::orbits::STEPPED_BACK.into()),
+                _ => Ok(None),
+            };
+        }
         let login = self.snapshot().await.github_user.unwrap_or_default();
         let fresh = github::pull(&cached.repo, cached.number, &login).await?;
         if !publishable(r, &fresh) {
@@ -215,12 +226,6 @@ impl Engine {
                 {
                     return Err(reason);
                 }
-                if !self
-                    .clear_to_post(&fresh.repo, fresh.number, &fresh.id)
-                    .await?
-                {
-                    return Ok(None);
-                }
             }
             By::You { .. } => {}
             By::Bit(still) => {
@@ -228,12 +233,6 @@ impl Engine {
                 still(&s)?;
                 if let Some(reason) = bit_hold(&fresh, sensitive, &s.settings.trusted_authors) {
                     return Err(reason);
-                }
-                if !self
-                    .clear_to_post(&fresh.repo, fresh.number, &fresh.id)
-                    .await?
-                {
-                    return Err(crate::orbits::STEPPED_BACK.into());
                 }
             }
         }

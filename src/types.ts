@@ -1154,22 +1154,32 @@ export interface OrbitInstance {
   /** A fingerprint of where it runs. */
   home: string;
   /** Its earlier names, newest last. */
-  former: string[];
+  former: FormerName[];
 }
-/** A post on GitHub, and when GitHub last took it. */
+/** One of an Orbit's earlier names, and when it stopped using it. What the
+ * name posted later is the Orbit it was copied from. */
+export interface FormerName {
+  name: string;
+  until: string;
+}
+/** A signed post on GitHub, when GitHub last took it, and the name that
+ * signed it. */
 export interface OrbitPost {
   url: string;
   at: string;
+  by: string;
 }
 /** Where Orbit stands on one pull request: it steps back once another
  * Orbit posted there after it, and after the post you said to post after
  * anyway. */
 export interface Posting {
   prId: string;
-  /** When GitHub last took a post from this Orbit there. */
-  mine: string;
+  /** This Orbit's newest post there. */
+  mine?: OrbitPost | null;
+  /** The newest post there from another Orbit. */
   other?: OrbitPost | null;
-  resumed: string;
+  /** The other Orbit's post you said to post after anyway. */
+  resumed?: OrbitPost | null;
 }
 /** One thing a morning brief lists. */
 export interface BriefLine {

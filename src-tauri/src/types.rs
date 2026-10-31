@@ -1696,6 +1696,7 @@ pub(crate) mod tests {
             other: Some(crate::orbits::Post {
                 url: "u".into(),
                 at: "2026-10-31T09:00:00Z".into(),
+                by: "f".repeat(32),
             }),
             ..Default::default()
         });

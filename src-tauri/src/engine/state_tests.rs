@@ -185,6 +185,8 @@ async fn a_copy_of_the_data_folder_is_another_orbit() {
     let copy = Engine::new(there.clone(), |_| {}).unwrap();
     let named = copy.snapshot().await.instance;
     assert_ne!(named.name, first.name);
-    assert_eq!(named.former, std::slice::from_ref(&first.name));
+    assert_eq!(named.former.len(), 1);
+    assert_eq!(named.former[0].name, first.name);
+    assert!(named.is(&first.name, &named.former[0].until));
     assert_eq!(named.home, crate::orbits::home(&there));
 }

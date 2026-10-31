@@ -372,7 +372,11 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
             out.push(Attention {
                 fix: Some(Fix::PostHereAgain),
                 ..item(
-                    format!("another-orbit:{}:{}", pr.id, p.resumed),
+                    format!(
+                        "another-orbit:{}:{}",
+                        pr.id,
+                        p.resumed.as_ref().map_or("", |r| r.at.as_str())
+                    ),
                     AttentionKind::AnotherOrbit,
                     Some(&pr.id),
                     None,

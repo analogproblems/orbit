@@ -153,11 +153,22 @@ impl Engine {
             if let Some((pr_id, number)) = &pr {
                 let clear = match self.clear_to_post(&planned.repo, *number, pr_id).await {
                     Ok(clear) => clear,
-                    // GitHub couldn't say. An edit keeps what's on GitHub
-                    // true, such as taking back a clear to merge; anything
-                    // new waits.
-                    Err(_) if planned.action == Action::EditComment => true,
-                    Err(_) => break,
+                    // GitHub couldn't say. Editing a comment GitHub shows
+                    // this Orbit wrote last keeps what's on GitHub true,
+                    // such as taking back a clear to merge. Anything new,
+                    // or another Orbit's comment, waits.
+                    Err(_) => {
+                        let own = match (planned.action, planned.comment_id) {
+                            (Action::EditComment, Some(id)) => {
+                                self.own_comment(&planned.repo, id, &planned.marker).await
+                            }
+                            _ => false,
+                        };
+                        if !own {
+                            break;
+                        }
+                        true
+                    }
                 };
                 if !clear || !self.still_wanted(&planned).await {
                     continue;

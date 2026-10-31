@@ -473,7 +473,7 @@ async function demoAction(
       await demoAction("update_settings", { patch: { automatic: true } });
     else if (item.fix === "post_here_again")
       demo.posting = demo.posting?.map((p) =>
-        p.prId === item.prId ? { ...p, resumed: p.other?.at ?? "" } : p,
+        p.prId === item.prId ? { ...p, resumed: p.other ?? null } : p,
       );
     else demo.lastPoll = new Date().toISOString();
     demo.attention = demo.attention?.filter((a) => a.key !== item.key);
