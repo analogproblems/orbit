@@ -514,8 +514,10 @@ async fn ends_open_event_streams_when_stopped() {
 #[tokio::test]
 async fn reports_a_port_in_use_and_refuses_low_ports() {
     let (_d, access) = access();
-    let port = free_port();
-    let taken = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+    // The system picks a port and it's held from the start, so nothing
+    // else in the tests can take it between choosing and holding it.
+    let taken = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = taken.local_addr().unwrap().port();
     let status = access.set(true, port).await.unwrap();
     assert!(status.enabled && !status.running);
     assert!(status
