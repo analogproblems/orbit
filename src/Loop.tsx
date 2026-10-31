@@ -7,7 +7,7 @@ import {
   Token,
   VStack,
 } from "@astryxdesign/core";
-import { useOrbit } from "./store";
+import { openLink, useOrbit } from "./store";
 import {
   loopState,
   loopStatusLabels,
@@ -119,6 +119,8 @@ export function ReadinessPanel({ prId }: { prId: string }) {
   const { snapshot: s } = useOrbit();
   const r = s.readiness?.find((x) => x.prId === prId);
   if (!r) return null;
+  // Where the agent reads it.
+  const told = s.ops?.find((t) => t.prId === prId && t.ready && t.url);
   return (
     <VStack gap={2}>
       <Heading level={3}>Merging</Heading>
@@ -128,6 +130,14 @@ export function ReadinessPanel({ prId }: { prId: string }) {
           color={r.clear ? "green" : "orange"}
           label={r.clear ? "Clear to merge" : "Not clear yet"}
         />
+        {told && (
+          <Button
+            label="Open Orbit's comment"
+            size="sm"
+            variant="secondary"
+            onClick={() => openLink(told.url)}
+          />
+        )}
       </HStack>
       {r.clear ? (
         <Text>{readinessLine(r)}</Text>
@@ -137,7 +147,8 @@ export function ReadinessPanel({ prId }: { prId: string }) {
       <Text type="supporting" color="secondary">
         Clear means Orbit’s review of this commit is clean, every check passed
         with the base branch’s latest commit, and GitHub says it merges. Orbit
-        never merges it itself.
+        tells the agent at the top of its comment on the pull request once it is
+        clear or waits on someone, but never merges it itself.
       </Text>
     </VStack>
   );

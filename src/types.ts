@@ -1266,8 +1266,13 @@ export interface ActionsStorage {
 /** What is in the way of merging a pull request. */
 export type WaitKind =
   "review" | "findings" | "loop" | "checks" | "base" | "merge";
+/** Whose move it is: the author's (or their agent's), a person's (you, or
+ * whoever a rule on GitHub waits for), or nobody's yet while Orbit, CI or
+ * GitHub is still at work. */
+export type Turn = "author" | "person" | "working";
 export interface Wait {
   kind: WaitKind;
+  turn: Turn;
   text: string;
 }
 /** Whether a pull request Orbit reviews is clear to merge at its head. */
@@ -1491,6 +1496,22 @@ export interface OpsThread {
   readNewest?: string;
   /** When GitHub last took Orbit's text. */
   shownAt?: string;
+  /** Whether the pull request is clear to merge, as the top of its comment
+   * says it, for one Orbit reviews automatically. */
+  ready?: OpsReady;
+}
+/** The answer at the top of Orbit's comment on a pull request. */
+export interface OpsReady {
+  clear: boolean;
+  /** The head and base it was worked out for, and once it is clear, the
+   * base's latest commit. */
+  headSha: string;
+  base: string;
+  baseSha: string;
+  /** Whose move it is while it isn't clear; null once Orbit stopped
+   * working it out. */
+  turn?: Turn | null;
+  text: string;
 }
 export type OpsAction =
   | "post_comment"

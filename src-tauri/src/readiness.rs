@@ -44,12 +44,32 @@ pub enum WaitKind {
     /// GitHub says it can't merge yet, or hasn't said.
     Merge,
 }
+/// Whose move it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Turn {
+    /// The pull request's author, or their agent: answer findings, fix a
+    /// check, or bring it up to date with its base.
+    Author,
+    /// A person: you, or whoever a rule on GitHub waits for.
+    Person,
+    /// Nobody yet: Orbit, CI or GitHub is still at work.
+    Working,
+}
 /// One thing in the way, in Orbit's words.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Wait {
     pub kind: WaitKind,
+    pub turn: Turn,
     pub text: String,
+}
+fn wait(kind: WaitKind, turn: Turn, text: impl Into<String>) -> Wait {
+    Wait {
+        kind,
+        turn,
+        text: text.into(),
+    }
 }
 /// Whether a pull request is clear to merge at its current head.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,36 +163,30 @@ pub fn of(s: &Snapshot, pr: &PullRequest) -> Readiness {
         clear: false,
         waits: vec![],
     };
-    let mut wait = |kind, text: String| answer.waits.push(Wait { kind, text });
     let reviewed = review(s, pr);
-    if let Some((kind, text)) = &reviewed {
-        wait(*kind, text.clone());
-    }
     let checked = checks(s, pr);
-    for (kind, text) in &checked.waits {
-        wait(*kind, text.clone());
-    }
-    let base_sha = checked.base_sha.clone();
+    let clean = reviewed.is_none() && checked.waits.is_empty();
+    answer.waits.extend(reviewed);
+    answer.waits.extend(checked.waits);
+    let base_sha = checked.base_sha;
     // A clean loop reviewed the pull request with the base commit GitHub
     // gave Orbit for it; the checks must have run with that same commit.
-    if reviewed.is_none() && checked.waits.is_empty() && base_sha != pr.base_sha {
+    if clean && base_sha != pr.base_sha {
         let base = &pr.base_ref;
-        wait(
+        answer.waits.push(wait(
             WaitKind::Review,
+            Turn::Working,
             format!(
                 "Orbit reviewed it with {base} at {}, and {base} is at {} now, so it waits for a review with the latest {base}.",
                 short(&pr.base_sha),
                 short(&base_sha)
             ),
-        );
+        ));
     }
     if answer.waits.is_empty() {
         let merge = s.merges.iter().find(|m| asked(m, pr, &base_sha));
-        if let Some(text) = merging(merge, pr) {
-            answer.waits.push(Wait {
-                kind: WaitKind::Merge,
-                text,
-            });
+        if let Some((turn, text)) = merging(merge, pr) {
+            answer.waits.push(wait(WaitKind::Merge, turn, text));
         }
     }
     answer.base_sha = base_sha;
@@ -181,13 +195,11 @@ pub fn of(s: &Snapshot, pr: &PullRequest) -> Readiness {
 }
 
 /// What Orbit's loop says, when it is in the way.
-fn review(s: &Snapshot, pr: &PullRequest) -> Option<(WaitKind, String)> {
+fn review(s: &Snapshot, pr: &PullRequest) -> Option<Wait> {
     let head = short(&pr.head_sha);
+    let reviewing = |text: String| Some(wait(WaitKind::Review, Turn::Working, text));
     let Some(state) = crate::review_loop::state(s, pr) else {
-        return Some((
-            WaitKind::Review,
-            format!("Orbit hasn't reviewed {head} yet."),
-        ));
+        return reviewing(format!("Orbit hasn't reviewed {head} yet."));
     };
     let latest = state
         .round_ids
@@ -197,16 +209,12 @@ fn review(s: &Snapshot, pr: &PullRequest) -> Option<(WaitKind, String)> {
     match state.status {
         LoopStatus::Clean => None,
         LoopStatus::Reviewing if current && latest.is_some_and(|r| active(&r.status)) => {
-            Some((WaitKind::Review, format!("Orbit is reviewing {head}.")))
+            reviewing(format!("Orbit is reviewing {head}."))
         }
-        LoopStatus::Reviewing if current => Some((
-            WaitKind::Review,
-            format!("Orbit is publishing its review of {head}."),
-        )),
-        LoopStatus::Reviewing => Some((
-            WaitKind::Review,
-            format!("Orbit hasn't reviewed {head} yet."),
-        )),
+        LoopStatus::Reviewing if current => {
+            reviewing(format!("Orbit is publishing its review of {head}."))
+        }
+        LoopStatus::Reviewing => reviewing(format!("Orbit hasn't reviewed {head} yet.")),
         LoopStatus::WaitingForAuthor => {
             let n = latest.and_then(|r| r.blocking).unwrap_or(0);
             let findings = match n {
@@ -214,21 +222,24 @@ fn review(s: &Snapshot, pr: &PullRequest) -> Option<(WaitKind, String)> {
                 n => format!("{n} blocking findings"),
             };
             let verb = if n == 1 { "waits" } else { "wait" };
-            Some((
+            Some(wait(
                 WaitKind::Findings,
+                Turn::Author,
                 format!("{findings} from Orbit's review of {head} {verb} on the author."),
             ))
         }
-        LoopStatus::NeedsYou => Some((
+        LoopStatus::NeedsYou => Some(wait(
             WaitKind::Loop,
+            Turn::Person,
             match &state.reason {
                 Some(reason) => format!("Orbit's review loop needs you: {reason}"),
                 None => "Orbit's review loop needs you.".into(),
             },
         )),
-        LoopStatus::Stopped => Some((
+        LoopStatus::Stopped => Some(wait(
             WaitKind::Loop,
-            "Orbit's review loop on it is stopped.".into(),
+            Turn::Person,
+            "Orbit's review loop on it is stopped.",
         )),
     }
 }
@@ -236,18 +247,19 @@ fn review(s: &Snapshot, pr: &PullRequest) -> Option<(WaitKind, String)> {
 /// What the checks say, and the base branch's latest commit they ran
 /// with, when Orbit knows it.
 struct Checked {
-    waits: Vec<(WaitKind, String)>,
+    waits: Vec<Wait>,
     base_sha: String,
 }
 fn checks(s: &Snapshot, pr: &PullRequest) -> Checked {
     let head = short(&pr.head_sha);
-    let waiting = |kind, text: String| Checked {
-        waits: vec![(kind, text)],
+    let waiting = |kind, turn, text: String| Checked {
+        waits: vec![wait(kind, turn, text)],
         base_sha: String::new(),
     };
     if !s.settings.watch_ci {
         return waiting(
             WaitKind::Checks,
+            Turn::Person,
             "Orbit can't see its checks while Watch CI is off.".into(),
         );
     }
@@ -258,6 +270,7 @@ fn checks(s: &Snapshot, pr: &PullRequest) -> Checked {
     let (Some(repo), Some(pull)) = (repo, pull) else {
         return waiting(
             WaitKind::Checks,
+            Turn::Working,
             format!("Orbit hasn't read the checks on {head} yet."),
         );
     };
@@ -273,18 +286,21 @@ fn checks(s: &Snapshot, pr: &PullRequest) -> Checked {
             };
             return waiting(
                 WaitKind::Checks,
+                Turn::Author,
                 format!("{} {verb} on {head}.", crate::problems::names(&ci.failing)),
             );
         }
         CiState::Running if ci.incomplete && ci.running == 0 => {
             return waiting(
                 WaitKind::Checks,
+                Turn::Working,
                 format!("Orbit couldn't read every check on {head}."),
             );
         }
         CiState::Running => {
             return waiting(
                 WaitKind::Checks,
+                Turn::Working,
                 format!("Checks are still running on {head}."),
             );
         }
@@ -294,6 +310,7 @@ fn checks(s: &Snapshot, pr: &PullRequest) -> Checked {
         CiState::None => {
             return waiting(
                 WaitKind::Checks,
+                Turn::Working,
                 format!("No checks have reported on {head} yet."),
             );
         }
@@ -303,6 +320,7 @@ fn checks(s: &Snapshot, pr: &PullRequest) -> Checked {
     if !on_default {
         return waiting(
             WaitKind::Base,
+            Turn::Person,
             format!(
                 "Orbit can't tell whether its checks ran with the latest {base}: it only follows the default branch."
             ),
@@ -321,10 +339,12 @@ fn checks(s: &Snapshot, pr: &PullRequest) -> Checked {
         },
         Some(true) => waiting(
             WaitKind::Base,
+            Turn::Author,
             format!("{base} moved on since its checks ran: merge {base} in and let them run again."),
         ),
         None => waiting(
             WaitKind::Base,
+            Turn::Person,
             format!(
                 "Orbit can't tell whether its checks ran with the latest {base}, as GitHub didn't say when they began."
             ),
@@ -358,36 +378,44 @@ fn no_ci(s: &Snapshot, ci: &RepoCi) -> bool {
 fn asked(m: &Merge, pr: &PullRequest, base_sha: &str) -> bool {
     m.pr_id == pr.id && m.head_sha == pr.head_sha && m.base_sha == base_sha
 }
-/// What GitHub's answer says, when it is in the way.
-fn merging(merge: Option<&Merge>, pr: &PullRequest) -> Option<String> {
+/// What GitHub's answer says, and whose move it is, when it is in the
+/// way.
+fn merging(merge: Option<&Merge>, pr: &PullRequest) -> Option<(Turn, String)> {
     let base = &pr.base_ref;
+    let working = |text: &str| Some((Turn::Working, text.to_string()));
     let Some(m) = merge else {
-        return Some("Orbit hasn't asked GitHub yet whether it merges.".into());
+        return working("Orbit hasn't asked GitHub yet whether it merges.");
     };
     if m.read_at.is_empty() {
         if let Some(error) = &m.error {
-            return Some(error.clone());
+            return working(error);
         }
     }
     if m.pending() {
-        return Some("GitHub is still checking whether it merges.".into());
+        return working("GitHub is still checking whether it merges.");
     }
     if m.mergeable == Some(false) || m.state == "dirty" {
-        return Some(format!(
-            "It conflicts with {base}: merge {base} in and fix the conflicts."
+        return Some((
+            Turn::Author,
+            format!("It conflicts with {base}: merge {base} in and fix the conflicts."),
         ));
     }
+    let person = |text: String| Some((Turn::Person, text));
     match m.state.as_str() {
         "clean" | "has_hooks" => None,
-        "behind" => Some(format!(
-            "GitHub wants it brought up to date with {base} first."
+        "behind" => Some((
+            Turn::Author,
+            format!("GitHub wants it brought up to date with {base} first."),
         )),
         "blocked" => {
-            Some("GitHub says a rule blocks merging it, such as a required review.".into())
+            person("GitHub says a rule blocks merging it, such as a required review.".into())
         }
-        "unstable" => Some("GitHub says a check on it isn't passing.".into()),
-        "draft" => Some("GitHub says it is a draft.".into()),
-        other => Some(format!("GitHub says it can't merge yet ({other}).")),
+        "unstable" => Some((
+            Turn::Author,
+            "GitHub says a check on it isn't passing.".into(),
+        )),
+        "draft" => Some((Turn::Author, "GitHub says it is a draft.".into())),
+        other => person(format!("GitHub says it can't merge yet ({other}).")),
     }
 }
 
@@ -412,13 +440,10 @@ pub fn wanted(s: &Snapshot, now: DateTime<Utc>) -> Vec<(String, u64, String, Str
             let Some(m) = s.merges.iter().find(|m| asked(m, pr, &answer.base_sha)) else {
                 return Some((String::new(), ask));
             };
-            let ready = if m.error.is_some() || m.pending() {
-                m.retry_at
-                    .as_deref()
-                    .and_then(time)
-                    .is_none_or(|retry| now >= retry)
-            } else {
-                time(&m.read_at).is_none_or(|at| now - at >= EVERY)
+            // Only a definite answer has no wait set.
+            let ready = match m.retry_at.as_deref().and_then(time) {
+                Some(retry) => now >= retry,
+                None => time(&m.read_at).is_none_or(|at| now - at >= EVERY),
             };
             ready.then(|| (m.read_at.clone(), ask))
         })
@@ -467,8 +492,10 @@ pub fn understand(
 
 /// Records what GitHub said about a pull request, or that asking failed.
 /// While GitHub is still working it out, or after an error, Orbit asks
-/// again after a wait, a minute doubling up to `logs::MAX_RETRY`; an error
-/// keeps what GitHub said before about the same head and base.
+/// again after a wait, a minute doubling up to `logs::MAX_RETRY`, and
+/// keeps what GitHub said before about the same head and base, so a
+/// pull request clear to merge doesn't flicker while GitHub works it out
+/// again.
 pub fn record(
     merges: &mut Vec<Merge>,
     pr_id: &str,
@@ -483,11 +510,13 @@ pub fn record(
         .filter(|m| m.head_sha == head_sha && m.base_sha == base_sha);
     let tries = same.map_or(0, |m| m.tries) + 1;
     let wait = Duration::minutes(1i64 << (tries - 1).min(6)).min(logs::MAX_RETRY);
+    let answered = same.filter(|m| !m.pending());
     let merge = match result {
         Ok(m) if m.pending() => Merge {
             tries,
             retry_at: Some(stamp(now + wait)),
-            ..m
+            error: None,
+            ..answered.cloned().unwrap_or(m)
         },
         Ok(m) => m,
         Err(error) => {

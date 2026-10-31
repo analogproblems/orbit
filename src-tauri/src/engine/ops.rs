@@ -1,10 +1,11 @@
-//! Telling agents about failing CI: after each CI read, Orbit reads the
-//! agents' answers on its comments and issues, checks the fixes they name
-//! against CI, reruns jobs that failed by bad luck (`crate::reruns`), then
-//! posts, updates and closes its comments on pull requests and its issues
-//! about default branches as their problems need (see `crate::ops`). Each
-//! write is recorded in the journal, and the journal saved, before it is
-//! sent.
+//! Telling agents about failing CI, and whether each pull request Orbit
+//! reviews is clear to merge: after each CI read, Orbit reads the agents'
+//! answers on its comments and issues, checks the fixes they name against
+//! CI, reruns jobs that failed by bad luck (`crate::reruns`), then posts,
+//! updates and closes its comments on pull requests and its issues about
+//! default branches as their problems and answers need (see `crate::ops`).
+//! Each write is recorded in the journal, and the journal saved, before it
+//! is sent.
 use super::{claims, Engine};
 use crate::{
     ci::CiState,
@@ -21,13 +22,32 @@ use std::sync::{atomic::Ordering, Arc};
 fn plan(s: &Snapshot, now: chrono::DateTime<chrono::Utc>) -> Option<Planned> {
     reruns::all(s, now).into_iter().next().or_else(|| {
         s.ops.iter().find_map(|t| {
-            let problem = s.problems.iter().find(|p| p.id == t.problem_id);
+            let problem = ops::problem_of(t, &s.problems, &s.ci);
             ops::next(t, problem, ops::may_post(s, t), now)
         })
     })
 }
+/// Works out each pull request's answer to whether it is clear to merge
+/// again, from things as they are now, so a write planned before Orbit
+/// waited on GitHub never sends an answer that has gone stale meanwhile.
+/// Returns whether anything changed.
+fn ready_now(s: &mut Snapshot, now: chrono::DateTime<chrono::Utc>) -> bool {
+    let answers = crate::readiness::all(s);
+    let watch = s.settings.watch_ci;
+    ops::ready(&mut s.ops, &answers, &s.prs, &s.problems, &s.ci, watch, now)
+}
 
 impl Engine {
+    /// Whether `planned` is still the next write once Orbit has looked on
+    /// GitHub, as rules, settings and answers may have changed meanwhile.
+    async fn still_wanted(&self, planned: &Planned) -> bool {
+        let mut s = self.state.lock().await;
+        let now = chrono::Utc::now();
+        if ready_now(&mut s, now) {
+            self.dirty.store(true, Ordering::SeqCst);
+        }
+        plan(&s, now).as_ref() == Some(planned)
+    }
     /// Brings Orbit's comments and issues up to date, one write at a time,
     /// unless that is already running.
     pub async fn tell_agents(&self) {
@@ -58,10 +78,16 @@ impl Engine {
         events.extend(self.read_answers().await);
         for _ in 0..ops::WRITES_PER_PASS {
             let next = {
-                let s = self.state.lock().await;
+                let mut s = self.state.lock().await;
+                let now = chrono::Utc::now();
+                // Here rather than first, as reading answers or the write
+                // before may have taken a while.
+                if ready_now(&mut s, now) {
+                    self.dirty.store(true, Ordering::SeqCst);
+                }
                 // Orbit's sign-in is how it finds its own comments again.
                 let login = s.github_user.clone();
-                plan(&s, chrono::Utc::now()).zip(login)
+                plan(&s, now).zip(login)
             };
             let Some((planned, login)) = next else {
                 break;
@@ -82,11 +108,7 @@ impl Engine {
                     }
                     continue;
                 }
-                let wanted = {
-                    let s = self.state.lock().await;
-                    plan(&s, chrono::Utc::now()).as_ref() == Some(&planned)
-                };
-                if !wanted {
+                if !self.still_wanted(&planned).await {
                     continue;
                 }
             } else if ops::looks_first(planned.action) {
@@ -103,11 +125,7 @@ impl Engine {
                 }
                 // Nothing there: post it only if it is still wanted now the
                 // search is done, as rules and settings may have changed.
-                let wanted = {
-                    let s = self.state.lock().await;
-                    plan(&s, chrono::Utc::now()).as_ref() == Some(&planned)
-                };
-                if !wanted {
+                if !self.still_wanted(&planned).await {
                     continue;
                 }
             }

@@ -222,6 +222,7 @@ fn orbits_loop_comes_first() {
         answer.waits,
         [Wait {
             kind: WaitKind::Review,
+            turn: Turn::Working,
             text: "Orbit reviewed it with main at eeeeeee, and main is at ccccccc now, so it waits for a review with the latest main.".into()
         }]
     );
@@ -258,6 +259,86 @@ fn orbits_loop_comes_first() {
             "Orbit's review loop on it is stopped.".into()
         )]
     );
+}
+
+/// Each thing in the way says whose move it is: the author's when they
+/// have something to fix, a person's when only you or a rule on GitHub can
+/// move it on, and nobody's while Orbit, CI or GitHub is still at work.
+#[test]
+fn each_wait_says_whose_move_it_is() {
+    use Turn::*;
+    fn failing(s: &mut Snapshot) {
+        pull(s).state = CiState::Failing;
+        pull(s).failing = vec![Check {
+            name: "Test".into(),
+            url: String::new(),
+        }];
+    }
+    fn answered(s: &mut Snapshot, mergeable: Option<bool>, state: &str) {
+        s.merges = vec![merge(mergeable, state)];
+    }
+    type Change = fn(&mut Snapshot);
+    let cases: Vec<(Turn, Change)> = vec![
+        (Working, |s| s.reviews.clear()),
+        (Working, |s| s.reviews[0].status = "reviewing".into()),
+        (Working, |s| {
+            let mut r = round(&s.prs[0], 2);
+            r.status = "ready".into();
+            s.reviews = vec![r];
+        }),
+        (Author, |s| s.reviews = vec![round(&s.prs[0], 2)]),
+        (Person, |s| s.reviews[0].status = "failed".into()),
+        (Person, |s| {
+            s.loops.push(LoopControl {
+                pr_id: s.prs[0].id.clone(),
+                stopped: true,
+                ..Default::default()
+            })
+        }),
+        (Author, failing),
+        (Working, |s| {
+            pull(s).state = CiState::Running;
+            pull(s).running = 1;
+        }),
+        (Working, |s| {
+            pull(s).state = CiState::Running;
+            pull(s).incomplete = true;
+        }),
+        (Working, |s| pull(s).sha = "e".repeat(40)),
+        (Person, |s| s.settings.watch_ci = false),
+        (Working, |s| *pull(s) = commit(HEAD, CiState::None)),
+        (Person, |s| s.prs[0].base_ref = "release".into()),
+        (Author, |s| s.ci[0].head.committed_at = ago(20)),
+        (Person, |s| {
+            s.ci[0].head.committed_at = ago(20);
+            pull(s).ran_at.clear();
+        }),
+        (Working, |s| {
+            s.prs[0].base_sha = "e".repeat(40);
+            s.reviews = vec![round(&s.prs[0], 0)];
+        }),
+        (Working, |s| s.merges.clear()),
+        (Working, |s| answered(s, None, "unknown")),
+        (Working, |s| {
+            s.merges = vec![Merge {
+                read_at: String::new(),
+                error: Some("down".into()),
+                ..merge(None, "")
+            }]
+        }),
+        (Author, |s| answered(s, Some(false), "dirty")),
+        (Author, |s| answered(s, Some(true), "behind")),
+        (Person, |s| answered(s, Some(true), "blocked")),
+        (Author, |s| answered(s, Some(true), "unstable")),
+        (Author, |s| answered(s, Some(true), "draft")),
+        (Person, |s| answered(s, Some(true), "odd")),
+    ];
+    for (turn, change) in cases {
+        let (mut s, _) = ready();
+        change(&mut s);
+        let first = of(&s, &s.prs[0]).waits.remove(0);
+        assert_eq!(first.turn, turn, "{}", first.text);
+    }
 }
 
 #[test]
@@ -557,6 +638,15 @@ fn github_is_asked_once_nothing_else_is_in_the_way() {
         ..merge(Some(true), "clean")
     }];
     assert!(wanted(&s, now()).is_empty());
+    // An answer kept while GitHub works it out again waits its turn too.
+    s.merges = vec![Merge {
+        retry_at: Some(stamp(now() + Duration::minutes(1))),
+        ..merge(Some(true), "clean")
+    }];
+    s.merges[0].read_at = ago(30);
+    assert!(wanted(&s, now()).is_empty());
+    s.merges[0].retry_at = Some(stamp(now()));
+    assert_eq!(wanted(&s, now()), [ask(1)]);
     // A new base commit is a new question, once the pull request is on it
     // and reviewed with it.
     s.ci[0].head.sha = "9".repeat(40);
@@ -656,6 +746,14 @@ fn github_still_working_or_failing_is_asked_again_later_and_longer() {
     }
     assert_eq!(waits, [1, 2, 4, 8, 16, 32, 60, 60]);
     assert_eq!(merges.len(), 1);
+    // Still working it out on a later read: that read is the latest.
+    let later = stamp(now() + Duration::minutes(5));
+    let still = Merge {
+        read_at: later.clone(),
+        ..merge(None, "unknown")
+    };
+    record(&mut merges, "a/b#1", HEAD, MAIN, Ok(still), now());
+    assert_eq!(merges[0].read_at, later);
     // A definite answer starts over.
     record(
         &mut merges,
@@ -666,6 +764,25 @@ fn github_still_working_or_failing_is_asked_again_later_and_longer() {
         now(),
     );
     assert_eq!(merges, [merge(Some(true), "clean")]);
+    // GitHub working it out again keeps it too, so a pull request clear to
+    // merge stays clear meanwhile, and Orbit asks again after a wait.
+    record(&mut merges, "a/b#1", HEAD, MAIN, pending(), now());
+    assert_eq!(
+        merges,
+        [Merge {
+            tries: 1,
+            retry_at: Some(stamp(now() + Duration::minutes(1))),
+            ..merge(Some(true), "clean")
+        }]
+    );
+    record(
+        &mut merges,
+        "a/b#1",
+        HEAD,
+        MAIN,
+        Ok(merge(Some(true), "clean")),
+        now(),
+    );
     // An error keeps it, and says why.
     record(
         &mut merges,
@@ -679,6 +796,16 @@ fn github_still_working_or_failing_is_asked_again_later_and_longer() {
     assert_eq!(
         merges[0].error.as_deref(),
         Some("Orbit couldn't ask GitHub whether it merges: HTTP 502. It tries again later.")
+    );
+    // GitHub then still working it out: the error is over.
+    record(&mut merges, "a/b#1", HEAD, MAIN, pending(), now());
+    assert_eq!(
+        (
+            merges[0].mergeable,
+            merges[0].error.as_deref(),
+            merges[0].tries
+        ),
+        (Some(true), None, 2)
     );
     // About a new head, an error keeps nothing of the old answer, and the
     // waits start over.
