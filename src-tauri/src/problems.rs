@@ -317,7 +317,7 @@ pub fn observe(
 /// branch's latest commit was made, so they ran without it, or None when
 /// Orbit can't tell: its base isn't the default branch, or GitHub didn't
 /// say when.
-fn behind(ci: &RepoCi, pr: &PullRequest, pull: &CommitCi) -> Option<bool> {
+pub(crate) fn behind(ci: &RepoCi, pr: &PullRequest, pull: &CommitCi) -> Option<bool> {
     if ci.branch.is_empty() || pr.base_ref != ci.branch {
         return None;
     }

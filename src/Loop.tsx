@@ -11,6 +11,7 @@ import { useOrbit } from "./store";
 import {
   loopState,
   loopStatusLabels,
+  readinessLine,
   type LoopState,
   type LoopStatus,
   type Snapshot,
@@ -109,6 +110,35 @@ export function LoopPanel({ prId }: { prId: string }) {
             : "Stop pauses automatic reviews of this pull request. Review again still works."}
         </Text>
       )}
+    </VStack>
+  );
+}
+
+/** Whether the pull request is clear to merge, and what is in the way. */
+export function ReadinessPanel({ prId }: { prId: string }) {
+  const { snapshot: s } = useOrbit();
+  const r = s.readiness?.find((x) => x.prId === prId);
+  if (!r) return null;
+  return (
+    <VStack gap={2}>
+      <Heading level={3}>Merging</Heading>
+      <HStack gap={2} vAlign="center" wrap="wrap">
+        <Token
+          size="sm"
+          color={r.clear ? "green" : "orange"}
+          label={r.clear ? "Clear to merge" : "Not clear yet"}
+        />
+      </HStack>
+      {r.clear ? (
+        <Text>{readinessLine(r)}</Text>
+      ) : (
+        r.waits.map((w) => <Text key={`${w.kind}:${w.text}`}>{w.text}</Text>)
+      )}
+      <Text type="supporting" color="secondary">
+        Clear means Orbit’s review of this commit is clean, every check passed
+        with the base branch’s latest commit, and GitHub says it merges. Orbit
+        never merges it itself.
+      </Text>
     </VStack>
   );
 }

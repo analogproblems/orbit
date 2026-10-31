@@ -663,6 +663,36 @@ fn rules_use_the_names_the_app_sends() {
     );
 }
 
+/// A clean loop says whether it is clear to merge, and why not.
+#[test]
+fn a_clean_loop_says_whether_it_may_merge() {
+    let (mut s, p) = seeded();
+    let mut r = round(&p, 1);
+    finish(&mut r, 0);
+    s.reviews.push(r);
+    s.settings.watch_ci = true;
+    // Only for a pull request Orbit reviews automatically.
+    assert_eq!(
+        ask_and_read(&mut s, Question::Loops).1,
+        ["b#1: round 1 of 4, clean."]
+    );
+    s.prs[0].head_repo = "a/b".into();
+    s.prs[0].author_association = "OWNER".into();
+    assert_eq!(
+        ask_and_read(&mut s, Question::Loops).1,
+        ["b#1: round 1 of 4, clean. Not clear to merge yet. Orbit hasn't read the checks on aaaaaaa yet."]
+    );
+    // A loop that isn't clean already says what it waits for.
+    let mut r = round(&p, 2);
+    finish(&mut r, 1);
+    s.reviews.push(r);
+    let lines = ask_and_read(&mut s, Question::Loops).1;
+    assert!(
+        lines[0].starts_with("b#1: round 2 of 4, waiting for the author."),
+        "{lines:?}"
+    );
+    assert!(!lines[0].contains("merge"), "{lines:?}");
+}
 fn ask_and_read(
     s: &mut Snapshot,
     question: Question,

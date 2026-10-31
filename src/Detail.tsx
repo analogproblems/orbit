@@ -51,7 +51,7 @@ import { Files } from "./Files";
 import { SafeMarkdown } from "./SafeMarkdown";
 import { ReviewActions } from "./ReviewActions";
 import { ReviewStatus } from "./ReviewStatus";
-import { LoopPanel } from "./Loop";
+import { LoopPanel, ReadinessPanel } from "./Loop";
 const Chat = lazy(() => import("./Chat").then((m) => ({ default: m.Chat })));
 export type DetailTab = "overview" | "chat" | "files";
 export function Detail({
@@ -279,6 +279,7 @@ export function Detail({
               {tab === "overview" ? (
                 <VStack gap={6} padding={5}>
                   <LoopPanel prId={pr.id} />
+                  <ReadinessPanel prId={pr.id} />
                   <VStack gap={3}>
                     <Heading level={3}>Description</Heading>
                     <SafeMarkdown>

@@ -458,6 +458,7 @@ pub fn announce(s: &mut Snapshot) -> (Vec<Notice>, bool) {
 pub fn shown(s: &Snapshot) -> Snapshot {
     let mut shown = s.clone();
     shown.loop_states = crate::review_loop::states(s);
+    shown.readiness = crate::readiness::all(s);
     shown.attention = items(s);
     shown.mood = Some(crate::buddy::mood(s, &shown.attention, &shown.loop_states));
     shown

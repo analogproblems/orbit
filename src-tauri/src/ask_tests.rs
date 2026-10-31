@@ -94,6 +94,10 @@ fn the_summary_holds_what_bit_needs_and_nothing_more() {
     assert!(pr["title"].as_str().unwrap().ends_with('…'));
     assert_eq!(pr["title"].as_str().unwrap().chars().count(), 201);
     assert_eq!(pr["readyToPublish"], true);
+    assert_eq!(
+        pr["mergeReadiness"],
+        "Not clear to merge yet. Orbit's review loop needs you: The report is waiting for you to publish it."
+    );
     assert_eq!(pr["latestReview"]["verdict"], "changes_requested");
     assert_eq!(
         pr["latestReview"]["findings"],
@@ -746,4 +750,11 @@ fn bit_is_told_how_to_set_up_a_repository_safely() {
     assert!(text.contains("tell them to type it in Repositories themselves"));
     assert!(text.contains("Turn autopilot on only when the person asks for it, or asks you to get a repository reviewed automatically"));
     assert!(!text.contains("setup command, network access or browser access"));
+}
+#[test]
+fn bit_is_told_whether_a_pull_request_orbit_reviews_may_merge() {
+    let mut s = snapshot();
+    s.prs[0].head_repo = "someone/b".into();
+    let b = briefing(&s, &Lookups::default());
+    assert_eq!(b["pullRequests"][0]["mergeReadiness"], Value::Null);
 }

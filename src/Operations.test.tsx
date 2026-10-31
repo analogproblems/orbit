@@ -715,6 +715,52 @@ describe("operations page", () => {
     expect(screen.queryByText("Self-hosted runners")).toBe(null);
   });
 
+  it("lists each pull request Orbit reviews, clear to merge or what is in the way", () => {
+    const s = freshDemo();
+    const go = show(s);
+    expect(
+      screen.getByText(/^0 pull requests are clear to merge\./),
+    ).toBeTruthy();
+    const list = screen.getByRole("list", { name: "Ready to merge" });
+    const items = within(list).getAllByRole("listitem");
+    expect(items.map((i) => i.textContent)).toEqual([
+      expect.stringContaining(
+        "acme/orbit#147 · Keep review threads in sync with new commitsNot clear to merge yet. Orbit's review loop needs you: Round limit reached.",
+      ),
+      expect.stringContaining(
+        "acme/orbit#145 · Handle interrupted reviews on restartNot clear to merge yet. main moved on since its checks ran",
+      ),
+    ]);
+    expect(within(items[0]).getByLabelText("Not clear yet")).toBeTruthy();
+    fireEvent.click(within(items[1]).getByText(/^acme\/orbit#145/));
+    expect(go.onChoose).toHaveBeenCalledWith(s.prs[4]);
+  });
+
+  it("counts the pull requests clear to merge, and shows none where Orbit reviews none", () => {
+    const s = freshDemo();
+    s.readiness![1] = {
+      ...s.readiness![1],
+      baseSha: "7d41e09" + "0".repeat(33),
+      clear: true,
+      waits: [],
+    };
+    show(s);
+    expect(
+      screen.getByText(/^1 pull request is clear to merge\./),
+    ).toBeTruthy();
+    const list = screen.getByRole("list", { name: "Ready to merge" });
+    const clear = within(list).getAllByRole("listitem")[1];
+    expect(within(clear).getByLabelText("Clear to merge")).toBeTruthy();
+    expect(clear.textContent).toContain(
+      "Clear to merge at abc4444 against main at 7d41e09.",
+    );
+    cleanup();
+    show({ ...s, readiness: [] });
+    expect(
+      screen.queryByRole("heading", { name: "Ready to merge" }),
+    ).toBeNull();
+  });
+
   it("asks you to connect a repository first", () => {
     const s = freshDemo();
     s.settings.repositories = [];

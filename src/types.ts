@@ -1107,6 +1107,12 @@ export interface Snapshot {
   /** Each connected repository's GitHub Actions caches and artifacts, as
    * Orbit last read them. */
   actionsStorage?: ActionsStorage[];
+  /** What GitHub last said about whether each pull request Orbit reviews
+   * can merge. */
+  merges?: Merge[];
+  /** Whether each pull request Orbit reviews is clear to merge, and what
+   * is in the way. Derived like `loopStates`. */
+  readiness?: Readiness[];
 }
 /** Where a commit's checks stand. "none" is no checks, or only ones that
  * were skipped or cancelled. */
@@ -1256,6 +1262,48 @@ export interface ActionsStorage {
   error?: string | null;
   tries: number;
   retryAt?: string | null;
+}
+/** What is in the way of merging a pull request. */
+export type WaitKind =
+  "review" | "findings" | "loop" | "checks" | "base" | "merge";
+export interface Wait {
+  kind: WaitKind;
+  text: string;
+}
+/** Whether a pull request Orbit reviews is clear to merge at its head. */
+export interface Readiness {
+  prId: string;
+  repo: string;
+  number: number;
+  headSha: string;
+  /** Its base branch, and the latest commit on it the checks ran with,
+   * once Orbit knows it. */
+  base: string;
+  baseSha: string;
+  clear: boolean;
+  /** What is in the way, first things first. */
+  waits: Wait[];
+}
+/** What GitHub last said about whether a pull request can merge. */
+export interface Merge {
+  prId: string;
+  headSha: string;
+  baseSha: string;
+  readAt: string;
+  /** GitHub's answer, or null while it is still working it out. */
+  mergeable?: boolean | null;
+  /** GitHub's `mergeable_state`, such as clean, dirty, blocked or behind. */
+  state: string;
+  error?: string | null;
+  tries: number;
+  retryAt?: string | null;
+}
+/** A readiness answer in one line, as Orbit says it. */
+export function readinessLine(r: Readiness) {
+  const first = r.waits[0];
+  if (!first)
+    return `Clear to merge at ${r.headSha.slice(0, 7)} against ${r.base} at ${r.baseSha.slice(0, 7)}.`;
+  return `Not clear to merge yet. ${first.text}`;
 }
 /** What Orbit found in a repository where no CI runs on pull requests. */
 export interface CiFound {

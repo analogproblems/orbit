@@ -24,6 +24,8 @@
 // The cache usage of a/b is <dir>/cache.json, or none, and its artifacts the
 // list in <dir>/artifacts.json, or none, in pages; while <dir>/cache-error or
 // <dir>/artifacts-error exists, reading them fails with its text.
+// Pull request <n> of a/b is <dir>/pull-<n>.json, or 404; while
+// <dir>/pull-error exists, reading one fails with its text.
 // While <dir>/down exists every call
 // fails. While <dir>/hold exists a GET waits, after writing <dir>/held, or
 // only a GET of the endpoint it names, when it names one. Each
@@ -317,6 +319,15 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
     const list = saved || [];
     answer({ total_count: list.length, artifacts: page(list) });
   }
+} else if ((m = endpoint.match(/^repos\/a\/b\/pulls\/(\d+)$/))) {
+  const refused = path.join(dir, "pull-error");
+  if (fs.existsSync(refused)) {
+    process.stderr.write(fs.readFileSync(refused, "utf8"));
+    process.exit(1);
+  }
+  const pull = path.join(dir, `pull-${m[1]}.json`);
+  if (!fs.existsSync(pull)) missing();
+  process.stdout.write(fs.readFileSync(pull, "utf8"));
 } else if (endpoint === "repos/a/b/actions/runs") {
   const queued = path.join(dir, "queued.json");
   const before = Date.parse((fields.created || "").replace(/^</, ""));

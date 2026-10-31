@@ -2,7 +2,7 @@
 import "./test-setup";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { LoopPanel } from "./Loop";
+import { LoopPanel, ReadinessPanel } from "./Loop";
 import { freshDemo } from "./demo";
 import { useOrbit } from "./store";
 afterEach(cleanup);
@@ -59,6 +59,37 @@ describe("review loop panel", () => {
       screen.getByText(
         "GitHub did not accept the status check: Resource not accessible by integration",
       ),
+    ).toBeTruthy();
+  });
+});
+describe("merging panel", () => {
+  it("says what is in the way, first things first", () => {
+    const snapshot = freshDemo();
+    useOrbit.setState({ snapshot });
+    render(<ReadinessPanel prId={snapshot.prs[1].id} />);
+    expect(screen.getByText("Not clear yet")).toBeTruthy();
+    expect(
+      screen.getByText("Orbit's review loop needs you: Round limit reached."),
+    ).toBeTruthy();
+    expect(
+      screen.getByText("Orbit hasn't read the checks on abc1111 yet."),
+    ).toBeTruthy();
+  });
+  it("says where it is clear to merge, and nothing where Orbit has no answer", () => {
+    const snapshot = freshDemo();
+    snapshot.readiness![1] = {
+      ...snapshot.readiness![1],
+      baseSha: "7d41e09" + "0".repeat(33),
+      clear: true,
+      waits: [],
+    };
+    useOrbit.setState({ snapshot });
+    const { container } = render(<ReadinessPanel prId={snapshot.prs[0].id} />);
+    expect(container.textContent).toBe("");
+    render(<ReadinessPanel prId={snapshot.prs[4].id} />);
+    expect(screen.getByText("Clear to merge")).toBeTruthy();
+    expect(
+      screen.getByText("Clear to merge at abc4444 against main at 7d41e09."),
     ).toBeTruthy();
   });
 });
