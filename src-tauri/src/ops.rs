@@ -24,7 +24,7 @@
 //! line naming the head and base that answer is for (`ready`). That line
 //! alone is worth a comment once it is clear or waits on someone.
 use crate::{
-    ci::short,
+    ci::{short, RepoCi},
     problems::{stamp, time, Problem, ProblemKind, FLAP_QUIET, KEEP_CLOSED},
     readiness::{Readiness, Turn},
     types::{same_repo, trusted_source, PullRequest, Snapshot},
@@ -624,6 +624,7 @@ pub fn ready(
     answers: &[Readiness],
     prs: &[PullRequest],
     problems: &[Problem],
+    ci: &[RepoCi],
     watch: bool,
     now: DateTime<Utc>,
 ) -> bool {
@@ -657,7 +658,7 @@ pub fn ready(
             continue;
         }
         // The same answer in new words waits for the comment to change.
-        if comment_body(t, problem_of(t, problems, prs)) != t.posted {
+        if comment_body(t, problem_of(t, problems, ci)) != t.posted {
             t.ready = Some(answer);
         }
     }
@@ -1093,20 +1094,18 @@ const PR_CLOSED: &str = "The pull request closed.";
 /// unless that closed with its pull request and the pull request has been
 /// reopened since, as what Orbit saw before then is over. Its comment then
 /// says what is true now, not that it closed.
-pub fn problem_of<'a>(
-    t: &Thread,
-    problems: &'a [Problem],
-    prs: &[PullRequest],
-) -> Option<&'a Problem> {
+///
+/// Reopened means the latest CI read of its repository, `ci`, lists it:
+/// CI lists only open pull requests, and a read is kept only once applied,
+/// after the one that found it closed. Times can't tell, as GitHub's for
+/// the reopening may come before Orbit's for the closing.
+pub fn problem_of<'a>(t: &Thread, problems: &'a [Problem], ci: &[RepoCi]) -> Option<&'a Problem> {
     let p = problems.iter().find(|p| p.id == t.problem_id)?;
-    let closed = p.closed_at.as_deref().and_then(time);
-    let reopened = p.closed_reason.as_deref() == Some(PR_CLOSED)
-        && prs.iter().any(|pr| {
-            t.pr_id.as_deref() == Some(pr.id.as_str())
-                && time(&pr.updated_at)
-                    .zip(closed)
-                    .is_some_and(|(updated, closed)| updated > closed)
-        });
+    let listed = |n| {
+        ci.iter()
+            .any(|c| same_repo(&c.repo, &t.repo) && c.pull(n).is_some())
+    };
+    let reopened = p.closed_reason.as_deref() == Some(PR_CLOSED) && t.number.is_some_and(listed);
     (!reopened).then_some(p)
 }
 /// Whether a default branch's issue should be closed: its problem is over,

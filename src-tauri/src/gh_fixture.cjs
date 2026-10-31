@@ -28,7 +28,8 @@
 // <dir>/pull-error exists, reading one fails with its text.
 // While <dir>/down exists every call
 // fails. While <dir>/hold exists a GET waits, after writing <dir>/held, or
-// only a GET of the endpoint it names, when it names one. Each
+// only a GET of the endpoint it names, when it names one; when it names
+// "graphql <owner>/<name>", only reading that repository's CI waits. Each
 // call is logged to <dir>/calls as "METHOD endpoint".
 const fs = require("node:fs");
 const path = require("node:path");
@@ -128,22 +129,22 @@ if (endpoint === "graphql" && fields.workflows) {
     });
   process.exit(0);
 }
+const hold = path.join(dir, "hold");
+const held = (names) =>
+  fs.existsSync(hold) && names.includes(fs.readFileSync(hold, "utf8").trim());
+const wait = () => {
+  fs.writeFileSync(path.join(dir, "held"), "");
+  const nap = new Int32Array(new SharedArrayBuffer(4));
+  while (fs.existsSync(hold)) Atomics.wait(nap, 0, 0, 20);
+};
 if (endpoint === "graphql") {
+  if (held([`graphql ${fields.owner}/${fields.name}`])) wait();
   const commit = path.join(dir, `commit-${fields.oid}.json`);
   const file = fields.oid && fs.existsSync(commit) ? commit : "answer.json";
   process.stdout.write(fs.readFileSync(path.resolve(dir, file), "utf8"));
   process.exit(0);
 }
-const hold = path.join(dir, "hold");
-if (
-  method === "GET" &&
-  fs.existsSync(hold) &&
-  ["", endpoint].includes(fs.readFileSync(hold, "utf8").trim())
-) {
-  fs.writeFileSync(path.join(dir, "held"), "");
-  const nap = new Int32Array(new SharedArrayBuffer(4));
-  while (fs.existsSync(path.join(dir, "hold"))) Atomics.wait(nap, 0, 0, 20);
-}
+if (method === "GET" && held(["", endpoint])) wait();
 const db = load();
 let m;
 if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {

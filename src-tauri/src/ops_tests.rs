@@ -1642,7 +1642,7 @@ fn answer(head: char, wait: Option<(Turn, &str)>) -> Readiness {
     }
 }
 fn say(threads: &mut Vec<Thread>, head: char, a: Readiness, problems: &[Problem]) -> bool {
-    ready(threads, &[a], &[open(head)], problems, true, t0())
+    ready(threads, &[a], &[open(head)], problems, &[], true, t0())
 }
 
 /// A pull request Orbit reviews gets a comment once its answer tells the
@@ -1656,9 +1656,9 @@ fn the_merge_answer_gets_a_comment_once_it_tells_something() {
     let mut journal = vec![];
     let working = answer('a', Some((Turn::Working, "Checks are still running.")));
     let answers = std::slice::from_ref(&working);
-    assert!(!ready(&mut threads, answers, &prs, &[], false, t0()));
+    assert!(!ready(&mut threads, answers, &prs, &[], &[], false, t0()));
     assert!(threads.is_empty());
-    assert!(ready(&mut threads, answers, &prs, &[], true, t0()));
+    assert!(ready(&mut threads, answers, &prs, &[], &[], true, t0()));
     let t = &threads[0];
     assert_eq!(
         (t.key.as_str(), t.kind, t.number, t.pr_id.as_deref()),
@@ -1793,7 +1793,7 @@ fn a_pull_request_orbit_stops_working_out_says_so() {
         ..open('a')
     };
     let stop = |threads: &mut Vec<Thread>, pr: &PullRequest| {
-        ready(threads, &[], std::slice::from_ref(pr), &[], true, t0())
+        ready(threads, &[], std::slice::from_ref(pr), &[], &[], true, t0())
     };
     assert!(stop(&mut threads, &draft));
     let body = tell(&mut threads, &mut journal, None, true, t0())
@@ -1809,7 +1809,7 @@ fn a_pull_request_orbit_stops_working_out_says_so() {
     assert_eq!(next(&threads[0], None, true, t0()), None);
     // Closed: left as it was.
     let before = threads.clone();
-    assert!(!ready(&mut threads, &[], &[], &[], true, t0()));
+    assert!(!ready(&mut threads, &[], &[], &[], &[], true, t0()));
     assert_eq!(threads, before);
     // Reviewed again.
     say(&mut threads, 'a', answer('a', None), &[]);
@@ -1841,6 +1841,7 @@ fn a_pull_request_orbit_stops_working_out_says_so() {
         &[],
         &[open('a')],
         std::slice::from_ref(&p),
+        &[],
         true,
         t0()
     ));
@@ -1853,7 +1854,8 @@ fn a_pull_request_orbit_stops_working_out_says_so() {
 
 /// A pull request that closes keeps its comment as it was, and once it is
 /// reopened the comment says what is true now: the CI problem from before
-/// it closed is over, so only the answer is left.
+/// it closed is over, so only the answer is left. Reopened means CI lists
+/// it again, whatever the times say.
 #[test]
 fn a_reopened_pull_request_gets_its_answer() {
     let mut p = pull("p1", &["CI / Rust"], 'a', t0());
@@ -1861,7 +1863,7 @@ fn a_reopened_pull_request_gets_its_answer() {
     let mut journal = vec![];
     refresh(&mut threads, std::slice::from_ref(&p), t0());
     let failing = answer('a', Some((Turn::Author, "CI / Rust fails on aaaaaaa.")));
-    say(&mut threads, 'a', failing, std::slice::from_ref(&p));
+    say(&mut threads, 'a', failing.clone(), std::slice::from_ref(&p));
     let body = send(&mut threads, &mut journal, &p, true, t0())
         .unwrap()
         .body;
@@ -1872,63 +1874,68 @@ fn a_reopened_pull_request_gets_its_answer() {
     p.closed_reason = Some("The pull request closed.".into());
     let problems = std::slice::from_ref(&p);
     refresh(&mut threads, problems, closed);
-    assert!(!ready(&mut threads, &[], &[], problems, true, closed));
-    assert_eq!(
-        next(
-            &threads[0],
-            problem_of(&threads[0], problems, &[]),
-            true,
-            closed
-        ),
-        None
-    );
-    // Still listed as open from before it closed: the same.
-    let listed = PullRequest {
+    let read = |repo: &str, numbers: &[u64]| crate::ci::RepoCi {
+        repo: repo.into(),
+        pulls: numbers
+            .iter()
+            .map(|&number| crate::ci::PullCi {
+                number,
+                ..Default::default()
+            })
+            .collect(),
+        complete: true,
+        ..Default::default()
+    };
+    let gone = [read("a/b", &[])];
+    assert!(!ready(
+        &mut threads,
+        &[],
+        &[],
+        problems,
+        &gone,
+        true,
+        closed
+    ));
+    let t = &threads[0];
+    assert_eq!(next(t, problem_of(t, problems, &gone), true, closed), None);
+    // Still listed in Orbit's pull requests from before it closed, or
+    // another pull request or repository listed: the same.
+    let prs = [open('a')];
+    assert!(!ready(
+        &mut threads,
+        &[failing],
+        &prs,
+        problems,
+        &gone,
+        true,
+        closed
+    ));
+    let t = &threads[0];
+    assert_eq!(next(t, problem_of(t, problems, &gone), true, closed), None);
+    for others in [[read("a/b", &[13])], [read("c/d", &[12])]] {
+        assert_eq!(problem_of(&threads[0], problems, &others), Some(&p));
+    }
+    // CI lists it again, even before its update time: reopened. Its checks
+    // pass and Orbit's review is clean, so it is clear to merge.
+    let listed = [read("A/B", &[12])];
+    let pr = PullRequest {
         updated_at: stamp(t0()),
         ..open('a')
     };
-    assert_eq!(problem_of(&threads[0], problems, &[listed]), Some(&p));
-    // Nor without a time, for another pull request, or for a problem that
-    // was over for another reason.
-    let later = stamp(closed + Duration::hours(1));
-    let unknown = PullRequest {
-        updated_at: String::new(),
-        ..open('a')
-    };
-    assert_eq!(problem_of(&threads[0], problems, &[unknown]), Some(&p));
-    let other = PullRequest {
-        id: "a/b#13".into(),
-        number: 13,
-        updated_at: later.clone(),
-        ..open('a')
-    };
-    assert_eq!(problem_of(&threads[0], problems, &[other]), Some(&p));
-    let mut passed = p.clone();
-    pass(&mut passed, 'a', closed);
-    let touched = PullRequest {
-        updated_at: later,
-        ..open('a')
-    };
-    let passed = std::slice::from_ref(&passed);
-    assert_eq!(problem_of(&threads[0], passed, &[touched]), passed.first());
-    // Reopened, its checks pass and Orbit's review is clean: clear to merge.
-    let reopened = closed + Duration::hours(1);
-    let pr = PullRequest {
-        updated_at: stamp(reopened),
-        ..open('a')
-    };
     let prs = std::slice::from_ref(&pr);
+    let clear = [answer('a', None)];
     assert!(ready(
         &mut threads,
-        &[answer('a', None)],
+        &clear,
         prs,
         problems,
+        &listed,
         true,
-        reopened
+        closed
     ));
-    let problem = problem_of(&threads[0], problems, prs);
+    let problem = problem_of(&threads[0], problems, &listed);
     assert_eq!(problem, None);
-    let edit = tell(&mut threads, &mut journal, problem, true, reopened).unwrap();
+    let edit = tell(&mut threads, &mut journal, problem, true, closed).unwrap();
     assert_eq!(edit.action, Action::EditComment);
     assert!(edit
         .body
@@ -1937,35 +1944,43 @@ fn a_reopened_pull_request_gets_its_answer() {
     assert!(edit.body.contains("\"items\":[]"));
     assert!(!ready(
         &mut threads,
-        &[answer('a', None)],
+        &clear,
         prs,
         problems,
+        &listed,
         true,
-        reopened
+        closed
     ));
-    assert_eq!(next(&threads[0], problem, true, reopened), None);
+    assert_eq!(next(&threads[0], problem, true, closed), None);
     // It waits on someone, then the same in new words, which wait as usual.
-    let waits = |text| answer('a', Some((Turn::Person, text)));
+    let waits = |text| [answer('a', Some((Turn::Person, text)))];
     let review = waits("A review is required.");
     assert!(ready(
         &mut threads,
-        &[review],
+        &review,
         prs,
         problems,
+        &listed,
         true,
-        reopened
+        closed
     ));
-    tell(&mut threads, &mut journal, problem, true, reopened).unwrap();
+    tell(&mut threads, &mut journal, problem, true, closed).unwrap();
     let reworded = waits("A required review is missing.");
     assert!(!ready(
         &mut threads,
-        &[reworded],
+        &reworded,
         prs,
         problems,
+        &listed,
         true,
-        reopened
+        closed
     ));
-    assert_eq!(next(&threads[0], problem, true, reopened), None);
+    assert_eq!(next(&threads[0], problem, true, closed), None);
+    // Only a problem that closed with its pull request is over that way.
+    let mut passed = p.clone();
+    pass(&mut passed, 'a', closed);
+    let passed = std::slice::from_ref(&passed);
+    assert_eq!(problem_of(&threads[0], passed, &listed), passed.first());
 }
 
 /// Others' words in the answer, such as a check's name or GitHub's error,
@@ -2059,7 +2074,7 @@ fn the_reply_skill_shows_the_answer_as_orbit_writes_it() {
     };
     let pr = PullRequest { id, ..open('a') };
     let mut threads = vec![];
-    ready(&mut threads, &[a], &[pr], &[], true, t0());
+    ready(&mut threads, &[a], &[pr], &[], &[], true, t0());
     let marker = format!("`{}{{json}} -->`", threads[0].tag());
     assert!(skill.contains(&marker), "{marker}");
 }

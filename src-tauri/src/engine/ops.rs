@@ -22,7 +22,7 @@ use std::sync::{atomic::Ordering, Arc};
 fn plan(s: &Snapshot, now: chrono::DateTime<chrono::Utc>) -> Option<Planned> {
     reruns::all(s, now).into_iter().next().or_else(|| {
         s.ops.iter().find_map(|t| {
-            let problem = ops::problem_of(t, &s.problems, &s.prs);
+            let problem = ops::problem_of(t, &s.problems, &s.ci);
             ops::next(t, problem, ops::may_post(s, t), now)
         })
     })
@@ -34,7 +34,7 @@ fn plan(s: &Snapshot, now: chrono::DateTime<chrono::Utc>) -> Option<Planned> {
 fn ready_now(s: &mut Snapshot, now: chrono::DateTime<chrono::Utc>) -> bool {
     let answers = crate::readiness::all(s);
     let watch = s.settings.watch_ci;
-    ops::ready(&mut s.ops, &answers, &s.prs, &s.problems, watch, now)
+    ops::ready(&mut s.ops, &answers, &s.prs, &s.problems, &s.ci, watch, now)
 }
 
 impl Engine {

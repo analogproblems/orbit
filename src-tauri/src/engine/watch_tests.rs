@@ -1195,37 +1195,58 @@ async fn an_answer_gone_stale_while_orbit_waits_isnt_sent() {
 /// A pull request that closes with a check failing keeps Orbit's comment
 /// as it was. Reopened with its checks passing and Orbit's review clean,
 /// its comment says it is clear to merge, with nothing about CI from
-/// before it closed.
+/// before it closed. That holds when it is reopened while Orbit reads
+/// another repository's CI, after reading that it closed: GitHub's time
+/// for the reopening is then before Orbit's for the closing.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_reopened_pull_request_is_told_it_is_clear() {
     let d = tempfile::tempdir().unwrap();
     let gh = fixture_gh(d.path());
     let e = connected(d.path()).await;
-    e.update(|s| s.github_user = Some("me".into())).await;
+    e.update(|s| {
+        s.github_user = Some("me".into());
+        let mut other = s.settings.repositories[0].clone();
+        other.name = "c/d".into();
+        other.automatic = false;
+        s.settings.repositories.push(other);
+    })
+    .await;
     let p = reviewed(&e).await;
     let watch = || crate::github::GH.scope(gh.clone(), e.watch_ci());
     answer_pull_failing(d.path(), &p.head_sha);
     watch().await;
     assert_eq!(writes(d.path()), ["POST repos/a/b/issues/1/comments"]);
-    let posted = comment(d.path());
-    assert!(posted.contains("### CI"));
-    // It closes.
+    assert!(comment(d.path()).contains("### CI"));
+    // It closes. Orbit reads that, then waits on c/d's CI, and it is
+    // reopened meanwhile.
     e.update(|s| s.prs.clear()).await;
     passing_pulls(d.path(), &[]);
-    watch().await;
+    std::fs::write(d.path().join("hold"), "graphql c/d").unwrap();
+    let watching = tokio::spawn(crate::github::GH.scope(gh.clone(), {
+        let e = e.clone();
+        async move { e.watch_ci().await }
+    }));
+    held(d.path()).await;
+    let reopened = chrono::Utc::now().to_rfc3339();
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    std::fs::remove_file(d.path().join("hold")).unwrap();
+    watching.await.unwrap();
     let s = e.snapshot().await;
+    let problem = &s.problems[0];
     assert_eq!(
-        s.problems[0].closed_reason.as_deref(),
+        problem.closed_reason.as_deref(),
         Some("The pull request closed.")
     );
+    assert!(problem.closed_at.as_deref().unwrap() > reopened.as_str());
     assert_eq!(writes(d.path()).len(), 1);
-    // Reopened.
-    let reopened = PullRequest {
-        updated_at: (chrono::Utc::now() + chrono::Duration::seconds(1)).to_rfc3339(),
+    // A sync finds it open, CI lists it with its checks passing, and
+    // GitHub says it merges.
+    let open = PullRequest {
+        updated_at: reopened,
         ..p.clone()
     };
-    e.update(|s| s.prs = vec![reopened]).await;
+    e.update(|s| s.prs = vec![open]).await;
     passing_pull(d.path(), &p.head_sha);
     mergeable(d.path(), &p.head_sha, json!(true), "clean");
     watch().await;
