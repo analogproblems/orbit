@@ -5,7 +5,7 @@
 //! working when the checkout it was built in changes or goes away.
 use std::{
     ffi::OsString,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 /// The systemd user service's name.
@@ -153,15 +153,43 @@ fn must(run: Run, program: &str, args: &[&str]) -> Result<Ran, String> {
     }
 }
 
-/// How the service starts Orbit.
+/// How the service starts Orbit. What isn't given stays as it was set up
+/// before.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Setup {
-    pub data: PathBuf,
+    pub data: Option<PathBuf>,
     pub port: Option<u16>,
-    /// The data folder `orbit-server` uses when none is given, so a command
-    /// shown later can leave `--data` out.
+    /// The data folder `orbit-server` uses when none is given: the service's
+    /// first one, and the one a command shown later can leave `--data` out for.
     pub default_data: Option<PathBuf>,
 }
+
+/// What the service was set up with, kept beside the program's copy so
+/// installing again changes only what it's given.
+#[derive(Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct Installed {
+    data: Option<PathBuf>,
+    port: Option<u16>,
+}
+const INSTALLED: &str = "setup.json";
+fn installed(host: &Host) -> Installed {
+    std::fs::read(host.programs.join(INSTALLED))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+/// What install puts in the program's folder, which uninstall removes. The
+/// rest of the folder is left alone.
+const COPIES: [&str; 8] = [
+    "orbit-server",
+    "orbit-server.new",
+    "orbit-server.exe",
+    "orbit-server.exe.new",
+    "web",
+    "web.new",
+    "web.old",
+    INSTALLED,
+];
 
 /// Copies the program and its page into their own folder, writes the
 /// service and starts it. Returns what to tell you.
@@ -178,18 +206,40 @@ pub fn install(
         "orbit-server"
     });
     let page = host.programs.join("web");
+    let before = installed(host);
+    let kept = setup.data.is_none() && before.data.is_some();
+    let data = setup
+        .data
+        .clone()
+        .or(before.data)
+        .or(setup.default_data.clone())
+        .ok_or("Orbit can't find the desktop app's data folder. Choose one with --data.")?;
+    let port = setup.port.or(before.port);
+    // Uninstall removes what's in this folder, so the data can't live there.
+    if resolved(&data).starts_with(resolved(&host.programs)) {
+        return Err(format!(
+            "The data folder can't be inside {}, since that's where Orbit keeps its copy of the program. Choose another one with --data.",
+            host.programs.display()
+        ));
+    }
     std::fs::create_dir_all(&host.programs)
         .map_err(|e| format!("Can't make {}: {e}", host.programs.display()))?;
     copy_program(exe, &program)?;
     copy_page(web, &page)?;
+    let record = serde_json::to_vec_pretty(&Installed {
+        data: Some(data.clone()),
+        port,
+    })
+    .map_err(|e| format!("Can't record how the service is set up: {e}"))?;
+    write_replacing(&host.programs.join(INSTALLED), &record)?;
     let mut args = vec![
         text(&program, "the program's folder")?,
         "--data".into(),
-        text(&setup.data, "the data folder")?,
+        text(&data, "the data folder")?,
         "--web".into(),
         text(&page, "the program's folder")?,
     ];
-    if let Some(port) = setup.port {
+    if let Some(port) = port {
         args.extend(["--port".into(), port.to_string()]);
     }
     let path = host
@@ -243,7 +293,11 @@ pub fn install(
     let mut lines = vec![
         "Orbit is set up as a service and running.".to_string(),
         format!("Program: {}", host.programs.display()),
-        format!("Data folder: {}", setup.data.display()),
+        if kept {
+            format!("Data folder: {} (as before)", data.display())
+        } else {
+            format!("Data folder: {}", data.display())
+        },
         format!("Service: {}", file.display()),
     ];
     lines.push(format!("Found on its PATH: {}.", list(&found)));
@@ -264,7 +318,7 @@ pub fn install(
     lines.extend(notes);
     // The copy isn't on your PATH, so commands name it in full.
     let me = format!("\"{}\"", program.display());
-    let data = data_option(setup);
+    let data = data_option(&data, setup);
     lines.push(format!(
         "See the link for your other devices with: {me} link{data}"
     ));
@@ -275,12 +329,38 @@ pub fn install(
 }
 
 /// `--data <folder>` for a command shown to you, unless it's the default.
-fn data_option(setup: &Setup) -> String {
-    if Some(&setup.data) == setup.default_data.as_ref() {
+fn data_option(data: &Path, setup: &Setup) -> String {
+    if Some(data) == setup.default_data.as_deref() {
         String::new()
     } else {
-        format!(" --data \"{}\"", setup.data.display())
+        format!(" --data \"{}\"", data.display())
     }
+}
+
+/// The path with its links followed as far as it exists, so two names for
+/// one folder compare equal. The part that doesn't exist yet can't hold a
+/// link, so its `..` just goes up.
+fn resolved(path: &Path) -> PathBuf {
+    let mut real = PathBuf::new();
+    let mut exists = true;
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                real.pop();
+            }
+            part => {
+                real.push(part);
+                if exists {
+                    match std::fs::canonicalize(&real) {
+                        Ok(found) => real = found,
+                        Err(_) => exists = false,
+                    }
+                }
+            }
+        }
+    }
+    real
 }
 
 /// How long to wait before loading a launch agent again.
@@ -326,11 +406,24 @@ pub fn uninstall(host: &Host, run: Run) -> Result<String, String> {
             }
         }
     }
-    if host.programs.exists() {
-        std::fs::remove_dir_all(&host.programs)
-            .map_err(|e| format!("Can't remove {}: {e}", host.programs.display()))?;
+    let mut done = "Orbit's service is stopped and removed, with its copy of the program. Its data folder is kept.".to_string();
+    // Only what install put there goes: anything else in the folder stays.
+    for name in COPIES {
+        let copy = host.programs.join(name);
+        let gone = match std::fs::symlink_metadata(&copy) {
+            Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(&copy),
+            Ok(_) => std::fs::remove_file(&copy),
+            Err(_) => continue,
+        };
+        gone.map_err(|e| format!("Can't remove {}: {e}", copy.display()))?;
     }
-    Ok("Orbit's service is stopped and removed, with its copy of the program. Its data folder is kept.".into())
+    if host.programs.exists() && std::fs::remove_dir(&host.programs).is_err() {
+        done.push_str(&format!(
+            "\n{} has other files in it, so it's kept.",
+            host.programs.display()
+        ));
+    }
+    Ok(done)
 }
 
 /// How the service is doing, in words.

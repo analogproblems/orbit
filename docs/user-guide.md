@@ -775,7 +775,7 @@ From a fresh computer:
 
 The commands install shows name Orbit's copy in full, since it isn't on your `PATH`; from the source folder, `npm run server -- status` and the like work too. To update Orbit, get the new source (`git pull` and `npm ci`) and run `npm run server -- install` again: it replaces the copy and restarts the service. Run it again after installing a new tool too, so the service finds it. `orbit-server uninstall` removes the service and the copy, and keeps your data folder.
 
-The service starts Orbit with the data folder and port you gave install. A stop from the system (shutting down, or `systemctl --user stop orbit`) saves and stops it like Ctrl+C. If Orbit can't start, such as while the desktop app has the same data folder open, it tries again every 10 seconds, and `orbit-server logs` shows why.
+The service starts Orbit with the data folder and port you gave install, or the desktop app's folder if you gave none. Installing again keeps them unless you give new ones. The data folder can't be inside the folder Orbit's copy goes in, since uninstall removes that copy. A stop from the system (shutting down, or `systemctl --user stop orbit`) saves and stops it like Ctrl+C. If Orbit can't start, such as while the desktop app has the same data folder open, it tries again every 10 seconds, and `orbit-server logs` shows why.
 
 ## Restart, retained data, and cleanup
 

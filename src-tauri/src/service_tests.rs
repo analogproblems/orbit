@@ -49,6 +49,8 @@ struct Machine {
     host: Host,
     exe: PathBuf,
     web: PathBuf,
+    /// The desktop app's data folder, which install uses when it's given none.
+    data: PathBuf,
     setup: Setup,
 }
 fn machine(kind: Kind) -> Machine {
@@ -93,8 +95,9 @@ fn machine(kind: Kind) -> Machine {
         host,
         exe,
         web,
+        data: data.clone(),
         setup: Setup {
-            data: data.clone(),
+            data: None,
             port: None,
             default_data: Some(data),
         },
@@ -142,7 +145,7 @@ fn sets_up_a_user_service_on_linux() {
             &[
                 program.display().to_string(),
                 "--data".into(),
-                m.setup.data.display().to_string(),
+                m.data.display().to_string(),
                 "--web".into(),
                 page.display().to_string(),
             ],
@@ -151,6 +154,14 @@ fn sets_up_a_user_service_on_linux() {
         .unwrap()
     );
     assert!(unit_text.contains(&format!("\nEnvironment=\"PATH={path}\"\n")));
+    // Install keeps what it was set up with beside the copy.
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(
+            &std::fs::read(m.host.programs.join("setup.json")).unwrap()
+        )
+        .unwrap(),
+        serde_json::json!({ "data": m.data, "port": null })
+    );
     assert_eq!(
         done,
         format!(
@@ -164,7 +175,7 @@ Linux stops your services when you log out. To keep Orbit running then, and star
 See the link for your other devices with: \"{program}\" link
 See how it's doing with \"{program}\" status, and its log with \"{program}\" logs.",
             m.host.programs.display(),
-            m.setup.data.display(),
+            m.data.display(),
             file.display(),
             program = program.display(),
         )
@@ -180,6 +191,9 @@ fn installing_again_replaces_the_copy_and_keeps_its_port_and_folder() {
         _ => ok(""),
     });
     let run = |p: &str, a: &[&str]| fake.run(p, a);
+    let other = m.root.join("other data");
+    m.setup.data = Some(other.clone());
+    m.setup.port = Some(5000);
     install(&m.host, &run, &m.exe, &m.web, &m.setup).unwrap();
     // A copy left half made by an install that was cut short goes.
     std::fs::create_dir_all(m.host.programs.join("web.new")).unwrap();
@@ -187,8 +201,10 @@ fn installing_again_replaces_the_copy_and_keeps_its_port_and_folder() {
     std::fs::write(&m.exe, "program v2").unwrap();
     std::fs::remove_file(m.web.join("assets/app.js")).unwrap();
     std::fs::write(m.web.join("assets/next.js"), "next()").unwrap();
-    m.setup.data = m.root.join("other data");
-    m.setup.port = Some(5000);
+    // Installing again with nothing given, as the guide says to after an
+    // update, keeps the folder and port it had, not the desktop's.
+    m.setup.data = None;
+    m.setup.port = None;
     let done = install(&m.host, &run, &m.exe, &m.web, &m.setup).unwrap();
     let program = m.host.programs.join("orbit-server");
     assert_eq!(std::fs::read_to_string(&program).unwrap(), "program v2");
@@ -198,26 +214,92 @@ fn installing_again_replaces_the_copy_and_keeps_its_port_and_folder() {
     assert!(!m.host.programs.join("web.new").exists());
     assert!(!page.join("stale.js").exists());
     assert!(!m.host.programs.join("web.old").exists());
+    let exec_start = |data: &Path, port: &str| {
+        format!(
+            "ExecStart=\"{}\" \"--data\" \"{}\" \"--web\" \"{}\"{port}\n",
+            program.display(),
+            data.display(),
+            page.display()
+        )
+    };
     let unit_text = std::fs::read_to_string(m.host.service_file()).unwrap();
-    assert!(unit_text.contains(&format!(
-        "ExecStart=\"{}\" \"--data\" \"{}\" \"--web\" \"{}\" \"--port\" \"5000\"\n",
-        program.display(),
-        m.setup.data.display(),
-        page.display()
-    )));
+    assert!(
+        unit_text.contains(&exec_start(&other, " \"--port\" \"5000\"")),
+        "{unit_text}"
+    );
+    assert!(
+        done.contains(&format!("\nData folder: {} (as before)\n", other.display())),
+        "{done}"
+    );
     // Linger is on, so there's no note about it; the data folder isn't the
     // default, so the link command names it.
     assert!(!done.contains("enable-linger"), "{done}");
     assert!(done.contains(&format!(
         "\"{}\" link --data \"{}\"",
         program.display(),
-        m.setup.data.display()
+        other.display()
     )));
-    // Installing from the copy itself leaves it as it is.
+    // Installing from the copy itself leaves it as it is, and a folder or
+    // port that's given replaces the old one.
     let copy = m.host.programs.join("orbit-server");
-    install(&m.host, &run, &copy, &page, &m.setup).unwrap();
+    m.setup.data = Some(m.data.clone());
+    m.setup.port = Some(6000);
+    let done = install(&m.host, &run, &copy, &page, &m.setup).unwrap();
     assert_eq!(std::fs::read_to_string(&copy).unwrap(), "program v2");
     assert!(page.join("assets/next.js").is_file());
+    let unit_text = std::fs::read_to_string(m.host.service_file()).unwrap();
+    assert!(
+        unit_text.contains(&exec_start(&m.data, " \"--port\" \"6000\"")),
+        "{unit_text}"
+    );
+    assert!(done.contains(&format!("\nData folder: {}\n", m.data.display())));
+    assert!(
+        done.contains(&format!("\"{}\" link\n", copy.display())),
+        "{done}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn keeps_the_data_folder_out_of_the_programs_folder() {
+    let mut m = machine(Kind::Systemd);
+    let fake = Fake::working();
+    let run = |p: &str, a: &[&str]| fake.run(p, a);
+    // Another name for the programs folder, through a link.
+    let share = m.host.home.join(".local/share");
+    std::fs::create_dir_all(&share).unwrap();
+    let alias = m.root.join("alias");
+    std::os::unix::fs::symlink(&share, &alias).unwrap();
+    for data in [
+        m.host.programs.clone(),
+        m.host.programs.join("data"),
+        m.host.programs.join("web/data"),
+        m.host.programs.join("new/../data"),
+        alias.join("orbit-server/data"),
+        share.join("other/../orbit-server/./data"),
+    ] {
+        m.setup.data = Some(data.clone());
+        assert_eq!(
+            install(&m.host, &run, &m.exe, &m.web, &m.setup),
+            Err(format!(
+                "The data folder can't be inside {}, since that's where Orbit keeps its copy of the program. Choose another one with --data.",
+                m.host.programs.display()
+            )),
+            "{}",
+            data.display()
+        );
+        assert!(!m.host.service_file().exists());
+        assert!(!m.host.programs.join("orbit-server").exists());
+    }
+    assert!(fake.calls().is_empty());
+    // Beside it, or holding it, is fine.
+    for data in [
+        share.join("orbit-server data"),
+        share.join("orbit-server/.."),
+    ] {
+        m.setup.data = Some(data);
+        install(&m.host, &run, &m.exe, &m.web, &m.setup).unwrap();
+    }
 }
 
 #[cfg(unix)]
@@ -337,7 +419,7 @@ fn sets_up_a_launch_agent_on_macos() {
             &[
                 program.display().to_string(),
                 "--data".into(),
-                m.setup.data.display().to_string(),
+                m.data.display().to_string(),
                 "--web".into(),
                 m.host.programs.join("web").display().to_string(),
             ],
@@ -451,7 +533,7 @@ fn removes_the_service_and_its_copy_but_keeps_the_data() {
         );
         assert!(fake.calls().is_empty());
         install(&m.host, &run, &m.exe, &m.web, &m.setup).unwrap();
-        std::fs::create_dir_all(&m.setup.data).unwrap();
+        std::fs::create_dir_all(&m.data).unwrap();
         fake.calls.borrow_mut().clear();
         assert_eq!(
             uninstall(&m.host, &run).unwrap(),
@@ -467,7 +549,7 @@ fn removes_the_service_and_its_copy_but_keeps_the_data() {
         assert_eq!(fake.calls(), expected, "{kind:?}");
         assert!(!m.host.service_file().exists());
         assert!(!m.host.programs.exists());
-        assert!(m.setup.data.is_dir());
+        assert!(m.data.is_dir());
 
         // A copy left behind without its service is removed too.
         install(&m.host, &run, &m.exe, &m.web, &m.setup).unwrap();
@@ -483,6 +565,30 @@ fn removes_the_service_and_its_copy_but_keeps_the_data() {
             Kind::Launchd => vec!["launchctl bootout gui/501/dev.orbit.review.server".into()],
         };
         assert_eq!(fake.calls(), expected, "{kind:?}");
+
+        // Anything else in the folder stays, such as Orbit data put there by
+        // hand, with the copy's own files gone around it.
+        install(&m.host, &run, &m.exe, &m.web, &m.setup).unwrap();
+        let theirs = m.host.programs.join("data");
+        std::fs::create_dir_all(&theirs).unwrap();
+        std::fs::write(theirs.join("state.json"), "{}").unwrap();
+        std::fs::write(m.host.programs.join("orbit-server.new"), "half").unwrap();
+        assert_eq!(
+            uninstall(&m.host, &run).unwrap(),
+            format!(
+                "Orbit's service is stopped and removed, with its copy of the program. Its data folder is kept.\n{} has other files in it, so it's kept.",
+                m.host.programs.display()
+            )
+        );
+        let left: Vec<_> = std::fs::read_dir(&m.host.programs)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(left, ["data"], "{kind:?}");
+        assert_eq!(
+            std::fs::read_to_string(theirs.join("state.json")).unwrap(),
+            "{}"
+        );
     }
 }
 

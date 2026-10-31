@@ -544,6 +544,20 @@ fn sets_itself_up_as_a_service_and_removes_it() {
     let _ = copy.kill();
     let _ = copy.wait();
 
+    // Installing again without --data, as after an update, keeps the
+    // service on its folder rather than the desktop app's.
+    let again = server(&["install", "--web", web.to_str().unwrap()]);
+    assert!(again.status.success(), "{}", text(&again.stderr));
+    assert!(
+        text(&again.stdout).contains(&format!("\nData folder: {} (as before)\n", data.display())),
+        "{}",
+        text(&again.stdout)
+    );
+    let unit_again =
+        std::fs::read_to_string(home.join(".config/systemd/user/orbit.service")).unwrap();
+    assert_eq!(unit_again, unit);
+    std::fs::remove_file(&asked).unwrap();
+
     let status = server(&["status"]);
     assert_eq!(
         text(&status.stdout),

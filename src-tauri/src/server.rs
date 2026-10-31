@@ -30,8 +30,10 @@ enum Command {
         data: PathBuf,
         new: bool,
     },
+    /// With no `--data`, the service keeps the folder it was set up with
+    /// before, or uses the desktop app's.
     Install {
-        data: PathBuf,
+        data: Option<PathBuf>,
         port: Option<u16>,
         web: Option<PathBuf>,
     },
@@ -266,6 +268,7 @@ fn parse(args: Vec<OsString>, default_data: Option<PathBuf>) -> Result<Command, 
             _ => return Err(format!("Orbit doesn't know {text}.")),
         }
     }
+    let given = data.clone().map(absolute).transpose()?;
     let data = || -> Result<PathBuf, String> {
         let data = data
             .clone()
@@ -284,7 +287,7 @@ fn parse(args: Vec<OsString>, default_data: Option<PathBuf>) -> Result<Command, 
         },
         Verb::Link => Command::Link { data: data()?, new },
         Verb::Install => Command::Install {
-            data: data()?,
+            data: given,
             port,
             web: web()?,
         },
@@ -420,7 +423,7 @@ fn mime_type(path: &str) -> &'static str {
 }
 
 /// Sets Orbit up as a service, from this program and the page it would serve.
-fn install(data: PathBuf, port: Option<u16>, web: Option<PathBuf>) -> Result<(), String> {
+fn install(data: Option<PathBuf>, port: Option<u16>, web: Option<PathBuf>) -> Result<(), String> {
     let host = service::Host::current()?;
     let web = web_folder(web)?;
     let exe = std::env::current_exe().map_err(|e| format!("Orbit can't find itself: {e}"))?;

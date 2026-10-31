@@ -87,13 +87,22 @@ fn reads_the_options_for_the_link() {
 
 #[test]
 fn reads_the_service_commands() {
-    let default = abs("/home/me/.local/share/dev.orbit.review");
+    // Without --data, install keeps the folder the service had, which only
+    // the service knows.
     assert_eq!(
         parsed(&["install", "--port", "5000", "--web=dist"]),
         Ok(Command::Install {
-            data: default,
+            data: None,
             port: Some(5000),
             web: Some(here("dist"))
+        })
+    );
+    assert_eq!(
+        parse(args(&["install", "--data", "orbit"]), None),
+        Ok(Command::Install {
+            data: Some(here("orbit")),
+            port: None,
+            web: None
         })
     );
     // These don't use a data folder, so they work without one.
