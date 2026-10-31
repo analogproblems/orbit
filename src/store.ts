@@ -430,6 +430,15 @@ async function demoAction(
     commit();
     return;
   }
+  if (command === "close_brief") {
+    const b = demo.brief?.latest;
+    if (b && b.day === args.day) b.open = false;
+    demo.attention = demo.attention?.filter(
+      (a) => a.key !== `brief:${String(args.day)}`,
+    );
+    commit();
+    return;
+  }
   if (command === "clear_memory") {
     if (demo.buddyFeed)
       demo.buddyFeed.memory = { general: [], repositories: {} };

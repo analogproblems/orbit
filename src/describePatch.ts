@@ -54,6 +54,8 @@ const buddyLabels: Record<keyof Buddy, string> = {
   openaiModel: "OpenAI model",
   anthropicModel: "Anthropic model",
   googleModel: "Gemini model",
+  brief: "Morning brief",
+  briefAt: "Brief time",
 };
 
 /** A buddy setting's value as the settings page names it, such as Pink. */

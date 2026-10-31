@@ -49,6 +49,7 @@ impl Engine {
                     next.state_write_error = None;
                 }
                 next.settings = settings;
+                crate::brief::settings_changed(next);
                 if ModelSelection::workspace(&next.settings)
                     .validate_execution(next)
                     .is_ok()

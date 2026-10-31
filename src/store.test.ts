@@ -396,6 +396,38 @@ describe("demo buddy", () => {
     });
   });
 
+  it("marks only that day's morning brief read", async () => {
+    const saved = structuredClone(useOrbit.getState().snapshot);
+    const brief = saved.brief!.latest!;
+    brief.open = true;
+    saved.attention?.unshift({
+      key: `brief:${brief.day}`,
+      kind: "brief",
+      prId: null,
+      reviewId: null,
+      approvalId: null,
+      repo: null,
+      reason: brief.text,
+    });
+    localStorage.setItem("orbit-demo-v3", JSON.stringify(saved));
+    await useOrbit.getState().init();
+    const store = useOrbit.getState();
+    const open = () => {
+      const s = useOrbit.getState().snapshot;
+      return [
+        s.brief!.latest!.open,
+        s.attention!.some((a) => a.kind === "brief"),
+      ];
+    };
+    expect(open()).toEqual([true, true]);
+    await store.action("close_brief", { day: "2000-01-01" });
+    expect(open()).toEqual([true, true]);
+    expect((await store.action("close_brief", { day: brief.day })).ok).toBe(
+      true,
+    );
+    expect(open()).toEqual([false, false]);
+  });
+
   it("says a question the demo restarted on wasn't answered", async () => {
     await useOrbit.getState().action("ask_buddy_anything", { question: "Hi?" });
     await useOrbit.getState().init();

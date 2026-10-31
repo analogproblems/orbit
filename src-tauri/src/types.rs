@@ -1370,6 +1370,8 @@ pub struct Snapshot {
     /// like `loop_states`.
     #[serde(skip_deserializing, skip_serializing_if = "Vec::is_empty")]
     pub readiness: Vec<crate::readiness::Readiness>,
+    /// Bit's morning briefs: the latest, and the day Orbit last looked.
+    pub brief: crate::brief::Briefs,
 }
 /// How reading the pull-request history is going.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -1523,6 +1525,8 @@ pub enum AttentionKind {
     /// A pull request has waited on a person, such as a reviewer, for a
     /// long time (`crate::ops::NUDGE_PERSON`).
     Stuck,
+    /// Bit's morning brief, to read (`crate::brief`).
+    Brief,
 }
 /// Something only the developer can resolve.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

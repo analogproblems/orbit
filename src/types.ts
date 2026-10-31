@@ -457,6 +457,10 @@ export interface Buddy {
   anthropicModel: string;
   /** The model that answers with your Google key. */
   googleModel: string;
+  /** Whether Bit sends a morning brief. */
+  brief: boolean;
+  /** When, by this computer's clock, as HH:MM. */
+  briefAt: string;
 }
 /** One of Orbit's own controls, offered for something that needs you. */
 export type Fix =
@@ -550,6 +554,8 @@ export const defaultBuddy: Buddy = {
   openaiModel: "",
   anthropicModel: "",
   googleModel: "",
+  brief: true,
+  briefAt: "09:00",
 };
 export const buddyTones: Record<BuddyTone, string> = {
   cheerful: "Cheerful",
@@ -605,7 +611,8 @@ export type NoteKind =
   | "connected"
   | "decide"
   | "sign_in"
-  | "ci";
+  | "ci"
+  | "brief";
 /** A question Bit answers straight from Orbit's state. */
 export type Question =
   "needs_you" | "running" | "loops" | "repositories" | "setup";
@@ -622,6 +629,8 @@ export interface BuddyNoteLine {
   prId: string | null;
   /** The Needs you item the line is about. */
   key: string | null;
+  /** For a line of the morning brief, that it is new since the last one. */
+  new?: boolean;
 }
 /** A line in Bit's feed, in its own voice. */
 export interface BuddyNote {
@@ -804,7 +813,8 @@ export function needsSetup(s: Snapshot) {
  * when it didn't (the demo). */
 export function buddyMood(s: Snapshot): Mood {
   if (s.mood) return s.mood;
-  if (s.attention?.length) return "worried";
+  // The morning brief is there to read, so it worries nobody.
+  if (s.attention?.some((a) => a.kind !== "brief")) return "worried";
   if (
     s.reviews.some((r) => activeStatuses.includes(r.status)) ||
     s.loopStates?.some((l) => !l.closed && l.status === "reviewing")
@@ -943,7 +953,8 @@ export type AttentionKind =
   | "ci_failing"
   | "ci_question"
   | "runs_waiting"
-  | "stuck";
+  | "stuck"
+  | "brief";
 /** Something only the developer can resolve. */
 export interface Attention {
   /** Stays the same while the item is open. */
@@ -970,7 +981,10 @@ export const attentionLabels: Record<AttentionKind, string> = {
   ci_question: "An agent needs a person",
   runs_waiting: "Runs waiting",
   stuck: "Stuck",
+  brief: "Morning brief",
 };
+/** The day a morning brief's item is for, from its key. */
+export const briefDay = (a: Attention) => a.key.replace(/^brief:/, "");
 export interface AttentionHandlers {
   onChoose: (p: PullRequest, r?: Review) => void;
   onRepositories: () => void;
@@ -978,6 +992,8 @@ export interface AttentionHandlers {
   onApproval: (reviewId: string, id: string | number) => void;
   onPublish: (r: Review) => void;
   onOperations: () => void;
+  /** Bit's conversation, where the morning brief is. */
+  onBuddy?: () => void;
 }
 /** Where an item is resolved: its review, its PR, or a settings page. */
 export function attentionAction(
@@ -998,6 +1014,7 @@ export function attentionAction(
     a.kind === "disconnected"
   )
     return go.onSettings;
+  if (a.kind === "brief") return go.onBuddy;
   const p = [...s.prs, ...(s.historyPrs ?? [])].find((p) => p.id === a.prId);
   const r = s.reviews.find((r) => r.id === a.reviewId);
   if (a.kind === "approval" && r && a.approvalId != null) {
@@ -1115,6 +1132,33 @@ export interface Snapshot {
   /** Whether each pull request Orbit reviews is clear to merge, and what
    * is in the way. Derived like `loopStates`. */
   readiness?: Readiness[];
+  /** Bit's morning briefs: the latest, and the day Orbit last looked. */
+  brief?: Briefs;
+}
+/** One thing a morning brief lists. */
+export interface BriefLine {
+  key: string;
+  text: string;
+  prId?: string;
+  /** Not in the brief before. */
+  new?: boolean;
+}
+/** A morning brief Orbit sent. */
+export interface Brief {
+  /** The day it is for, by this computer's clock, such as 2026-10-31. */
+  day: string;
+  at: string;
+  text: string;
+  lines: BriefLine[];
+  /** How many lines of the brief before are gone. */
+  settled: number;
+  /** In Needs you, until you mark it read or the next brief's time comes. */
+  open: boolean;
+}
+export interface Briefs {
+  /** The latest day Orbit looked at whether to send a brief. */
+  looked?: string;
+  latest?: Brief;
 }
 /** Where a commit's checks stand. "none" is no checks, or only ones that
  * were skipped or cancelled. */

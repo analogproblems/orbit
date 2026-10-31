@@ -19,6 +19,46 @@ async fn can_disable_automation_while_codex_is_disconnected() {
     e.save_settings(settings).await.unwrap();
     assert!(!e.snapshot().await.settings.automatic);
 }
+/// Turning Bit or its brief off takes an open brief out of Needs you, so
+/// turning it back on doesn't tell it again. Other changes leave it.
+#[tokio::test]
+async fn turning_the_brief_off_takes_it_out_of_needs_you() {
+    let (_d, e, _) = running_engine().await;
+    let open = || async { e.snapshot().await.brief.latest.unwrap().open };
+    for patch in [
+        serde_json::json!({ "buddy": { "brief": false } }),
+        serde_json::json!({ "buddy": { "enabled": false } }),
+    ] {
+        e.update(|s| {
+            s.settings.buddy = Default::default();
+            s.brief.latest = Some(crate::brief::Brief {
+                day: "2026-10-31".into(),
+                open: true,
+                ..Default::default()
+            });
+        })
+        .await;
+        let tone = serde_json::json!({ "buddy": { "tone": "calm" } });
+        e.update_settings(serde_json::from_value(tone).unwrap())
+            .await
+            .unwrap();
+        assert!(open().await);
+        e.update_settings(serde_json::from_value(patch.clone()).unwrap())
+            .await
+            .unwrap();
+        assert!(!open().await, "{patch}");
+    }
+    // And you can't save a time that isn't one.
+    let bad = serde_json::json!({ "buddy": { "briefAt": "noon" } });
+    let error = e
+        .update_settings(serde_json::from_value(bad).unwrap())
+        .await
+        .unwrap_err();
+    assert!(
+        error.contains("'noon' isn't a time for the morning brief"),
+        "{error}"
+    );
+}
 #[test]
 fn rejects_other_checkout_origins() {
     assert!(matches_origin("git@github.com:Acme/repo.git", "acme/repo"));

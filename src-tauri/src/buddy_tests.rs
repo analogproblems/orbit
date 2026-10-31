@@ -416,6 +416,17 @@ fn mood_follows_the_loops() {
     assert_eq!(shown(&s), Some(Mood::Happy), "clean");
     s.reviews[0].status = "failed".into();
     assert_eq!(shown(&s), Some(Mood::Worried));
+    // The morning brief is there to read, so it worries nobody.
+    s.reviews[0].status = "posted".into();
+    s.brief.latest = Some(crate::brief::Brief {
+        open: true,
+        ..Default::default()
+    });
+    assert_eq!(crate::attention::items(&s)[0].kind, AttentionKind::Brief);
+    assert_eq!(shown(&s), Some(Mood::Happy));
+    s.reviews[0].status = "failed".into();
+    assert_eq!(shown(&s), Some(Mood::Worried));
+    s.brief = Default::default();
     s.reviews.clear();
     s.settings.automatic = false;
     assert_eq!(shown(&s), Some(Mood::Sleepy), "autopilot off");
@@ -467,6 +478,11 @@ fn settings_check_the_name_and_choices() {
             "localhost:11434",
             "Ollama's address starts with http:// or https://, such as http://localhost:11434.",
         ),
+        (
+            "brief_at",
+            "9am",
+            "'9am' isn't a time for the morning brief. Give hours and minutes, such as 09:00.",
+        ),
     ] {
         let mut bad = b.clone();
         match field {
@@ -476,6 +492,7 @@ fn settings_check_the_name_and_choices() {
             "look" => bad.look = value.into(),
             "answerer" => bad.answerer = value.into(),
             "ollama_url" => bad.ollama_url = value.into(),
+            "brief_at" => bad.brief_at = value.into(),
             _ => bad.tone = value.into(),
         }
         assert_eq!(bad.validate().unwrap_err(), error, "{field}");
@@ -489,6 +506,14 @@ fn settings_check_the_name_and_choices() {
         ("Orbie", "wizard", "fizz")
     );
     assert!(serde_json::from_value::<BuddyPatch>(json!({"mood": "happy"})).is_err());
+    // The morning brief comes at 9 until you choose.
+    assert!(b.brief);
+    assert_eq!(b.brief_at, "09:00");
+    let patch: BuddyPatch =
+        serde_json::from_value(json!({"brief": false, "briefAt": " 17:30 "})).unwrap();
+    patch.apply(&mut b);
+    assert_eq!((b.brief, b.brief_at.as_str()), (false, "17:30"));
+    assert!(b.validate().is_ok());
     // Codex answers until you choose another.
     assert_eq!(b.answered_by(), Answerer::Codex);
     let patch: BuddyPatch = serde_json::from_value(json!({"answerer": "claude"})).unwrap();
@@ -549,6 +574,12 @@ fn saved_state_from_another_version_falls_back_to_defaults() {
         ("lime", "none", "glim", "cheerful")
     );
     assert!(b.validate().is_ok());
+    // A brief time Orbit can't use, and none from before briefs.
+    let mut b: Buddy = serde_json::from_value(json!({"briefAt": "25:00", "brief": false})).unwrap();
+    b.normalize();
+    assert_eq!((b.brief, b.brief_at.as_str()), (false, "09:00"));
+    let b: Buddy = serde_json::from_value(json!({"name": "Sprocket"})).unwrap();
+    assert_eq!((b.brief, b.brief_at.as_str()), (true, "09:00"));
     // An Ollama address Orbit can't use.
     let mut b: Buddy =
         serde_json::from_value(json!({"ollamaUrl": "file:///etc", "ollamaModel": "a\nb"})).unwrap();

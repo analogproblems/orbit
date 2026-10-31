@@ -574,6 +574,16 @@ impl Engine {
         let _ = self.flush().await;
         Ok(())
     }
+    /// Takes the morning brief for `day` out of Needs you, as you read it.
+    /// A brief already out of it, or a newer one, is left as it is.
+    pub async fn close_brief(&self, day: &str) -> Result<(), String> {
+        let mut closed = false;
+        self.update(|s| closed = crate::brief::close(s, day)).await;
+        if closed {
+            let _ = self.flush().await;
+        }
+        Ok(())
+    }
     /// Forgets everything Bit remembers.
     pub async fn clear_memory(&self) -> Result<(), String> {
         self.update(|s| {

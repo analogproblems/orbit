@@ -33,14 +33,17 @@ import {
   TextArea,
   TextInput,
   Timestamp,
+  TimeInput,
   Token,
   VStack,
 } from "@astryxdesign/core";
+import { createISOTimeString } from "@astryxdesign/core/utils";
 import { ExternalLink, RefreshCw, Trash2 } from "lucide-react";
 import { openLink, useOrbit } from "./store";
 import {
   actionLabels,
   apiProviders,
+  briefDay,
   buddyMood,
   buddyOf,
   buddyAnswerers,
@@ -182,6 +185,25 @@ function FixButton({ itemKey }: { itemKey: string | null | undefined }) {
   );
 }
 
+/** Got it, on the morning brief while it is in Needs you, to take it out. */
+function ReadButton({ itemKey }: { itemKey: string | null | undefined }) {
+  const { snapshot: s, action } = useOrbit();
+  const item = s.attention?.find((a) => a.key === itemKey);
+  if (!item) return null;
+  return (
+    <HStack>
+      <Button
+        label="Got it"
+        size="sm"
+        variant="secondary"
+        clickAction={async () => {
+          await action("close_brief", { day: briefDay(item) });
+        }}
+      />
+    </HStack>
+  );
+}
+
 /** What a button from one of Bit's answers says it does. */
 function proposalLabel(p: Proposal) {
   if (p.label) return p.label;
@@ -276,7 +298,12 @@ function ProposalButton({
  * repositories, or settings. Answers lead nowhere; their lines carry their
  * own buttons. */
 function noteLink(note: BuddyNote) {
-  if (note.kind === "answer" || note.kind === "sign_in") return undefined;
+  if (
+    note.kind === "answer" ||
+    note.kind === "sign_in" ||
+    note.kind === "brief"
+  )
+    return undefined;
   if (note.kind === "decide") return "Open decisions";
   if (note.prId) return "Open loop";
   if (note.key?.startsWith("problem:")) return "Open operations";
@@ -355,6 +382,9 @@ function NoteMessage({
                   key={index}
                   label={<LineText text={line.text} />}
                   description={<FixButton itemKey={line.key} />}
+                  endContent={
+                    line.new && <Token label="New" color="blue" size="sm" />
+                  }
                 />
               ))}
             </List>
@@ -372,6 +402,7 @@ function NoteMessage({
             </Text>
           ))}
           <FixButton itemKey={note.key} />
+          {note.kind === "brief" && <ReadButton itemKey={note.key} />}
         </VStack>
       </ChatMessageBubble>
     </ChatMessage>
@@ -1012,6 +1043,32 @@ export function BuddySettings() {
             onChange={(tone) => void save({ tone: tone as BuddyTone }, "tone")}
           />
           <SaveFeedback saveKey="buddy.tone" />
+        </VStack>
+        <VStack gap={2}>
+          <Switch
+            label="Morning brief"
+            description={`Once a day, ${buddy.name} sums up what's clear to merge, what's stuck and on whom, open CI problems, and notes on runners and storage. Nothing comes on a day when nothing changed.`}
+            value={buddy.brief}
+            isDisabled={pending("brief")}
+            onChange={(brief) => void save({ brief }, "brief")}
+          />
+          <SaveFeedback saveKey="buddy.brief" />
+          {buddy.brief && (
+            <>
+              <TimeInput
+                label="Brief time"
+                description="By this computer's clock. If Orbit isn't running then, the brief comes when it next is."
+                hourFormat="24h"
+                value={createISOTimeString(buddy.briefAt) ?? undefined}
+                isDisabled={pending("briefAt")}
+                onChange={(briefAt) => {
+                  if (briefAt)
+                    void save({ briefAt: briefAt.slice(0, 5) }, "briefAt");
+                }}
+              />
+              <SaveFeedback saveKey="buddy.briefAt" />
+            </>
+          )}
         </VStack>
         <VStack gap={2}>
           <Selector

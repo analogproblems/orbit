@@ -5,6 +5,7 @@ pub mod api;
 pub mod ask;
 pub mod attention;
 pub mod boxtool;
+pub mod brief;
 pub mod broke;
 pub mod buddy;
 pub mod ci;
@@ -255,6 +256,10 @@ mod desktop {
         question: String,
     ) -> Result<(), String> {
         engine.ask_buddy_anything(&question).await
+    }
+    #[tauri::command]
+    async fn close_brief(engine: State<'_, AppState>, day: String) -> Result<(), String> {
+        engine.close_brief(&day).await
     }
     #[tauri::command]
     async fn forget_memory(
@@ -509,6 +514,7 @@ mod desktop {
                 ask_buddy_anything,
                 use_proposal,
                 forget_memory,
+                close_brief,
                 clear_memory,
                 set_api_key,
                 publish_review,
