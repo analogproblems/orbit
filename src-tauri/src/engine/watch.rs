@@ -4,7 +4,8 @@
 //! repository's pull requests (`crate::workflows`), the self-hosted
 //! runners its runs wait for (`crate::runners`), its Actions storage
 //! (`crate::actions_storage`), and whether GitHub says each pull request
-//! Orbit reviews can merge (`crate::readiness`).
+//! Orbit reviews can merge (`crate::readiness`), then Bit's morning brief
+//! once a day (`crate::brief`).
 use super::Engine;
 use crate::{
     actions_storage as storage, broke, ci, logs, problems, readiness, runners, types::*, workflows,
@@ -37,6 +38,19 @@ impl Engine {
         // Last, so telling agents never waits for runners or storage.
         self.read_runners().await;
         self.read_storage().await;
+        // After everything else, so it sums up what Orbit just read.
+        self.look_for_brief().await;
+    }
+    /// Makes the morning brief, once its time has come today.
+    async fn look_for_brief(&self) {
+        let local = chrono::Local::now().naive_local();
+        let mut s = self.state.lock().await;
+        let changed = crate::brief::look(&mut s, local, chrono::Utc::now());
+        drop(s);
+        if changed {
+            self.dirty.store(true, Ordering::SeqCst);
+            let _ = self.flush().await;
+        }
     }
     async fn watch_ci_now(&self) {
         let (watch, repos) = {

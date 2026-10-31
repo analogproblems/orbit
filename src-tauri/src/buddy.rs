@@ -274,6 +274,10 @@ pub struct Buddy {
     pub anthropic_model: String,
     /// The model that answers with your Google key.
     pub google_model: String,
+    /// Whether Bit sends a morning brief (`crate::brief`).
+    pub brief: bool,
+    /// When, by this computer's clock, as `HH:MM`.
+    pub brief_at: String,
 }
 impl Default for Buddy {
     fn default() -> Self {
@@ -292,6 +296,8 @@ impl Default for Buddy {
             openai_model: String::new(),
             anthropic_model: String::new(),
             google_model: String::new(),
+            brief: true,
+            brief_at: crate::brief::DEFAULT_AT.into(),
         }
     }
 }
@@ -340,6 +346,12 @@ impl Buddy {
         crate::ollama::validate_model(&self.ollama_model)?;
         for api in Api::ALL {
             crate::api::validate_model(self.api_model(api))?;
+        }
+        if crate::brief::time_of(&self.brief_at).is_none() {
+            return Err(format!(
+                "'{}' isn't a time for the morning brief. Give hours and minutes, such as 09:00.",
+                self.brief_at
+            ));
         }
         Ok(())
     }
@@ -412,6 +424,9 @@ impl Buddy {
                 self.api_model_mut(api).clear();
             }
         }
+        if crate::brief::time_of(&self.brief_at).is_none() {
+            self.brief_at = default.brief_at;
+        }
     }
 }
 /// Only supplied fields change.
@@ -432,6 +447,8 @@ pub struct BuddyPatch {
     pub openai_model: Option<String>,
     pub anthropic_model: Option<String>,
     pub google_model: Option<String>,
+    pub brief: Option<bool>,
+    pub brief_at: Option<String>,
 }
 impl BuddyPatch {
     pub fn apply(self, buddy: &mut Buddy) {
@@ -464,6 +481,12 @@ impl BuddyPatch {
         }
         if let Some(v) = self.ollama_model {
             buddy.ollama_model = v.trim().to_string();
+        }
+        if let Some(v) = self.brief {
+            buddy.brief = v;
+        }
+        if let Some(v) = self.brief_at {
+            buddy.brief_at = v.trim().to_string();
         }
         for (api, v) in [
             (Api::OpenAi, self.openai_model),
@@ -529,6 +552,8 @@ pub enum NoteKind {
     /// A sign-in waiting for you to enter its code on a website, or one
     /// that didn't finish.
     SignIn,
+    /// The morning brief (`crate::brief`).
+    Brief,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -599,6 +624,9 @@ pub struct NoteLine {
     pub pr_id: Option<String>,
     /// The Needs you item the line is about, as on a note.
     pub key: Option<String>,
+    /// For a line of the morning brief, that it is new since the last one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub new: bool,
 }
 /// What Bit last saw of a loop, to tell what changed.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -782,12 +810,12 @@ fn current<'a>(s: &'a Snapshot, pr: &'a PullRequest) -> Option<Current<'a>> {
     })
 }
 /// `orbit#41` for `analogproblems/orbit#41`.
-fn label(pr: &PullRequest) -> String {
+pub(crate) fn label(pr: &PullRequest) -> String {
     let name = pr.repo.rsplit('/').next().unwrap_or(&pr.repo);
     format!("{name}#{}", pr.number)
 }
 /// The label of a PR Orbit knows, in the inbox or not.
-fn pr_label(s: &Snapshot, pr_id: Option<&str>) -> Option<String> {
+pub(crate) fn pr_label(s: &Snapshot, pr_id: Option<&str>) -> Option<String> {
     let id = pr_id?;
     s.prs
         .iter()
@@ -1187,6 +1215,26 @@ pub fn observe(s: &mut Snapshot, fresh: &[Attention]) -> bool {
         for item in fresh {
             let pr = pr_label(s, item.pr_id.as_deref());
             let pr = pr.as_deref();
+            if let Some(b) = s
+                .brief
+                .latest
+                .as_ref()
+                .filter(|_| item.kind == AttentionKind::Brief)
+            {
+                written.push(Note {
+                    key: Some(item.key.clone()),
+                    lines: b
+                        .lines
+                        .iter()
+                        .map(|l| NoteLine {
+                            new: l.new,
+                            ..line(l.text.clone(), l.pr_id.as_deref(), None)
+                        })
+                        .collect(),
+                    ..Note::new(NoteKind::Brief, b.text.clone())
+                });
+                continue;
+            }
             written.push(match will_fix(s, item) {
                 Some(_) => {
                     Note::new(NoteKind::Fixing, say::fixing(&tone, pr, &item.reason)).about(item)
@@ -1647,6 +1695,7 @@ fn line(text: String, pr_id: Option<&str>, key: Option<&Attention>) -> NoteLine 
         text,
         pr_id: pr_id.map(str::to_owned),
         key: key.map(|a| a.key.clone()),
+        new: false,
     }
 }
 /// An answer that starts by saying autopilot is off, when it is.
@@ -1889,7 +1938,8 @@ fn ci_sentence(ci: &crate::ci::RepoCi) -> String {
 /// while a review runs, sleepy with autopilot off or nothing open, and happy
 /// otherwise.
 pub fn mood(s: &Snapshot, attention: &[Attention], loops: &[LoopState]) -> Mood {
-    if !attention.is_empty() {
+    // The brief is there to read, not a worry.
+    if attention.iter().any(|a| a.kind != AttentionKind::Brief) {
         Mood::Worried
     } else if s.reviews.iter().any(|r| active(&r.status))
         || loops

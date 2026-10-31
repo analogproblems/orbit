@@ -13,9 +13,11 @@ import {
 } from "./Bit";
 import { ORB_MOODS } from "./orbs";
 import { describePatch } from "./describePatch";
+import { freshDemo } from "./demo";
 import {
   actionLabels,
   buddyAnswerers,
+  buddyMood,
   buddyTones,
   defaultBuddy,
   fixLabels,
@@ -80,6 +82,26 @@ function fakeFrames() {
 const hats = Object.keys(bitHats) as BuddyHat[];
 
 describe("Bit", () => {
+  it("isn't worried by the morning brief alone", () => {
+    const s = freshDemo();
+    delete s.mood;
+    const brief = {
+      key: "brief:2026-10-31",
+      kind: "brief" as const,
+      prId: null,
+      reviewId: null,
+      approvalId: null,
+      repo: null,
+      reason: "Here's your morning brief!",
+    };
+    s.attention = [brief];
+    expect(buddyMood(s)).not.toBe("worried");
+    s.attention = [
+      brief,
+      { ...brief, key: "sync:github", kind: "sync_failing" },
+    ];
+    expect(buddyMood(s)).toBe("worried");
+  });
   it("offers the same colours, hats and tones as the engine", () => {
     expect(Object.keys(bitColours)).toEqual(options.colours);
     expect(hats).toEqual(options.hats);
@@ -99,6 +121,9 @@ describe("Bit", () => {
     ).toBe(
       "Buddy's look: Fizz; Buddy's colour: Its own colours; Buddy's hat: Top hat",
     );
+    expect(
+      describePatch({ buddy: { brief: false, briefAt: "07:30" } }, []),
+    ).toBe("Morning brief: Off; Brief time: 07:30");
     expect(Object.keys(fixRuleLabels)).toEqual(options.rules);
     expect(Object.keys(fixLabels)).toEqual(options.fixes);
     expect(Object.keys(questionLabels)).toEqual(options.questions);

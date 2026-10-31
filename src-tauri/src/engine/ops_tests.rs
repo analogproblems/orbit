@@ -87,6 +87,9 @@ async fn connected(dir: &Path) -> Arc<Engine> {
     let e = Engine::new(dir.join("state"), |_| {}).unwrap();
     e.update(|s| {
         s.github_user = Some("me".into());
+        // The morning brief comes by the clock, so only where a test
+        // turns it on.
+        s.settings.buddy.brief = false;
         if s.settings.repositories.is_empty() {
             s.settings.repositories.push(Repository {
                 name: "a/b".into(),

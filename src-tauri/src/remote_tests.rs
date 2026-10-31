@@ -308,7 +308,7 @@ fn each_browser_command_takes_its_desktop_arguments() {
         keys.dedup();
         served.insert(name.clone(), keys);
     }
-    assert_eq!(desktop.len(), 44, "every desktop command was read");
+    assert_eq!(desktop.len(), 45, "every desktop command was read");
     for name in COMMANDS {
         assert_eq!(
             served.get(*name),

@@ -256,11 +256,21 @@ fn settings_buttons_carry_a_valid_change() {
         change(json!([{"setting": "buddy.name", "value": "42"}]))[0].settings,
         Some(json!({"buddy": {"name": "42"}}))
     );
+    // The morning brief, at a time Orbit can use.
+    assert_eq!(
+        change(json!([
+            {"setting": "buddy.brief", "value": "false"},
+            {"setting": "buddy.briefAt", "value": "07:30"},
+        ]))[0]
+            .settings,
+        Some(json!({"buddy": {"brief": false, "briefAt": "07:30"}}))
+    );
     // Not a setting Bit may change, not valid, or no change at all.
     for changes in [
         json!([{"setting": "trustedAuthors", "value": "[\"mallory\"]"}]),
         json!([{"setting": "pollSeconds", "value": "often"}]),
         json!([{"setting": "buddy.tone", "value": "grumpy"}]),
+        json!([{"setting": "buddy.briefAt", "value": "7.30am"}]),
         json!([{"setting": "automatic", "value": "true"}]),
         json!([]),
     ] {

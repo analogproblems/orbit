@@ -169,9 +169,18 @@ fn checks_again(s: &Snapshot) -> String {
     format!("Orbit checks again every {every}.")
 }
 /// Every open item, oldest kind of problem first: the workspace, then each
-/// PR in inbox order.
+/// PR in inbox order. Bit's morning brief, while it is open, comes first.
 pub fn items(s: &Snapshot) -> Vec<Attention> {
     let mut out = vec![];
+    if let Some(b) = s.brief.latest.as_ref().filter(|b| b.open) {
+        out.push(item(
+            crate::brief::item_key(b),
+            AttentionKind::Brief,
+            None,
+            None,
+            b.text.clone(),
+        ));
+    }
     if let Some(error) = &s.state_write_error {
         if !s.settings.automatic {
             out.push(Attention {
@@ -424,6 +433,7 @@ pub fn notice(s: &Snapshot, a: Attention) -> Notice {
         AttentionKind::CiQuestion => "An agent needs a person",
         AttentionKind::RunsWaiting => "Runs are waiting for a runner",
         AttentionKind::Stuck => "A pull request is stuck",
+        AttentionKind::Brief => "Your morning brief",
     };
     let pr = s.prs.iter().find(|p| Some(&p.id) == a.pr_id.as_ref());
     let body = match pr {

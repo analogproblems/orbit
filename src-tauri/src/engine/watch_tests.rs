@@ -54,6 +54,9 @@ fn fake_gh(dir: &Path) -> std::path::PathBuf {
 async fn connected(dir: &Path) -> std::sync::Arc<Engine> {
     let e = Engine::new(dir.join("state"), |_| {}).unwrap();
     e.update(|s| {
+        // The morning brief comes by the clock, so only where a test
+        // turns it on.
+        s.settings.buddy.brief = false;
         if s.settings.repositories.is_empty() {
             s.settings.repositories.push(Repository {
                 name: "a/b".into(),
@@ -1847,4 +1850,145 @@ async fn a_rate_limit_stops_asking_whether_pull_requests_merge() {
     let asked = sent(d.path(), "GET repos/a/b/pulls/1") + sent(d.path(), "GET repos/a/b/pulls/2");
     assert_eq!(asked, 1);
     assert_eq!(e.shown_snapshot().await.merges.len(), 1);
+}
+
+/// The morning brief's Done when, end to end with the fake `gh`: on a day
+/// with changes, one brief comes after Orbit reads CI, told once, in Needs
+/// you and in Bit's conversation, and no other that day. A quiet day sends
+/// none and takes it out of Needs you. A day with something settled sends
+/// one again, until you mark it read.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_day_with_changes_gives_one_brief_and_a_quiet_day_none() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    let e = connected(d.path()).await;
+    let titles = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
+    let told = titles.clone();
+    e.on_notice(move |n| told.lock().unwrap().push(n.title.clone()));
+    e.update(|s| {
+        s.github_user = Some("me".into());
+        s.settings.buddy.brief = true;
+        s.settings.buddy.brief_at = "00:00".into();
+    })
+    .await;
+    let p = reviewed(&e).await;
+    passing_pull(d.path(), &p.head_sha);
+    mergeable(d.path(), &p.head_sha, json!(true), "clean");
+    let watch = || crate::github::GH.scope(gh.clone(), e.watch_ci());
+    let briefs = || async {
+        let s = e.shown_snapshot().await;
+        let notes: Vec<_> = s
+            .buddy_feed
+            .notes
+            .into_iter()
+            .filter(|n| n.kind == NoteKind::Brief)
+            .collect();
+        let items: Vec<_> = s
+            .attention
+            .into_iter()
+            .filter(|a| a.kind == AttentionKind::Brief)
+            .collect();
+        let told = titles
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|t| *t == "Your morning brief")
+            .count();
+        (s.brief, notes, items, told)
+    };
+    // GitHub fails that morning: no brief from what Orbit couldn't read,
+    // and the day isn't used up.
+    std::fs::write(d.path().join("down"), "").unwrap();
+    watch().await;
+    let (b, notes, items, told) = briefs().await;
+    assert_eq!(b, crate::brief::Briefs::default());
+    assert_eq!((notes.len(), items.len(), told), (0, 0, 0));
+    std::fs::remove_file(d.path().join("down")).unwrap();
+    // A day with a pull request clear to merge.
+    watch().await;
+    let (b, notes, items, told) = briefs().await;
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let first = b.latest.unwrap();
+    assert_eq!(
+        (b.looked.as_str(), first.day.as_str()),
+        (today.as_str(), today.as_str())
+    );
+    let text = "Here's your morning brief! 1 pull request is clear to merge.";
+    assert_eq!(first.text, text);
+    assert_eq!(
+        first
+            .lines
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>(),
+        ["b#1: Clear to merge at aaaaaaa against main at 1111111."]
+    );
+    assert_eq!((notes.len(), items.len(), told), (1, 1, 1));
+    assert_eq!(notes[0].text, text);
+    assert_eq!(notes[0].lines[0].text, first.lines[0].text);
+    assert_eq!(items[0].reason, text);
+    // Later that day, nothing more, even once something changes.
+    mergeable(d.path(), &p.head_sha, json!(false), "dirty");
+    e.update(|s| s.merges[0].read_at = "2020-01-01T00:00:00.000Z".into())
+        .await;
+    watch().await;
+    let (b, notes, items, told) = briefs().await;
+    assert!(line(&e)
+        .await
+        .starts_with("Not clear to merge yet. It conflicts"));
+    assert_eq!(b.latest.unwrap().day, today);
+    assert_eq!((notes.len(), items.len(), told), (1, 1, 1));
+    // A quiet day: clear again, as in the last brief. None, and the brief
+    // leaves Needs you. (Orbit's record goes back a day, as if a day had
+    // passed, with the brief told on that day.)
+    mergeable(d.path(), &p.head_sha, json!(true), "clean");
+    e.update(|s| {
+        s.merges[0].read_at = "2020-01-01T00:00:00.000Z".into();
+        s.brief.looked = "2000-01-01".into();
+        s.brief.latest.as_mut().unwrap().day = "2000-01-01".into();
+        for key in &mut s.announced {
+            if key.starts_with("brief:") {
+                *key = "brief:2000-01-01".into();
+            }
+        }
+    })
+    .await;
+    watch().await;
+    let (b, notes, items, told) = briefs().await;
+    assert!(line(&e).await.starts_with("Clear to merge"));
+    assert_eq!(b.looked, today);
+    let latest = b.latest.unwrap();
+    assert_eq!((latest.day.as_str(), latest.open), ("2000-01-01", false));
+    assert_eq!((notes.len(), items.len(), told), (1, 0, 1));
+    // The next day it conflicts: the line from the last brief settled.
+    mergeable(d.path(), &p.head_sha, json!(false), "dirty");
+    e.update(|s| {
+        s.merges[0].read_at = "2020-01-01T00:00:00.000Z".into();
+        s.brief.looked = "2000-01-02".into();
+    })
+    .await;
+    watch().await;
+    let (b, notes, items, told) = briefs().await;
+    let text = "Here's your morning brief! Nothing is clear to merge, stuck or failing. 1 thing from the last brief has settled.";
+    let latest = b.latest.unwrap();
+    assert_eq!(
+        (latest.day.as_str(), latest.text.as_str()),
+        (today.as_str(), text)
+    );
+    assert_eq!((notes.len(), items.len(), told), (2, 1, 2));
+    assert_eq!(notes[1].text, text);
+    // You read it.
+    e.close_brief("2000-01-01").await.unwrap();
+    assert_eq!(briefs().await.2.len(), 1);
+    e.close_brief(&today).await.unwrap();
+    let (b, _, items, told) = briefs().await;
+    assert!(items.is_empty() && !b.latest.unwrap().open);
+    assert_eq!(told, 2);
+    // Saved: a restart neither brings it back nor tells it again.
+    drop(e);
+    let e = connected(d.path()).await;
+    let s = e.shown_snapshot().await;
+    assert!(!s.attention.iter().any(|a| a.kind == AttentionKind::Brief));
+    assert_eq!(s.brief.looked, today);
 }

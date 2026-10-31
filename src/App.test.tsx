@@ -1220,6 +1220,108 @@ describe("Bit", () => {
     ).toBeTruthy();
   });
 
+  it("reads the morning brief in Bit's conversation and in Needs you, then marks it read", async () => {
+    const brief = snapshot.brief!.latest!;
+    brief.open = true;
+    const item = {
+      key: `brief:${brief.day}`,
+      kind: "brief" as const,
+      prId: null,
+      reviewId: null,
+      approvalId: null,
+      repo: null,
+      reason: brief.text,
+    };
+    snapshot.attention = [item, ...snapshot.attention!];
+    invoke.mockImplementation(async (cmd: string, args) => {
+      if (cmd !== "close_brief") return backend(cmd, args);
+      snapshot.brief!.latest!.open = false;
+      snapshot.attention = snapshot.attention!.filter(
+        (a) => a.key !== item.key,
+      );
+      emit();
+    });
+    await mount();
+    await user().click(screen.getByRole("button", { name: /^Needs you/ }));
+    const needs = await screen.findByRole("list", { name: "Needs you" });
+    const row = within(needs).getByText(brief.text).closest("li")!;
+    expect(within(row).getAllByText("Morning brief")).toHaveLength(2);
+    // Its row opens Bit's conversation, where the brief lists each thing,
+    // with what's new marked.
+    await user().click(within(row).getByText(brief.text));
+    const chat = () => screen.getByRole("log", { name: "Bit's notes" });
+    const lines = within(chat()).getByRole("list", { name: brief.text });
+    const items = within(lines).getAllByRole("listitem");
+    expect(items).toHaveLength(brief.lines.length);
+    expect(within(lines).getAllByText("New")).toHaveLength(2);
+    expect(within(items[1]).getByText("New")).toBeTruthy();
+    expect(within(items[0]).queryByText("New")).toBeNull();
+    expect(
+      within(chat()).queryAllByRole("button", { name: "Open settings" }),
+    ).toHaveLength(0);
+    await user().click(within(chat()).getByRole("button", { name: "Got it" }));
+    expect(invoke).toHaveBeenCalledWith("close_brief", { day: brief.day });
+    await waitFor(() =>
+      expect(
+        within(chat()).queryByRole("button", { name: "Got it" }),
+      ).toBeNull(),
+    );
+    // The brief stays in the conversation.
+    expect(within(chat()).getByText(brief.text)).toBeTruthy();
+  });
+
+  it("marks the morning brief read from Needs you", async () => {
+    const brief = snapshot.brief!.latest!;
+    snapshot.attention = [
+      {
+        key: `brief:${brief.day}`,
+        kind: "brief",
+        prId: null,
+        reviewId: null,
+        approvalId: null,
+        repo: null,
+        reason: brief.text,
+      },
+    ];
+    await mount();
+    await user().click(screen.getByRole("button", { name: /^Needs you/ }));
+    const needs = await screen.findByRole("list", { name: "Needs you" });
+    await user().click(within(needs).getByRole("button", { name: "Got it" }));
+    expect(invoke).toHaveBeenCalledWith("close_brief", { day: brief.day });
+  });
+
+  it("sends the morning brief at the time you choose, or not at all", async () => {
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Settings" }));
+    await openSettingsTab("Buddy");
+    const brief = await screen.findByRole("switch", { name: /^Morning brief/ });
+    expect((brief as HTMLInputElement).checked).toBe(true);
+    const time = screen.getByRole("textbox", { name: /^Brief time/ });
+    expect((time as HTMLInputElement).value).toBe("09:00");
+    // Passing through the box without changing it saves nothing.
+    await user().click(time);
+    await user().tab();
+    expect(invoke).not.toHaveBeenCalledWith("update_settings", {
+      patch: { buddy: { briefAt: "09:00" } },
+    });
+    await user().clear(time);
+    await user().type(time, "07:30");
+    await user().tab();
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("update_settings", {
+        patch: { buddy: { briefAt: "07:30" } },
+      }),
+    );
+    expect(buddyOf(snapshot.settings).briefAt).toBe("07:30");
+    await user().click(brief);
+    expect(invoke).toHaveBeenCalledWith("update_settings", {
+      patch: { buddy: { brief: false } },
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("textbox", { name: /^Brief time/ })).toBeNull(),
+    );
+  });
+
   it("sets what Bit may do on its own in Settings", async () => {
     await mount();
     await user().click(screen.getByRole("button", { name: "Settings" }));

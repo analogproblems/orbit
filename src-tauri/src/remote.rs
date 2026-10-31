@@ -66,6 +66,7 @@ pub const COMMANDS: &[&str] = &[
     "use_proposal",
     "forget_memory",
     "clear_memory",
+    "close_brief",
     "set_api_key",
     "publish_review",
     "publish_plan",
@@ -322,6 +323,7 @@ async fn dispatch(e: &Arc<Engine>, name: &str, a: &Value) -> Result<Value, Strin
             )
             .await?),
         "clear_memory" => out(e.clear_memory().await?),
+        "close_brief" => out(e.close_brief(&arg::<String>(a, "day")?).await?),
         "set_api_key" => out(e
             .set_api_key(
                 &arg::<String>(a, "provider")?,

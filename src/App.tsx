@@ -273,6 +273,7 @@ export default function App() {
     onApproval: openApproval,
     onPublish: setPublish,
     onOperations: () => setPage("operations"),
+    onBuddy: () => setPage("buddy"),
   };
   useEffect(() => {
     openNotified.current = (item) => {

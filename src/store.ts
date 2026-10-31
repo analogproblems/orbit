@@ -430,6 +430,15 @@ async function demoAction(
     commit();
     return;
   }
+  if (command === "close_brief") {
+    const b = demo.brief?.latest;
+    if (b && b.day === args.day) b.open = false;
+    demo.attention = demo.attention?.filter(
+      (a) => a.key !== `brief:${String(args.day)}`,
+    );
+    commit();
+    return;
+  }
   if (command === "clear_memory") {
     if (demo.buddyFeed)
       demo.buddyFeed.memory = { general: [], repositories: {} };
@@ -686,6 +695,12 @@ async function demoAction(
       demo.attention = demo.attention?.filter(
         (a) => a.kind !== "ci_failing" && a.kind !== "runs_waiting",
       );
+    }
+    // As in Orbit, turning Bit or the brief off takes the brief out of
+    // Needs you.
+    if (!next.buddy.enabled || !next.buddy.brief) {
+      if (demo.brief?.latest) demo.brief.latest.open = false;
+      demo.attention = demo.attention?.filter((a) => a.kind !== "brief");
     }
     demo.modelConfigurationError = selectionError(demo.models, next);
     if (

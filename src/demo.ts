@@ -7,6 +7,8 @@ import {
   sameRepo,
   scanActive,
   selectionError,
+  type Brief,
+  type BriefLine,
   type BuddyNote,
   type BuddyNoteLine,
   type CiFailure,
@@ -607,6 +609,7 @@ export function freshDemo(): Snapshot {
   const ci = demoCi(prs);
   const red = ci.problems![0];
   const redReason = `CI is failing on main in acme/orbit since ${red.sinceSha.slice(0, 7)}: ${checkNames(red.failing)}.`;
+  const brief = demoBrief(prs, ci.problems!, ago(12));
   return {
     prs,
     ...ci,
@@ -711,6 +714,8 @@ export function freshDemo(): Snapshot {
         ],
       },
     ],
+    // This morning's brief, already read.
+    brief,
     // Bit's notes, as the engine would have written them.
     buddyFeed: {
       notes: [
@@ -770,6 +775,22 @@ export function freshDemo(): Snapshot {
           repo: null,
           text: `Could you take a look at ${label(prs[1])}? Round limit reached.`,
           key: `loop:${prs[1].id}:Round limit reached.`,
+        },
+        {
+          id: 8,
+          at: brief.latest!.at,
+          kind: "brief",
+          prId: null,
+          reviewId: null,
+          repo: null,
+          text: brief.latest!.text,
+          key: `brief:${brief.latest!.day}`,
+          lines: brief.latest!.lines.map((l) => ({
+            text: l.text,
+            prId: l.prId ?? null,
+            key: null,
+            new: l.new,
+          })),
         },
         {
           id: 4,
@@ -880,6 +901,63 @@ const sha = (start: string) => start + "0".repeat(40 - start.length);
  * yesterday and its one self-hosted runner is offline, dashboard can't be
  * read, docs has no CI on pull requests, one pull request fails its own
  * checks, and one passed before orbit's main moved on. */
+/** This morning's brief, made `at`, as the engine would have made it from
+ * the demo's CI, its stuck pull request, and its runners and storage. Two
+ * lines are new since the last brief, and one thing settled. */
+function demoBrief(prs: PullRequest[], problems: Problem[], at: string) {
+  const label = (id?: string | null) => {
+    const p = prs.find((p) => p.id === id);
+    return p ? `${p.repo.split("/")[1]}#${p.number}` : (id ?? "");
+  };
+  const short = (sha: string) => sha.slice(0, 7);
+  const [red, failing, behind, docs] = problems;
+  const lines: BriefLine[] = [
+    {
+      key: `stuck:${behind.prId}:${at}`,
+      text: `${label(behind.prId)} has waited on its author for more than 2 hours: main moved on since its checks ran: merge main in and let them run again.`,
+      prId: behind.prId ?? undefined,
+    },
+    {
+      key: `problem:${red.id}`,
+      text: `CI is failing on main in ${red.repo} since ${short(red.sinceSha)}: ${checkNames(red.failing)}.`,
+      new: true,
+    },
+    {
+      key: `problem:${failing.id}`,
+      text: `CI is failing on ${label(failing.prId)} at ${short(failing.sha)}: ${checkNames(failing.failing)}.`,
+      prId: failing.prId ?? undefined,
+      new: true,
+    },
+    {
+      key: `problem:${behind.id}`,
+      text: `${label(behind.prId)}'s checks ran without main's latest commit, ${short(behind.baseSha ?? "")}.`,
+      prId: behind.prId ?? undefined,
+    },
+    {
+      key: `problem:${docs.id}`,
+      text: `No CI runs on the pull requests of ${docs.repo}.`,
+    },
+    {
+      key: "offline:acme/api",
+      text: "acme/api's one self-hosted runner is offline.",
+    },
+    {
+      key: "caches:acme/orbit",
+      text: "acme/orbit's caches hold 9.6 GB, near GitHub's usual 10 GB limit, so GitHub may soon drop the ones used least.",
+    },
+  ];
+  const day = at.slice(0, 10);
+  const latest: Brief = {
+    day,
+    at,
+    text: "Here's your morning brief! 1 pull request is stuck, 4 CI problems are open and 2 notes are about runners or storage. 2 are new since the last brief. 1 thing from the last brief has settled.",
+    lines,
+    settled: 1,
+    open: false,
+  };
+  return { looked: day, latest };
+}
+
 export function demoCi(
   prs: PullRequest[],
 ): Pick<

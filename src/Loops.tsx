@@ -18,6 +18,7 @@ import {
   activeStatuses,
   attentionAction,
   attentionLabels,
+  briefDay,
   canPublish,
   loopFinished,
   loopStatusLabels,
@@ -95,6 +96,12 @@ export function mainAction(
     a.kind === "runs_waiting"
   )
     return { label: "Open operations", onClick: go.onOperations };
+  // You've read it.
+  if (a.kind === "brief")
+    return {
+      label: "Got it",
+      onClick: () => run("close_brief", { day: briefDay(a) }),
+    };
   // A reviewer or a rule on GitHub holds it back.
   if (a.kind === "stuck" && p)
     return { label: "Open on GitHub", onClick: () => openLink(p.url) };
