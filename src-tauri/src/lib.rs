@@ -31,6 +31,7 @@ pub mod rpc;
 pub mod runners;
 pub mod scans;
 pub mod server;
+pub mod service;
 pub mod setup;
 pub mod storage;
 pub mod text;
