@@ -1594,6 +1594,7 @@ export function demoFixed(s: Snapshot, fix: Fix, prId: string | null) {
     sync_now: "Synced with GitHub. All good again!",
     turn_on_autopilot: "Autopilot is back on!",
     check_connections: "It's connected again. All good!",
+    post_here_again: `I'll post on ${pr} again!`,
   }[fix];
 }
 /** Bit's answer to a quick question, from the demo's state, as the engine

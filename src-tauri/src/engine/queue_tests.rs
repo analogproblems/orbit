@@ -119,6 +119,33 @@ async fn a_new_head_replaces_queued_runs_and_supersedes_running_ones() {
     assert!(newest.automatic && newest.head_sha == trusted_pr().head_sha);
     assert_eq!(s.reviews.len(), 3);
 }
+/// Where Orbit stepped back for another Orbit, a review queued before
+/// waits, and nothing new is queued.
+#[tokio::test]
+async fn nothing_is_reviewed_where_another_orbit_posts() {
+    let (_d, e) = autopilot_engine(trusted_pr()).await;
+    let queued = automatic(&e, &trusted_pr().head_sha, "queued").await;
+    let posting = crate::orbits::Posting {
+        pr_id: trusted_pr().id,
+        other: Some(crate::orbits::Post {
+            url: "u".into(),
+            at: "2026-10-31T09:00:00Z".into(),
+        }),
+        ..Default::default()
+    };
+    e.update(|s| s.posting.push(posting)).await;
+    e.synced_repos.lock().await.insert("a/b".into());
+    e.schedule().await;
+    let s = e.snapshot().await;
+    assert_eq!(s.reviews.len(), 1);
+    assert_eq!(
+        (s.reviews[0].id.as_str(), s.reviews[0].status.as_str()),
+        (queued.as_str(), "queued")
+    );
+    e.update(|s| s.reviews.clear()).await;
+    e.schedule().await;
+    assert!(e.snapshot().await.reviews.is_empty());
+}
 #[tokio::test]
 async fn a_queued_run_stops_when_its_pr_closes() {
     let (_d, e) = autopilot_engine(trusted_pr()).await;

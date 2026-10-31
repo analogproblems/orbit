@@ -164,3 +164,27 @@ async fn a_failed_save_pauses_autopilot_until_it_is_turned_back_on() {
     assert!(e.snapshot().await.state_write_error.is_none());
     assert!(e.shown_snapshot().await.attention.is_empty());
 }
+
+/// An Orbit keeps its name across restarts; a copy of its data folder is
+/// another Orbit, which counts the first one's name as its own too.
+#[tokio::test]
+async fn a_copy_of_the_data_folder_is_another_orbit() {
+    let d = tempfile::tempdir().unwrap();
+    let (here, there) = (d.path().join("here"), d.path().join("there"));
+    let e = Engine::new(here.clone(), |_| {}).unwrap();
+    let first = e.snapshot().await.instance;
+    assert_eq!(first.name.len(), 32);
+    assert_eq!(first.home, crate::orbits::home(&here));
+    e.flush().await.unwrap();
+    drop(e);
+    let e = Engine::new(here.clone(), |_| {}).unwrap();
+    assert_eq!(e.snapshot().await.instance, first);
+    drop(e);
+    std::fs::create_dir_all(&there).unwrap();
+    std::fs::copy(here.join("state.json"), there.join("state.json")).unwrap();
+    let copy = Engine::new(there.clone(), |_| {}).unwrap();
+    let named = copy.snapshot().await.instance;
+    assert_ne!(named.name, first.name);
+    assert_eq!(named.former, std::slice::from_ref(&first.name));
+    assert_eq!(named.home, crate::orbits::home(&there));
+}

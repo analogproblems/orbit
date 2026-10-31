@@ -162,6 +162,12 @@ impl Engine {
                 })
                 .await
                 .map(|_| ()),
+            // What waited goes out now; reviews start from the next sync.
+            Fix::PostHereAgain => {
+                self.post_here_again(pr()?).await?;
+                self.tell_agents().await;
+                Ok(())
+            }
             // Done once the item closes, whatever else is still off.
             Fix::CheckConnections => {
                 let _ = self.check_connections().await;

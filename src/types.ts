@@ -469,10 +469,14 @@ export type Fix =
   | "publish"
   | "sync_now"
   | "turn_on_autopilot"
-  | "check_connections";
-/** The fixes Bit can do on its own. Changing settings and checking
- * connections always ask first. */
-export type RuledFix = Exclude<Fix, "turn_on_autopilot" | "check_connections">;
+  | "check_connections"
+  | "post_here_again";
+/** The fixes that always ask first: changing settings, checking
+ * connections, and posting again where another Orbit posts. */
+export type AskingFix =
+  "turn_on_autopilot" | "check_connections" | "post_here_again";
+/** The fixes Bit can do on its own. */
+export type RuledFix = Exclude<Fix, AskingFix>;
 export type FixRule = "do_it" | "ask_first" | "leave_it";
 /** What Bit does on GitHub about CI: telling agents, rerunning jobs that
  * failed by bad luck, and proposing CI where none runs on pull requests. */
@@ -491,6 +495,7 @@ export const fixLabels: Record<Fix, string> = {
   sync_now: "Sync now",
   turn_on_autopilot: "Turn autopilot back on",
   check_connections: "Check again",
+  post_here_again: "Post here again",
 };
 export const fixDescriptions: Record<RuledFix, string> = {
   continue_loop: "When a loop reaches its round limit, allow two more rounds.",
@@ -787,6 +792,11 @@ export function buddyOf(settings: Settings): Buddy {
     rules: { ...defaultBuddy.rules, ...settings.buddy?.rules },
   };
 }
+/** Whether a fix always waits for your tap, whatever Bit's rules. */
+export const asksFirst = (fix: Fix): fix is AskingFix =>
+  fix === "turn_on_autopilot" ||
+  fix === "check_connections" ||
+  fix === "post_here_again";
 /** The fix to offer as a button for an item that is still open, unless
  * you asked Bit to leave it to you. */
 export function offeredFix(
@@ -796,11 +806,7 @@ export function offeredFix(
   const item = s.attention?.find((a) => a.key === key);
   const fix = item?.fix;
   if (!item || !fix) return undefined;
-  if (
-    fix !== "turn_on_autopilot" &&
-    fix !== "check_connections" &&
-    buddyOf(s.settings).rules[fix] === "leave_it"
-  )
+  if (!asksFirst(fix) && buddyOf(s.settings).rules[fix] === "leave_it")
     return undefined;
   return { item, fix };
 }
@@ -954,7 +960,8 @@ export type AttentionKind =
   | "ci_question"
   | "runs_waiting"
   | "stuck"
-  | "brief";
+  | "brief"
+  | "another_orbit";
 /** Something only the developer can resolve. */
 export interface Attention {
   /** Stays the same while the item is open. */
@@ -982,6 +989,7 @@ export const attentionLabels: Record<AttentionKind, string> = {
   runs_waiting: "Runs waiting",
   stuck: "Stuck",
   brief: "Morning brief",
+  another_orbit: "Another Orbit posts here",
 };
 /** The day a morning brief's item is for, from its key. */
 export const briefDay = (a: Attention) => a.key.replace(/^brief:/, "");
@@ -1134,6 +1142,34 @@ export interface Snapshot {
   readiness?: Readiness[];
   /** Bit's morning briefs: the latest, and the day Orbit last looked. */
   brief?: Briefs;
+  /** Who this Orbit is, by the name that signs what it posts on pull
+   * requests. */
+  instance?: OrbitInstance;
+  /** Each pull request where Orbit read whether another Orbit posts. */
+  posting?: Posting[];
+}
+/** Who an Orbit is. Its name goes with its data folder on one computer. */
+export interface OrbitInstance {
+  name: string;
+  /** A fingerprint of where it runs. */
+  home: string;
+  /** Its earlier names, newest last. */
+  former: string[];
+}
+/** A post on GitHub, and when GitHub last took it. */
+export interface OrbitPost {
+  url: string;
+  at: string;
+}
+/** Where Orbit stands on one pull request: it steps back once another
+ * Orbit posted there after it, and after the post you said to post after
+ * anyway. */
+export interface Posting {
+  prId: string;
+  /** When GitHub last took a post from this Orbit there. */
+  mine: string;
+  other?: OrbitPost | null;
+  resumed: string;
 }
 /** One thing a morning brief lists. */
 export interface BriefLine {

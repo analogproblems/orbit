@@ -102,7 +102,8 @@ pub(super) mod fake_gh {
     use crate::types::*;
 
     /// A stand-in for `gh` that answers from files in `dir`: the PR from
-    /// `pr.json`, and a one-file diff. The diff waits for `release` when `pause`
+    /// `pr.json`, its comments from `comments.json` or none (a comment
+    /// posted is kept as `posted`), and a one-file diff. The diff waits for `release` when `pause`
     /// exists; with `reject`, the first review POST waits for `release-post` and
     /// is refused as GitHub refuses a comment on a line outside the diff; with
     /// `fail`, every review POST fails as an outage does.
@@ -135,6 +136,11 @@ pub(super) mod fake_gh {
         fi
         printf '%s' '[{{"filename":"src/a.rs","patch":"@@ -1 +1,2 @@\n a\n+b"}}]' ;;
       *"repos/a/b/pulls/1") cat {d}/pr.json ;;
+      *"--method POST repos/a/b/issues/1/comments"*)
+        cat > {d}/posted
+        printf '%s' '{{"id":6,"html_url":"https://github.com/a/b/pull/1#issuecomment-6"}}' ;;
+      *"--method GET repos/a/b/issues/1/comments"*)
+        cat {d}/comments.json 2>/dev/null || echo '[]' ;;
       *) echo '[]' ;;
     esac
     "#
@@ -300,5 +306,69 @@ pub(super) mod fake_gh {
             .unwrap()
             .contains("### Other findings"));
         assert_eq!(e.snapshot().await.reviews[0].status, "posted");
+    }
+    /// Where another Orbit posted after this one, autopilot and Bit leave
+    /// the report to it; you can still publish it.
+    #[tokio::test]
+    async fn only_you_publish_where_another_orbit_posts() {
+        let (d, e, id) = structured_autopost().await;
+        let gh = fake_gh(d.path());
+        let other = crate::orbits::signed("Every check passes.", &"f".repeat(32));
+        let comments = serde_json::json!([{
+            "id": 3, "body": other, "updated_at": "2026-10-31T09:00:00Z",
+            "html_url": "https://github.com/a/b/pull/1#issuecomment-3"
+        }]);
+        std::fs::write(d.path().join("comments.json"), comments.to_string()).unwrap();
+        let publish = |by| crate::github::GH.scope(gh.clone(), e.publish_by(&id, by));
+        publish(super::super::publish::By::Autopilot).await.unwrap();
+        assert_eq!(posts(d.path()), 0);
+        assert_eq!(e.snapshot().await.reviews[0].status, "ready");
+        let pr_id = e.snapshot().await.reviews[0].pr_id.clone();
+        let item = e
+            .shown_snapshot()
+            .await
+            .attention
+            .into_iter()
+            .find(|a| a.kind == AttentionKind::AnotherOrbit)
+            .unwrap();
+        assert_eq!(item.pr_id, Some(pr_id));
+        let bit = |_: &Snapshot| Ok(());
+        let error = publish(super::super::publish::By::Bit(&bit))
+            .await
+            .unwrap_err();
+        assert_eq!(error, crate::orbits::STEPPED_BACK);
+        assert_eq!(posts(d.path()), 0);
+        crate::github::GH
+            .scope(gh.clone(), e.publish(&id, false, false))
+            .await
+            .unwrap();
+        assert_eq!(posts(d.path()), 1);
+        let posted: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(d.path().join("posted")).unwrap())
+                .unwrap();
+        let name = e.snapshot().await.instance.name;
+        assert_eq!(
+            crate::orbits::signer(posted["body"].as_str().unwrap()),
+            Some(name.as_str())
+        );
+    }
+    /// A run with no findings is one comment, signed too.
+    #[tokio::test]
+    async fn an_unstructured_report_is_signed_as_this_orbits() {
+        let (d, e, id) = running_engine().await;
+        ready_for_autopost(&e, "No actionable defects found.", true).await;
+        let gh = fake_gh(d.path());
+        crate::github::GH
+            .scope(gh, e.publish(&id, true, false))
+            .await
+            .unwrap();
+        assert_eq!(e.snapshot().await.reviews[0].status, "posted");
+        let posted: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(d.path().join("posted")).unwrap())
+                .unwrap();
+        let body = posted["body"].as_str().unwrap();
+        assert!(body.starts_with(&format!("<!-- orbit-review:{id} -->")));
+        let name = e.snapshot().await.instance.name;
+        assert_eq!(crate::orbits::signer(body), Some(name.as_str()));
     }
 }

@@ -589,6 +589,146 @@ async fn a_failing_pull_request_gets_one_comment_kept_up_to_date() {
     );
 }
 
+/// Who signed the comment on pull request 12.
+fn signed_by(dir: &Path) -> String {
+    let body = github(dir)["comments"][0]["body"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    crate::orbits::signer(&body).unwrap().to_string()
+}
+/// Two Orbits follow one pull request, such as the desktop app and an
+/// always-on Orbit both running: the first to post keeps its comment up to
+/// date; the other steps back before it writes and says so once. Once you
+/// tap Post here again it takes over, and the first steps back.
+#[cfg(unix)]
+#[tokio::test]
+async fn only_one_orbit_posts_on_a_pull_request() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let first = connected(&d.path().join("first")).await;
+    let second = connected(&d.path().join("second")).await;
+    for e in [&first, &second] {
+        e.update(|s| s.prs = vec![pr('5')]).await;
+    }
+    let failing = |check: &str| {
+        answer(
+            d.path(),
+            '1',
+            &[("Rust", "SUCCESS")],
+            Some(('5', &[(check, "FAILURE")])),
+        )
+    };
+    let named = |s: &Snapshot| s.instance.name.clone();
+    let stepped_back = |s: &Snapshot| {
+        s.attention
+            .iter()
+            .find(|a| a.kind == AttentionKind::AnotherOrbit)
+            .cloned()
+    };
+    failing("Rust");
+    watch(&first, &gh).await;
+    assert_eq!(writes(d.path()), ["POST repos/a/b/issues/12/comments"]);
+    let first_name = named(&first.snapshot().await);
+    assert_eq!(signed_by(d.path()), first_name);
+
+    // The second finds that comment, and steps back rather than edit it.
+    watch(&second, &gh).await;
+    assert_eq!(writes(d.path()).len(), 1);
+    let shown = second.shown_snapshot().await;
+    let item = stepped_back(&shown).expect("a Needs you item");
+    assert_eq!(item.pr_id.as_deref(), Some("a/b#12"));
+    assert_eq!(item.fix, Some(crate::buddy::Fix::PostHereAgain));
+    assert_eq!(item.reason, crate::attention::ANOTHER_ORBIT);
+    assert!(stepped_back(&first.shown_snapshot().await).is_none());
+    // Nor anything later, nor does it keep asking GitHub.
+    failing("Lint");
+    let asked = calls(d.path(), "GET repos/a/b/pulls/12/reviews");
+    watch(&second, &gh).await;
+    assert_eq!(writes(d.path()).len(), 1);
+    assert_eq!(calls(d.path(), "GET repos/a/b/pulls/12/reviews"), asked);
+    assert!(!second
+        .snapshot()
+        .await
+        .journal
+        .iter()
+        .any(|w| w.thread == "pr:a/b#12"));
+
+    // The first carries on.
+    watch(&first, &gh).await;
+    assert_eq!(writes(d.path()).len(), 2);
+    assert!(writes(d.path())[1].starts_with("PATCH repos/a/b/issues/comments/"));
+    assert_eq!(signed_by(d.path()), first_name);
+
+    // You say the second posts here: it does at once, and the first steps
+    // back from then on.
+    crate::github::GH
+        .scope(gh.clone(), second.fix(&item.key))
+        .await
+        .unwrap();
+    assert_eq!(writes(d.path()).len(), 3);
+    assert_eq!(signed_by(d.path()), named(&second.snapshot().await));
+    assert!(stepped_back(&second.shown_snapshot().await).is_none());
+    failing("Rust");
+    watch(&first, &gh).await;
+    assert_eq!(writes(d.path()).len(), 3);
+    let shown = first.shown_snapshot().await;
+    assert!(stepped_back(&shown).is_some());
+    watch(&second, &gh).await;
+    assert_eq!(writes(d.path()).len(), 4);
+    let body = github(d.path())["comments"][0]["body"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(body.contains("- **I1** · `CI / Rust` · failing at `5555555`"));
+    assert_eq!(github(d.path())["comments"].as_array().unwrap().len(), 1);
+}
+
+/// While GitHub can't say who posted last, nothing new is posted on a pull
+/// request, but Orbit's own comment is still kept true.
+#[cfg(unix)]
+#[tokio::test]
+async fn nothing_new_is_posted_while_github_cant_say_who_posted_last() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let e = connected(d.path()).await;
+    e.update(|s| s.prs = vec![pr('5')]).await;
+    answer(
+        d.path(),
+        '1',
+        &[("Rust", "SUCCESS")],
+        Some(('5', &[("Rust", "FAILURE")])),
+    );
+    std::fs::write(
+        d.path().join("reviews-error"),
+        "gh: Bad Gateway (HTTP 502)\n",
+    )
+    .unwrap();
+    watch(&e, &gh).await;
+    assert!(writes(d.path()).is_empty());
+    std::fs::remove_file(d.path().join("reviews-error")).unwrap();
+    watch(&e, &gh).await;
+    assert_eq!(writes(d.path()), ["POST repos/a/b/issues/12/comments"]);
+    std::fs::write(
+        d.path().join("reviews-error"),
+        "gh: Bad Gateway (HTTP 502)\n",
+    )
+    .unwrap();
+    answer(
+        d.path(),
+        '1',
+        &[("Rust", "SUCCESS")],
+        Some(('5', &[("Rust", "SUCCESS")])),
+    );
+    watch(&e, &gh).await;
+    assert_eq!(writes(d.path()).len(), 2);
+    assert!(github(d.path())["comments"][0]["body"]
+        .as_str()
+        .unwrap()
+        .contains("Every check passes at `5555555`."));
+    assert!(e.shown_snapshot().await.attention.is_empty());
+}
+
 /// With Leave it to me nothing is posted; with Ask first nothing is posted
 /// until you say yes; with Bit off nothing new is posted.
 #[cfg(unix)]
@@ -820,6 +960,30 @@ async fn a_rule_changed_during_the_search_stops_the_post() {
 #[cfg(unix)]
 #[tokio::test]
 async fn a_search_too_big_to_finish_finds_nothing_it_can_trust() {
+    // Nor does reading who posted last, for whether another Orbit did.
+    {
+        let d = tempfile::tempdir().unwrap();
+        let gh = fake_gh(d.path());
+        let seed = |total: u64| {
+            let items: Vec<Value> = (1..=total)
+                .map(|n| json!({ "id": n, "issue": 12, "body": "x", "created_at": made(n) }))
+                .collect();
+            let db = json!({ "next": 1000, "issues": [], "comments": items });
+            std::fs::write(d.path().join("github.json"), db.to_string()).unwrap();
+        };
+        let read = || {
+            let endpoint = "repos/a/b/issues/12/comments";
+            let all = crate::github::all_or_nothing(endpoint, &[], 2, "Invalid comment list");
+            crate::github::GH.scope(gh.clone(), all)
+        };
+        seed(200);
+        assert!(read()
+            .await
+            .unwrap_err()
+            .starts_with("There are too many posts"));
+        seed(199);
+        assert_eq!(read().await.unwrap().len(), 199);
+    }
     use crate::github::{find_comment_within, find_issue_within};
     let d = tempfile::tempdir().unwrap();
     let gh = fake_gh(d.path());

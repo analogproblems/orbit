@@ -198,6 +198,7 @@ impl Engine {
                         .filter(|p| {
                             s.settings.automatic
                                 && trusted_source(p, &s.settings.trusted_authors)
+                                && !crate::orbits::stepped_back(&s.posting, &p.id)
                                 && s.settings
                                     .repositories
                                     .iter()

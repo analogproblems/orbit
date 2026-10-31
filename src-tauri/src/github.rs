@@ -469,6 +469,54 @@ pub async fn comments(pr: &PullRequest, since: &str) -> Result<Vec<Value>, Strin
     )
     .await
 }
+/// Pages `all_or_nothing` reads at most, 10,000 items.
+const ALL_PAGES: u32 = 100;
+/// Every item of a list, up to `most` pages, or an error when there are
+/// more, for a read where missing the newest would mislead.
+pub(crate) async fn all_or_nothing(
+    endpoint: &str,
+    fields: &[(&str, String)],
+    most: u32,
+    invalid: &str,
+) -> Result<Vec<Value>, String> {
+    let mut all = vec![];
+    for page in 1..=most {
+        let mut query = fields.to_vec();
+        query.extend([("per_page", "100".into()), ("page", page.to_string())]);
+        let v = api(endpoint, "GET", &query, None).await?;
+        let items = v.as_array().ok_or(invalid)?;
+        all.extend(items.iter().cloned());
+        if items.len() < 100 {
+            return Ok(all);
+        }
+    }
+    Err("There are too many posts on this pull request for Orbit to read them all.".into())
+}
+/// The conversation comments on pull request `number` of `repo` updated at
+/// or after `since` (everything when it's empty), oldest first. Unlike
+/// `comments`, all of them or none.
+pub async fn comments_since(repo: &str, number: u64, since: &str) -> Result<Vec<Value>, String> {
+    validate_repo(repo)?;
+    let since = (!since.is_empty()).then(|| ("since", since.to_string()));
+    all_or_nothing(
+        &format!("repos/{repo}/issues/{number}/comments"),
+        &since.into_iter().collect::<Vec<_>>(),
+        ALL_PAGES,
+        "Invalid comment list",
+    )
+    .await
+}
+/// The reviews on pull request `number` of `repo`, oldest first.
+pub async fn reviews(repo: &str, number: u64) -> Result<Vec<Value>, String> {
+    validate_repo(repo)?;
+    all_or_nothing(
+        &format!("repos/{repo}/pulls/{number}/reviews"),
+        &[],
+        ALL_PAGES,
+        "Invalid review list",
+    )
+    .await
+}
 /// The PR's comments on the diff updated at or after `since`, up to 1,000.
 /// Replies in a thread carry `in_reply_to_id`, the thread's first comment.
 pub async fn review_comments_since(pr: &PullRequest, since: &str) -> Result<Vec<Value>, String> {
@@ -564,8 +612,15 @@ fn comment_body(r: &Review, round: Option<u32>) -> String {
         r.report
     )
 }
-pub async fn publish(pr: &PullRequest, r: &Review, round: Option<u32>) -> Result<String, String> {
-    let body = comment_body(r, round);
+/// Posts a review as a conversation comment, signed by Orbit `me` (see
+/// `crate::orbits`), and returns its URL.
+pub async fn publish(
+    pr: &PullRequest,
+    r: &Review,
+    round: Option<u32>,
+    me: &str,
+) -> Result<String, String> {
+    let body = crate::orbits::signed(&comment_body(r, round), me);
     if body.len() > 60000 {
         return Err(
             "Review exceeds GitHub’s comment size limit. Copy it from the chat instead.".into(),

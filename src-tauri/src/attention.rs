@@ -7,6 +7,9 @@ use crate::{buddy::Fix, text::sentence, types::*};
 /// Consecutive failed syncs before a repository needs the developer.
 pub const SYNC_FAILURES: u32 = 3;
 
+/// Why Orbit stopped on a pull request where another Orbit posts.
+pub const ANOTHER_ORBIT: &str = "Another Orbit, maybe on another computer, posted here after this one did. So this one stopped reviewing and posting here, and the agent isn't told everything twice. If this one should take over, use Post here again.";
+
 /// Loop reasons that an item of another kind already covers.
 const COVERED: [&str; 3] = [
     "An approval is pending.",
@@ -359,6 +362,24 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
         });
     }
     for pr in &s.prs {
+        // Whatever its loop, as it's about posting at all. A new key each
+        // time you say to post here again.
+        if let Some(p) = s
+            .posting
+            .iter()
+            .find(|p| p.pr_id == pr.id && p.stepped_back())
+        {
+            out.push(Attention {
+                fix: Some(Fix::PostHereAgain),
+                ..item(
+                    format!("another-orbit:{}:{}", pr.id, p.resumed),
+                    AttentionKind::AnotherOrbit,
+                    Some(&pr.id),
+                    None,
+                    ANOTHER_ORBIT.into(),
+                )
+            });
+        }
         let state = crate::review_loop::state(s, pr);
         // A stopped loop is in the developer's hands already.
         if state
@@ -434,6 +455,7 @@ pub fn notice(s: &Snapshot, a: Attention) -> Notice {
         AttentionKind::RunsWaiting => "Runs are waiting for a runner",
         AttentionKind::Stuck => "A pull request is stuck",
         AttentionKind::Brief => "Your morning brief",
+        AttentionKind::AnotherOrbit => "Another Orbit posts here",
     };
     let pr = s.prs.iter().find(|p| Some(&p.id) == a.pr_id.as_ref());
     let body = match pr {

@@ -136,12 +136,15 @@ impl Engine {
         let Some(fresh) = self.final_checks(cached, r, by, &sensitive).await? else {
             return Ok(());
         };
+        // Signed, so another Orbit following this pull request steps back.
+        let me = s.instance.name.as_str();
         // Persisted first, so a crash mid-request is recovered as an interrupted publication.
         let _ = self.flush().await;
         // A stable marker reconciles network timeouts or crashes without duplicate comments.
         let published = match (&plan, &hunks) {
             (Some(plan), Some(hunks)) => {
-                match github::create_review(&fresh, &r.head_sha, &plan.body, &plan.comments).await {
+                let body = crate::orbits::signed(&plan.body, me);
+                match github::create_review(&fresh, &r.head_sha, &body, &plan.comments).await {
                     // GitHub refuses the whole review if it disagrees about a line, and
                     // posts nothing, so posting again with every finding in the body is safe.
                     Err(error) if github::unprocessable(&error) && !plan.comments.is_empty() => {
@@ -151,13 +154,14 @@ impl Engine {
                         else {
                             return Ok(());
                         };
-                        github::create_review(&fresh, &r.head_sha, &plan.body, &[]).await
+                        let body = crate::orbits::signed(&plan.body, me);
+                        github::create_review(&fresh, &r.head_sha, &body, &[]).await
                     }
                     result => result,
                 }
                 .map(|(url, id)| (url, Some(id)))
             }
-            _ => github::publish(&fresh, r, round)
+            _ => github::publish(&fresh, r, round, me)
                 .await
                 .map(|url| (url, None)),
         };
@@ -179,8 +183,10 @@ impl Engine {
     /// The checks run immediately before each write: the PR is still open at
     /// the reviewed head and base; for automatic publication, the switches
     /// still allow it; and for Bit, its check still passes and the fresh PR
-    /// is one automatic publication would trust. Returns the fresh PR, or
-    /// None when automatic publication was switched off, which cancels it.
+    /// is one automatic publication would trust. Neither posts where another
+    /// Orbit posted later (`crate::orbits`); you can. Returns the fresh PR,
+    /// or None when automatic publication was switched off or stepped back,
+    /// which cancels it.
     async fn final_checks(
         &self,
         cached: &PullRequest,
@@ -209,6 +215,12 @@ impl Engine {
                 {
                     return Err(reason);
                 }
+                if !self
+                    .clear_to_post(&fresh.repo, fresh.number, &fresh.id)
+                    .await?
+                {
+                    return Ok(None);
+                }
             }
             By::You { .. } => {}
             By::Bit(still) => {
@@ -216,6 +228,12 @@ impl Engine {
                 still(&s)?;
                 if let Some(reason) = bit_hold(&fresh, sensitive, &s.settings.trusted_authors) {
                     return Err(reason);
+                }
+                if !self
+                    .clear_to_post(&fresh.repo, fresh.number, &fresh.id)
+                    .await?
+                {
+                    return Err(crate::orbits::STEPPED_BACK.into());
                 }
             }
         }

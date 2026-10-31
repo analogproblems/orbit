@@ -112,6 +112,12 @@ export function mainAction(
       label: "Check again",
       onClick: () => run("use_fix", { key: a.key }),
     };
+  // Only you know whether the other Orbit still runs.
+  if (a.kind === "another_orbit")
+    return {
+      label: "Post here again",
+      onClick: () => run("use_fix", { key: a.key }),
+    };
   if (
     r &&
     publishable &&

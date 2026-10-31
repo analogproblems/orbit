@@ -81,7 +81,8 @@
     "publish",
     "sync_now",
     "turn_on_autopilot",
-    "check_connections"
+    "check_connections",
+    "post_here_again"
   ],
   "helpActions": ["sign_in", "open_page"],
   "questions": ["needs_you", "running", "loops", "repositories", "setup"],
