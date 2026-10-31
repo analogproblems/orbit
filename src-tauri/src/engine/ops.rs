@@ -1,10 +1,11 @@
-//! Telling agents about failing CI: after each CI read, Orbit reads the
-//! agents' answers on its comments and issues, checks the fixes they name
-//! against CI, reruns jobs that failed by bad luck (`crate::reruns`), then
-//! posts, updates and closes its comments on pull requests and its issues
-//! about default branches as their problems need (see `crate::ops`). Each
-//! write is recorded in the journal, and the journal saved, before it is
-//! sent.
+//! Telling agents about failing CI, and whether each pull request Orbit
+//! reviews is clear to merge: after each CI read, Orbit reads the agents'
+//! answers on its comments and issues, checks the fixes they name against
+//! CI, reruns jobs that failed by bad luck (`crate::reruns`), then posts,
+//! updates and closes its comments on pull requests and its issues about
+//! default branches as their problems and answers need (see `crate::ops`).
+//! Each write is recorded in the journal, and the journal saved, before it
+//! is sent.
 use super::{claims, Engine};
 use crate::{
     ci::CiState,
@@ -46,6 +47,9 @@ impl Engine {
             // as sending was cut off when Orbit stopped.
             let mut changed = ops::interrupted(&mut s.journal, &mut s.ops, now);
             changed |= ops::refresh(&mut s.ops, &s.problems, now);
+            let answers = crate::readiness::all(s);
+            let watch = s.settings.watch_ci;
+            changed |= ops::ready(&mut s.ops, &answers, &s.prs, &s.problems, watch, now);
             changed |= ops::explain(&mut s.ops, &s.failures);
             let mut again = reruns::noticed(s);
             again.extend(ops::offer(s));

@@ -59,7 +59,17 @@ fn send(
     may: bool,
     now: DateTime<Utc>,
 ) -> Option<Planned> {
-    let planned = next(&threads[0], Some(p), may, now)?;
+    tell(threads, journal, Some(p), may, now)
+}
+/// The same, for a thread that may have no problem.
+fn tell(
+    threads: &mut [Thread],
+    journal: &mut Vec<Write>,
+    p: Option<&Problem>,
+    may: bool,
+    now: DateTime<Utc>,
+) -> Option<Planned> {
+    let planned = next(&threads[0], p, may, now)?;
     let id = record(journal, &planned, now);
     let posted = Posted {
         id: 7,
@@ -338,7 +348,7 @@ fn a_base_that_moved_on_is_an_item_on_the_pull_requests_comment() {
             (2, ItemKind::BaseMoved, "main", true)
         ]
     );
-    let body = comment_body(&threads[0], &base);
+    let body = comment_body(&threads[0], Some(&base));
     assert!(body.contains("\n\nEvery check passes at `2222222`, but `main` has moved on since they began. Merge `main` in and let CI run again, so they run with its latest changes.\n\n"), "{body}");
     assert!(body.contains(
         "- **I2** · `main` moved on since the checks at `2222222` began · merge it in and let CI run again\n- **I1** · `A` · passes at `2222222`\n"
@@ -371,13 +381,13 @@ fn a_base_that_moved_on_is_an_item_on_the_pull_requests_comment() {
     assert_eq!(heard.len(), 1);
     assert_eq!(heard[0].check, "main moved on");
     assert!(to_verify(&threads, &[base.clone()]).is_empty());
-    assert!(comment_body(&threads[0], &base)
+    assert!(comment_body(&threads[0], Some(&base))
         .contains("merge it in and let CI run again · said to be fixed in `abc1234`; Orbit is waiting for its checks there"));
 
     // CI runs again with main's latest.
     pass(&mut base, '3', t0());
     refresh(&mut threads, &[failed.clone(), base.clone()], t0());
-    let body = comment_body(&threads[0], &base);
+    let body = comment_body(&threads[0], Some(&base));
     assert!(body.contains("Every check passes at `3333333`. Nothing is left to fix here."));
     assert!(body.contains(
         "- **I1** · `A` · passes at `3333333`\n- **I2** · `main` moved on · done at `3333333`\n"
@@ -421,7 +431,7 @@ fn a_failure_takes_over_from_a_base_that_moved_on() {
         items,
         [(1, ItemKind::BaseMoved, false), (2, ItemKind::Check, true)]
     );
-    let body = comment_body(&threads[0], &failing);
+    let body = comment_body(&threads[0], Some(&failing));
     assert!(body.contains("1 check fails on this pull request at `2222222`."));
     assert!(body.contains("- **I1** · `main` moved on · done at `2222222`"));
 }
@@ -713,7 +723,7 @@ fn stopping_watching_keeps_what_was_last_seen() {
     assert!(hidden.contains("\"failing\":true"));
     assert!(hidden.contains("\"open\":false"));
     assert!(hidden.contains("\"passed\":false"));
-    assert!(!comment_body(&threads[0], &p).contains("not failing"));
+    assert!(!comment_body(&threads[0], Some(&p)).contains("not failing"));
 }
 
 /// Bit posts something new only while Watch CI is on, the repository is
@@ -912,7 +922,7 @@ fn bodies_say_what_agents_answered_without_repeating_them() {
         &[reply(1, "Declined I1: ask @someone <b>now</b>\nFixed I2")],
         None,
     );
-    let body = comment_body(&threads[0], &p);
+    let body = comment_body(&threads[0], Some(&p));
     assert!(body.contains(
         "- **I1** · `A` · failing at `1111111` · [details](https://github.com/a/b/actions/runs/1/job/2) · declined ([reply](https://github.com/a/b/issues/12#issuecomment-1))\n"
     ), "{body}");
@@ -922,15 +932,15 @@ fn bodies_say_what_agents_answered_without_repeating_them() {
     assert!(hidden.contains(r#""answer":{"check":null,"commit":null,"kind":"declined"}"#));
     assert_eq!(hidden.matches("\"answer\"").count(), 2, "{hidden}");
     threads[0].items[1].answer = None;
-    let hidden = comment_body(&threads[0], &p);
+    let hidden = comment_body(&threads[0], Some(&p));
     assert_eq!(hidden.matches("\"answer\"").count(), 1, "none without one");
     threads[0].items[0].answer.as_mut().unwrap().url = "https://example.com/x".into();
-    assert!(comment_body(&threads[0], &p).contains("job/2) · declined\n"));
+    assert!(comment_body(&threads[0], Some(&p)).contains("job/2) · declined\n"));
 
     p.closed_at = Some(stamp(t0()));
     p.closed_reason = Some("Orbit stopped watching CI.".into());
     refresh(&mut threads, std::slice::from_ref(&p), t0());
-    let body = comment_body(&threads[0], &p);
+    let body = comment_body(&threads[0], Some(&p));
     let shown = body.rsplit_once('\n').unwrap().0;
     assert!(!shown.contains("declined") && !shown.contains("said to be fixed"));
 }
@@ -1600,4 +1610,328 @@ fn bit_says_what_orbit_did_about_a_proposal() {
         text(&Event::Closed(key), &threads, &p).as_deref(),
         Some("Orbit closed issue #45 on a/b. The repository was disconnected.")
     );
+}
+
+/// Pull request 12 of `a/b` at `head`, into main.
+fn open(head: char) -> PullRequest {
+    let mut p = crate::types::tests::pr();
+    p.id = "a/b#12".into();
+    p.number = 12;
+    p.head_sha = sha(head);
+    p
+}
+/// Its answer at `head`: clear, or the first thing in the way and whose
+/// move it is.
+fn answer(head: char, wait: Option<(Turn, &str)>) -> Readiness {
+    Readiness {
+        pr_id: "a/b#12".into(),
+        repo: "a/b".into(),
+        number: 12,
+        head_sha: sha(head),
+        base: "main".into(),
+        base_sha: sha('c'),
+        clear: wait.is_none(),
+        waits: wait
+            .map(|(turn, text)| crate::readiness::Wait {
+                kind: crate::readiness::WaitKind::Checks,
+                turn,
+                text: text.into(),
+            })
+            .into_iter()
+            .collect(),
+    }
+}
+fn say(threads: &mut Vec<Thread>, head: char, a: Readiness, problems: &[Problem]) -> bool {
+    ready(threads, &[a], &[open(head)], problems, true, t0())
+}
+
+/// A pull request Orbit reviews gets a comment once its answer tells the
+/// agent something: it is clear to merge, or it waits on someone. Not
+/// while Orbit, CI or GitHub is still at work, nor while Orbit doesn't
+/// watch CI, nor where Bit may not post. Bit tells you nothing about it.
+#[test]
+fn the_merge_answer_gets_a_comment_once_it_tells_something() {
+    let prs = [open('a')];
+    let mut threads = vec![];
+    let mut journal = vec![];
+    let working = answer('a', Some((Turn::Working, "Checks are still running.")));
+    let answers = std::slice::from_ref(&working);
+    assert!(!ready(&mut threads, answers, &prs, &[], false, t0()));
+    assert!(threads.is_empty());
+    assert!(ready(&mut threads, answers, &prs, &[], true, t0()));
+    let t = &threads[0];
+    assert_eq!(
+        (t.key.as_str(), t.kind, t.number, t.pr_id.as_deref()),
+        ("pr:a/b#12", ThreadKind::Comment, Some(12), Some("a/b#12"))
+    );
+    assert_eq!(t.updated_at, stamp(t0()));
+    assert_eq!(next(t, None, true, t0()), None);
+    for turn in [Turn::Author, Turn::Person] {
+        let mut threads = threads.clone();
+        say(&mut threads, 'a', answer('a', Some((turn, "x"))), &[]);
+        let post = next(&threads[0], None, true, t0()).map(|p| p.action);
+        assert_eq!(post, Some(Action::PostComment), "{turn:?}");
+        assert_eq!(next(&threads[0], None, false, t0()), None);
+    }
+    assert!(say(&mut threads, 'a', answer('a', None), &[]));
+    let post = tell(&mut threads, &mut journal, None, true, t0()).unwrap();
+    assert_eq!(post.action, Action::PostComment);
+    assert_eq!(
+        post.body,
+        format!(
+            "## Orbit\n\n**Clear to merge** at `aaaaaaa` against `main` at `ccccccc`.\n\n<!-- orbit-ready {{\"base\":\"main\",\"baseSha\":\"{}\",\"clear\":true,\"head\":\"{}\",\"turn\":null,\"version\":1}} -->\n\nOrbit works out after each sync whether this is clear to merge, and edits this comment when that or CI changes. It never pushes to this branch.\n\n<!-- orbit-ops thread=pr:a/b#12 {{\"items\":[],\"kind\":\"pull_request\",\"open\":false,\"repo\":\"a/b\",\"version\":1}} -->",
+            sha('c'),
+            sha('a')
+        )
+    );
+    let posted = Event::Posted("pr:a/b#12".into());
+    assert_eq!(event_text(&threads, &[], &posted), None);
+    // Nothing more while nothing changes.
+    assert!(!say(&mut threads, 'a', answer('a', None), &[]));
+    assert_eq!(next(&threads[0], None, true, t0()), None);
+}
+
+/// The answer on the comment changes only when it turns clear or not, its
+/// head or base moves, or it becomes someone else's move, so each change
+/// wakes the agent once. Its words catch up when the comment changes
+/// anyway.
+#[test]
+fn the_comment_changes_only_when_the_answer_does() {
+    let mut threads = vec![];
+    let mut journal = vec![];
+    say(&mut threads, 'a', answer('a', None), &[]);
+    tell(&mut threads, &mut journal, None, true, t0()).unwrap();
+    let mut edit = |threads: &mut Vec<Thread>, p: Option<&Problem>| {
+        let e = tell(threads, &mut journal, p, true, t0()).map(|e| (e.action, e.body));
+        e.map(|(action, body)| {
+            assert_eq!(action, Action::EditComment);
+            body
+        })
+    };
+    // A push takes it back: one edit.
+    let working = |text: &str| answer('b', Some((Turn::Working, text)));
+    say(
+        &mut threads,
+        'b',
+        working("Orbit hasn't reviewed bbbbbbb yet."),
+        &[],
+    );
+    let body = edit(&mut threads, None).unwrap();
+    assert!(body.contains(&format!(
+        "\n\n**Not clear to merge yet.** Orbit hasn't reviewed bbbbbbb yet.\n\n<!-- orbit-ready {{\"base\":\"main\",\"baseSha\":\"\",\"clear\":false,\"head\":\"{}\",\"turn\":\"working\",\"version\":1}} -->\n\n",
+        sha('b')
+    )));
+    // Orbit, CI and GitHub at work: no edit, and the words wait.
+    for text in [
+        "Orbit is reviewing bbbbbbb.",
+        "Checks are still running on bbbbbbb.",
+        "GitHub is still checking whether it merges.",
+    ] {
+        assert!(!say(&mut threads, 'b', working(text), &[]), "{text}");
+        assert_eq!(edit(&mut threads, None), None, "{text}");
+    }
+    let text = |threads: &[Thread]| threads[0].ready.as_ref().unwrap().text.clone();
+    assert_eq!(text(&threads), "Orbit hasn't reviewed bbbbbbb yet.");
+    // The author's move: one edit.
+    let conflict = "It conflicts with main: merge main in and fix the conflicts.";
+    say(
+        &mut threads,
+        'b',
+        answer('b', Some((Turn::Author, conflict))),
+        &[],
+    );
+    let body = edit(&mut threads, None).unwrap();
+    assert!(body.contains(&format!("**Not clear to merge yet.** {conflict}\n\n")));
+    assert!(body.contains("\"turn\":\"author\""));
+    // Clear, then clear against a newer base: an edit each.
+    say(&mut threads, 'b', answer('b', None), &[]);
+    let body = edit(&mut threads, None).unwrap();
+    assert!(body.contains("**Clear to merge** at `bbbbbbb` against `main` at `ccccccc`."));
+    let newer = Readiness {
+        base_sha: sha('d'),
+        ..answer('b', None)
+    };
+    say(&mut threads, 'b', newer, &[]);
+    let body = edit(&mut threads, None).unwrap();
+    assert!(body.contains("**Clear to merge** at `bbbbbbb` against `main` at `ddddddd`."));
+    // Its words catch up when CI changes the comment anyway.
+    let fails = |text: &str| answer('b', Some((Turn::Author, text)));
+    say(&mut threads, 'b', fails("CI / Test fails on bbbbbbb."), &[]);
+    edit(&mut threads, None).unwrap();
+    let both = "CI / Test and CI / Lint fail on bbbbbbb.";
+    assert!(!say(&mut threads, 'b', fails(both), &[]));
+    assert_eq!(text(&threads), "CI / Test fails on bbbbbbb.");
+    let p = pull("p1", &["CI / Test", "CI / Lint"], 'b', t0());
+    let problems = std::slice::from_ref(&p);
+    refresh(&mut threads, problems, t0());
+    assert!(say(&mut threads, 'b', fails(both), problems));
+    let body = edit(&mut threads, Some(&p)).unwrap();
+    assert!(body.starts_with(&format!(
+        "## Orbit\n\n**Not clear to merge yet.** {both}\n\n<!-- orbit-ready "
+    )));
+    assert!(body.contains(
+        " -->\n\n### CI\n\n2 checks fail on this pull request at `bbbbbbb`.\n\n- **I1** · `CI / Test`"
+    ));
+    assert!(body.ends_with("\"open\":true,\"passed\":false,\"repo\":\"a/b\",\"version\":1} -->"));
+    // With CI unchanged, new words wait again.
+    let reworded = "CI / Lint and CI / Test fail on bbbbbbb.";
+    assert!(!say(&mut threads, 'b', fails(reworded), problems));
+    assert_eq!(edit(&mut threads, Some(&p)), None);
+}
+
+/// A pull request still open that Orbit stopped working out says so, once;
+/// a closed one is left as it was. A comment only about CI never gets the
+/// line, and a thread with neither has nothing to say.
+#[test]
+fn a_pull_request_orbit_stops_working_out_says_so() {
+    let mut threads = vec![];
+    let mut journal = vec![];
+    say(&mut threads, 'a', answer('a', None), &[]);
+    tell(&mut threads, &mut journal, None, true, t0()).unwrap();
+    let draft = PullRequest {
+        draft: true,
+        ..open('a')
+    };
+    let stop = |threads: &mut Vec<Thread>, pr: &PullRequest| {
+        ready(threads, &[], std::slice::from_ref(pr), &[], true, t0())
+    };
+    assert!(stop(&mut threads, &draft));
+    let body = tell(&mut threads, &mut journal, None, true, t0())
+        .unwrap()
+        .body;
+    assert!(body.contains(&format!(
+        "\n\n**Not clear to merge.** Orbit stopped working out whether it is clear to merge while it is a draft.\n\n<!-- orbit-ready {{\"base\":\"main\",\"baseSha\":\"\",\"clear\":false,\"head\":\"{}\",\"turn\":null,\"version\":1}} -->",
+        sha('a')
+    )));
+    assert!(!stop(&mut threads, &draft));
+    // Out of draft but no longer reviewed: the same answer, so no edit.
+    stop(&mut threads, &open('a'));
+    assert_eq!(next(&threads[0], None, true, t0()), None);
+    // Closed: left as it was.
+    let before = threads.clone();
+    assert!(!ready(&mut threads, &[], &[], &[], true, t0()));
+    assert_eq!(threads, before);
+    // Reviewed again.
+    say(&mut threads, 'a', answer('a', None), &[]);
+    let body = tell(&mut threads, &mut journal, None, true, t0())
+        .unwrap()
+        .body;
+    assert!(body.contains("**Clear to merge** at `aaaaaaa`"));
+
+    // One never posted isn't posted to say Orbit stopped.
+    let mut quiet = vec![];
+    say(
+        &mut quiet,
+        'a',
+        answer('a', Some((Turn::Working, "x"))),
+        &[],
+    );
+    stop(&mut quiet, &open('a'));
+    assert_eq!(
+        quiet[0].ready.as_ref().unwrap().text,
+        "Orbit stopped working out whether it is clear to merge, as it no longer reviews it automatically."
+    );
+    assert_eq!(next(&quiet[0], None, true, t0()), None);
+    // A comment only about CI.
+    let p = pull("p1", &["CI / Rust"], 'a', t0());
+    let mut ci = vec![];
+    refresh(&mut ci, std::slice::from_ref(&p), t0());
+    assert!(!ready(
+        &mut ci,
+        &[],
+        &[open('a')],
+        std::slice::from_ref(&p),
+        true,
+        t0()
+    ));
+    assert_eq!(ci[0].ready, None);
+    assert!(comment_body(&ci[0], Some(&p)).starts_with("## Orbit · CI\n\n1 check fails"));
+    // Neither.
+    ci[0].comment_id = Some(7);
+    assert_eq!(next(&ci[0], None, true, t0()), None);
+}
+
+/// Others' words in the answer, such as a check's name or GitHub's error,
+/// can't mention anyone, link anywhere or read as Markdown or HTML.
+#[test]
+fn others_words_in_the_answer_stay_words() {
+    let said = "CI / Rust (ubuntu-22.04) fails on abc1234: it's 100% \"odd\", a=b; c+d?";
+    assert_eq!(plain(said), said);
+    for (word, shown) in [
+        ("@team", "`@team`"),
+        ("*Lint*", "`*Lint*`"),
+        ("a_b", "`a_b`"),
+        ("#12", "`#12`"),
+        ("<b>", "`<b>`"),
+        ("[a](b)", "`[a](b)`"),
+        ("~~x~~", "`~~x~~`"),
+        ("$x$", "`$x$`"),
+        ("&amp;", "`&amp;`"),
+        ("a\\b", "`a\\b`"),
+        ("`x`", "`'x'`"),
+        ("<!--x", "`<! --x`"),
+        ("a\nb", "`a b`"),
+        ("https://evil.example", "`https://evil.example`"),
+        ("WWW.evil.example", "`WWW.evil.example`"),
+    ] {
+        assert_eq!(
+            plain(&format!("{word} fails.")),
+            format!("{shown} fails."),
+            "{word}"
+        );
+    }
+    // On the comment, whatever the answer.
+    let said = |turn| Ready {
+        turn,
+        text: "@team fails.".into(),
+        ..Default::default()
+    };
+    for turn in [Some(Turn::Author), None] {
+        assert!(
+            ready_text(&said(turn)).contains(".** `@team` fails.\n"),
+            "{turn:?}"
+        );
+    }
+}
+
+/// A thread saved before Orbit said whether pull requests are clear to
+/// merge loads, and one without an answer saves as before.
+#[test]
+fn threads_without_an_answer_load_and_save_as_before() {
+    let t: Thread = serde_json::from_str(r#"{"key":"pr:a/b#12","kind":"comment"}"#).unwrap();
+    assert_eq!(t.ready, None);
+    assert!(!serde_json::to_string(&t).unwrap().contains("ready"));
+}
+
+/// The reply skill for coding agents shows the answer as Orbit writes it,
+/// and names each field of its hidden line.
+#[test]
+fn the_reply_skill_shows_the_answer_as_orbit_writes_it() {
+    let skill = include_str!("../../.claude/skills/answer-orbit-reviews/SKILL.md");
+    let clear = Ready {
+        clear: true,
+        head_sha: format!("abc1234{}", "0".repeat(33)),
+        base: "main".into(),
+        base_sha: format!("def5678{}", "0".repeat(33)),
+        ..Default::default()
+    };
+    let conflict = Ready {
+        turn: Some(Turn::Author),
+        text: "It conflicts with main: merge main in and fix the conflicts.".into(),
+        ..clear.clone()
+    };
+    for r in [clear, conflict] {
+        let text = ready_text(&r);
+        let (line, hidden) = text.split_once("\n\n<!-- orbit-ready ").unwrap();
+        assert!(skill.contains(&format!("\n- {line}\n")), "{line}");
+        let v: serde_json::Value = serde_json::from_str(hidden.trim_end_matches(" -->")).unwrap();
+        for key in v.as_object().unwrap().keys() {
+            let named = skill.contains(&format!("`{key}`"))
+                || skill.contains(&format!("`\"{key}\": {}`", v[key]));
+            assert!(named, "{key}");
+        }
+    }
+    for turn in ["author", "person", "working"] {
+        assert!(skill.contains(&format!("`{turn}`")), "{turn}");
+    }
 }

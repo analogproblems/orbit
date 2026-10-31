@@ -666,6 +666,7 @@ async function demoAction(
           ...r.waits.filter((w) => !afterReview.includes(w.kind)),
           {
             kind: "checks",
+            turn: "person",
             text: "Orbit can't see its checks while Watch CI is off.",
           },
         ],
@@ -721,9 +722,14 @@ async function demoAction(
       const n = latest?.blocking ?? 0;
       const head = shortSha(latest?.headSha ?? "");
       const loop: Wait = stop
-        ? { kind: "loop", text: "Orbit's review loop on it is stopped." }
+        ? {
+            kind: "loop",
+            turn: "person",
+            text: "Orbit's review loop on it is stopped.",
+          }
         : {
             kind: "findings",
+            turn: "author",
             text: `${n === 1 ? "1 blocking finding" : `${n} blocking findings`} from Orbit's review of ${head} ${n === 1 ? "waits" : "wait"} on the author.`,
           };
       demo.readiness = demo.readiness?.map((r) =>

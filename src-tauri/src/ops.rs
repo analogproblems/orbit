@@ -18,9 +18,15 @@
 //! `Fixed I2 in abc1234`, `Declined I2: reason`, `Need a person on I2:
 //! question`; see `hear`). A fix in a named commit is checked against CI
 //! there (`to_verify`), and the comment or issue says what Orbit found.
+//!
+//! On a pull request Orbit reviews automatically, the comment also starts
+//! with whether it is clear to merge (`crate::readiness`), with a hidden
+//! line naming the head and base that answer is for (`ready`). That line
+//! alone is worth a comment once it is clear or waits on someone.
 use crate::{
     ci::short,
     problems::{stamp, time, Problem, ProblemKind, FLAP_QUIET, KEEP_CLOSED},
+    readiness::{Readiness, Turn},
     types::{same_repo, trusted_source, PullRequest, Snapshot},
 };
 use chrono::{DateTime, Duration, Utc};
@@ -124,6 +130,10 @@ pub struct Thread {
     /// When GitHub last took Orbit's text for its comment or issue, by
     /// GitHub's clock.
     pub shown_at: String,
+    /// Whether the pull request is clear to merge, as its comment says it,
+    /// for one Orbit reviews automatically.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ready: Option<Ready>,
 }
 impl Thread {
     /// Whether it is on GitHub.
@@ -139,6 +149,68 @@ impl Thread {
         tag(&self.key)
     }
 }
+/// Whether a pull request is clear to merge, as the top of its comment says
+/// it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Ready {
+    pub clear: bool,
+    /// The head and base it was worked out for, and once it is clear, the
+    /// base's latest commit.
+    pub head_sha: String,
+    pub base: String,
+    pub base_sha: String,
+    /// Whose move it is while it isn't clear; none once Orbit stopped
+    /// working it out.
+    pub turn: Option<Turn>,
+    /// What is in the way, in Orbit's words.
+    pub text: String,
+}
+impl Ready {
+    fn of(r: &Readiness) -> Ready {
+        let first = r.waits.first();
+        Ready {
+            clear: r.clear,
+            head_sha: r.head_sha.clone(),
+            base: r.base.clone(),
+            base_sha: if r.clear {
+                r.base_sha.clone()
+            } else {
+                String::new()
+            },
+            turn: first.map(|w| w.turn),
+            text: first.map(|w| w.text.clone()).unwrap_or_default(),
+        }
+    }
+    /// What a pull request Orbit no longer works it out for says.
+    fn stopped(pr: &PullRequest) -> Ready {
+        let text = if pr.draft {
+            "Orbit stopped working out whether it is clear to merge while it is a draft."
+        } else {
+            "Orbit stopped working out whether it is clear to merge, as it no longer reviews it automatically."
+        };
+        Ready {
+            head_sha: pr.head_sha.clone(),
+            base: pr.base_ref.clone(),
+            text: text.into(),
+            ..Default::default()
+        }
+    }
+    /// Whether it gives the same answer, whatever its words.
+    fn same(&self, other: &Ready) -> bool {
+        let answer = |r: &Ready| Ready {
+            text: String::new(),
+            ..r.clone()
+        };
+        answer(self) == answer(other)
+    }
+    /// Whether it is worth a comment of its own: it is clear, or it waits
+    /// on someone.
+    fn tells(&self) -> bool {
+        self.clear || matches!(self.turn, Some(Turn::Author | Turn::Person))
+    }
+}
+
 /// The start of the hidden line that marks a thread's comment or issue.
 pub fn tag(key: &str) -> String {
     format!("<!-- orbit-ops thread={key} ")
@@ -539,6 +611,67 @@ pub fn refresh(threads: &mut Vec<Thread>, problems: &[Problem], now: DateTime<Ut
     }
     changed || threads.len() != before.len()
 }
+/// Puts each pull request's answer to whether it is clear to merge on its
+/// comment's thread, starting a thread for each one while Orbit watches
+/// CI. The answer a comment gives changes only when it turns clear or not,
+/// its head or base moves, or it becomes someone else's move, so each
+/// change wakes the agent once; its words catch up whenever the comment
+/// changes anyway. A pull request still open with no answer any more says
+/// Orbit stopped; a closed one is left as it was. Returns whether anything
+/// changed.
+pub fn ready(
+    threads: &mut Vec<Thread>,
+    answers: &[Readiness],
+    prs: &[PullRequest],
+    problems: &[Problem],
+    watch: bool,
+    now: DateTime<Utc>,
+) -> bool {
+    let before = threads.clone();
+    for a in answers.iter().filter(|_| watch) {
+        let key = format!("pr:{}", a.pr_id);
+        if !threads.iter().any(|t| t.key == key) {
+            threads.push(Thread {
+                key,
+                repo: a.repo.clone(),
+                number: Some(a.number),
+                pr_id: Some(a.pr_id.clone()),
+                ..Default::default()
+            });
+        }
+    }
+    for t in threads.iter_mut() {
+        let pr = prs
+            .iter()
+            .find(|p| t.pr_id.as_deref() == Some(p.id.as_str()));
+        let Some(pr) = pr else {
+            continue;
+        };
+        let answer = match answers.iter().find(|a| a.pr_id == pr.id) {
+            Some(a) => Ready::of(a),
+            None if t.ready.is_some() => Ready::stopped(pr),
+            None => continue,
+        };
+        if !t.ready.as_ref().is_some_and(|r| r.same(&answer)) {
+            t.ready = Some(answer);
+            continue;
+        }
+        // The same answer in new words waits for the comment to change.
+        let problem = problems.iter().find(|p| p.id == t.problem_id);
+        if comment_body(t, problem) != t.posted {
+            t.ready = Some(answer);
+        }
+    }
+    let at = stamp(now);
+    let mut changed = false;
+    for (i, t) in threads.iter_mut().enumerate() {
+        if before.get(i) != Some(t) {
+            t.updated_at = at.clone();
+            changed = true;
+        }
+    }
+    changed
+}
 fn key_of(p: &Problem) -> String {
     match p.kind {
         ProblemKind::DefaultBranch | ProblemKind::NoCi | ProblemKind::Waiting => {
@@ -896,7 +1029,6 @@ pub fn next(
             rerun: None,
         });
     }
-    let p = problem?;
     let plan = |action: Action, body: String| Planned {
         thread: t.key.clone(),
         action,
@@ -905,25 +1037,31 @@ pub fn next(
         comment_id: t.comment_id,
         title: String::new(),
         marker: t.tag(),
-        completed: p.passed(),
+        completed: problem.is_some_and(Problem::passed),
         closed_at: None,
         rerun: None,
         body,
     };
     match t.kind {
         ThreadKind::Comment => {
-            if t.comment_id.is_none() {
-                return (p.is_open() && may_post)
-                    .then(|| plan(Action::PostComment, comment_body(t, p)));
-            }
-            // A closed pull request has nobody left to tell.
-            if p.closed_reason.as_deref() == Some(PR_CLOSED) {
+            let p = problem;
+            if p.is_none() && t.ready.is_none() {
                 return None;
             }
-            let body = body_now(t, p);
+            if t.comment_id.is_none() {
+                let tells =
+                    p.is_some_and(Problem::is_open) || t.ready.as_ref().is_some_and(Ready::tells);
+                return (tells && may_post).then(|| plan(Action::PostComment, comment_body(t, p)));
+            }
+            // A closed pull request has nobody left to tell.
+            if p.and_then(|p| p.closed_reason.as_deref()) == Some(PR_CLOSED) {
+                return None;
+            }
+            let body = comment_body(t, p);
             (body != t.posted).then(|| plan(Action::EditComment, body))
         }
         ThreadKind::Issue => {
+            let p = problem?;
             if t.number.is_none() {
                 return (p.is_open() && may_post).then(|| Planned {
                     title: issue_title(t, p),
@@ -989,6 +1127,27 @@ fn safe(url: &str) -> Option<&str> {
 /// A link to a check's page.
 fn details(url: &str) -> String {
     safe(url).map_or_else(String::new, |url| format!(" · [details]({url})"))
+}
+/// Orbit's words with others' in them, such as a check's name or GitHub's
+/// error, as they are: each word Markdown could read as more than text, or
+/// that could mention someone or link somewhere, is code.
+fn plain(text: &str) -> String {
+    let words: Vec<String> = text
+        .split(' ')
+        .map(|w| {
+            let plain = w
+                .chars()
+                .all(|c| c.is_alphanumeric() || ".,;:-'()+/=?\"%".contains(c))
+                && !w.contains("://")
+                && !w.to_ascii_lowercase().starts_with("www.");
+            if plain {
+                w.to_string()
+            } else {
+                code(w)
+            }
+        })
+        .collect();
+    words.join(" ")
 }
 /// What an agent said about a failing item, and for a fix, what Orbit
 /// found. A reason or question is linked, never repeated.
@@ -1172,8 +1331,9 @@ fn items_text(t: &Thread, p: &Problem) -> String {
     lines.join("\n")
 }
 /// The hidden line at the end of a comment or issue, with its items for
-/// agents that read the raw text.
-fn data(t: &Thread, p: &Problem) -> String {
+/// agents that read the raw text, and the problem's state when there is
+/// one.
+fn data(t: &Thread, p: Option<&Problem>) -> String {
     let items: Vec<_> = t
         .items
         .iter()
@@ -1216,24 +1376,56 @@ fn data(t: &Thread, p: &Problem) -> String {
             item
         })
         .collect();
-    let v = json!({
+    let mut v = json!({
         "version": 1,
-        "kind": match (t.kind, p.kind) {
-            (_, ProblemKind::NoCi) => "no_ci",
+        "kind": match (t.kind, p.map(|p| p.kind)) {
+            (_, Some(ProblemKind::NoCi)) => "no_ci",
             (ThreadKind::Comment, _) => "pull_request",
             (ThreadKind::Issue, _) => "default_branch",
         },
         "repo": t.repo,
-        "open": p.is_open(),
-        "passed": p.passed(),
+        "open": p.is_some_and(Problem::is_open),
+        "passed": p.is_some_and(Problem::passed),
         "items": items,
     });
-    let text = v
-        .to_string()
+    // A comment only about merging has no problem to have passed.
+    if let (None, Some(o)) = (p, v.as_object_mut()) {
+        o.remove("passed");
+    }
+    format!("{}{} -->", t.tag(), hidden(&v))
+}
+/// JSON for a hidden line, which nothing in it can end.
+fn hidden(v: &serde_json::Value) -> String {
+    v.to_string()
         .replace('<', "\\u003c")
         .replace('>', "\\u003e")
-        .replace('&', "\\u0026");
-    format!("{}{text} -->", t.tag())
+        .replace('&', "\\u0026")
+}
+/// The top of a pull request's comment: whether it is clear to merge, and
+/// a hidden line naming the head and base that is for, so an agent can
+/// tell a stale answer from a fresh one.
+fn ready_text(r: &Ready) -> String {
+    let line = if r.clear {
+        format!(
+            "**Clear to merge** at {} against {} at {}.",
+            code(short(&r.head_sha)),
+            code(&r.base),
+            code(short(&r.base_sha))
+        )
+    } else if r.turn.is_none() {
+        format!("**Not clear to merge.** {}", plain(&r.text))
+    } else {
+        format!("**Not clear to merge yet.** {}", plain(&r.text))
+    };
+    let v = json!({
+        "version": 1,
+        "clear": r.clear,
+        "head": r.head_sha,
+        "base": r.base,
+        "baseSha": r.base_sha,
+        "turn": r.turn,
+    });
+    format!("{line}\n\n<!-- orbit-ready {} -->", hidden(&v))
 }
 fn failing_count(t: &Thread) -> usize {
     t.items.iter().filter(|i| i.failing).count()
@@ -1246,9 +1438,29 @@ fn checks(n: usize) -> String {
     }
 }
 
-/// Orbit's comment on a pull request.
-pub fn comment_body(t: &Thread, p: &Problem) -> String {
-    let status = if p.is_open() && p.kind == ProblemKind::BaseMoved {
+/// Orbit's comment on a pull request: whether it is clear to merge, for
+/// one Orbit reviews automatically, then its CI problem, if any.
+pub fn comment_body(t: &Thread, p: Option<&Problem>) -> String {
+    let ci = p.map(|p| format!("{}\n\n{}", ci_status(t, p), items_text(t, p)));
+    let Some(r) = &t.ready else {
+        return format!(
+            "## Orbit · CI\n\n{}\n\nOrbit reads CI after each sync and edits this comment when it changes. It never pushes to this branch.\n\n{}",
+            ci.unwrap_or_default(),
+            data(t, p)
+        );
+    };
+    let ci = ci
+        .map(|ci| format!("### CI\n\n{ci}\n\n"))
+        .unwrap_or_default();
+    format!(
+        "## Orbit\n\n{}\n\n{ci}Orbit works out after each sync whether this is clear to merge, and edits this comment when that or CI changes. It never pushes to this branch.\n\n{}",
+        ready_text(r),
+        data(t, p)
+    )
+}
+/// What a pull request's CI problem is, in a sentence.
+fn ci_status(t: &Thread, p: &Problem) -> String {
+    if p.is_open() && p.kind == ProblemKind::BaseMoved {
         let base = code(&p.base);
         format!(
             "Every check passes at {}, but {base} has moved on since they began. Merge {base} in and let CI run again, so they run with its latest changes.",
@@ -1270,17 +1482,12 @@ pub fn comment_body(t: &Thread, p: &Problem) -> String {
             "Orbit has stopped watching CI here for now. {}",
             p.closed_reason.as_deref().unwrap_or_default()
         )
-    };
-    format!(
-        "## Orbit · CI\n\n{status}\n\n{}\n\nOrbit reads CI after each sync and edits this comment when it changes. It never pushes to this branch.\n\n{}",
-        items_text(t, p),
-        data(t, p)
-    )
+    }
 }
 /// The text a thread's comment or issue should have now, until it closes.
 fn body_now(t: &Thread, p: &Problem) -> String {
     match t.kind {
-        ThreadKind::Comment => comment_body(t, p),
+        ThreadKind::Comment => comment_body(t, Some(p)),
         ThreadKind::Issue => issue_body(t, p, t.closed),
     }
 }
@@ -1343,7 +1550,7 @@ pub fn issue_body(t: &Thread, p: &Problem, closing: bool) -> String {
     format!(
         "## Orbit · CI\n\n{status}\n\n{broke}{}\n\nOrbit opened this issue because CI fails on {on}. It edits this issue as CI changes, and closes it once every check has passed for an hour.\n\n{}",
         items_text(t, p),
-        data(t, p)
+        data(t, Some(p))
     )
 }
 /// Orbit's issue proposing CI for a repository where none runs on pull
@@ -1389,7 +1596,7 @@ fn proposal_body(t: &Thread, p: &Problem) -> String {
     format!(
         "## Orbit · CI\n\n{status}\n\n{}\n\nOrbit opened this issue because no CI runs on pull requests here. It edits this issue as it reads new commits on {on}, and closes it once a workflow there runs on pull requests.\n\n{}",
         items_text(t, p),
-        data(t, p)
+        data(t, Some(p))
     )
 }
 /// "A", "A and B", "A, B and C".

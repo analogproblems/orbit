@@ -68,6 +68,26 @@ describe("merging panel", () => {
     useOrbit.setState({ snapshot });
     render(<ReadinessPanel prId={snapshot.prs[1].id} />);
     expect(screen.getByText("Not clear yet")).toBeTruthy();
+    // Orbit hasn't told its agent anything yet.
+    expect(
+      screen.queryByRole("button", { name: "Open Orbit's comment" }),
+    ).toBeNull();
+  });
+  it("opens Orbit's comment only once it gives the answer on GitHub", () => {
+    const snapshot = freshDemo();
+    const told = snapshot.ops!.find((t) => t.ready)!;
+    const prId = snapshot.prs[1].id;
+    // A comment only about CI, and one not on GitHub yet.
+    snapshot.ops = [
+      { ...told, prId, ready: undefined },
+      { ...told, prId, url: "" },
+    ];
+    useOrbit.setState({ snapshot });
+    render(<ReadinessPanel prId={prId} />);
+    expect(screen.getByText("Not clear yet")).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Open Orbit's comment" }),
+    ).toBeNull();
     expect(
       screen.getByText("Orbit's review loop needs you: Round limit reached."),
     ).toBeTruthy();
@@ -91,5 +111,20 @@ describe("merging panel", () => {
     expect(
       screen.getByText("Clear to merge at abc4444 against main at 7d41e09."),
     ).toBeTruthy();
+  });
+  it("opens the comment where Orbit tells the agent", () => {
+    const snapshot = freshDemo();
+    useOrbit.setState({ snapshot });
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    render(<ReadinessPanel prId={snapshot.prs[4].id} />);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open Orbit's comment" }),
+    );
+    expect(open).toHaveBeenCalledWith(
+      `${snapshot.prs[4].url}#issuecomment-902`,
+      "_blank",
+      "noopener,noreferrer",
+    );
+    open.mockRestore();
   });
 });

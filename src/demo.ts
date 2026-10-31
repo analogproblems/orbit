@@ -684,10 +684,12 @@ export function freshDemo(): Snapshot {
         waits: [
           {
             kind: "loop",
+            turn: "person",
             text: "Orbit's review loop needs you: Round limit reached.",
           },
           {
             kind: "checks",
+            turn: "working",
             text: `Orbit hasn't read the checks on ${prs[1].headSha.slice(0, 7)} yet.`,
           },
         ],
@@ -703,6 +705,7 @@ export function freshDemo(): Snapshot {
         waits: [
           {
             kind: "base",
+            turn: "author",
             text: "main moved on since its checks ran: merge main in and let them run again.",
           },
         ],
@@ -1362,6 +1365,14 @@ export function demoCi(
           kind: "base_moved",
         },
       ],
+      ready: {
+        clear: false,
+        headSha: behindPr.headSha,
+        base: "main",
+        baseSha: "",
+        turn: "author",
+        text: "main moved on since its checks ran: merge main in and let them run again.",
+      },
       updatedAt: ago(44),
     }),
     // Bit asks before proposing CI.

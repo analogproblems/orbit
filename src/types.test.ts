@@ -494,9 +494,14 @@ describe("readiness line", () => {
         ...r,
         clear: false,
         waits: [
-          { kind: "checks", text: "Checks are still running on aaaaaaa." },
+          {
+            kind: "checks",
+            turn: "working",
+            text: "Checks are still running on aaaaaaa.",
+          },
           {
             kind: "merge",
+            turn: "working",
             text: "GitHub is still checking whether it merges.",
           },
         ],

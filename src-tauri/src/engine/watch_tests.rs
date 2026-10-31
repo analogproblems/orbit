@@ -1016,6 +1016,107 @@ async fn github_is_asked_whether_a_clean_pull_request_merges() {
     );
     assert_eq!(sent(d.path(), ask), 3);
 }
+/// GitHub's CI for `a/b` with pull request 1's one check still running
+/// at `head`.
+fn answer_pull_running(dir: &Path, head: &str) {
+    passing_pull(dir, head);
+    let text = std::fs::read_to_string(dir.join("answer.json")).unwrap();
+    let mut v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let check = &mut v["data"]["repository"]["pullRequests"]["nodes"][0]["commits"]["nodes"][0]
+        ["commit"]["statusCheckRollup"]["contexts"]["nodes"][0];
+    check["status"] = json!("IN_PROGRESS");
+    check["conclusion"] = json!(null);
+    std::fs::write(dir.join("answer.json"), v.to_string()).unwrap();
+}
+/// The one comment the fake GitHub holds.
+fn comment(dir: &Path) -> String {
+    let text = std::fs::read_to_string(dir.join("github.json")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let comments = v["comments"].as_array().unwrap();
+    assert_eq!(comments.len(), 1);
+    comments[0]["body"].as_str().unwrap().to_string()
+}
+
+/// The agent's view, end to end: Orbit's comment on the pull request comes
+/// once it is clear to merge, a push takes it back with one edit, and it
+/// turns clear again with one more, however many steps Orbit, CI and
+/// GitHub take in between.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_agent_is_told_once_each_time_the_answer_changes() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    let e = connected(d.path()).await;
+    e.update(|s| s.github_user = Some("me".into())).await;
+    let p = reviewed(&e).await;
+    let watch = || crate::github::GH.scope(gh.clone(), e.watch_ci());
+    let retry = || e.update(|s| s.merges[0].retry_at = Some("2020-01-01T00:00:00.000Z".into()));
+    // Nothing is started while Watch CI is off, though it waits on you.
+    e.update(|s| s.settings.watch_ci = false).await;
+    watch().await;
+    assert!(e.snapshot().await.ops.is_empty());
+    e.update(|s| s.settings.watch_ci = true).await;
+    // GitHub still working out whether it merges: nothing to tell yet.
+    passing_pull(d.path(), &p.head_sha);
+    mergeable(d.path(), &p.head_sha, json!(null), "unknown");
+    watch().await;
+    assert!(writes(d.path()).is_empty());
+    retry().await;
+    mergeable(d.path(), &p.head_sha, json!(true), "clean");
+    watch().await;
+    assert_eq!(writes(d.path()), ["POST repos/a/b/issues/1/comments"]);
+    let body = comment(d.path());
+    assert!(body.starts_with(&format!(
+        "## Orbit\n\n**Clear to merge** at `aaaaaaa` against `main` at `1111111`.\n\n<!-- orbit-ready {{\"base\":\"main\",\"baseSha\":\"{}\",\"clear\":true,\"head\":\"{}\",\"turn\":null,\"version\":1}} -->",
+        "1".repeat(40),
+        p.head_sha
+    )));
+    watch().await;
+    assert_eq!(writes(d.path()).len(), 1);
+
+    // A push takes it back: one edit.
+    let new = "b".repeat(40);
+    e.update(|s| s.prs[0].head_sha = new.clone()).await;
+    answer_pull_running(d.path(), &new);
+    watch().await;
+    assert_eq!(writes(d.path()).len(), 2);
+    assert!(comment(d.path())
+        .contains("**Not clear to merge yet.** Orbit hasn't reviewed bbbbbbb yet."));
+    // Orbit reviews it clean, the checks finish and GitHub works it out:
+    // nothing until it is clear again, then one edit.
+    e.update(|s| {
+        let mut r = Review::new(&s.prs[0], &s.settings, true);
+        r.status = "posted".into();
+        r.report = "Report".into();
+        r.findings = Some(vec![]);
+        crate::review_loop::decide(&mut r, Some(1));
+        s.reviews.push(r);
+    })
+    .await;
+    watch().await;
+    assert_eq!(
+        line(&e).await,
+        "Not clear to merge yet. Checks are still running on bbbbbbb."
+    );
+    passing_pull(d.path(), &new);
+    mergeable(d.path(), &new, json!(null), "unknown");
+    watch().await;
+    assert_eq!(
+        line(&e).await,
+        "Not clear to merge yet. GitHub is still checking whether it merges."
+    );
+    assert_eq!(writes(d.path()).len(), 2);
+    retry().await;
+    mergeable(d.path(), &new, json!(true), "clean");
+    watch().await;
+    let w = writes(d.path());
+    assert_eq!(w.len(), 3);
+    assert!(w[1].starts_with("PATCH repos/a/b/issues/comments/"));
+    assert_eq!(w[2], w[1]);
+    assert!(
+        comment(d.path()).contains("**Clear to merge** at `bbbbbbb` against `main` at `1111111`.")
+    );
+}
 /// GitHub's CI for `a/b` with pull request 1's one check failing at `head`.
 fn answer_pull_failing(dir: &Path, head: &str) {
     passing_pull(dir, head);
