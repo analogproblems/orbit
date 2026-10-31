@@ -657,8 +657,7 @@ pub fn ready(
             continue;
         }
         // The same answer in new words waits for the comment to change.
-        let problem = problems.iter().find(|p| p.id == t.problem_id);
-        if comment_body(t, problem) != t.posted {
+        if comment_body(t, problem_of(t, problems, prs)) != t.posted {
             t.ready = Some(answer);
         }
     }
@@ -1090,6 +1089,26 @@ pub fn next(
 }
 /// Why `problems` closes a pull request's problem when it closes.
 const PR_CLOSED: &str = "The pull request closed.";
+/// The problem a thread's comment or issue is about: the one it follows,
+/// unless that closed with its pull request and the pull request has been
+/// reopened since, as what Orbit saw before then is over. Its comment then
+/// says what is true now, not that it closed.
+pub fn problem_of<'a>(
+    t: &Thread,
+    problems: &'a [Problem],
+    prs: &[PullRequest],
+) -> Option<&'a Problem> {
+    let p = problems.iter().find(|p| p.id == t.problem_id)?;
+    let closed = p.closed_at.as_deref().and_then(time);
+    let reopened = p.closed_reason.as_deref() == Some(PR_CLOSED)
+        && prs.iter().any(|pr| {
+            t.pr_id.as_deref() == Some(pr.id.as_str())
+                && time(&pr.updated_at)
+                    .zip(closed)
+                    .is_some_and(|(updated, closed)| updated > closed)
+        });
+    (!reopened).then_some(p)
+}
 /// Whether a default branch's issue should be closed: its problem is over,
 /// and if it passed, it has stayed green long enough not to come back as
 /// the same problem.
@@ -1334,9 +1353,11 @@ fn items_text(t: &Thread, p: &Problem) -> String {
 /// agents that read the raw text, and the problem's state when there is
 /// one.
 fn data(t: &Thread, p: Option<&Problem>) -> String {
+    // A comment only about merging has no problem to list items for.
     let items: Vec<_> = t
         .items
         .iter()
+        .filter(|_| p.is_some())
         .take(MAX_ITEMS)
         .map(|i| {
             let mut item = json!({

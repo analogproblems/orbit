@@ -291,7 +291,7 @@ While automatic publication is on, Orbit also shows each automatic round's resul
 
 ### Replies from coding agents
 
-When a coding agent such as Claude Code fixes a PR, it can answer each finding in the form the next round recognises. Orbit includes a Claude Code skill for this, `answer-orbit-reviews`. It explains how to read a published review and its hidden data, which findings need an answer, the `Fixed F2 in <commit>` and `Declined F2: <reason>` lines, the answers to Orbit's CI comments and issues (`Taking I2`, `Fixed I2 in <commit>`, `Declined I2: <reason>`, `Need a person on I2: <question>`), where to post them, which accounts Orbit reads replies from, and to merge only when Orbit's comment says clear to merge at the agent's latest commit and base (see [Clear to merge](#clear-to-merge)).
+When a coding agent such as Claude Code fixes a PR, it can answer each finding in the form the next round recognises. Orbit includes a Claude Code skill for this, `answer-orbit-reviews`. It explains how to read a published review and its hidden data, which findings need an answer, the `Fixed F2 in <commit>` and `Declined F2: <reason>` lines, the answers to Orbit's CI comments and issues (`Taking I2`, `Fixed I2 in <commit>`, `Declined I2: <reason>`, `Need a person on I2: <question>`), where to post them, which accounts Orbit reads replies from, and to merge only when Orbit's own comment, posted by Orbit's account, says clear to merge at the agent's latest commit and base (see [Clear to merge](#clear-to-merge)).
 
 In Settings, **Replies from coding agents** shows the skill with **Copy skill**. Save it as `.claude/skills/answer-orbit-reviews/SKILL.md` in a repository Orbit reviews, then commit and push it: cloud sessions load skills from the repository they clone, not from your computer. Or save it under `~/.claude/skills/answer-orbit-reviews/` for every project on one computer. Orbit never adds it to a repository itself. If the agent posts as a bot account, add that account under **Trusted accounts**; otherwise its replies are left out.
 
@@ -444,9 +444,11 @@ Orbit tells the agent at the top of its one comment on the pull request, headed 
 
 - Orbit posts the comment once the pull request is clear or waits on someone, not while Orbit, CI or GitHub is still at work.
 - It edits the comment only when the answer changes: it turns clear or not, its latest commit or its base's moves, or it becomes someone else's move. Each change wakes the agent once, rather than at every step in between; the words catch up whenever the comment changes anyway.
-- When Orbit stops working it out for a pull request that is still open, such as while it is a draft, the comment says so. A closed pull request's comment is left as it was.
+- When Orbit stops working it out for a pull request that is still open, such as while it is a draft, the comment says so. A closed pull request's comment is left as it was. If it is reopened, the comment gives the answer again, and the CI part from before it closed goes until a check fails again.
+- Orbit works the answer out again just before each change to the comment, so one that went stale while Orbit waited on GitHub is never sent.
 - The **Comment on pull requests** rule decides whether Bit posts it, as for failing CI. With **Ask first**, the answer goes only on a comment you let Bit post. Nothing new is posted while **Watch CI** is off, but a comment already on GitHub then says Orbit can't see the checks.
 - **Open Orbit's comment** in the **Merging** panel opens it on GitHub.
+- Anyone can post a comment that looks like Orbit's, so the `answer-orbit-reviews` skill tells the agent to read the answer only from Orbit's own comment, posted by the GitHub account Orbit signs in with, and to check GitHub again right before it merges. Tell your agent which account that is, such as in its instructions. Clear to merge never lets an agent merge on its own: it merges only where you already let it.
 
 ### Review loops
 

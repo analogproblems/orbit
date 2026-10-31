@@ -1117,6 +1117,133 @@ async fn the_agent_is_told_once_each_time_the_answer_changes() {
         comment(d.path()).contains("**Clear to merge** at `bbbbbbb` against `main` at `1111111`.")
     );
 }
+/// Waits for the fake GitHub to hold a call.
+async fn held(dir: &Path) {
+    let held = dir.join("held");
+    for _ in 0..500 {
+        if held.exists() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let calls = std::fs::read_to_string(dir.join("calls")).unwrap_or_default();
+    panic!("GitHub was never asked: {calls}");
+}
+/// Turns automatic reviews off for `a/b` while GitHub holds a call during
+/// `watch`, then lets it go.
+async fn stop_reviewing_while_held(
+    e: &std::sync::Arc<Engine>,
+    dir: &Path,
+    gh: &std::path::Path,
+    endpoint: &str,
+) {
+    std::fs::write(dir.join("hold"), endpoint).unwrap();
+    let watching = tokio::spawn(crate::github::GH.scope(gh.to_path_buf(), {
+        let e = e.clone();
+        async move { e.watch_ci().await }
+    }));
+    held(dir).await;
+    e.update(|s| s.settings.repositories[0].automatic = false)
+        .await;
+    std::fs::remove_file(dir.join("hold")).unwrap();
+    watching.await.unwrap();
+}
+
+/// An answer worked out before Orbit waits on GitHub isn't sent once it
+/// has gone stale meanwhile: a pull request no longer reviewed
+/// automatically while Orbit looks for its comment gets none, and one whose
+/// replies Orbit is reading says Orbit stopped instead.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_answer_gone_stale_while_orbit_waits_isnt_sent() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    let e = connected(d.path()).await;
+    e.update(|s| s.github_user = Some("me".into())).await;
+    let p = reviewed(&e).await;
+    passing_pull(d.path(), &p.head_sha);
+    mergeable(d.path(), &p.head_sha, json!(true), "clean");
+    stop_reviewing_while_held(&e, d.path(), &gh, "repos/a/b/issues/1/comments").await;
+    assert!(writes(d.path()).is_empty());
+    let calls = std::fs::read_to_string(d.path().join("calls")).unwrap();
+    assert!(calls.contains("GET repos/a/b/issues/1/comments\n"));
+
+    // A comment about a failing check, whose replies Orbit reads first each
+    // time. A push changes the answer, and Orbit stops reviewing it while
+    // it reads them.
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    let e = connected(d.path()).await;
+    e.update(|s| s.github_user = Some("me".into())).await;
+    let p = reviewed(&e).await;
+    answer_pull_failing(d.path(), &p.head_sha);
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!(writes(d.path()), ["POST repos/a/b/issues/1/comments"]);
+    let new = "b".repeat(40);
+    e.update(|s| s.prs[0].head_sha = new.clone()).await;
+    answer_pull_failing(d.path(), &new);
+    stop_reviewing_while_held(&e, d.path(), &gh, "repos/a/b/issues/1/comments").await;
+    assert_eq!(writes(d.path()).len(), 2);
+    let body = comment(d.path());
+    assert!(!body.contains("Orbit hasn't reviewed"), "{body}");
+    assert!(
+        body.contains("**Not clear to merge.** Orbit stopped working out whether it is clear to merge, as it no longer reviews it automatically."),
+        "{body}"
+    );
+}
+
+/// A pull request that closes with a check failing keeps Orbit's comment
+/// as it was. Reopened with its checks passing and Orbit's review clean,
+/// its comment says it is clear to merge, with nothing about CI from
+/// before it closed.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_reopened_pull_request_is_told_it_is_clear() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    let e = connected(d.path()).await;
+    e.update(|s| s.github_user = Some("me".into())).await;
+    let p = reviewed(&e).await;
+    let watch = || crate::github::GH.scope(gh.clone(), e.watch_ci());
+    answer_pull_failing(d.path(), &p.head_sha);
+    watch().await;
+    assert_eq!(writes(d.path()), ["POST repos/a/b/issues/1/comments"]);
+    let posted = comment(d.path());
+    assert!(posted.contains("### CI"));
+    // It closes.
+    e.update(|s| s.prs.clear()).await;
+    passing_pulls(d.path(), &[]);
+    watch().await;
+    let s = e.snapshot().await;
+    assert_eq!(
+        s.problems[0].closed_reason.as_deref(),
+        Some("The pull request closed.")
+    );
+    assert_eq!(writes(d.path()).len(), 1);
+    // Reopened.
+    let reopened = PullRequest {
+        updated_at: (chrono::Utc::now() + chrono::Duration::seconds(1)).to_rfc3339(),
+        ..p.clone()
+    };
+    e.update(|s| s.prs = vec![reopened]).await;
+    passing_pull(d.path(), &p.head_sha);
+    mergeable(d.path(), &p.head_sha, json!(true), "clean");
+    watch().await;
+    let w = writes(d.path());
+    assert_eq!(w.len(), 2);
+    assert!(w[1].starts_with("PATCH repos/a/b/issues/comments/"));
+    let body = comment(d.path());
+    assert!(
+        body.starts_with(
+            "## Orbit\n\n**Clear to merge** at `aaaaaaa` against `main` at `1111111`."
+        ),
+        "{body}"
+    );
+    assert!(!body.contains("### CI"), "{body}");
+    watch().await;
+    assert_eq!(writes(d.path()).len(), 2);
+}
+
 /// GitHub's CI for `a/b` with pull request 1's one check failing at `head`.
 fn answer_pull_failing(dir: &Path, head: &str) {
     passing_pull(dir, head);

@@ -1851,6 +1851,123 @@ fn a_pull_request_orbit_stops_working_out_says_so() {
     assert_eq!(next(&ci[0], None, true, t0()), None);
 }
 
+/// A pull request that closes keeps its comment as it was, and once it is
+/// reopened the comment says what is true now: the CI problem from before
+/// it closed is over, so only the answer is left.
+#[test]
+fn a_reopened_pull_request_gets_its_answer() {
+    let mut p = pull("p1", &["CI / Rust"], 'a', t0());
+    let mut threads = vec![];
+    let mut journal = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    let failing = answer('a', Some((Turn::Author, "CI / Rust fails on aaaaaaa.")));
+    say(&mut threads, 'a', failing, std::slice::from_ref(&p));
+    let body = send(&mut threads, &mut journal, &p, true, t0())
+        .unwrap()
+        .body;
+    assert!(body.contains("### CI\n\n1 check fails on this pull request at `aaaaaaa`."));
+    // It closes: nothing is edited, though Orbit stopped watching its CI.
+    let closed = t0() + Duration::hours(1);
+    p.closed_at = Some(stamp(closed));
+    p.closed_reason = Some("The pull request closed.".into());
+    let problems = std::slice::from_ref(&p);
+    refresh(&mut threads, problems, closed);
+    assert!(!ready(&mut threads, &[], &[], problems, true, closed));
+    assert_eq!(
+        next(
+            &threads[0],
+            problem_of(&threads[0], problems, &[]),
+            true,
+            closed
+        ),
+        None
+    );
+    // Still listed as open from before it closed: the same.
+    let listed = PullRequest {
+        updated_at: stamp(t0()),
+        ..open('a')
+    };
+    assert_eq!(problem_of(&threads[0], problems, &[listed]), Some(&p));
+    // Nor without a time, for another pull request, or for a problem that
+    // was over for another reason.
+    let later = stamp(closed + Duration::hours(1));
+    let unknown = PullRequest {
+        updated_at: String::new(),
+        ..open('a')
+    };
+    assert_eq!(problem_of(&threads[0], problems, &[unknown]), Some(&p));
+    let other = PullRequest {
+        id: "a/b#13".into(),
+        number: 13,
+        updated_at: later.clone(),
+        ..open('a')
+    };
+    assert_eq!(problem_of(&threads[0], problems, &[other]), Some(&p));
+    let mut passed = p.clone();
+    pass(&mut passed, 'a', closed);
+    let touched = PullRequest {
+        updated_at: later,
+        ..open('a')
+    };
+    let passed = std::slice::from_ref(&passed);
+    assert_eq!(problem_of(&threads[0], passed, &[touched]), passed.first());
+    // Reopened, its checks pass and Orbit's review is clean: clear to merge.
+    let reopened = closed + Duration::hours(1);
+    let pr = PullRequest {
+        updated_at: stamp(reopened),
+        ..open('a')
+    };
+    let prs = std::slice::from_ref(&pr);
+    assert!(ready(
+        &mut threads,
+        &[answer('a', None)],
+        prs,
+        problems,
+        true,
+        reopened
+    ));
+    let problem = problem_of(&threads[0], problems, prs);
+    assert_eq!(problem, None);
+    let edit = tell(&mut threads, &mut journal, problem, true, reopened).unwrap();
+    assert_eq!(edit.action, Action::EditComment);
+    assert!(edit
+        .body
+        .starts_with("## Orbit\n\n**Clear to merge** at `aaaaaaa`"));
+    assert!(!edit.body.contains("### CI"));
+    assert!(edit.body.contains("\"items\":[]"));
+    assert!(!ready(
+        &mut threads,
+        &[answer('a', None)],
+        prs,
+        problems,
+        true,
+        reopened
+    ));
+    assert_eq!(next(&threads[0], problem, true, reopened), None);
+    // It waits on someone, then the same in new words, which wait as usual.
+    let waits = |text| answer('a', Some((Turn::Person, text)));
+    let review = waits("A review is required.");
+    assert!(ready(
+        &mut threads,
+        &[review],
+        prs,
+        problems,
+        true,
+        reopened
+    ));
+    tell(&mut threads, &mut journal, problem, true, reopened).unwrap();
+    let reworded = waits("A required review is missing.");
+    assert!(!ready(
+        &mut threads,
+        &[reworded],
+        prs,
+        problems,
+        true,
+        reopened
+    ));
+    assert_eq!(next(&threads[0], problem, true, reopened), None);
+}
+
 /// Others' words in the answer, such as a check's name or GitHub's error,
 /// can't mention anyone, link anywhere or read as Markdown or HTML.
 #[test]
@@ -1934,4 +2051,15 @@ fn the_reply_skill_shows_the_answer_as_orbit_writes_it() {
     for turn in ["author", "person", "working"] {
         assert!(skill.contains(&format!("`{turn}`")), "{turn}");
     }
+    // It names the hidden line that tells Orbit's own comment apart.
+    let id = crate::types::pr_id("owner/repo", 12);
+    let a = Readiness {
+        pr_id: id.clone(),
+        ..answer('a', None)
+    };
+    let pr = PullRequest { id, ..open('a') };
+    let mut threads = vec![];
+    ready(&mut threads, &[a], &[pr], &[], true, t0());
+    let marker = format!("`{}{{json}} -->`", threads[0].tag());
+    assert!(skill.contains(&marker), "{marker}");
 }
