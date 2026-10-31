@@ -507,5 +507,16 @@ describe("readiness line", () => {
         ],
       }),
     ).toBe("Not clear to merge yet. Checks are still running on aaaaaaa.");
+    // Where Orbit can't see the branch's rules, it says so.
+    const unseen = { reviewers: [], rule: null, unseen: "Can't see." };
+    expect(readinessLine({ ...r, reviews: unseen })).toBe(
+      "Clear to merge at aaaaaaa against main at ccccccc. Orbit can't see main's rules, so it left its reviews to GitHub.",
+    );
+    expect(
+      readinessLine({
+        ...r,
+        reviews: { reviewers: [], rule: { approvals: 1, codeOwners: false } },
+      }),
+    ).toBe("Clear to merge at aaaaaaa against main at ccccccc.");
   });
 });

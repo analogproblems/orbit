@@ -903,13 +903,16 @@ fn passing_pulls(dir: &Path, pulls: &[(u64, &str)]) {
     std::fs::write(dir.join("answer.json"), v.to_string()).unwrap();
 }
 /// What GitHub says about pull request 1 at `head`, against main's latest
-/// commit in `passing_pulls`.
+/// commit in `passing_pulls`, with nobody asked to review it.
 fn mergeable(dir: &Path, head: &str, mergeable: serde_json::Value, state: &str) {
     let v = json!({
+        "user": { "login": "author" },
         "head": { "sha": head },
-        "base": { "sha": "1".repeat(40) },
+        "base": { "sha": "1".repeat(40), "ref": "main", "repo": { "owner": { "login": "a" } } },
         "mergeable": mergeable,
-        "mergeable_state": state
+        "mergeable_state": state,
+        "requested_reviewers": [],
+        "requested_teams": []
     });
     std::fs::write(dir.join("pull-1.json"), v.to_string()).unwrap();
 }
@@ -1116,6 +1119,184 @@ async fn the_agent_is_told_once_each_time_the_answer_changes() {
     assert!(
         comment(d.path()).contains("**Clear to merge** at `bbbbbbb` against `main` at `1111111`.")
     );
+}
+/// A review of pull request 1 by `login` at `commit`.
+fn review(login: &str, state: &str, commit: &str) -> serde_json::Value {
+    json!({ "user": { "login": login }, "state": state, "commit_id": commit })
+}
+fn reviews(dir: &Path, reviews: &[serde_json::Value]) {
+    std::fs::write(dir.join("reviews-1.json"), json!(reviews).to_string()).unwrap();
+}
+
+/// Where main's rules need an approval, one of an older commit keeps the
+/// line waiting on its reviewer, and their approval of the latest commit
+/// turns it clear. Rules Orbit can't see are said so, and left to GitHub.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_approval_of_an_older_commit_keeps_it_waiting_on_its_reviewer() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    let e = connected(d.path()).await;
+    e.update(|s| s.github_user = Some("me".into())).await;
+    let p = reviewed(&e).await;
+    let watch = || crate::github::GH.scope(gh.clone(), e.watch_ci());
+    let again = || e.update(|s| s.merges[0].read_at = "2020-01-01T00:00:00.000Z".into());
+    let old = "b".repeat(40);
+    passing_pull(d.path(), &p.head_sha);
+    mergeable(d.path(), &p.head_sha, json!(true), "clean");
+    // Protected by a ruleset alone, which needs an approval.
+    std::fs::write(d.path().join("branch-main.json"), r#"{"protected":true}"#).unwrap();
+    std::fs::write(
+        d.path().join("rules-main.json"),
+        r#"[{"type":"pull_request","parameters":{"required_approving_review_count":1}}]"#,
+    )
+    .unwrap();
+    reviews(d.path(), &[review("alice", "APPROVED", &old)]);
+    watch().await;
+    let waiting =
+        "main needs 1 approval of aaaaaaa and it has none: alice approved bbbbbbb but not aaaaaaa.";
+    assert_eq!(line(&e).await, format!("Not clear to merge yet. {waiting}"));
+    let shown = e.shown_snapshot().await;
+    let r = shown.readiness[0].reviews.as_ref().unwrap();
+    assert_eq!(r.rule.as_ref().map(|r| r.approvals), Some(1));
+    assert_eq!(r.reviewers[0].stand, crate::readiness::Stand::ApprovedOlder);
+    assert_eq!(writes(d.path()), ["POST repos/a/b/issues/1/comments"]);
+    assert!(comment(d.path()).contains(&format!("**Not clear to merge yet.** {waiting}")));
+    assert!(comment(d.path()).contains(r#""turn":"person""#));
+    // Read again later, still waiting: nothing more is sent.
+    again().await;
+    watch().await;
+    assert_eq!(sent(d.path(), "GET repos/a/b/pulls/1/reviews"), 2);
+    assert_eq!(writes(d.path()).len(), 1);
+
+    // Alice approves the latest commit: one edit, to clear.
+    reviews(
+        d.path(),
+        &[
+            review("alice", "APPROVED", &old),
+            review("alice", "APPROVED", &p.head_sha),
+        ],
+    );
+    again().await;
+    watch().await;
+    assert_eq!(
+        line(&e).await,
+        "Clear to merge at aaaaaaa against main at 1111111."
+    );
+    assert_eq!(writes(d.path()).len(), 2);
+    assert!(comment(d.path())
+        .contains("**Clear to merge** at `aaaaaaa` against `main` at `1111111`.\n\n<!--"));
+
+    // Orbit's sign-in can't see main's protection: it says so, leaves the
+    // reviews to GitHub, and doesn't edit the comment just for that.
+    std::fs::write(
+        d.path().join("protection-error"),
+        "gh: Not Found (HTTP 404)\n",
+    )
+    .unwrap();
+    again().await;
+    watch().await;
+    let shown = e.shown_snapshot().await;
+    assert_eq!(
+        shown.readiness[0].reviews.as_ref().unwrap().unseen.as_deref(),
+        Some("Orbit's GitHub sign-in can't see main's rules, so Orbit can't tell whether it needs reviews.")
+    );
+    assert_eq!(
+        shown.readiness[0].line(),
+        "Clear to merge at aaaaaaa against main at 1111111. Orbit can't see main's rules, so it left its reviews to GitHub."
+    );
+    assert_eq!(writes(d.path()).len(), 2);
+    // Or GitHub fails to say.
+    std::fs::write(
+        d.path().join("protection-error"),
+        "gh: Bad Gateway (HTTP 502)\n",
+    )
+    .unwrap();
+    again().await;
+    watch().await;
+    let shown = e.shown_snapshot().await;
+    assert_eq!(
+        shown.readiness[0].reviews.as_ref().unwrap().unseen.as_deref(),
+        Some("Orbit couldn't read main's rules, so it can't tell whether it needs reviews: Bad Gateway (HTTP 502).")
+    );
+    // Or doesn't say whether main is protected, or which branch it is
+    // into.
+    std::fs::write(d.path().join("branch-main.json"), "{}").unwrap();
+    again().await;
+    watch().await;
+    let shown = e.shown_snapshot().await;
+    assert_eq!(
+        shown.readiness[0].reviews.as_ref().unwrap().unseen.as_deref(),
+        Some("Orbit couldn't read main's rules, so it can't tell whether it needs reviews: GitHub didn't say whether it is protected.")
+    );
+    std::fs::write(d.path().join("branch-main.json"), r#"{"protected":true}"#).unwrap();
+    let mut pull: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(d.path().join("pull-1.json")).unwrap())
+            .unwrap();
+    pull["base"]["ref"] = json!(null);
+    std::fs::write(d.path().join("pull-1.json"), pull.to_string()).unwrap();
+    again().await;
+    watch().await;
+    let shown = e.shown_snapshot().await;
+    assert_eq!(
+        shown.readiness[0]
+            .reviews
+            .as_ref()
+            .unwrap()
+            .unseen
+            .as_deref(),
+        Some("GitHub didn't say its base branch, so Orbit can't tell whether it needs reviews.")
+    );
+    mergeable(d.path(), &p.head_sha, json!(true), "clean");
+    // GitHub then says a rule blocks it: who it may wait for.
+    let mut pull: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(d.path().join("pull-1.json")).unwrap())
+            .unwrap();
+    pull["mergeable_state"] = json!("blocked");
+    pull["requested_reviewers"] = json!([{ "login": "bob" }]);
+    std::fs::write(d.path().join("pull-1.json"), pull.to_string()).unwrap();
+    again().await;
+    watch().await;
+    let blocked = "GitHub says a rule blocks merging it, and Orbit can't see main's rules to tell which. So far, bob hasn't reviewed aaaaaaa yet.";
+    assert_eq!(line(&e).await, format!("Not clear to merge yet. {blocked}"));
+    assert_eq!(writes(d.path()).len(), 3);
+    // Its rules read with an admin's sign-in: two approvals.
+    std::fs::remove_file(d.path().join("protection-error")).unwrap();
+    std::fs::write(
+        d.path().join("protection-main.json"),
+        r#"{"required_pull_request_reviews":{"required_approving_review_count":2}}"#,
+    )
+    .unwrap();
+    again().await;
+    watch().await;
+    assert_eq!(
+        line(&e).await,
+        "Not clear to merge yet. main needs 2 approvals of aaaaaaa and it has 1: bob hasn't reviewed aaaaaaa yet."
+    );
+    // A list of reviews too long to read in full is a failed read, which
+    // keeps the answer from before.
+    let many: Vec<_> = (0..300)
+        .map(|i| review(&format!("r{i}"), "COMMENTED", &old))
+        .collect();
+    reviews(d.path(), &many);
+    again().await;
+    watch().await;
+    let shown = e.shown_snapshot().await;
+    assert_eq!(
+        shown.merges[0].error.as_deref(),
+        Some("Orbit couldn't ask GitHub whether it merges: It has more reviews than Orbit reads. It tries again later.")
+    );
+    assert_eq!(
+        shown.readiness[0]
+            .reviews
+            .as_ref()
+            .unwrap()
+            .rule
+            .as_ref()
+            .map(|r| r.approvals),
+        Some(2)
+    );
+    assert_eq!(sent(d.path(), "GET repos/a/b/pulls/1/reviews"), 12);
 }
 /// Waits for the fake GitHub to hold a call.
 async fn held(dir: &Path) {

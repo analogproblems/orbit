@@ -66,6 +66,8 @@ On a pull request Orbit reviews automatically, Orbit's comment starts with wheth
 
 - **Clear to merge** at `abc1234` against `main` at `def5678`.
 - **Not clear to merge yet.** It conflicts with main: merge main in and fix the conflicts.
+- **Not clear to merge yet.** main needs 1 approval of abc1234 and it has none: alice approved 9f8e7d6 but not abc1234.
+- **Clear to merge** at `abc1234` against `main` at `def5678`. Orbit can't see main's rules, so it left its reviews to GitHub.
 
 Under that line, a hidden `<!-- orbit-ready {json} -->` line says the same for the raw text (`"version": 1`): `clear`, `head` (the commit it was worked out for), `base` (the base branch) and `baseSha` (the base branch's commit it is clear against, empty while it isn't), and `turn`, whose move it is while it isn't clear: `author` (yours), `person` (the person running Orbit, or whoever a rule on GitHub waits for) or `working` (Orbit, CI or GitHub is still at it). `turn` is null when it is clear, or once Orbit stopped working it out, such as while the pull request is a draft.
 
@@ -89,8 +91,8 @@ Then:
 - Clear to merge is never permission to merge on its own. Merge only when you may merge anyway, because the person running Orbit or your instructions let you, and then only when the line says so.
 - Merge only when `clear` is true, `head` is your branch's latest commit and `baseSha` is the base branch's latest commit. An answer about an older commit is stale: wait for Orbit to edit it.
 - Right before merging, check on GitHub again that the branch's latest commit is still `head`, the base branch's is still `baseSha`, and GitHub still says it can merge, with its checks and the branch's rules. Pin the head when your tool lets you, such as `gh pr merge --match-head-commit <head>`, so a push in between stops the merge.
-- Clear means Orbit's latest review of that commit is clean, every check on it passed having begun after the base branch's latest commit, and GitHub says it can merge.
-- While it isn't clear, the line says the first thing in the way. When `turn` is `author`, it is yours: fix what it names, such as findings, a failing check, or the base branch moving on, then push. Otherwise wait, or ask the person running Orbit.
+- Clear means Orbit's latest review of that commit is clean, every check on it passed having begun after the base branch's latest commit, and GitHub says it can merge. Where the base branch's rules need approvals, it also means enough people approved that commit itself, as an approval of an older commit doesn't count, and nobody's request for changes stands. When Orbit can't see the branch's rules, the line says so and leaves reviews to GitHub.
+- While it isn't clear, the line says the first thing in the way. When `turn` is `author`, it is yours: fix what it names, such as findings, a failing check, a reviewer's request for changes, or the base branch moving on, then push. Otherwise wait, or ask the person running Orbit.
 - Orbit edits the comment only when the answer changes: it turns clear or not, the head or base moves, or it becomes someone else's move. It doesn't edit it for each step Orbit, CI and GitHub take in between, so each edit is worth reading.
 - Orbit never merges, approves or requests changes itself.
 
