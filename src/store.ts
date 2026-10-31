@@ -65,6 +65,14 @@ const served =
 /** Running in a browser connected to a desktop Orbit through an access link,
  * or opened from its server without one that works. */
 export const remote = remoteToken !== null || served;
+/** Opened from `orbit-server`, Orbit without a window, whose page mark
+ * (`SERVER_MARK` in remote.rs) says so. Its link is made on the computer it
+ * runs on rather than in a desktop window. */
+export const windowless =
+  served &&
+  document
+    .querySelector('meta[name="orbit-served"]')
+    ?.getAttribute("content") === "server";
 /** The access link's token; without one, every call fails as an old link. */
 function linkToken(): string {
   if (remoteToken === null) throw Error(expiredLink);

@@ -102,6 +102,9 @@ const HTML_CSP: &str = "default-src 'self'; connect-src 'self'; img-src 'self' d
 
 /// Added to the page Orbit serves; `src/store.ts` looks for it.
 pub const SERVED_MARK: &str = r#"<meta name="orbit-served" content="">"#;
+/// The same mark on the page `orbit-server` serves, so the page can say its
+/// link is made on the computer Orbit runs on, not in a desktop window.
+pub const SERVER_MARK: &str = r#"<meta name="orbit-served" content="server">"#;
 /// A file of the built frontend.
 pub struct Asset {
     pub bytes: Vec<u8>,
@@ -133,17 +136,19 @@ impl Hub {
 
 /// The access token kept in Orbit's data folder, created on first use.
 pub fn token(root: &Path) -> Result<String, String> {
-    let path = root.join(TOKEN_FILE);
-    if let Ok(saved) = std::fs::read_to_string(&path) {
-        let saved = saved.trim();
-        if valid_token(saved) {
-            return Ok(saved.into());
-        }
+    match saved_token(root) {
+        Some(saved) => Ok(saved),
+        None => new_token(root),
     }
-    new_token(root)
+}
+/// The access token already in Orbit's data folder, if there is a valid one.
+pub(crate) fn saved_token(root: &Path) -> Option<String> {
+    let saved = std::fs::read_to_string(root.join(TOKEN_FILE)).ok()?;
+    let saved = saved.trim();
+    valid_token(saved).then(|| saved.into())
 }
 /// Replaces the access token, so links made with the old one stop working.
-fn new_token(root: &Path) -> Result<String, String> {
+pub(crate) fn new_token(root: &Path) -> Result<String, String> {
     let path = root.join(TOKEN_FILE);
     // Version 4 UUIDs come from the operating system's secure random source.
     let token = format!(
@@ -165,15 +170,19 @@ struct Remote {
     token: Arc<str>,
     assets: Assets,
     stop: watch::Receiver<bool>,
+    mark: &'static str,
 }
 /// The server's routes. Event streams end once `stop` turns true, so a server
-/// being stopped or given a new token does not wait on open browsers.
+/// being stopped or given a new token does not wait on open browsers. `mark`
+/// goes in the served page's head: [`SERVED_MARK`] from the desktop app,
+/// [`SERVER_MARK`] from `orbit-server`.
 pub fn router(
     engine: Arc<Engine>,
     hub: Hub,
     token: String,
     assets: Assets,
     stop: watch::Receiver<bool>,
+    mark: &'static str,
 ) -> Router {
     Router::new()
         .route("/api/events", get(events))
@@ -185,6 +194,7 @@ pub fn router(
             token: token.into(),
             assets,
             stop,
+            mark,
         })
 }
 
@@ -432,7 +442,7 @@ async fn asset(State(remote): State<Remote>, uri: Uri) -> Response {
         // Marks the page as served here, so a browser without a working link
         // says so rather than showing the demo.
         String::from_utf8_lossy(&file.bytes)
-            .replacen("<head>", &format!("<head>{SERVED_MARK}"), 1)
+            .replacen("<head>", &format!("<head>{}", remote.mark), 1)
             .into_bytes()
     } else {
         file.bytes
@@ -475,6 +485,23 @@ impl Default for Config {
         }
     }
 }
+/// The saved configuration, or the default when there is none.
+pub(crate) fn config(root: &Path) -> Config {
+    std::fs::read(root.join(CONFIG_FILE))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+pub(crate) fn save_config(root: &Path, config: &Config) -> Result<(), String> {
+    write_private(
+        &root.join(CONFIG_FILE),
+        &serde_json::to_vec(config).map_err(|e| e.to_string())?,
+    )
+}
+/// The access link on this computer.
+pub(crate) fn local_link(port: u16, token: &str) -> String {
+    format!("http://127.0.0.1:{port}/#token={token}")
+}
 /// What Settings shows about browser access.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -511,10 +538,7 @@ pub struct Access {
 impl Access {
     /// Loads the saved configuration. Nothing listens until [`Access::start`].
     pub fn new(engine: Arc<Engine>, hub: Hub, root: PathBuf, assets: Assets) -> Arc<Self> {
-        let config = std::fs::read(root.join(CONFIG_FILE))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
+        let config = config(&root);
         Arc::new(Self {
             engine,
             hub,
@@ -543,7 +567,7 @@ impl Access {
                 link: inner
                     .running
                     .as_ref()
-                    .map(|r| format!("http://127.0.0.1:{}/#token={}", inner.config.port, r.token)),
+                    .map(|r| local_link(inner.config.port, &r.token)),
                 tailnet_host: None,
             }
         };
@@ -562,10 +586,7 @@ impl Access {
         {
             let mut inner = self.inner.lock().await;
             let config = Config { enabled, port };
-            write_private(
-                &self.root.join(CONFIG_FILE),
-                &serde_json::to_vec(&config).map_err(|e| e.to_string())?,
-            )?;
+            save_config(&self.root, &config)?;
             let turned_off = inner.config.enabled && !enabled;
             if inner.config != config || inner.running.is_none() == enabled {
                 inner.config = config;
@@ -623,6 +644,7 @@ impl Access {
             token.clone(),
             self.assets.clone(),
             stopped.clone(),
+            SERVED_MARK,
         );
         let mut shutdown = stopped;
         tokio::spawn(async move {
@@ -669,7 +691,7 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     std::io::Write::write_all(&mut file, bytes).map_err(|e| e.to_string())
 }
 /// This computer's name on the tailnet, such as `desk.example.ts.net`.
-async fn tailnet_host() -> Option<String> {
+pub(crate) async fn tailnet_host() -> Option<String> {
     let out = crate::github::run_with_timeout(
         "tailscale",
         &["status".into(), "--json".into()],

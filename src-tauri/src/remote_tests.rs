@@ -26,7 +26,14 @@ fn server() -> (
     let engine = Engine::new(d.path().into(), |_| {}).unwrap();
     let hub = Hub::default();
     let (stop, stopped) = watch::channel(false);
-    let app = router(engine.clone(), hub.clone(), TOKEN.into(), assets(), stopped);
+    let app = router(
+        engine.clone(),
+        hub.clone(),
+        TOKEN.into(),
+        assets(),
+        stopped,
+        SERVED_MARK,
+    );
     (d, engine, hub, app, stop)
 }
 fn call(command: &str, token: Option<&str>, body: &str) -> Request<Body> {
@@ -417,6 +424,13 @@ async fn turns_on_and_off_from_settings() {
     assert_eq!(
         request(port, "POST", "/api/get_snapshot", &token).await.0,
         200
+    );
+    // The desktop app's page says it comes from the desktop app.
+    let (status, page) = request(port, "GET", "/", &token).await;
+    assert_eq!(status, 200);
+    assert!(
+        page.contains(SERVED_MARK) && !page.contains(SERVER_MARK),
+        "{page}"
     );
 
     // The choice is kept for the next launch.

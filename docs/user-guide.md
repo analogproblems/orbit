@@ -726,11 +726,34 @@ While Orbit runs on your computer, you can open the same workspace in a browser 
 2. Run the `tailscale serve` command Settings shows, once, on this computer. It publishes Orbit to your tailnet over HTTPS. Nothing is opened on your local network or the internet.
 3. Copy the link from Settings and open it on your other device. The browser keeps the link's key, so later visits only need the address.
 
-The link works like a key. Anyone with it can do everything you can in the desktop window, including running repository setup commands on this computer. Only open it on your own devices. **Make a new link** signs out every browser that uses the old one. Turning access off does the same, so a link from before never works again, even on a phone you've lost. You can only change these controls from the desktop app.
+The link works like a key. Anyone with it can do everything you can in the desktop window, including running repository setup commands on this computer. Only open it on your own devices. **Make a new link** signs out every browser that uses the old one. Turning access off does the same, so a link from before never works again, even on a phone you've lost. You can only change these controls from the desktop app, or with `orbit-server link` for [Orbit without a window](#run-orbit-without-a-window).
 
-Your computer has to stay on with Orbit running. Desktop notifications appear on the computer only, but **Needs you** shows every item in the browser too. When the connection drops, the browser says so and reconnects on its own.
+Your computer has to stay on with Orbit running, or you can [run Orbit without a window](#run-orbit-without-a-window) on a computer that stays on. Desktop notifications appear on the computer only, but **Needs you** shows every item in the browser too. When the connection drops, the browser says so and reconnects on its own.
 
 On a phone-sized screen, the sidebar moves into a menu: tap the menu button at the top right to reach every page, including Bit.
+
+## Run Orbit without a window
+
+Orbit only reviews while it runs. To keep reviewing while your laptop is closed, run `orbit-server` on a computer that stays on, such as a home server or an old laptop, and use it from your other devices through the browser page above. It's the same Orbit: the same reviews, rules, settings and saved state, with no window.
+
+1. On that computer, install Node, Rust, Git, the GitHub CLI (`gh`) and the reviewer tools you use (`codex`, `claude` or `agy`), so they are on its `PATH`. If you use Claude or Antigravity, run `claude` or `agy` there once to sign in.
+2. In a copy of Orbit's source, run `npm ci`, then `npm run server`. It builds the browser page and Orbit, then starts Orbit with no window. It prints where it keeps its data and the link for your other devices.
+3. Run the `tailscale serve` command it shows, once, then open the link on your other device. Sign in to GitHub and Codex there: both sign-ins give you a code to enter in a browser, so they work from any device.
+
+By default it uses the desktop app's data folder, so a computer that has the desktop app picks up its repositories and history. Only one Orbit can use a data folder at a time: close the desktop app first, or give the server its own folder. It listens on this computer only, on port 4317 unless you choose another, and Tailscale forwards your other devices to it.
+
+Ctrl+C, or a stop signal from your system, saves and stops it. If it can't start, it says why in the terminal and stops.
+
+| Command                        | What it does                                                                                                                                     |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `orbit-server`                 | Runs Orbit with no window.                                                                                                                       |
+| `orbit-server --data <folder>` | Uses another data folder.                                                                                                                        |
+| `orbit-server --port <port>`   | Listens on another port, from 1024 to 65535. The port is kept for that data folder, so the link and the desktop app's browser access use it too. |
+| `orbit-server --web <folder>`  | Serves the browser page from another folder. `npm run build` makes it as `dist`.                                                                 |
+| `orbit-server link`            | Shows the link for your other devices.                                                                                                           |
+| `orbit-server link --new`      | Makes a new link, so browsers using the old one are signed out. Stop Orbit first, then start it again after.                                     |
+
+With `npm run server`, add options after `--`, such as `npm run server -- --port 5000`. The link works like a key, so Orbit only prints it when you run it in a terminal; anywhere else, such as a log, it says to run `orbit-server link` instead. The controls a browser can't use stay on that computer: the link is only shown and changed there, a repository's local clone is a path on that computer (leave it empty and Orbit downloads its own copy), and links open in a new tab on your device. Notifications only reach a desktop app, so check **Needs you** in the browser.
 
 ## Restart, retained data, and cleanup
 
@@ -738,7 +761,7 @@ Orbit saves settings, PR metadata, reviews, reports, and chat messages in `state
 
 Treat Orbit's saved state and worktrees as local project data: reports and logs can contain private repository content. Apart from the pruning above, there is no history deletion or retention setting. Worktree cleanup preserves reports, conversations, publication metadata, and the run records used to avoid duplicate automatic reviews. Chat on pull requests still in your inbox is kept until they leave it. Copying `state.json` alone does not recreate the Git worktrees or Codex's own stored threads.
 
-On exit, Orbit stops its Codex app-server and saves state. It is not a background service: keep the application running for polling and automation.
+On exit, Orbit stops its Codex app-server and saves state. The desktop app is not a background service: keep it running for polling and automation, or [run Orbit without a window](#run-orbit-without-a-window) on a computer that stays on.
 
 After a restart:
 

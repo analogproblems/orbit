@@ -4,6 +4,8 @@ version = "0.2.0"
 description = "A workspace for Codex pull request reviews"
 edition = "2021"
 license = "Apache-2.0"
+# There are two programs; `cargo run` and `tauri dev` start the desktop app.
+default-run = "orbit"
 
 [lib]
 name = "orbit_lib"
@@ -17,6 +19,9 @@ desktop = [
     "dep:tauri-plugin-dialog",
     "dep:tauri-plugin-notification",
 ]
+# Orbit without a window. Off by default, so the desktop app's bundles don't
+# carry a second program that has no browser page beside it.
+server = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [], optional = true }
@@ -48,3 +53,14 @@ pulldown-cmark = { version = "0.13.4", default-features = false }
 name = "orbit"
 path = "src/main.rs"
 required-features = ["desktop"]
+
+# Orbit without a window, for a computer that stays on. It needs no Tauri.
+[[bin]]
+name = "orbit-server"
+path = "src/bin/orbit-server.rs"
+required-features = ["server"]
+
+[[test]]
+name = "server"
+path = "tests/server.rs"
+required-features = ["server"]
