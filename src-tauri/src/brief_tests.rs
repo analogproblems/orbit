@@ -345,6 +345,78 @@ fn a_failed_read_holds_the_brief_until_a_read_works() {
         assert!(look(&mut s, at(day, "09:05"), now()));
         assert_eq!((latest(&s).day.as_str(), latest(&s).open), (day, true));
     }
+    // A failed question about whether an older head merges no longer
+    // counts: here the author pushed again and its checks fail, so Orbit
+    // won't ask GitHub about the new head until they pass.
+    let mut s = busy();
+    s.merges[0].error = Some("Orbit couldn't ask GitHub whether it merges: Bad Gateway.".into());
+    assert!(!look(&mut s, at(day, "09:00"), now()));
+    let pushed = "d".repeat(40);
+    s.prs[0].head_sha = pushed.clone();
+    let pull = r::pull(&mut s);
+    pull.sha = pushed.clone();
+    pull.state = crate::ci::CiState::Failing;
+    pull.passing = 0;
+    s.problems.push(Problem {
+        pr_id: Some("a/b#1".into()),
+        sha: pushed,
+        ..problem("one", ProblemKind::PullRequest)
+    });
+    assert!(look(&mut s, at(day, "09:05"), now()));
+    assert!(latest(&s)
+        .lines
+        .iter()
+        .any(|l| l.text == "CI is failing on b#1 at ddddddd: build."));
+    // Nor does one about another base, or an older head once the new one
+    // is reviewed and passes, which Orbit asks about on its next pass.
+    let failed = |s: &mut Snapshot| {
+        s.merges[0].error =
+            Some("Orbit couldn't ask GitHub whether it merges: Bad Gateway.".into());
+    };
+    let mut s = busy();
+    failed(&mut s);
+    s.merges[0].base_sha = "e".repeat(40);
+    assert!(look(&mut s, at(day, "09:00"), now()));
+    let mut s = busy();
+    failed(&mut s);
+    let pushed = "d".repeat(40);
+    s.prs[0].head_sha = pushed.clone();
+    s.reviews[0].head_sha = pushed.clone();
+    r::pull(&mut s).sha = pushed;
+    let waits: Vec<WaitKind> = crate::readiness::of(&s, &s.prs[0])
+        .waits
+        .iter()
+        .map(|w| w.kind)
+        .collect();
+    assert_eq!(waits, [WaitKind::Merge]);
+    assert!(look(&mut s, at(day, "09:00"), now()));
+    // Nor one about this head and base while something else is in the way
+    // now, such as checks that failed when they ran again, or a loop you
+    // stopped.
+    let mut s = busy();
+    failed(&mut s);
+    let pull = r::pull(&mut s);
+    pull.state = crate::ci::CiState::Failing;
+    pull.passing = 0;
+    assert!(look(&mut s, at(day, "09:00"), now()));
+    let mut s = busy();
+    failed(&mut s);
+    s.loops.push(LoopControl {
+        pr_id: "a/b#1".into(),
+        stopped: true,
+        ..Default::default()
+    });
+    let answer = crate::readiness::of(&s, &s.prs[0]);
+    assert_eq!(
+        (answer.waits[0].kind, answer.base_sha.as_str()),
+        (WaitKind::Loop, s.merges[0].base_sha.as_str())
+    );
+    assert!(look(&mut s, at(day, "09:00"), now()));
+    // Nor one about another pull request at the same commits.
+    let mut s = busy();
+    failed(&mut s);
+    s.merges[0].pr_id = "a/b#9".into();
+    assert!(look(&mut s, at(day, "09:00"), now()));
 }
 
 #[test]

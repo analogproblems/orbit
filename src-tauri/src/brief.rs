@@ -278,7 +278,22 @@ fn unread(s: &Snapshot) -> bool {
     s.poll_failures > 0
         || s.github_error.is_some()
         || s.ci.iter().any(|c| c.error.is_some())
-        || s.merges.iter().any(|m| m.error.is_some())
+        || crate::readiness::all(s).iter().any(|r| merge_unread(s, r))
+}
+/// Whether a pull request's answer rests on GitHub saying whether it
+/// merges, with nothing else in the way, and Orbit's latest question about
+/// its head and base failed. A question about an older head or base no
+/// longer counts, and isn't asked again until nothing else is in the way,
+/// as in `crate::readiness::wanted`.
+fn merge_unread(s: &Snapshot, r: &crate::readiness::Readiness) -> bool {
+    let github = |w: &crate::readiness::Wait| matches!(w.kind, WaitKind::Merge | WaitKind::Reviews);
+    r.waits.iter().all(github)
+        && s.merges.iter().any(|m| {
+            m.error.is_some()
+                && m.pr_id == r.pr_id
+                && m.head_sha == r.head_sha
+                && m.base_sha == r.base_sha
+        })
 }
 
 /// Looks once a day, at the time Bit's settings give, whether there is a
