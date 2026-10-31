@@ -165,14 +165,20 @@ pub fn lines(s: &Snapshot) -> Vec<Line> {
         use crate::actions_storage::{gb, CACHE_LIMIT, GB, NEAR};
         for st in &s.actions_storage {
             if st.unseen.is_none() && st.cache_bytes >= NEAR {
+                let mut text = format!(
+                    "{}'s caches hold {}, near GitHub's usual {} GB limit, so GitHub may soon drop the ones used least.",
+                    st.repo,
+                    gb(st.cache_bytes),
+                    CACHE_LIMIT / GB
+                );
+                if st.error.is_some() {
+                    text.push_str(
+                        " Orbit's latest read of its storage failed, so this may be out of date.",
+                    );
+                }
                 notes.push(line(
                     format!("caches:{}", st.repo.to_ascii_lowercase()),
-                    format!(
-                        "{}'s caches hold {}, near GitHub's usual {} GB limit, so GitHub may soon drop the ones used least.",
-                        st.repo,
-                        gb(st.cache_bytes),
-                        CACHE_LIMIT / GB
-                    ),
+                    text,
                     None,
                 ));
             }
@@ -219,7 +225,8 @@ fn stuck_text(s: &Snapshot, now: &crate::readiness::Readiness) -> Option<String>
     ))
 }
 /// A line for each place whose self-hosted runners Orbit sees are all
-/// offline.
+/// offline, saying when Orbit read only some of them or its latest read
+/// failed, as Operations does (`crate::runners`).
 fn offline(s: &Snapshot) -> Vec<Line> {
     use crate::runners::PlaceKind;
     s.runners
@@ -227,15 +234,32 @@ fn offline(s: &Snapshot) -> Vec<Line> {
         .filter(|p| p.unseen.is_none() && !p.runners.is_empty())
         .filter(|p| p.runners.iter().all(|r| !r.online))
         .filter_map(|p| {
-            let whose = match p.kind {
-                PlaceKind::Repository => p.name.clone(),
-                PlaceKind::Organization => format!("The {} organization", p.name),
+            let (whose, of) = match p.kind {
+                PlaceKind::Repository => (p.name.clone(), p.name.clone()),
+                PlaceKind::Organization => (
+                    format!("The {} organization", p.name),
+                    format!("the {} organization", p.name),
+                ),
                 _ => return None,
             };
-            let text = match p.runners.len() {
-                1 => format!("{whose}'s one self-hosted runner is offline."),
-                n => format!("{whose}'s {n} self-hosted runners are all offline."),
+            // GitHub may have more than Orbit read, so only those are
+            // said to be offline.
+            let n = p.runners.len();
+            let mut text = match (n, (p.total as usize).max(n)) {
+                (1, 1) => format!("{whose}'s one self-hosted runner is offline."),
+                (n, total) if n == total => {
+                    format!("{whose}'s {n} self-hosted runners are all offline.")
+                }
+                (1, total) => {
+                    format!("The one self-hosted runner Orbit read of {of}'s {total} is offline.")
+                }
+                (n, total) => format!(
+                    "The {n} self-hosted runners Orbit read of {of}'s {total} are all offline."
+                ),
             };
+            if p.error.is_some() {
+                text.push_str(" Orbit's latest read of them failed, so this may be out of date.");
+            }
             Some(line(
                 format!("offline:{}", p.name.to_ascii_lowercase()),
                 text,
@@ -245,15 +269,28 @@ fn offline(s: &Snapshot) -> Vec<Line> {
         .collect()
 }
 
+/// Whether a read the brief sums up failed last time, so what Orbit kept
+/// from before may no longer be true: syncing any repository's pull
+/// requests, reading a repository's CI, or asking GitHub whether a pull
+/// request merges. Runners and storage are read less often, so their lines say
+/// instead when their latest read failed.
+fn unread(s: &Snapshot) -> bool {
+    s.poll_failures > 0
+        || s.github_error.is_some()
+        || s.ci.iter().any(|c| c.error.is_some())
+        || s.merges.iter().any(|m| m.error.is_some())
+}
+
 /// Looks once a day, at the time Bit's settings give, whether there is a
 /// brief to send, and makes it if there is. `local` is this computer's
 /// time and `now` Orbit's clock. Looking takes yesterday's brief out of
-/// Needs you. Nothing happens while Bit or the brief is off, or while
-/// Orbit can't sync, so a brief is never made from what Orbit couldn't
-/// read. Returns whether anything changed.
+/// Needs you. Nothing happens while Bit or the brief is off, or while a
+/// read it sums up failed (`unread`), so a brief is never made from what
+/// Orbit couldn't read, and the day waits for a pass that reads it all.
+/// Returns whether anything changed.
 pub fn look(s: &mut Snapshot, local: NaiveDateTime, now: DateTime<Utc>) -> bool {
     let buddy = &s.settings.buddy;
-    if !buddy.enabled || !buddy.brief || s.poll_failures > 0 {
+    if !buddy.enabled || !buddy.brief || unread(s) {
         return false;
     }
     let Some(day) = due(&s.brief.looked, &buddy.brief_at, local) else {

@@ -696,6 +696,12 @@ async function demoAction(
         (a) => a.kind !== "ci_failing" && a.kind !== "runs_waiting",
       );
     }
+    // As in Orbit, turning Bit or the brief off takes the brief out of
+    // Needs you.
+    if (!next.buddy.enabled || !next.buddy.brief) {
+      if (demo.brief?.latest) demo.brief.latest.open = false;
+      demo.attention = demo.attention?.filter((a) => a.kind !== "brief");
+    }
     demo.modelConfigurationError = selectionError(demo.models, next);
     if (
       command === "update_settings" &&

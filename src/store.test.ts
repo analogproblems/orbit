@@ -396,7 +396,7 @@ describe("demo buddy", () => {
     });
   });
 
-  it("marks only that day's morning brief read", async () => {
+  it("marks only that day's morning brief read, as turning it off does", async () => {
     const saved = structuredClone(useOrbit.getState().snapshot);
     const brief = saved.brief!.latest!;
     brief.open = true;
@@ -426,6 +426,14 @@ describe("demo buddy", () => {
       true,
     );
     expect(open()).toEqual([false, false]);
+    // Turning the brief off takes it out of Needs you too.
+    for (const buddy of [{ brief: false }, { enabled: false }]) {
+      localStorage.setItem("orbit-demo-v3", JSON.stringify(saved));
+      await useOrbit.getState().init();
+      expect(open()).toEqual([true, true]);
+      await useOrbit.getState().updateSettings({ buddy });
+      expect(open()).toEqual([false, false]);
+    }
   });
 
   it("says a question the demo restarted on wasn't answered", async () => {

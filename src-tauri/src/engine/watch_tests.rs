@@ -1897,6 +1897,14 @@ async fn a_day_with_changes_gives_one_brief_and_a_quiet_day_none() {
             .count();
         (s.brief, notes, items, told)
     };
+    // GitHub fails that morning: no brief from what Orbit couldn't read,
+    // and the day isn't used up.
+    std::fs::write(d.path().join("down"), "").unwrap();
+    watch().await;
+    let (b, notes, items, told) = briefs().await;
+    assert_eq!(b, crate::brief::Briefs::default());
+    assert_eq!((notes.len(), items.len(), told), (0, 0, 0));
+    std::fs::remove_file(d.path().join("down")).unwrap();
     // A day with a pull request clear to merge.
     watch().await;
     let (b, notes, items, told) = briefs().await;

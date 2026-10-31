@@ -317,6 +317,36 @@ fn no_brief_while_bit_or_the_brief_is_off_or_orbit_cant_sync() {
     assert!(latest(&s).open);
 }
 
+/// A read the brief sums up failed: no brief from what Orbit kept from
+/// before, and the day isn't used up, so the brief comes once a read works
+/// that day.
+#[test]
+fn a_failed_read_holds_the_brief_until_a_read_works() {
+    let day = "2026-10-31";
+    let fails: [fn(&mut Snapshot); 4] = [
+        |s| s.poll_failures = 1,
+        // One repository didn't sync, so its pull requests are as before.
+        |s| s.github_error = Some("Could not sync a/b: gh: Bad Gateway (HTTP 502)".into()),
+        |s| s.ci[0].error = Some("gh: Bad Gateway (HTTP 502)".into()),
+        |s| {
+            s.merges[0].error =
+                Some("Orbit couldn't ask GitHub whether it merges: Bad Gateway.".into())
+        },
+    ];
+    for fail in fails {
+        let mut s = busy();
+        fail(&mut s);
+        assert!(!look(&mut s, at(day, "09:00"), now()));
+        assert_eq!(s.brief, Briefs::default());
+        s.poll_failures = 0;
+        s.github_error = None;
+        s.ci[0].error = None;
+        s.merges[0].error = None;
+        assert!(look(&mut s, at(day, "09:05"), now()));
+        assert_eq!((latest(&s).day.as_str(), latest(&s).open), (day, true));
+    }
+}
+
 #[test]
 fn runners_and_storage_are_in_it_only_while_watch_ci_is_on() {
     let mut s = busy();
@@ -354,8 +384,32 @@ fn runners_and_storage_are_in_it_only_while_watch_ci_is_on() {
     let keys: Vec<String> = lines(&s).into_iter().map(|l| l.key).collect();
     assert!(keys.contains(&"offline:a/b".to_string()));
     s.runners[0].runners.truncate(1);
-    let texts: Vec<String> = lines(&s).into_iter().map(|l| l.text).collect();
-    assert!(texts.contains(&"a/b's one self-hosted runner is offline.".to_string()));
+    // As GitHub counts them, or as read before Orbit kept the count.
+    for total in [1, 0] {
+        s.runners[0].total = total;
+        let texts: Vec<String> = lines(&s).into_iter().map(|l| l.text).collect();
+        assert!(texts.contains(&"a/b's one self-hosted runner is offline.".to_string()));
+    }
+    // Only the runners Orbit read are said to be offline, and a read that
+    // failed may be out of date.
+    let mut s = busy();
+    s.runners[0].total = 3;
+    s.runners[1].total = 101;
+    s.runners[1].error = Some("gh: Bad Gateway (HTTP 502)".into());
+    s.actions_storage[0].error = Some("gh: Bad Gateway (HTTP 502)".into());
+    let notes: Vec<String> = lines(&s)
+        .into_iter()
+        .filter(|l| l.key.starts_with("offline:") || l.key.starts_with("caches:"))
+        .map(|l| l.text)
+        .collect();
+    assert_eq!(
+        notes,
+        [
+            "The 2 self-hosted runners Orbit read of a/b's 3 are all offline.",
+            "The one self-hosted runner Orbit read of the a organization's 101 is offline. Orbit's latest read of them failed, so this may be out of date.",
+            "a/b's caches hold 9.0 GB, near GitHub's usual 10 GB limit, so GitHub may soon drop the ones used least. Orbit's latest read of its storage failed, so this may be out of date.",
+        ]
+    );
     // A closed problem isn't in it.
     let mut s = busy();
     for p in &mut s.problems {
