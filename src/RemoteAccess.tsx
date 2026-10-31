@@ -11,7 +11,7 @@ import {
   VStack,
 } from "@astryxdesign/core";
 import { RotateCcw } from "lucide-react";
-import { desktop, remote, useOrbit } from "./store";
+import { desktop, remote, useOrbit, windowless } from "./store";
 
 /** Browser access as the desktop app reports it (`remote::Status`). */
 export interface RemoteAccessStatus {
@@ -68,10 +68,17 @@ export function RemoteAccess() {
     <Card>
       <VStack gap={4}>
         <Heading level={3}>Use Orbit from other devices</Heading>
-        {remote && (
+        {remote && !windowless && (
           <Text color="secondary">
             You’re using Orbit from another device. Turn this off or make a new
             link from the desktop app.
+          </Text>
+        )}
+        {windowless && (
+          <Text color="secondary">
+            You’re using an Orbit that runs without a window. To make a new
+            link, stop it on the computer it runs on, run orbit-server link
+            --new there, then start it again.
           </Text>
         )}
         {!desktop && !remote && (

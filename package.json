@@ -16,7 +16,8 @@
     "lint": "eslint . && prettier --check . && cargo fmt --manifest-path src-tauri/Cargo.toml --check && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",
     "check:desktop": "cargo check --manifest-path src-tauri/Cargo.toml --all-targets",
     "check": "npm run lint && npm run build && npm test && npm run test:rust && npm run check:desktop",
-    "diagnose": "cargo run --manifest-path src-tauri/Cargo.toml --no-default-features --example diagnose"
+    "diagnose": "cargo run --manifest-path src-tauri/Cargo.toml --no-default-features --example diagnose",
+    "server": "npm run build && cargo run --manifest-path src-tauri/Cargo.toml --release --no-default-features --bin orbit-server --"
   },
   "dependencies": {
     "@astryxdesign/core": "0.6.3",

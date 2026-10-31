@@ -48,3 +48,8 @@ pulldown-cmark = { version = "0.13.4", default-features = false }
 name = "orbit"
 path = "src/main.rs"
 required-features = ["desktop"]
+
+# Orbit without a window, for a computer that stays on. It needs no Tauri.
+[[bin]]
+name = "orbit-server"
+path = "src/bin/orbit-server.rs"

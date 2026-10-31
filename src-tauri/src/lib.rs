@@ -30,6 +30,7 @@ pub mod review_loop;
 pub mod rpc;
 pub mod runners;
 pub mod scans;
+pub mod server;
 pub mod setup;
 pub mod storage;
 pub mod text;

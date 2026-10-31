@@ -36,6 +36,7 @@ npm run format     # Prettier and rustfmt
 npm test           # Frontend tests (Vitest)
 npm run test:rust  # Rust tests
 npm run diagnose   # Read-only GitHub/Codex connection check; no inference or comments
+npm run server     # Orbit without a window, serving the browser page (see the user guide)
 npm run tauri -- build --no-bundle  # Native executable (src-tauri/target/release/orbit on Linux)
 ```
 

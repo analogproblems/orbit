@@ -16,6 +16,7 @@ npm test           # Vitest (jsdom); one file: npx vitest run src/Live.test.tsx
 npm run test:rust  # cargo test --no-default-features (no Tauri needed); one: npm run test:rust -- review_loop
 npm run dev        # Browser demo with sample data at http://127.0.0.1:1420
 npm run desktop    # The real desktop app (needs a display)
+npm run server     # Orbit without a window (orbit-server), serving the browser page
 ```
 
 `npm run check:desktop` and Clippy build the `desktop` feature, which needs Tauri's Linux libraries (`libwebkit2gtk-4.1-dev`, `libgtk-3-dev` and friends); the [dev container](.devcontainer/) and the [CI workflow](.github/workflows/ci.yml) install them. Prettier also checks Markdown, so run `npm run format` after editing docs.
@@ -23,7 +24,7 @@ npm run desktop    # The real desktop app (needs a display)
 ## Layout
 
 - `src/`: React 19 + TypeScript + Zustand. `store.ts` holds state and `action(command, args)`, which goes to Tauri `invoke` on the desktop, to `/api/<command>` in a browser using remote access (`remote.ts`), or to `demoAction` in the browser demo. `types.ts` mirrors the Rust types.
-- `src-tauri/src/`: the Rust side. `lib.rs` is the Tauri command allowlist and lifecycle; `engine/` is the engine, one file per area (see the doc comment on `Engine` in `engine/mod.rs`); top-level files hold logic that doesn't need the engine (reviewer CLIs, GitHub, review loop, Bit, ledger, scans, remote access).
+- `src-tauri/src/`: the Rust side. `lib.rs` is the Tauri command allowlist and lifecycle; `server.rs` (with `bin/orbit-server.rs`) runs the engine with no window, for a computer that stays on; `engine/` is the engine, one file per area (see the doc comment on `Engine` in `engine/mod.rs`); top-level files hold logic that doesn't need the engine (reviewer CLIs, GitHub, review loop, Bit, ledger, scans, remote access).
 - `docs/user-guide.md` (every control and rule, for users), `docs/architecture.md` (how it works inside, with a [code map](docs/architecture.md#code-map)), `docs/screenshots/` (README images, taken from the browser demo).
 - `test-fixtures/`: JSON lists shared by both sides (Bit's options, finding categories, report labels) and copies of real PR comments for the ledger parsers.
 - `.claude/skills/answer-orbit-reviews/`: the skill Orbit hands to authors' agents. Tests parse its examples with the real reply parser, so edit it and `engine/claims.rs` together.
@@ -39,7 +40,7 @@ A command is wired in four places, and missing one fails in only one mode:
 
 ## Conventions
 
-- **Tests sit beside the code.** Rust: `foo_tests.rs` next to `foo.rs`, included with `#[cfg(test)] #[path = "foo_tests.rs"] mod tests;` (or `mod foo_tests;` in `engine/mod.rs`). Frontend: `Foo.test.tsx` next to `Foo.tsx`. Fake CLIs (`*_fixture.cjs`, a fake `gh` on Unix) drive the reviewer and GitHub paths; nothing in the tests calls a real model or GitHub.
+- **Tests sit beside the code.** Rust: `foo_tests.rs` next to `foo.rs`, included with `#[cfg(test)] #[path = "foo_tests.rs"] mod tests;` (or `mod foo_tests;` in `engine/mod.rs`). Frontend: `Foo.test.tsx` next to `Foo.tsx`. Fake CLIs (`*_fixture.cjs`, a fake `gh` on Unix) drive the reviewer and GitHub paths; nothing in the tests calls a real model or GitHub. The one exception to "beside the code" is `src-tauri/tests/server.rs`, which starts the real `orbit-server` program.
 - **Lists that both sides know** (Bit's colours, hats and actions, finding categories) live once in `test-fixtures/*.json`, and tests on both sides check against them. Change all three together.
 - **Locks.** `std` mutexes are never held across an `.await`. When taking more than one lock, follow the order in the table on `Engine`.
 - **State** is one `state.json`, rewritten whole on each change and pruned by `engine/prune.rs`. New fields need `#[serde(default)]` so older state files still load.
