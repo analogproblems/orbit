@@ -2098,7 +2098,11 @@ fn the_reply_skill_shows_the_answer_as_orbit_writes_it() {
         text: "Orbit can't see main's rules, so it left its reviews to GitHub.".into(),
         ..clear.clone()
     };
-    for r in [clear, conflict, reviews, unseen] {
+    let reminded = Ready {
+        nudged: Some(stamp(t0())),
+        ..conflict.clone()
+    };
+    for r in [clear, conflict, reviews, unseen, reminded] {
         let text = ready_text(&r);
         let (line, hidden) = text.split_once("\n\n<!-- orbit-ready ").unwrap();
         assert!(skill.contains(&format!("\n- {line}\n")), "{line}");
@@ -2123,4 +2127,362 @@ fn the_reply_skill_shows_the_answer_as_orbit_writes_it() {
     ready(&mut threads, &[a], &[pr], &[], &[], true, t0());
     let marker = format!("`{}{{json}} -->`", threads[0].tag());
     assert!(skill.contains(&marker), "{marker}");
+}
+
+/// Its answer at `head`, waiting on `turn` for `kind`.
+fn waiting_on(head: char, kind: crate::readiness::WaitKind, turn: Turn, text: &str) -> Readiness {
+    let mut a = answer(head, Some((turn, text)));
+    a.waits[0].kind = kind;
+    a
+}
+/// `minutes` after noon.
+fn at(minutes: i64) -> DateTime<Utc> {
+    t0() + Duration::minutes(minutes)
+}
+fn said_at(
+    threads: &mut Vec<Thread>,
+    a: Readiness,
+    problems: &[Problem],
+    now: DateTime<Utc>,
+) -> bool {
+    let head = a.head_sha.chars().next().unwrap();
+    ready(threads, &[a], &[open(head)], problems, &[], true, now)
+}
+fn ready_of(threads: &[Thread]) -> &Ready {
+    threads[0].ready.as_ref().unwrap()
+}
+const REMINDER: &str = " **Reminder:** it has waited on the author for more than 2 hours.";
+
+/// An answer that hasn't changed for 2 hours since the agent could see it
+/// reminds the agent once, with one edit of its comment. A push, or
+/// someone else's move, starts the wait again; new words don't.
+#[test]
+fn an_answer_left_waiting_on_the_agent_reminds_it_once() {
+    use crate::readiness::WaitKind;
+    let conflict = "It conflicts with main: merge main in and fix the conflicts.";
+    let behind = "GitHub wants it brought up to date with main first.";
+    let waits = |head, text: &str| waiting_on(head, WaitKind::Merge, Turn::Author, text);
+    let mut threads = vec![];
+    let mut journal = vec![];
+    said_at(&mut threads, waits('a', conflict), &[], at(0));
+    assert_eq!(ready_of(&threads).since, stamp(at(0)));
+    // Posted half an hour later, when the agent can see it: the wait
+    // starts then.
+    let post = tell(&mut threads, &mut journal, None, true, at(30)).unwrap();
+    assert_eq!(post.action, Action::PostComment);
+    assert!(!post.body.contains("Reminder"));
+    assert_eq!(ready_of(&threads).since, stamp(at(30)));
+    assert!(!said_at(&mut threads, waits('a', conflict), &[], at(149)));
+    assert_eq!(next(&threads[0], None, true, at(149)), None);
+    // Two hours: one edit with the reminder, which keeps its wait.
+    assert!(said_at(&mut threads, waits('a', conflict), &[], at(150)));
+    assert_eq!(ready_of(&threads).nudged, Some(stamp(at(150))));
+    let edit = tell(&mut threads, &mut journal, None, true, at(150)).unwrap();
+    assert_eq!(edit.action, Action::EditComment);
+    assert!(edit.body.contains(&format!(
+        "\n\n**Not clear to merge yet.** {conflict}{REMINDER}\n\n<!-- orbit-ready {{\"base\":\"main\",\"baseSha\":\"\",\"clear\":false,\"head\":\"{}\",\"turn\":\"author\",\"version\":1}} -->\n\n",
+        sha('a')
+    )));
+    assert_eq!(ready_of(&threads).since, stamp(at(30)));
+    // Once, however long it waits, and new words wait as before.
+    assert!(!said_at(
+        &mut threads,
+        waits('a', conflict),
+        &[],
+        at(3 * 24 * 60)
+    ));
+    assert!(!said_at(
+        &mut threads,
+        waits('a', behind),
+        &[],
+        at(3 * 24 * 60)
+    ));
+    assert_eq!(next(&threads[0], None, true, at(3 * 24 * 60)), None);
+    assert_eq!(ready_of(&threads).text, conflict);
+
+    // A push: one edit without it, and a reminder 2 hours on.
+    let push = 4 * 24 * 60;
+    assert!(said_at(&mut threads, waits('b', conflict), &[], at(push)));
+    assert_eq!(
+        (
+            ready_of(&threads).since.as_str(),
+            ready_of(&threads).nudged.as_deref()
+        ),
+        (stamp(at(push)).as_str(), None)
+    );
+    let edit = tell(&mut threads, &mut journal, None, true, at(push)).unwrap();
+    assert!(!edit.body.contains("Reminder"));
+    assert_eq!(ready_of(&threads).since, stamp(at(push)));
+    assert!(!said_at(
+        &mut threads,
+        waits('b', conflict),
+        &[],
+        at(push + 119)
+    ));
+    assert!(said_at(
+        &mut threads,
+        waits('b', behind),
+        &[],
+        at(push + 120)
+    ));
+    let edit = tell(&mut threads, &mut journal, None, true, at(push + 120)).unwrap();
+    assert!(edit.body.contains(&format!(
+        "**Not clear to merge yet.** {behind}{REMINDER}\n\n"
+    )));
+    // Orbit at work, then the agent's move again: it starts again.
+    let working = waiting_on(
+        'b',
+        WaitKind::Checks,
+        Turn::Working,
+        "Checks are still running on bbbbbbb.",
+    );
+    said_at(&mut threads, working, &[], at(push + 180));
+    assert_eq!(ready_of(&threads).nudged, None);
+    said_at(&mut threads, waits('b', conflict), &[], at(push + 240));
+    assert_eq!(ready_of(&threads).since, stamp(at(push + 240)));
+    assert!(!said_at(
+        &mut threads,
+        waits('b', conflict),
+        &[],
+        at(push + 359)
+    ));
+    assert!(said_at(
+        &mut threads,
+        waits('b', conflict),
+        &[],
+        at(push + 360)
+    ));
+}
+
+/// The agent is reminded only on a comment it can see, while Orbit
+/// watches CI: not before it is posted, as Bit asks first, nor once it is
+/// gone from GitHub.
+#[test]
+fn the_agent_is_reminded_only_on_a_comment_it_can_see() {
+    use crate::readiness::WaitKind;
+    let fails = || {
+        waiting_on(
+            'a',
+            WaitKind::Checks,
+            Turn::Author,
+            "CI / Rust fails on aaaaaaa.",
+        )
+    };
+    let mut threads = vec![];
+    let mut journal = vec![];
+    said_at(&mut threads, fails(), &[], at(0));
+    assert_eq!(next(&threads[0], None, false, at(0)), None);
+    assert!(!said_at(&mut threads, fails(), &[], at(5 * 60)));
+    assert_eq!(ready_of(&threads).nudged, None);
+    // You say to post it at 5 hours: 2 hours from then.
+    tell(&mut threads, &mut journal, None, true, at(5 * 60)).unwrap();
+    assert!(!said_at(&mut threads, fails(), &[], at(7 * 60 - 1)));
+    let late = threads.clone();
+    assert!(said_at(&mut threads, fails(), &[], at(7 * 60)));
+    // Not while Orbit doesn't watch CI.
+    let mut off = late.clone();
+    let a = [fails()];
+    assert!(!ready(
+        &mut off,
+        &a,
+        &[open('a')],
+        &[],
+        &[],
+        false,
+        at(9 * 60)
+    ));
+    assert_eq!(off[0].ready.as_ref().unwrap().nudged, None);
+    // Nor once the comment is gone.
+    let mut gone = late;
+    gone[0].gone = true;
+    assert!(!said_at(&mut gone, fails(), &[], at(9 * 60)));
+    assert_eq!(gone[0].ready.as_ref().unwrap().nudged, None);
+}
+
+/// A failing check or the base moving on is the agent's only until it
+/// answers each failing item in a way that leaves it to a person: it
+/// declined it, or asked for a person. Other things in the way are the
+/// agent's whatever it said about the checks.
+#[test]
+fn an_agent_that_answered_each_failing_item_isnt_reminded() {
+    use crate::readiness::WaitKind;
+    let p = pull("p1", &["CI / Test", "CI / Lint"], 'a', t0());
+    let problems = std::slice::from_ref(&p);
+    let mut threads = vec![];
+    let mut journal = vec![];
+    refresh(&mut threads, problems, t0());
+    let text = "CI / Test and CI / Lint fail on aaaaaaa.";
+    let fails = |kind| waiting_on('a', kind, Turn::Author, text);
+    said_at(&mut threads, fails(WaitKind::Checks), problems, at(0));
+    send(&mut threads, &mut journal, &p, true, at(0)).unwrap();
+    let said = |kind| {
+        Some(Answer {
+            kind,
+            ..Default::default()
+        })
+    };
+    threads[0].items[0].answer = said(AnswerKind::Declined);
+    threads[0].items[1].answer = said(AnswerKind::Question);
+    let answered = threads.clone();
+    for kind in [WaitKind::Checks, WaitKind::Base] {
+        let mut threads = answered.clone();
+        said_at(&mut threads, fails(kind), problems, at(1));
+        assert!(
+            !said_at(&mut threads, fails(kind), problems, at(5 * 60)),
+            "{kind:?}"
+        );
+        assert_eq!(ready_of(&threads).nudged, None, "{kind:?}");
+    }
+    // One item it is on, or hasn't answered: the agent's.
+    for answer in [said(AnswerKind::Taking), said(AnswerKind::Fixed), None] {
+        let mut threads = answered.clone();
+        threads[0].items[1].answer = answer.clone();
+        assert!(
+            said_at(&mut threads, fails(WaitKind::Checks), problems, at(5 * 60)),
+            "{answer:?}"
+        );
+    }
+    // An item that passes again doesn't count.
+    let mut threads = answered.clone();
+    threads[0].items[1].answer = None;
+    threads[0].items[1].failing = false;
+    assert!(!said_at(
+        &mut threads,
+        fails(WaitKind::Checks),
+        problems,
+        at(5 * 60)
+    ));
+    // Findings are the agent's whatever it said about the checks.
+    let mut threads = answered;
+    said_at(&mut threads, fails(WaitKind::Findings), problems, at(1));
+    assert!(said_at(
+        &mut threads,
+        fails(WaitKind::Findings),
+        problems,
+        at(5 * 60)
+    ));
+}
+
+/// An answer that waits on a person, for a reviewer or a rule on GitHub,
+/// is nudged once a day on, for Needs you, without an edit: the comment
+/// says the same. Orbit's loop, its checks while Watch CI is off and a base
+/// it can't judge never are, nor anything Orbit, CI or GitHub is still at,
+/// nor a clear answer.
+#[test]
+fn an_answer_left_waiting_on_a_person_is_nudged_once_without_an_edit() {
+    use crate::readiness::WaitKind;
+    for kind in [WaitKind::Reviews, WaitKind::Merge] {
+        let waits = || waiting_on('a', kind, Turn::Person, "bob hasn't reviewed aaaaaaa yet.");
+        let mut threads = vec![];
+        let mut journal = vec![];
+        said_at(&mut threads, waits(), &[], at(0));
+        tell(&mut threads, &mut journal, None, true, at(0)).unwrap();
+        assert!(
+            !said_at(&mut threads, waits(), &[], at(24 * 60 - 1)),
+            "{kind:?}"
+        );
+        assert!(said_at(&mut threads, waits(), &[], at(24 * 60)), "{kind:?}");
+        assert_eq!(ready_of(&threads).nudged, Some(stamp(at(24 * 60))));
+        assert_eq!(next(&threads[0], None, true, at(24 * 60)), None, "{kind:?}");
+        assert!(!ready_text(ready_of(&threads)).contains("Reminder"));
+        assert!(
+            !said_at(&mut threads, waits(), &[], at(3 * 24 * 60)),
+            "{kind:?}"
+        );
+        // Without a comment too, as Bit asks first.
+        let mut quiet = vec![];
+        said_at(&mut quiet, waits(), &[], at(0));
+        assert!(said_at(&mut quiet, waits(), &[], at(24 * 60)), "{kind:?}");
+    }
+    let never = [
+        waiting_on(
+            'a',
+            WaitKind::Loop,
+            Turn::Person,
+            "Orbit's review loop needs you.",
+        ),
+        waiting_on(
+            'a',
+            WaitKind::Checks,
+            Turn::Person,
+            "Orbit can't see its checks while Watch CI is off.",
+        ),
+        waiting_on(
+            'a',
+            WaitKind::Base,
+            Turn::Person,
+            "Orbit can't tell whether its checks ran with the latest main.",
+        ),
+        waiting_on(
+            'a',
+            WaitKind::Merge,
+            Turn::Working,
+            "GitHub is still checking whether it merges.",
+        ),
+        waiting_on(
+            'a',
+            WaitKind::Reviews,
+            Turn::Working,
+            "Orbit couldn't read its reviews.",
+        ),
+        answer('a', None),
+    ];
+    for a in never {
+        let mut threads = vec![];
+        let mut journal = vec![];
+        said_at(&mut threads, a.clone(), &[], at(0));
+        tell(&mut threads, &mut journal, None, true, at(0));
+        assert!(
+            !said_at(&mut threads, a.clone(), &[], at(30 * 24 * 60)),
+            "{:?}",
+            a.waits
+        );
+        assert_eq!(ready_of(&threads).nudged, None);
+    }
+    // Nor one Orbit stopped working out.
+    let mut threads = vec![];
+    said_at(&mut threads, answer('a', None), &[], at(0));
+    ready(&mut threads, &[], &[open('a')], &[], &[], true, at(1));
+    assert!(!ready(
+        &mut threads,
+        &[],
+        &[open('a')],
+        &[],
+        &[],
+        true,
+        at(30 * 24 * 60)
+    ));
+    assert_eq!(ready_of(&threads).nudged, None);
+}
+
+/// An answer from before Orbit kept its time starts waiting when Orbit
+/// first sees it again, and what Orbit keeps of it saves and loads.
+#[test]
+fn an_answer_from_before_starts_waiting_now() {
+    use crate::readiness::WaitKind;
+    let waits = || waiting_on('a', WaitKind::Merge, Turn::Author, "x");
+    let mut threads = vec![];
+    let mut journal = vec![];
+    said_at(&mut threads, waits(), &[], at(0));
+    tell(&mut threads, &mut journal, None, true, at(0)).unwrap();
+    let old = serde_json::json!({
+        "clear": false,
+        "headSha": sha('a'),
+        "base": "main",
+        "baseSha": "",
+        "turn": "author",
+        "text": "x"
+    });
+    threads[0].ready = Some(serde_json::from_value(old.clone()).unwrap());
+    assert_eq!(serde_json::to_value(ready_of(&threads)).unwrap(), old);
+    assert!(said_at(&mut threads, waits(), &[], at(10 * 60)));
+    assert_eq!(ready_of(&threads).since, stamp(at(10 * 60)));
+    assert_eq!(ready_of(&threads).nudged, None);
+    assert_eq!(next(&threads[0], None, true, at(10 * 60)), None);
+    said_at(&mut threads, waits(), &[], at(12 * 60));
+    let saved = serde_json::to_value(ready_of(&threads)).unwrap();
+    assert_eq!(saved["since"], stamp(at(10 * 60)));
+    assert_eq!(saved["nudged"], stamp(at(12 * 60)));
+    let loaded: Ready = serde_json::from_value(saved).unwrap();
+    assert_eq!(&loaded, ready_of(&threads));
 }

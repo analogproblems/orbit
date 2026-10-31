@@ -114,6 +114,33 @@ fn run_item(s: &Snapshot, pr: &PullRequest) -> Option<Attention> {
     })
 }
 
+/// A pull request whose answer to whether it is clear to merge has waited
+/// on a person long enough for Orbit to nudge them (`crate::ops::ready`),
+/// while it still does: a reviewer, or a rule on GitHub. With Watch CI
+/// off, it waits on its checks instead. Its key names when the answer
+/// started, so each wait is announced once.
+fn stuck_item(s: &Snapshot, pr: &PullRequest) -> Option<Attention> {
+    use crate::readiness::{Turn, WaitKind};
+    let key = format!("pr:{}", pr.id);
+    let r = s.ops.iter().find(|t| t.key == key)?.ready.as_ref()?;
+    if r.clear || r.turn != Some(Turn::Person) || r.nudged.is_none() {
+        return None;
+    }
+    // In Orbit's words now, which the comment may give only later.
+    let now = crate::readiness::of(s, pr);
+    let w = now.waits.first()?;
+    let held = matches!(w.kind, WaitKind::Merge | WaitKind::Reviews);
+    if !held || w.turn != Turn::Person || now.head_sha != r.head_sha {
+        return None;
+    }
+    Some(item(
+        format!("stuck:{}:{}", pr.id, r.since),
+        AttentionKind::Stuck,
+        Some(&pr.id),
+        None,
+        format!("It has waited on a person for more than a day. {}", w.text),
+    ))
+}
 /// Counts each repository's failed syncs in a row. A sync that succeeds, or
 /// a repository that was removed, clears its count.
 pub fn count_sync_failures(s: &mut Snapshot, failed: &[(String, String)]) {
@@ -332,6 +359,7 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
             continue;
         }
         out.extend(run_item(s, pr));
+        out.extend(stuck_item(s, pr));
         if let Some(f) = s
             .queue_failures
             .iter()
@@ -395,6 +423,7 @@ pub fn notice(s: &Snapshot, a: Attention) -> Notice {
         AttentionKind::CiFailing => "CI is failing",
         AttentionKind::CiQuestion => "An agent needs a person",
         AttentionKind::RunsWaiting => "Runs are waiting for a runner",
+        AttentionKind::Stuck => "A pull request is stuck",
     };
     let pr = s.prs.iter().find(|p| Some(&p.id) == a.pr_id.as_ref());
     let body = match pr {

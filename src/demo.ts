@@ -1372,6 +1372,9 @@ export function demoCi(
         baseSha: "",
         turn: "author",
         text: "main moved on since its checks ran: merge main in and let them run again.",
+        // It has waited on the agent long enough for one reminder.
+        since: ago(3 * 60),
+        nudged: ago(44),
       },
       updatedAt: ago(44),
     }),

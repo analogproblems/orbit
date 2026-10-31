@@ -57,6 +57,12 @@ pub const MAX_RETRY: Duration = Duration::hours(1);
 pub const MAX_ANSWER: usize = 500;
 /// The most fixes checked against CI in one pass, for GitHub's limits.
 pub const CHECKS_PER_PASS: usize = 5;
+/// How long a pull request's answer waits on its agent before Orbit
+/// reminds it, once, on its comment.
+pub const NUDGE_AGENT: Duration = Duration::hours(2);
+/// How long it waits on a person, such as a reviewer, before it is in
+/// Needs you.
+pub const NUDGE_PERSON: Duration = Duration::days(1);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -166,6 +172,16 @@ pub struct Ready {
     /// What is in the way, in Orbit's words, or once it is clear, what
     /// Orbit couldn't check.
     pub text: String,
+    /// When Orbit first gave this answer, words aside, by Orbit's clock.
+    /// It starts again once the comment is first posted, when the agent
+    /// can see it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub since: String,
+    /// When Orbit nudged whoever's move it is, once, as it had waited
+    /// long enough (`nudges`): the agent on the comment, or you in Needs
+    /// you.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nudged: Option<String>,
 }
 impl Ready {
     fn of(r: &Readiness) -> Ready {
@@ -184,6 +200,7 @@ impl Ready {
                 .map(|w| w.text.clone())
                 .or(r.note())
                 .unwrap_or_default(),
+            ..Default::default()
         }
     }
     /// What a pull request Orbit no longer works it out for says.
@@ -200,13 +217,21 @@ impl Ready {
             ..Default::default()
         }
     }
-    /// Whether it gives the same answer, whatever its words.
+    /// Whether it gives the same answer, whatever its words and however
+    /// long it has stood.
     fn same(&self, other: &Ready) -> bool {
         let answer = |r: &Ready| Ready {
             text: String::new(),
+            since: String::new(),
+            nudged: None,
             ..r.clone()
         };
         answer(self) == answer(other)
+    }
+    /// Whether its comment reminds the agent: it waits on them, and Orbit
+    /// nudged them.
+    fn reminds(&self) -> bool {
+        self.turn == Some(Turn::Author) && self.nudged.is_some()
     }
     /// Whether it is worth a comment of its own: it is clear, or it waits
     /// on someone.
@@ -620,9 +645,10 @@ pub fn refresh(threads: &mut Vec<Thread>, problems: &[Problem], now: DateTime<Ut
 /// CI. The answer a comment gives changes only when it turns clear or not,
 /// its head or base moves, or it becomes someone else's move, so each
 /// change wakes the agent once; its words catch up whenever the comment
-/// changes anyway. A pull request still open with no answer any more says
-/// Orbit stopped; a closed one is left as it was. Returns whether anything
-/// changed.
+/// changes anyway. An answer that has stood long enough nudges whoever's
+/// move it is, once (`nudges`). A pull request still open with no answer
+/// any more says Orbit stopped; a closed one is left as it was. Returns
+/// whether anything changed.
 pub fn ready(
     threads: &mut Vec<Thread>,
     answers: &[Readiness],
@@ -645,6 +671,7 @@ pub fn ready(
             });
         }
     }
+    let at = stamp(now);
     for t in threads.iter_mut() {
         let pr = prs
             .iter()
@@ -652,21 +679,37 @@ pub fn ready(
         let Some(pr) = pr else {
             continue;
         };
-        let answer = match answers.iter().find(|a| a.pr_id == pr.id) {
+        let a = answers.iter().find(|a| a.pr_id == pr.id);
+        let mut answer = match a {
             Some(a) => Ready::of(a),
             None if t.ready.is_some() => Ready::stopped(pr),
             None => continue,
         };
-        if !t.ready.as_ref().is_some_and(|r| r.same(&answer)) {
+        let Some(kept) = t.ready.as_ref().filter(|r| r.same(&answer)) else {
+            answer.since = at.clone();
             t.ready = Some(answer);
             continue;
+        };
+        // An answer from before Orbit kept its time starts now.
+        answer.since = match kept.since.as_str() {
+            "" => at.clone(),
+            since => since.into(),
+        };
+        answer.nudged = kept.nudged.clone();
+        let due = a.is_some_and(|a| nudges(t, a, &answer.since, now));
+        if answer.nudged.is_none() && watch && due {
+            answer.nudged = Some(at.clone());
         }
-        // The same answer in new words waits for the comment to change.
+        if let Some(r) = t.ready.as_mut() {
+            r.since = answer.since.clone();
+            r.nudged = answer.nudged.clone();
+        }
+        // The same answer in new words waits for the comment to change,
+        // which a nudge to the agent does.
         if comment_body(t, problem_of(t, problems, ci)) != t.posted {
             t.ready = Some(answer);
         }
     }
-    let at = stamp(now);
     let mut changed = false;
     for (i, t) in threads.iter_mut().enumerate() {
         if before.get(i) != Some(t) {
@@ -675,6 +718,43 @@ pub fn ready(
         }
     }
     changed
+}
+/// Whether an answer that hasn't changed has waited long enough to nudge
+/// whoever's move it is: the agent, `NUDGE_AGENT` after its comment shows
+/// it, unless it answered each failing check or base item it is about
+/// (`Declined` or `Need a person`); or a person, `NUDGE_PERSON` after a
+/// reviewer or a rule on GitHub started holding it back. Orbit's loop, its
+/// checks while Watch CI is off and a base it can't judge are in Needs you
+/// or on screen already.
+fn nudges(t: &Thread, a: &Readiness, since: &str, now: DateTime<Utc>) -> bool {
+    use crate::readiness::WaitKind;
+    let Some(w) = a.waits.first() else {
+        return false;
+    };
+    let after = match (w.turn, w.kind) {
+        (Turn::Author, kind) => {
+            let answered = matches!(kind, WaitKind::Checks | WaitKind::Base) && answered(t);
+            if !t.is_posted() || t.gone || answered {
+                return false;
+            }
+            NUDGE_AGENT
+        }
+        (Turn::Person, WaitKind::Merge | WaitKind::Reviews) => NUDGE_PERSON,
+        _ => return false,
+    };
+    time(since).is_some_and(|since| now - since >= after)
+}
+/// Whether the agent answered every item failing on its comment in a way
+/// that leaves the next step to a person: it declined it, or asked for a
+/// person.
+fn answered(t: &Thread) -> bool {
+    let mut failing = t.items.iter().filter(|i| i.failing).peekable();
+    failing.peek().is_some()
+        && failing.all(|i| {
+            i.answer
+                .as_ref()
+                .is_some_and(|a| matches!(a.kind, AnswerKind::Declined | AnswerKind::Question))
+        })
 }
 fn key_of(p: &Problem) -> String {
     match p.kind {
@@ -1443,6 +1523,12 @@ fn ready_text(r: &Ready) -> String {
         }
     } else if r.turn.is_none() {
         format!("**Not clear to merge.** {}", plain(&r.text))
+    } else if r.reminds() {
+        format!(
+            "**Not clear to merge yet.** {} **Reminder:** it has waited on the author for more than {} hours.",
+            plain(&r.text),
+            NUDGE_AGENT.num_hours()
+        )
     } else {
         format!("**Not clear to merge yet.** {}", plain(&r.text))
     };
@@ -1796,11 +1882,15 @@ pub fn settle(
             t.tries = 0;
             t.retry_at = None;
             t.unsure = false;
-            t.updated_at = at;
+            t.updated_at = at.clone();
             match planned.action {
                 // Never sent as a write; see `looked`.
                 Action::Find => {}
                 Action::PostComment | Action::EditComment => {
+                    // The agent sees the answer from the first post on.
+                    if let Some(r) = t.ready.as_mut().filter(|_| t.comment_id.is_none()) {
+                        r.since = at.clone();
+                    }
                     t.comment_id = Some(posted.id);
                     t.url = posted.url;
                     t.posted = planned.body.clone();

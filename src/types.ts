@@ -942,7 +942,8 @@ export type AttentionKind =
   | "disconnected"
   | "ci_failing"
   | "ci_question"
-  | "runs_waiting";
+  | "runs_waiting"
+  | "stuck";
 /** Something only the developer can resolve. */
 export interface Attention {
   /** Stays the same while the item is open. */
@@ -968,6 +969,7 @@ export const attentionLabels: Record<AttentionKind, string> = {
   ci_failing: "CI failing",
   ci_question: "An agent needs a person",
   runs_waiting: "Runs waiting",
+  stuck: "Stuck",
 };
 export interface AttentionHandlers {
   onChoose: (p: PullRequest, r?: Review) => void;
@@ -1557,6 +1559,11 @@ export interface OpsReady {
    * working it out. */
   turn?: Turn | null;
   text: string;
+  /** When Orbit first gave this answer, words aside. */
+  since?: string;
+  /** When Orbit nudged whoever's move it is, once: the agent on the
+   * comment, or you in Needs you. */
+  nudged?: string | null;
 }
 export type OpsAction =
   | "post_comment"

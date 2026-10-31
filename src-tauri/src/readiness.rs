@@ -1028,4 +1028,4 @@ pub fn prune(s: &mut Snapshot) {
 
 #[cfg(test)]
 #[path = "readiness_tests.rs"]
-mod tests;
+pub(crate) mod tests;

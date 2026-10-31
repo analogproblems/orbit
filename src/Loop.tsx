@@ -128,6 +128,15 @@ export function ReadinessPanel({ prId }: { prId: string }) {
   if (!r) return null;
   // Where the agent reads it.
   const told = s.ops?.find((t) => t.prId === prId && t.ready && t.url);
+  // Whom Orbit nudged, once, about an answer that has stood for a while.
+  const first = r.waits[0];
+  const reminded =
+    first?.turn === "author" &&
+    told?.ready?.turn === "author" &&
+    !!told.ready.nudged;
+  const stuck = (s.attention ?? []).some(
+    (a) => a.kind === "stuck" && a.prId === prId,
+  );
   return (
     <VStack gap={2}>
       <Heading level={3}>Merging</Heading>
@@ -150,6 +159,18 @@ export function ReadinessPanel({ prId }: { prId: string }) {
         <Text>{readinessLine(r)}</Text>
       ) : (
         r.waits.map((w) => <Text key={`${w.kind}:${w.text}`}>{w.text}</Text>)
+      )}
+      {reminded && (
+        <Text>
+          Orbit reminded the author once on its comment: this has waited on them
+          for more than 2 hours.
+        </Text>
+      )}
+      {stuck && (
+        <Text>
+          This has waited on a person for more than a day, so it is in Needs
+          you.
+        </Text>
       )}
       {r.reviews && <ReviewsList r={r} reviews={r.reviews} />}
       <Text type="supporting" color="secondary">

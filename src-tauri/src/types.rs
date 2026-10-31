@@ -1520,6 +1520,9 @@ pub enum AttentionKind {
     CiQuestion,
     /// A repository's runs have waited a long time for a runner.
     RunsWaiting,
+    /// A pull request has waited on a person, such as a reviewer, for a
+    /// long time (`crate::ops::NUDGE_PERSON`).
+    Stuck,
 }
 /// Something only the developer can resolve.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

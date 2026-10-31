@@ -13,7 +13,7 @@ import {
   VStack,
 } from "@astryxdesign/core";
 import { ArrowLeft, GitPullRequest, Repeat, Square } from "lucide-react";
-import { useOrbit } from "./store";
+import { openLink, useOrbit } from "./store";
 import {
   activeStatuses,
   attentionAction,
@@ -95,6 +95,9 @@ export function mainAction(
     a.kind === "runs_waiting"
   )
     return { label: "Open operations", onClick: go.onOperations };
+  // A reviewer or a rule on GitHub holds it back.
+  if (a.kind === "stuck" && p)
+    return { label: "Open on GitHub", onClick: () => openLink(p.url) };
   if (a.kind === "sync_failing" || a.kind === "autopilot_paused")
     return { label: "Open settings", onClick: go.onSettings };
   if (a.kind === "disconnected")
