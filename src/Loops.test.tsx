@@ -114,6 +114,33 @@ describe("needs you list", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open chat" }));
     expect(go.onChoose).toHaveBeenLastCalledWith(snapshot.prs[4], clean);
   });
+  it("opens a stuck pull request on GitHub, and in Orbit from its row", () => {
+    const snapshot = freshDemo();
+    const pr = snapshot.prs[4];
+    snapshot.attention = [
+      {
+        key: `stuck:${pr.id}:2026-10-30T12:00:00.000Z`,
+        kind: "stuck",
+        prId: pr.id,
+        reviewId: null,
+        approvalId: null,
+        repo: null,
+        reason:
+          "It has waited on a person for more than a day. bob hasn't reviewed abc4444 yet.",
+      },
+    ];
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    const go = show(snapshot);
+    const needs = list("Needs you");
+    expect(within(needs).getByText(`Stuck · ${pr.id}`)).toBeTruthy();
+    fireEvent.click(
+      within(needs).getByRole("button", { name: "Open on GitHub" }),
+    );
+    expect(open).toHaveBeenCalledWith(pr.url, "_blank", "noopener,noreferrer");
+    fireEvent.click(within(needs).getByText(pr.title));
+    expect(go.onChoose).toHaveBeenCalledWith(pr, undefined);
+    open.mockRestore();
+  });
   it("shows no list when nothing needs you", () => {
     show({ ...freshDemo(), attention: [] });
     expect(screen.queryByRole("heading", { name: "Needs you" })).toBeNull();

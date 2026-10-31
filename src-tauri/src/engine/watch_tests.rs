@@ -1280,6 +1280,128 @@ async fn an_approval_of_an_older_commit_keeps_it_waiting_on_its_reviewer() {
     );
 }
 
+/// A pull request left waiting gets one nudge for whoever owes the next
+/// step, end to end: one on its agent gets one edit of Orbit's comment
+/// reminding it, and one on a reviewer lands in Needs you, announced once,
+/// without an edit. Each leaves once the answer changes.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_stuck_pull_request_nudges_whoever_owes_the_next_step_once() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    let e = connected(d.path()).await;
+    e.update(|s| s.github_user = Some("me".into())).await;
+    let p = reviewed(&e).await;
+    let watch = || crate::github::GH.scope(gh.clone(), e.watch_ci());
+    let again = || e.update(|s| s.merges[0].read_at = "2020-01-01T00:00:00.000Z".into());
+    // As if its answer had stood for `hours` since the agent saw it.
+    let left = |hours: i64| {
+        e.update(move |s| {
+            let since = chrono::Utc::now() - chrono::Duration::hours(hours);
+            s.ops[0].ready.as_mut().unwrap().since = crate::problems::stamp(since);
+        })
+    };
+    let stuck = || async {
+        let s = e.shown_snapshot().await;
+        let notes = s
+            .buddy_feed
+            .notes
+            .iter()
+            .filter(|n| n.kind == NoteKind::NeedsYou && n.text.contains("waited on a person"))
+            .count();
+        let items: Vec<_> = s
+            .attention
+            .into_iter()
+            .filter(|a| a.kind == AttentionKind::Stuck)
+            .collect();
+        (items, notes)
+    };
+    // It conflicts with main: the agent's move.
+    passing_pull(d.path(), &p.head_sha);
+    mergeable(d.path(), &p.head_sha, json!(false), "dirty");
+    watch().await;
+    let conflict = "It conflicts with main: merge main in and fix the conflicts.";
+    assert_eq!(writes(d.path()), ["POST repos/a/b/issues/1/comments"]);
+    assert!(comment(d.path()).contains(&format!("**Not clear to merge yet.** {conflict}\n\n")));
+    left(1).await;
+    watch().await;
+    assert_eq!(writes(d.path()).len(), 1);
+    // Two hours on: one edit reminding the agent.
+    left(2).await;
+    watch().await;
+    let w = writes(d.path());
+    assert_eq!(w.len(), 2);
+    assert!(w[1].starts_with("PATCH repos/a/b/issues/comments/"));
+    assert!(comment(d.path()).contains(&format!(
+        "**Not clear to merge yet.** {conflict} **Reminder:** it has waited on the author for more than 2 hours.\n\n<!-- orbit-ready "
+    )));
+    let r = e.snapshot().await.ops[0].ready.clone().unwrap();
+    assert!(r.nudged.is_some() && r.reminded.is_some());
+    // Once, however long it waits, and it isn't yours in Needs you.
+    left(48).await;
+    again().await;
+    watch().await;
+    assert_eq!(writes(d.path()).len(), 2);
+    assert_eq!(stuck().await, (vec![], 0));
+
+    // Fixed, and main's rules need an approval bob hasn't given: bob's
+    // move, so one edit without the reminder.
+    std::fs::write(d.path().join("branch-main.json"), r#"{"protected":true}"#).unwrap();
+    std::fs::write(
+        d.path().join("rules-main.json"),
+        r#"[{"type":"pull_request","parameters":{"required_approving_review_count":1}}]"#,
+    )
+    .unwrap();
+    mergeable(d.path(), &p.head_sha, json!(true), "blocked");
+    let mut pull: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(d.path().join("pull-1.json")).unwrap())
+            .unwrap();
+    pull["requested_reviewers"] = json!([{ "login": "bob" }]);
+    std::fs::write(d.path().join("pull-1.json"), pull.to_string()).unwrap();
+    again().await;
+    watch().await;
+    let waiting =
+        "main needs 1 approval of aaaaaaa and it has none: bob hasn't reviewed aaaaaaa yet.";
+    assert_eq!(line(&e).await, format!("Not clear to merge yet. {waiting}"));
+    assert_eq!(writes(d.path()).len(), 3);
+    assert!(comment(d.path()).contains(&format!("**Not clear to merge yet.** {waiting}\n\n")));
+    assert_eq!(stuck().await, (vec![], 0));
+    // Almost a day: nothing yet.
+    left(23).await;
+    again().await;
+    watch().await;
+    assert_eq!(stuck().await, (vec![], 0));
+    // A day on: in Needs you, told once, and the comment isn't edited.
+    left(24).await;
+    again().await;
+    watch().await;
+    let (items, notes) = stuck().await;
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].pr_id.as_deref(), Some(p.id.as_str()));
+    assert_eq!(
+        items[0].reason,
+        format!("It has waited on a person for more than a day. {waiting}")
+    );
+    assert_eq!(notes, 1);
+    assert_eq!(writes(d.path()).len(), 3);
+    again().await;
+    watch().await;
+    assert_eq!(stuck().await, (items, 1));
+    assert_eq!(writes(d.path()).len(), 3);
+
+    // Bob approves: clear, with one edit, and it leaves Needs you.
+    reviews(d.path(), &[review("bob", "APPROVED", &p.head_sha)]);
+    mergeable(d.path(), &p.head_sha, json!(true), "clean");
+    again().await;
+    watch().await;
+    assert_eq!(
+        line(&e).await,
+        "Clear to merge at aaaaaaa against main at 1111111."
+    );
+    assert_eq!(writes(d.path()).len(), 4);
+    assert_eq!(stuck().await, (vec![], 1));
+}
+
 /// What Orbit can't read never keeps an earlier clear answer: too many
 /// reviews, reviews GitHub fails to give, an approval by someone without
 /// write access or whose access Orbit can't tell, and rules on a later

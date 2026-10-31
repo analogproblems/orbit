@@ -112,6 +112,57 @@ describe("merging panel", () => {
       screen.getByText("Clear to merge at abc4444 against main at 7d41e09."),
     ).toBeTruthy();
   });
+  it("says whom Orbit nudged about an answer that has stood a while", () => {
+    const snapshot = freshDemo();
+    const pr = snapshot.prs[4];
+    const reminded =
+      "Orbit reminded the author once on its comment: this has waited on them for more than 2 hours.";
+    const inNeedsYou =
+      "This has waited on a person for more than a day, so it is in Needs you.";
+    const shows = (s: typeof snapshot) => {
+      cleanup();
+      useOrbit.setState({ snapshot: s });
+      render(<ReadinessPanel prId={pr.id} />);
+      return [reminded, inNeedsYou].filter((t) => screen.queryByText(t));
+    };
+    // The demo's agent was reminded.
+    expect(shows(snapshot)).toEqual([reminded]);
+    const told = (s: typeof snapshot) =>
+      s.ops!.find((t) => t.prId === pr.id)!.ready!;
+    // Not before GitHub has the reminder, such as while its edit fails,
+    // nor once it is someone else's move, nor where a person was nudged
+    // instead.
+    const quiet = structuredClone(snapshot);
+    told(quiet).reminded = null;
+    expect(shows(quiet)).toEqual([]);
+    const theirs = structuredClone(snapshot);
+    theirs.readiness![1].waits = [
+      {
+        kind: "reviews",
+        turn: "person",
+        text: "main needs 1 approval of abc4444 and it has none: bob hasn't reviewed abc4444 yet.",
+      },
+    ];
+    expect(shows(theirs)).toEqual([]);
+    const person = structuredClone(snapshot);
+    told(person).turn = "person";
+    expect(shows(person)).toEqual([]);
+    // A person's move a day on is in Needs you; another's item isn't.
+    const item = {
+      kind: "stuck" as const,
+      reviewId: null,
+      approvalId: null,
+      repo: null,
+      reason: `It has waited on a person for more than a day. ${theirs.readiness![1].waits[0].text}`,
+    };
+    theirs.attention = [
+      { ...item, key: "stuck:other", prId: snapshot.prs[1].id },
+      { ...item, kind: "loop", key: `loop:${pr.id}`, prId: pr.id },
+    ];
+    expect(shows(theirs)).toEqual([]);
+    theirs.attention.push({ ...item, key: `stuck:${pr.id}`, prId: pr.id });
+    expect(shows(theirs)).toEqual([inNeedsYou]);
+  });
   it("lists who was asked to review it and what the branch's rules need", () => {
     const snapshot = freshDemo();
     const head = "abc4444" + "0".repeat(33);

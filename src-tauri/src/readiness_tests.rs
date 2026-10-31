@@ -14,7 +14,7 @@ fn now() -> DateTime<Utc> {
 fn ago(minutes: i64) -> String {
     stamp(now() - Duration::minutes(minutes))
 }
-const HEAD: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+pub(crate) const HEAD: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const MAIN: &str = "cccccccccccccccccccccccccccccccccccccccc";
 
 fn repository(automatic: bool) -> Repository {
@@ -70,7 +70,7 @@ fn commit(sha: &str, state: CiState) -> CommitCi {
 /// A pull request Orbit reviews that is clear to merge: a clean round on
 /// its head and base, its checks passed after main's latest commit was
 /// made, and GitHub says it merges.
-fn ready() -> (Snapshot, PullRequest) {
+pub(crate) fn ready() -> (Snapshot, PullRequest) {
     let p = trusted();
     let mut s = Snapshot::default();
     s.settings.automatic = true;
@@ -121,7 +121,7 @@ fn waits(s: &Snapshot) -> Vec<(WaitKind, String)> {
 fn first(s: &Snapshot) -> String {
     of(s, &s.prs[0]).line()
 }
-fn pull(s: &mut Snapshot) -> &mut CommitCi {
+pub(crate) fn pull(s: &mut Snapshot) -> &mut CommitCi {
     &mut s.ci[0].pulls[0].ci
 }
 
@@ -857,7 +857,7 @@ fn answers_go_with_pull_requests_orbit_stops_reviewing() {
 
 const OLD: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 /// Someone where `stand`, with write access where it matters.
-fn person(name: &str, stand: Stand, commit: &str) -> Reviewer {
+pub(crate) fn person(name: &str, stand: Stand, commit: &str) -> Reviewer {
     Reviewer {
         may_approve: matches!(stand, Stand::Approved | Stand::ChangesRequested).then_some(true),
         ..read_as(name, stand, commit)
@@ -875,7 +875,7 @@ fn read_as(name: &str, stand: Stand, commit: &str) -> Reviewer {
     }
 }
 /// GitHub's answer says main needs `approvals` and who stands where.
-fn reviewed_by(s: &mut Snapshot, approvals: u32, reviewers: Vec<Reviewer>) {
+pub(crate) fn reviewed_by(s: &mut Snapshot, approvals: u32, reviewers: Vec<Reviewer>) {
     s.merges[0].reviews = Some(Reviews {
         reviewers,
         rule: Some(Rule {

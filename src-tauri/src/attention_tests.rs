@@ -413,3 +413,102 @@ fn runs_waiting_for_a_runner_need_you_with_what_orbit_sees_of_its_runners() {
     see_waiting(&mut s.problems, "a/b", &[], true, chrono::Utc::now());
     assert!(items(&s).is_empty());
 }
+
+/// A pull request whose answer has waited on a person for a day, such as
+/// a reviewer or a rule on GitHub, is one item while it still does, in
+/// Orbit's words now and announced once. Not while Watch CI is off, nor
+/// once something else is in the way.
+#[test]
+fn a_pull_request_left_waiting_on_a_person_needs_you_once() {
+    use crate::readiness::{tests as r, Stand, Turn, WaitKind};
+    let (mut s, _) = r::ready();
+    s.merges[0].state = "blocked".into();
+    let t0 = chrono::Utc::now();
+    let pass = |s: &mut Snapshot, hours: i64| {
+        let answers = crate::readiness::all(s);
+        let now = t0 + chrono::Duration::hours(hours);
+        crate::ops::ready(&mut s.ops, &answers, &s.prs, &[], &s.ci, true, now)
+    };
+    pass(&mut s, 0);
+    assert!(items(&s).is_empty());
+    pass(&mut s, 23);
+    assert!(items(&s).is_empty());
+    pass(&mut s, 24);
+    let key = format!("stuck:a/b#1:{}", crate::problems::stamp(t0));
+    let all = items(&s);
+    assert_eq!(all.len(), 1);
+    assert_eq!(
+        (all[0].kind, &all[0].key, all[0].pr_id.as_deref()),
+        (AttentionKind::Stuck, &key, Some("a/b#1"))
+    );
+    assert_eq!(
+        all[0].reason,
+        "It has waited on a person for more than a day. GitHub says a rule blocks merging it, such as a required review."
+    );
+    assert_eq!(notice(&s, all[0].clone()).title, "A pull request is stuck");
+    let (notices, _) = announce(&mut s);
+    assert_eq!(notices.len(), 1);
+    assert!(announce(&mut s).0.is_empty());
+    // Bit asked first, and you let it post the comment: the same wait,
+    // told no more.
+    let at = t0 + chrono::Duration::hours(30);
+    let post = crate::ops::next(&s.ops[0], None, true, at).unwrap();
+    assert_eq!(post.action, crate::ops::Action::PostComment);
+    let id = crate::ops::record(&mut s.journal, &post, at);
+    let posted = crate::ops::Posted {
+        id: 7,
+        number: Some(1),
+        url: "https://github.com/a/b/pull/1#issuecomment-7".into(),
+        updated_at: crate::problems::stamp(at),
+        body: post.body.clone(),
+    };
+    crate::ops::settle(&mut s.ops, &mut s.journal, &id, &post, Ok(posted), at);
+    pass(&mut s, 30);
+    assert_eq!(keys(&s), [(AttentionKind::Stuck, key.clone())]);
+    assert!(announce(&mut s).0.is_empty());
+    // Its reviews read: the same wait, in its words now.
+    r::reviewed_by(&mut s, 1, vec![r::person("bob", Stand::Asked, "")]);
+    assert_eq!(
+        items(&s)[0].reason,
+        "It has waited on a person for more than a day. main needs 1 approval of aaaaaaa and it has none: bob hasn't reviewed aaaaaaa yet."
+    );
+    assert_eq!(items(&s)[0].key, key);
+    pass(&mut s, 48);
+    assert_eq!(keys(&s), [(AttentionKind::Stuck, key.clone())]);
+    assert!(announce(&mut s).0.is_empty());
+    // Not while Watch CI is off.
+    s.settings.watch_ci = false;
+    assert!(items(&s).is_empty());
+    s.settings.watch_ci = true;
+    // Nor once something else is in the way, before Orbit works it out
+    // again: the author's move, or a base it can't judge.
+    let first = |s: &Snapshot| {
+        let w = crate::readiness::of(s, &s.prs[0]).waits.remove(0);
+        (w.kind, w.turn)
+    };
+    let mut theirs = s.clone();
+    theirs.merges[0].state = "behind".into();
+    assert_eq!(first(&theirs), (WaitKind::Merge, Turn::Author));
+    assert!(items(&theirs).is_empty());
+    let mut unsure = s.clone();
+    r::pull(&mut unsure).ran_at = String::new();
+    assert_eq!(first(&unsure), (WaitKind::Base, Turn::Person));
+    assert!(items(&unsure).is_empty());
+    // Nor a pull request Orbit hasn't nudged anyone about, nor one whose
+    // answer Orbit hasn't worked out again since it moved on.
+    let kept = |edit: fn(&mut crate::ops::Ready)| {
+        let mut s = s.clone();
+        edit(s.ops[0].ready.as_mut().unwrap());
+        items(&s)
+    };
+    assert!(kept(|r| r.nudged = None).is_empty());
+    assert!(kept(|r| r.head_sha = "b".repeat(40)).is_empty());
+    assert!(kept(|r| r.turn = Some(Turn::Author)).is_empty());
+    assert!(kept(|r| r.clear = true).is_empty());
+    assert_eq!(kept(|r| r.text = "Older words.".into()).len(), 1);
+    // Approved: it leaves Needs you.
+    r::reviewed_by(&mut s, 1, vec![r::person("bob", Stand::Approved, r::HEAD)]);
+    s.merges[0].state = "clean".into();
+    pass(&mut s, 49);
+    assert!(items(&s).is_empty());
+}
