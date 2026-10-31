@@ -856,12 +856,22 @@ fn answers_go_with_pull_requests_orbit_stops_reviewing() {
 }
 
 const OLD: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+/// Someone where `stand`, with write access where it matters.
 fn person(name: &str, stand: Stand, commit: &str) -> Reviewer {
+    Reviewer {
+        may_approve: matches!(stand, Stand::Approved | Stand::ChangesRequested).then_some(true),
+        ..read_as(name, stand, commit)
+    }
+}
+/// Someone where `stand`, as GitHub's reviews say, before Orbit asks
+/// about their access.
+fn read_as(name: &str, stand: Stand, commit: &str) -> Reviewer {
     Reviewer {
         name: name.into(),
         team: false,
         stand,
         commit: commit.into(),
+        may_approve: None,
     }
 }
 /// GitHub's answer says main needs `approvals` and who stands where.
@@ -872,7 +882,7 @@ fn reviewed_by(s: &mut Snapshot, approvals: u32, reviewers: Vec<Reviewer>) {
             approvals,
             code_owners: false,
         }),
-        unseen: None,
+        ..Default::default()
     });
 }
 fn wait_of(s: &Snapshot) -> (WaitKind, Turn, String) {
@@ -1011,6 +1021,7 @@ fn rules_orbit_cant_see_are_left_to_github_and_said_so() {
             reviewers,
             rule: None,
             unseen: Some("Orbit's GitHub sign-in can't see main's rules.".into()),
+            ..Default::default()
         });
     };
     unseen(&mut s, vec![person("alice", ApprovedOlder, OLD)]);
@@ -1163,21 +1174,21 @@ fn reviewers_are_read_from_the_pull_request_and_its_reviews() {
     assert_eq!(
         reviewers(&pull, &reviews, HEAD),
         [
-            person("bob", ChangesRequested, OLD),
-            person("dave", ApprovedOlder, OLD),
-            person("gina", Asked, ""),
-            person("hank", Asked, ""),
+            read_as("bob", ChangesRequested, OLD),
+            read_as("dave", ApprovedOlder, OLD),
+            read_as("gina", Asked, ""),
+            read_as("hank", Asked, ""),
             team,
-            person("carol", Approved, HEAD),
-            person("erin", ChangesRequested, OLD),
-            person("ALICE", Approved, HEAD),
+            read_as("carol", Approved, HEAD),
+            read_as("erin", ChangesRequested, OLD),
+            read_as("ALICE", Approved, HEAD),
         ]
     );
     // Asked again after approving the latest commit, that still counts.
     let asked = json!({ "requested_reviewers": [{ "login": "carol" }] });
     assert_eq!(
         reviewers(&asked, &reviews[1..2], HEAD),
-        [person("carol", Approved, HEAD)]
+        [read_as("carol", Approved, HEAD)]
     );
     // A team without its owner is named by its slug.
     let teams = json!({ "requested_teams": [{ "slug": "devs" }] });
@@ -1256,4 +1267,136 @@ fn reviews_load_from_older_state() {
     })
     .unwrap();
     assert_eq!(v, json!({ "approvals": 1, "codeOwners": true }));
+}
+
+#[test]
+fn only_approvals_by_people_with_write_access_count() {
+    use Stand::*;
+    let (mut s, _) = ready();
+    let without = |name: &str, stand: Stand, commit: &str, access: Option<bool>| Reviewer {
+        may_approve: access,
+        ..person(name, stand, commit)
+    };
+    reviewed_by(
+        &mut s,
+        1,
+        vec![
+            person("carol", ApprovedOlder, OLD),
+            without("mallory", Approved, HEAD, Some(false)),
+            without("trent", Approved, HEAD, None),
+        ],
+    );
+    assert_eq!(
+        wait_of(&s),
+        (
+            WaitKind::Reviews,
+            Turn::Person,
+            "main needs 1 approval of aaaaaaa and it has none: carol approved bbbbbbb but not aaaaaaa, mallory approved aaaaaaa, but without write access that doesn't count and trent approved aaaaaaa, but Orbit can't tell whether they have write access.".into()
+        )
+    );
+    // A request for changes without write access doesn't hold it back;
+    // one Orbit can't tell about does.
+    reviewed_by(
+        &mut s,
+        1,
+        vec![
+            person("alice", Approved, HEAD),
+            without("mallory", ChangesRequested, HEAD, Some(false)),
+        ],
+    );
+    assert!(of(&s, &s.prs[0]).clear);
+    reviewed_by(
+        &mut s,
+        2,
+        vec![
+            person("alice", Approved, HEAD),
+            without("mallory", ChangesRequested, OLD, Some(false)),
+        ],
+    );
+    assert_eq!(
+        first(&s),
+        "Not clear to merge yet. main needs 2 approvals of aaaaaaa and it has 1: mallory asked for changes on bbbbbbb, but without write access that doesn't hold it back."
+    );
+    reviewed_by(
+        &mut s,
+        1,
+        vec![
+            person("alice", Approved, HEAD),
+            without("trent", ChangesRequested, HEAD, None),
+        ],
+    );
+    assert_eq!(wait_of(&s).1, Turn::Author);
+    // GitHub's word on someone's permission.
+    for (permission, write) in [
+        ("admin", Some(true)),
+        ("maintain", Some(true)),
+        ("write", Some(true)),
+        ("triage", Some(false)),
+        ("read", Some(false)),
+        ("none", Some(false)),
+        ("odd", None),
+    ] {
+        assert_eq!(access(&json!({ "permission": permission })), write);
+    }
+    assert_eq!(access(&json!({})), None);
+    assert!(plain_login("alice-b2"));
+    for odd in ["", "dependabot[bot]", "a/b", "a b", "../x"] {
+        assert!(!plain_login(odd), "{odd}");
+    }
+}
+
+#[test]
+fn reviews_orbit_couldnt_read_never_make_it_clear() {
+    let (mut s, _) = ready();
+    let unreadable = |s: &mut Snapshot, too_many: bool, rule: Option<Rule>| {
+        s.merges[0].reviews = Some(Reviews {
+            rule,
+            unread: (!too_many).then(|| "Bad Gateway (HTTP 502)".into()),
+            too_many,
+            ..Default::default()
+        });
+    };
+    let needs = Some(Rule {
+        approvals: 1,
+        code_owners: false,
+    });
+    unreadable(&mut s, true, needs.clone());
+    assert_eq!(
+        wait_of(&s),
+        (
+            WaitKind::Reviews,
+            Turn::Person,
+            "It has more reviews than Orbit reads, so Orbit can't tell whether enough people approved aaaaaaa.".into()
+        )
+    );
+    unreadable(&mut s, false, needs.clone());
+    assert_eq!(
+        wait_of(&s),
+        (
+            WaitKind::Reviews,
+            Turn::Working,
+            "Orbit couldn't read its reviews, so it can't tell yet whether enough people approved aaaaaaa: Bad Gateway (HTTP 502).".into()
+        )
+    );
+    // GitHub says a rule blocks it: that stands, as Orbit couldn't read
+    // more.
+    s.merges[0].state = "blocked".into();
+    assert_eq!(
+        wait_of(&s),
+        (
+            WaitKind::Merge,
+            Turn::Person,
+            "GitHub says a rule blocks merging it, such as a required review.".into()
+        )
+    );
+    unreadable(&mut s, true, needs);
+    assert_eq!(wait_of(&s).0, WaitKind::Reviews);
+    // Unread reviews don't matter where the rules need none, or where
+    // Orbit can't see the rules and GitHub says it merges.
+    s.merges[0].state = "clean".into();
+    unreadable(&mut s, false, Some(Rule::default()));
+    assert!(of(&s, &s.prs[0]).clear);
+    unreadable(&mut s, true, None);
+    let r = of(&s, &s.prs[0]);
+    assert!(r.clear && r.note().is_some());
 }

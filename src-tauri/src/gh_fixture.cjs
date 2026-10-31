@@ -26,11 +26,14 @@
 // <dir>/artifacts-error exists, reading them fails with its text.
 // Pull request <n> of a/b is <dir>/pull-<n>.json, or 404; while
 // <dir>/pull-error exists, reading one fails with its text. Its reviews
-// are <dir>/reviews-<n>.json, or none, in pages. Branch <b> of a/b is
-// <dir>/branch-<b>.json, or unprotected; its protection is
+// are <dir>/reviews-<n>.json, or none, in pages, and while
+// <dir>/reviews-error exists, reading them fails with its text. Branch <b>
+// of a/b is <dir>/branch-<b>.json, or unprotected; its protection is
 // <dir>/protection-<b>.json, or "Branch not protected", and while
 // <dir>/protection-error exists, reading it fails with its text; the
-// rulesets on it are <dir>/rules-<b>.json, or none.
+// rulesets on it are <dir>/rules-<b>.json, or none, in pages. A user's
+// permission on a/b is <dir>/permission-<login>.json, or write, and while
+// <dir>/permission-error exists, reading one fails with its text.
 // While <dir>/down exists every call
 // fails. While <dir>/hold exists a GET waits, after writing <dir>/held, or
 // only a GET of the endpoint it names, when it names one; when it names
@@ -326,6 +329,11 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
     answer({ total_count: list.length, artifacts: page(list) });
   }
 } else if ((m = endpoint.match(/^repos\/a\/b\/pulls\/(\d+)\/reviews$/))) {
+  const refused = path.join(dir, "reviews-error");
+  if (fs.existsSync(refused)) {
+    process.stderr.write(fs.readFileSync(refused, "utf8"));
+    process.exit(1);
+  }
   const reviews = path.join(dir, `reviews-${m[1]}.json`);
   answer(
     page(
@@ -357,8 +365,22 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
 } else if ((m = endpoint.match(/^repos\/a\/b\/rules\/branches\/(.+)$/))) {
   const rules = path.join(dir, `rules-${decodeURIComponent(m[1])}.json`);
   answer(
-    fs.existsSync(rules) ? JSON.parse(fs.readFileSync(rules, "utf8")) : [],
+    page(
+      fs.existsSync(rules) ? JSON.parse(fs.readFileSync(rules, "utf8")) : [],
+    ),
   );
+} else if (
+  (m = endpoint.match(/^repos\/a\/b\/collaborators\/([^/]+)\/permission$/))
+) {
+  const refused = path.join(dir, "permission-error");
+  if (fs.existsSync(refused)) {
+    process.stderr.write(fs.readFileSync(refused, "utf8"));
+    process.exit(1);
+  }
+  const permission = path.join(dir, `permission-${m[1]}.json`);
+  if (fs.existsSync(permission))
+    process.stdout.write(fs.readFileSync(permission, "utf8"));
+  else answer({ permission: "write", user: { login: m[1] } });
 } else if ((m = endpoint.match(/^repos\/a\/b\/pulls\/(\d+)$/))) {
   const refused = path.join(dir, "pull-error");
   if (fs.existsSync(refused)) {

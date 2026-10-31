@@ -180,6 +180,11 @@ pub struct Reviews {
     /// `unseen`.
     pub rule: Option<Rule>,
     pub unseen: Option<String>,
+    /// Why Orbit couldn't read the reviews, as GitHub said, so `reviewers`
+    /// is empty.
+    pub unread: Option<String>,
+    /// It has more reviews than Orbit reads, so `reviewers` is empty.
+    pub too_many: bool,
 }
 /// Someone asked to review a pull request, or who reviewed it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -191,6 +196,21 @@ pub struct Reviewer {
     pub stand: Stand,
     /// The commit their latest approval or request for changes was of.
     pub commit: String,
+    /// For an approval of the latest commit or a request for changes,
+    /// whether they have write access, without which GitHub's rules don't
+    /// count it. None when Orbit couldn't tell, or didn't need to ask.
+    pub may_approve: Option<bool>,
+}
+impl Reviewer {
+    /// An approval of the latest commit that counts toward the rules.
+    fn counts(&self) -> bool {
+        self.stand == Stand::Approved && self.may_approve == Some(true)
+    }
+    /// A request for changes that can hold it back: from someone with
+    /// write access, or someone Orbit can't tell about.
+    fn blocks(&self) -> bool {
+        self.stand == Stand::ChangesRequested && self.may_approve != Some(false)
+    }
 }
 /// Where a reviewer stands on a pull request's latest commit.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -277,9 +297,11 @@ pub fn of(s: &Snapshot, pr: &PullRequest) -> Readiness {
         let github = merging(merge, pr);
         let people = reviews.and_then(|r| reviewing(r, pr, merge.is_some_and(Merge::blocked)));
         // GitHub still at work, a conflict or being behind come first, and
-        // reviews in the way say more than that a rule blocks it.
+        // reviews in the way say more than that a rule blocks it, unless
+        // Orbit couldn't read them.
+        let blocked = merge.is_some_and(Merge::blocked);
         match (github, people) {
-            (Some((Turn::Person, _)), Some((turn, text))) if merge.is_some_and(Merge::blocked) => {
+            (Some((Turn::Person, _)), Some((turn, text))) if blocked && turn != Turn::Working => {
                 answer.waits.push(wait(WaitKind::Reviews, turn, text));
             }
             (Some((turn, text)), _) => answer.waits.push(wait(WaitKind::Merge, turn, text)),
@@ -531,10 +553,19 @@ fn reviewing(r: &Reviews, pr: &PullRequest, blocked: bool) -> Option<(Turn, Stri
         None if !blocked => return None,
         _ => {}
     }
-    let changes = r
-        .reviewers
-        .iter()
-        .find(|x| x.stand == Stand::ChangesRequested);
+    if r.too_many {
+        return Some((
+            Turn::Person,
+            format!("It has more reviews than Orbit reads, so Orbit can't tell whether enough people approved {head}."),
+        ));
+    }
+    if let Some(why) = &r.unread {
+        return Some((
+            Turn::Working,
+            format!("Orbit couldn't read its reviews, so it can't tell yet whether enough people approved {head}: {why}."),
+        ));
+    }
+    let changes = r.reviewers.iter().find(|x| x.blocks());
     if let Some(x) = changes {
         if x.commit == pr.head_sha {
             return Some((
@@ -550,7 +581,7 @@ fn reviewing(r: &Reviews, pr: &PullRequest, blocked: bool) -> Option<(Turn, Stri
     let pending: Vec<String> = r
         .reviewers
         .iter()
-        .filter(|x| x.stand != Stand::Approved)
+        .filter(|x| !x.counts())
         .map(|x| who(x, head))
         .collect();
     let Some(rule) = &r.rule else {
@@ -564,11 +595,7 @@ fn reviewing(r: &Reviews, pr: &PullRequest, blocked: bool) -> Option<(Turn, Stri
             )
         });
     };
-    let approved = r
-        .reviewers
-        .iter()
-        .filter(|x| x.stand == Stand::Approved)
-        .count();
+    let approved = r.reviewers.iter().filter(|x| x.counts()).count();
     let needed = rule.approvals as usize;
     if approved >= needed {
         return None;
@@ -591,21 +618,31 @@ fn reviewing(r: &Reviews, pr: &PullRequest, blocked: bool) -> Option<(Turn, Stri
         format!("{base} needs {approvals} of {head} and it {has}: {rest}."),
     ))
 }
-/// Where someone not yet approving the latest commit stands, in a clause.
+/// Where someone whose approval of the latest commit doesn't count yet
+/// stands, in a clause.
 fn who(x: &Reviewer, head: &str) -> String {
     let name = if x.team {
         format!("the {} team", x.name)
     } else {
         x.name.clone()
     };
-    match x.stand {
-        Stand::Asked => format!("{name} hasn't reviewed {head} yet"),
-        Stand::ApprovedOlder => format!("{name} approved {} but not {head}", short(&x.commit)),
-        Stand::ChangesRequested => format!(
-            "{name} asked for changes on {} and hasn't reviewed {head} since",
-            short(&x.commit)
+    let older = short(&x.commit);
+    match (x.stand, x.may_approve) {
+        (Stand::Asked, _) => format!("{name} hasn't reviewed {head} yet"),
+        (Stand::ApprovedOlder, _) => format!("{name} approved {older} but not {head}"),
+        (Stand::ChangesRequested, Some(false)) => format!(
+            "{name} asked for changes on {older}, but without write access that doesn't hold it back"
         ),
-        Stand::Approved => format!("{name} approved {head}"),
+        (Stand::ChangesRequested, _) => {
+            format!("{name} asked for changes on {older} and hasn't reviewed {head} since")
+        }
+        (Stand::Approved, Some(true)) => format!("{name} approved {head}"),
+        (Stand::Approved, Some(false)) => {
+            format!("{name} approved {head}, but without write access that doesn't count")
+        }
+        (Stand::Approved, None) => format!(
+            "{name} approved {head}, but Orbit can't tell whether they have write access"
+        ),
     }
 }
 /// "a", "a and b", "a, b and c".
@@ -666,7 +703,8 @@ pub async fn read(
     validate_repo(repo)?;
     let v = crate::github::api(&format!("repos/{repo}/pulls/{number}"), "GET", &[], None).await?;
     let mut m = understand(&v, &pr_id(repo, number), head_sha, base_sha, Utc::now())?;
-    let reviews = read_reviews(repo, number).await?;
+    // GitHub's answer stands whatever else Orbit can't read.
+    let reviews = read_pages(&format!("repos/{repo}/pulls/{number}/reviews"), PAGES).await;
     let rule = match v["base"]["ref"].as_str() {
         Some(branch) => read_rule(repo, branch).await,
         None => Err(
@@ -674,32 +712,74 @@ pub async fn read(
                 .into(),
         ),
     };
-    m.reviews = Some(Reviews {
-        reviewers: reviewers(&v, &reviews, head_sha),
+    let mut found = Reviews {
         unseen: rule.as_ref().err().cloned(),
         rule: rule.ok(),
-    });
+        ..Default::default()
+    };
+    match reviews {
+        Ok(Some(reviews)) => {
+            found.reviewers = reviewers(&v, &reviews, head_sha);
+            if found.rule.as_ref().is_none_or(Rule::needs_reviews) {
+                check_access(repo, &mut found.reviewers).await;
+            }
+        }
+        Ok(None) => found.too_many = true,
+        Err(e) => found.unread = Some(logs::short(&e)),
+    }
+    m.reviews = Some(found);
     Ok(m)
 }
-/// Pages of reviews Orbit reads, 100 to a page.
-const REVIEW_PAGES: u32 = 3;
-async fn read_reviews(repo: &str, number: u64) -> Result<Vec<Value>, String> {
+/// Pages of a list Orbit reads, 100 to a page.
+const PAGES: u32 = 3;
+/// Every page of a list, or None when it has more than `pages` full ones.
+async fn read_pages(endpoint: &str, pages: u32) -> Result<Option<Vec<Value>>, String> {
     let mut all = vec![];
-    for page in 1..=REVIEW_PAGES {
+    for page in 1..=pages {
         let v = crate::github::api(
-            &format!("repos/{repo}/pulls/{number}/reviews"),
+            endpoint,
             "GET",
             &[("per_page", "100".into()), ("page", page.to_string())],
             None,
         )
         .await?;
-        let items = v.as_array().ok_or("Invalid review list")?;
+        let items = v.as_array().ok_or("Invalid list")?;
         all.extend(items.iter().cloned());
         if items.len() < 100 {
-            return Ok(all);
+            return Ok(Some(all));
         }
     }
-    Err("It has more reviews than Orbit reads.".into())
+    Ok(None)
+}
+/// Reviewers whose write access Orbit asks GitHub about, at most.
+const ACCESS_CHECKS: usize = 10;
+/// Asks GitHub whether each reviewer whose approval of the latest commit
+/// or request for changes the rules may count has write access. Those
+/// Orbit can't ask about, or GitHub doesn't answer for, stay unknown.
+async fn check_access(repo: &str, reviewers: &mut [Reviewer]) {
+    let asked = reviewers
+        .iter_mut()
+        .filter(|x| matches!(x.stand, Stand::Approved | Stand::ChangesRequested))
+        .filter(|x| plain_login(&x.name))
+        .take(ACCESS_CHECKS);
+    for x in asked {
+        let endpoint = format!("repos/{repo}/collaborators/{}/permission", x.name);
+        let v = crate::github::api(&endpoint, "GET", &[], None).await;
+        x.may_approve = v.ok().and_then(|v| access(&v));
+    }
+}
+/// A GitHub login, safe in a path.
+fn plain_login(name: &str) -> bool {
+    !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+/// Whether GitHub's answer about someone's permission gives them write
+/// access, which an approval needs to count toward a branch's rules.
+pub fn access(v: &Value) -> Option<bool> {
+    match v["permission"].as_str()? {
+        "admin" | "maintain" | "write" => Some(true),
+        "triage" | "read" | "none" => Some(false),
+        _ => None,
+    }
 }
 /// What a base branch's rules need, from its protection and the rulesets
 /// on it, or why Orbit can't see them. Its protection takes an admin's
@@ -730,13 +810,13 @@ async fn read_rule(repo: &str, branch: &str) -> Result<Rule, String> {
         },
         None => return Err(unseen("GitHub didn't say whether it is protected".into())),
     };
-    let rulesets = get(format!(
-        "repos/{repo}/rules/branches/{}",
-        branch_path(branch)
-    ))
-    .await
-    .map_err(unseen)?;
-    Ok(rule(protection.as_ref(), &rulesets))
+    let endpoint = format!("repos/{repo}/rules/branches/{}", branch_path(branch));
+    let Some(rulesets) = read_pages(&endpoint, PAGES).await.map_err(unseen)? else {
+        return Err(format!(
+            "{branch} has more rules than Orbit reads, so Orbit can't tell whether it needs reviews."
+        ));
+    };
+    Ok(rule(protection.as_ref(), &Value::Array(rulesets)))
 }
 /// A branch name as part of an API path: slashes stay, and anything else
 /// that isn't plain is escaped.
@@ -788,9 +868,9 @@ pub fn reviewers(pull: &Value, reviews: &[Value], head: &str) -> Vec<Reviewer> {
         match found {
             Some((_, Some(stand), commit)) => Reviewer {
                 name,
-                team: false,
                 stand: *stand,
                 commit: commit.clone(),
+                ..Default::default()
             },
             _ => Reviewer {
                 name,

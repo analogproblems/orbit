@@ -1306,6 +1306,10 @@ export interface Reviewer {
   stand: Stand;
   /** The commit their latest approval or request for changes was of. */
   commit: string;
+  /** For an approval of the latest commit or a request for changes,
+   * whether they have write access, without which GitHub's rules don't
+   * count it; null when Orbit couldn't tell. */
+  mayApprove?: boolean | null;
 }
 /** What a base branch's rules need before a pull request merges. */
 export interface ReviewRule {
@@ -1320,6 +1324,10 @@ export interface Reviews {
    * `unseen`. */
   rule?: ReviewRule | null;
   unseen?: string | null;
+  /** Why Orbit couldn't read the reviews, so `reviewers` is empty. */
+  unread?: string | null;
+  /** It has more reviews than Orbit reads, so `reviewers` is empty. */
+  tooMany?: boolean;
 }
 /** What GitHub last said about whether a pull request can merge. */
 export interface Merge {

@@ -163,15 +163,26 @@ export function ReadinessPanel({ prId }: { prId: string }) {
   );
 }
 
-const stands: Record<
-  Stand,
-  { variant: "success" | "warning" | "error" | "neutral"; label: string }
-> = {
+type Dot = {
+  variant: "success" | "warning" | "error" | "neutral";
+  label: string;
+};
+const stands: Record<Stand, Dot> = {
   asked: { variant: "neutral", label: "Asked" },
   approved: { variant: "success", label: "Approved" },
   approved_older: { variant: "warning", label: "Approved an older commit" },
   changes_requested: { variant: "error", label: "Asked for changes" },
 };
+/** A reviewer's dot: an approval or request for changes from someone
+ * without write access, or whose access Orbit can't tell, doesn't count
+ * as one. */
+function dotOf(x: Reviewer): Dot {
+  if (x.stand === "approved" && x.mayApprove !== true)
+    return { variant: "warning", label: "Approval doesn’t count" };
+  if (x.stand === "changes_requested" && x.mayApprove === false)
+    return { variant: "neutral", label: "Request doesn’t count" };
+  return stands[x.stand];
+}
 const short = (sha: string) => sha.slice(0, 7);
 /** Where a reviewer stands on the latest commit, `head`. */
 function standText(x: Reviewer, head: string) {
@@ -179,10 +190,16 @@ function standText(x: Reviewer, head: string) {
     case "asked":
       return `Hasn’t reviewed ${short(head)} yet.`;
     case "approved":
+      if (x.mayApprove === false)
+        return `Approved ${short(head)}, but without write access that doesn’t count.`;
+      if (x.mayApprove !== true)
+        return `Approved ${short(head)}, but Orbit can’t tell whether they have write access.`;
       return `Approved ${short(head)}.`;
     case "approved_older":
       return `Approved ${short(x.commit)}, but not ${short(head)}.`;
     case "changes_requested":
+      if (x.mayApprove === false)
+        return `Asked for changes on ${short(x.commit)}, but without write access that doesn’t hold it back.`;
       return x.commit === head
         ? `Asked for changes on ${short(head)}.`
         : `Asked for changes on ${short(x.commit)}, and hasn’t reviewed ${short(head)} since.`;
@@ -207,10 +224,18 @@ function ReviewsList({ r, reviews }: { r: Readiness; reviews: Reviews }) {
   return (
     <VStack gap={1}>
       <Heading level={4}>Reviews</Heading>
-      {reviews.reviewers.length > 0 ? (
+      {reviews.tooMany ? (
+        <Text color="secondary">
+          It has more reviews than Orbit reads, so Orbit can’t list them.
+        </Text>
+      ) : reviews.unread ? (
+        <Text color="secondary">
+          Orbit couldn’t read its reviews: {reviews.unread}.
+        </Text>
+      ) : reviews.reviewers.length > 0 ? (
         <List hasDividers density="compact" aria-label="Reviewers">
           {reviews.reviewers.map((x) => {
-            const stand = stands[x.stand];
+            const stand = dotOf(x);
             return (
               <ListItem
                 key={`${x.team ? "team" : "user"}:${x.name}`}

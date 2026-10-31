@@ -130,15 +130,51 @@ describe("merging panel", () => {
         reviewers: [
           { name: "bob", team: false, stand: "asked", commit: "" },
           { name: "acme/devs", team: true, stand: "asked", commit: "" },
-          { name: "alice", team: false, stand: "approved", commit: head },
+          {
+            name: "alice",
+            team: false,
+            stand: "approved",
+            commit: head,
+            mayApprove: true,
+          },
           { name: "carol", team: false, stand: "approved_older", commit: old },
-          { name: "dan", team: false, stand: "changes_requested", commit: old },
+          {
+            name: "dan",
+            team: false,
+            stand: "changes_requested",
+            commit: old,
+            mayApprove: true,
+          },
           {
             name: "erin",
             team: false,
             stand: "changes_requested",
             commit: head,
+            mayApprove: true,
           },
+          {
+            name: "mallory",
+            team: false,
+            stand: "approved",
+            commit: head,
+            mayApprove: false,
+          },
+          {
+            name: "trent",
+            team: false,
+            stand: "approved",
+            commit: head,
+            mayApprove: null,
+          },
+          {
+            name: "oscar",
+            team: false,
+            stand: "changes_requested",
+            commit: old,
+            mayApprove: false,
+          },
+          // Orbit didn't ask.
+          { name: "victor", team: false, stand: "approved", commit: head },
         ],
         rule: { approvals: 2, codeOwners: true },
       },
@@ -159,8 +195,16 @@ describe("merging panel", () => {
         "carolApproved 9f8e7d6, but not abc4444.",
         "danAsked for changes on 9f8e7d6, and hasn’t reviewed abc4444 since.",
         "erinAsked for changes on abc4444.",
+        "malloryApproved abc4444, but without write access that doesn’t count.",
+        "trentApproved abc4444, but Orbit can’t tell whether they have write access.",
+        "oscarAsked for changes on 9f8e7d6, but without write access that doesn’t hold it back.",
+        "victorApproved abc4444, but Orbit can’t tell whether they have write access.",
       ].join(""),
     );
+    expect(screen.getAllByLabelText("Approval doesn’t count")).toHaveLength(3);
+    expect(screen.getAllByLabelText("Request doesn’t count")).toHaveLength(1);
+    expect(screen.getAllByLabelText("Approved")).toHaveLength(1);
+    expect(screen.getAllByLabelText("Asked for changes")).toHaveLength(2);
     for (const label of [
       "Asked",
       "Approved",
@@ -209,6 +253,24 @@ describe("merging panel", () => {
     expect(
       screen.getByText("Orbit's GitHub sign-in can't see main's rules."),
     ).toBeTruthy();
+    // Reviews Orbit couldn't read.
+    for (const [reviews, text] of [
+      [
+        { reviewers: [], tooMany: true },
+        "It has more reviews than Orbit reads, so Orbit can’t list them.",
+      ],
+      [
+        { reviewers: [], unread: "Bad Gateway (HTTP 502)" },
+        "Orbit couldn’t read its reviews: Bad Gateway (HTTP 502).",
+      ],
+    ] as const) {
+      cleanup();
+      snapshot.readiness![1].reviews = { ...reviews, reviewers: [] };
+      useOrbit.setState({ snapshot: structuredClone(snapshot) });
+      render(<ReadinessPanel prId={snapshot.prs[4].id} />);
+      expect(screen.getByText(text)).toBeTruthy();
+      expect(screen.queryByText("Nobody is asked to review it.")).toBeNull();
+    }
   });
   it("says nothing of reviews before Orbit has read them", () => {
     const snapshot = freshDemo();
