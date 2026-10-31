@@ -11,13 +11,13 @@
     "tauri": "tauri",
     "desktop": "tauri dev",
     "test": "vitest run",
-    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml --no-default-features",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features server",
     "format": "prettier --write . && cargo fmt --manifest-path src-tauri/Cargo.toml",
-    "lint": "eslint . && prettier --check . && cargo fmt --manifest-path src-tauri/Cargo.toml --check && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",
-    "check:desktop": "cargo check --manifest-path src-tauri/Cargo.toml --all-targets",
+    "lint": "eslint . && prettier --check . && cargo fmt --manifest-path src-tauri/Cargo.toml --check && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --features server -- -D warnings",
+    "check:desktop": "cargo check --manifest-path src-tauri/Cargo.toml --all-targets --features server",
     "check": "npm run lint && npm run build && npm test && npm run test:rust && npm run check:desktop",
     "diagnose": "cargo run --manifest-path src-tauri/Cargo.toml --no-default-features --example diagnose",
-    "server": "npm run build && cargo run --manifest-path src-tauri/Cargo.toml --release --no-default-features --bin orbit-server --"
+    "server": "npm run build && cargo run --manifest-path src-tauri/Cargo.toml --release --no-default-features --features server --bin orbit-server --"
   },
   "dependencies": {
     "@astryxdesign/core": "0.6.3",

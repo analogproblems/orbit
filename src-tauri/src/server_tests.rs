@@ -386,3 +386,48 @@ fn help_names_every_option() {
     }
     assert!(text.contains(&remote::DEFAULT_PORT.to_string()));
 }
+
+/// `tauri dev` runs `cargo run` without naming a program, and Tauri bundles
+/// every program the build makes, so the desktop app has to stay the default
+/// and `orbit-server` has to stay out of its build.
+#[test]
+fn the_desktop_app_stays_the_program_cargo_starts_and_bundles() {
+    let out = std::process::Command::new(env!("CARGO"))
+        .args([
+            "metadata",
+            "--no-deps",
+            "--offline",
+            "--format-version",
+            "1",
+        ])
+        .arg("--manifest-path")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let metadata: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let package = &metadata["packages"][0];
+    // Tauri takes the program named like the package as the app.
+    assert_eq!(package["name"], "orbit");
+    assert_eq!(package["default_run"], "orbit");
+    let needs = |kind: &str, name: &str| {
+        package["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == name && t["kind"][0] == kind)
+            .unwrap_or_else(|| panic!("no {kind} {name}"))["required-features"]
+            .clone()
+    };
+    assert_eq!(needs("bin", "orbit"), serde_json::json!(["desktop"]));
+    assert_eq!(needs("bin", "orbit-server"), serde_json::json!(["server"]));
+    assert_eq!(needs("test", "server"), serde_json::json!(["server"]));
+    assert_eq!(
+        package["features"]["default"],
+        serde_json::json!(["desktop"])
+    );
+}

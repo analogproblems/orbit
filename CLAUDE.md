@@ -13,7 +13,7 @@ npm run check      # Everything: lint, build, frontend tests, Rust tests, deskto
 npm run lint       # ESLint, Prettier --check, rustfmt --check, Clippy with -D warnings
 npm run format     # Prettier and rustfmt (fixes what lint complains about)
 npm test           # Vitest (jsdom); one file: npx vitest run src/Live.test.tsx
-npm run test:rust  # cargo test --no-default-features (no Tauri needed); one: npm run test:rust -- review_loop
+npm run test:rust  # cargo test --no-default-features --features server (no Tauri needed); one: npm run test:rust -- review_loop
 npm run dev        # Browser demo with sample data at http://127.0.0.1:1420
 npm run desktop    # The real desktop app (needs a display)
 npm run server     # Orbit without a window (orbit-server), serving the browser page
