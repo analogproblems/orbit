@@ -1335,6 +1335,8 @@ async fn a_stuck_pull_request_nudges_whoever_owes_the_next_step_once() {
     assert!(comment(d.path()).contains(&format!(
         "**Not clear to merge yet.** {conflict} **Reminder:** it has waited on the author for more than 2 hours.\n\n<!-- orbit-ready "
     )));
+    let r = e.snapshot().await.ops[0].ready.clone().unwrap();
+    assert!(r.nudged.is_some() && r.reminded.is_some());
     // Once, however long it waits, and it isn't yours in Needs you.
     left(48).await;
     again().await;

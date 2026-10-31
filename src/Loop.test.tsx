@@ -129,10 +129,11 @@ describe("merging panel", () => {
     expect(shows(snapshot)).toEqual([reminded]);
     const told = (s: typeof snapshot) =>
       s.ops!.find((t) => t.prId === pr.id)!.ready!;
-    // Not before Orbit reminded it, nor once it is someone else's move,
-    // nor where a person was nudged instead.
+    // Not before GitHub has the reminder, such as while its edit fails,
+    // nor once it is someone else's move, nor where a person was nudged
+    // instead.
     const quiet = structuredClone(snapshot);
-    told(quiet).nudged = null;
+    told(quiet).reminded = null;
     expect(shows(quiet)).toEqual([]);
     const theirs = structuredClone(snapshot);
     theirs.readiness![1].waits = [

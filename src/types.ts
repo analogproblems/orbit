@@ -1564,6 +1564,8 @@ export interface OpsReady {
   /** When Orbit nudged whoever's move it is, once: the agent on the
    * comment, or you in Needs you. */
   nudged?: string | null;
+  /** When GitHub took the comment reminding the agent. */
+  reminded?: string | null;
 }
 export type OpsAction =
   | "post_comment"

@@ -449,6 +449,23 @@ fn a_pull_request_left_waiting_on_a_person_needs_you_once() {
     let (notices, _) = announce(&mut s);
     assert_eq!(notices.len(), 1);
     assert!(announce(&mut s).0.is_empty());
+    // Bit asked first, and you let it post the comment: the same wait,
+    // told no more.
+    let at = t0 + chrono::Duration::hours(30);
+    let post = crate::ops::next(&s.ops[0], None, true, at).unwrap();
+    assert_eq!(post.action, crate::ops::Action::PostComment);
+    let id = crate::ops::record(&mut s.journal, &post, at);
+    let posted = crate::ops::Posted {
+        id: 7,
+        number: Some(1),
+        url: "https://github.com/a/b/pull/1#issuecomment-7".into(),
+        updated_at: crate::problems::stamp(at),
+        body: post.body.clone(),
+    };
+    crate::ops::settle(&mut s.ops, &mut s.journal, &id, &post, Ok(posted), at);
+    pass(&mut s, 30);
+    assert_eq!(keys(&s), [(AttentionKind::Stuck, key.clone())]);
+    assert!(announce(&mut s).0.is_empty());
     // Its reviews read: the same wait, in its words now.
     r::reviewed_by(&mut s, 1, vec![r::person("bob", Stand::Asked, "")]);
     assert_eq!(

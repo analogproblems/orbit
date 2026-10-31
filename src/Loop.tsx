@@ -128,12 +128,13 @@ export function ReadinessPanel({ prId }: { prId: string }) {
   if (!r) return null;
   // Where the agent reads it.
   const told = s.ops?.find((t) => t.prId === prId && t.ready && t.url);
-  // Whom Orbit nudged, once, about an answer that has stood for a while.
+  // Whom Orbit nudged, once, about an answer that has stood for a while:
+  // the agent only once GitHub has the reminder.
   const first = r.waits[0];
   const reminded =
     first?.turn === "author" &&
     told?.ready?.turn === "author" &&
-    !!told.ready.nudged;
+    !!told.ready.reminded;
   const stuck = (s.attention ?? []).some(
     (a) => a.kind === "stuck" && a.prId === prId,
   );

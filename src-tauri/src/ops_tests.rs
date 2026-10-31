@@ -2174,11 +2174,48 @@ fn an_answer_left_waiting_on_the_agent_reminds_it_once() {
     assert_eq!(ready_of(&threads).since, stamp(at(30)));
     assert!(!said_at(&mut threads, waits('a', conflict), &[], at(149)));
     assert_eq!(next(&threads[0], None, true, at(149)), None);
-    // Two hours: one edit with the reminder, which keeps its wait.
+    // Two hours: one edit with the reminder, which keeps its wait. It is
+    // given only once GitHub takes it.
     assert!(said_at(&mut threads, waits('a', conflict), &[], at(150)));
     assert_eq!(ready_of(&threads).nudged, Some(stamp(at(150))));
-    let edit = tell(&mut threads, &mut journal, None, true, at(150)).unwrap();
+    assert_eq!(ready_of(&threads).reminded, None);
+    // A write without it, planned before, doesn't give it.
+    let stale = Planned {
+        action: Action::EditComment,
+        comment_id: Some(7),
+        ..post.clone()
+    };
+    let id = record(&mut journal, &stale, at(150));
+    let took = Posted {
+        id: 7,
+        number: Some(12),
+        url: "https://github.com/a/b/issues/45".into(),
+        updated_at: "2026-10-29T12:00:00Z".into(),
+        body: stale.body.clone(),
+    };
+    settle(
+        &mut threads,
+        &mut journal,
+        &id,
+        &stale,
+        Ok(took.clone()),
+        at(150),
+    );
+    assert_eq!(ready_of(&threads).reminded, None);
+    let planned = next(&threads[0], None, true, at(150)).unwrap();
+    let id = record(&mut journal, &planned, at(150));
+    settle(
+        &mut threads,
+        &mut journal,
+        &id,
+        &planned,
+        Err("HTTP 502".into()),
+        at(150),
+    );
+    assert_eq!(ready_of(&threads).reminded, None);
+    let edit = tell(&mut threads, &mut journal, None, true, at(152)).unwrap();
     assert_eq!(edit.action, Action::EditComment);
+    assert_eq!(ready_of(&threads).reminded, Some(stamp(at(152))));
     assert!(edit.body.contains(&format!(
         "\n\n**Not clear to merge yet.** {conflict}{REMINDER}\n\n<!-- orbit-ready {{\"base\":\"main\",\"baseSha\":\"\",\"clear\":false,\"head\":\"{}\",\"turn\":\"author\",\"version\":1}} -->\n\n",
         sha('a')
@@ -2199,6 +2236,23 @@ fn an_answer_left_waiting_on_the_agent_reminds_it_once() {
     ));
     assert_eq!(next(&threads[0], None, true, at(3 * 24 * 60)), None);
     assert_eq!(ready_of(&threads).text, conflict);
+    // When CI changes the comment, the words catch up and the reminder
+    // stays, given when GitHub first took it.
+    let p = pull("p1", &["CI / Rust"], 'a', t0());
+    let problems = std::slice::from_ref(&p);
+    refresh(&mut threads, problems, at(3 * 24 * 60));
+    assert!(said_at(
+        &mut threads,
+        waits('a', behind),
+        problems,
+        at(3 * 24 * 60)
+    ));
+    assert_eq!(ready_of(&threads).text, behind);
+    let edit = send(&mut threads, &mut journal, &p, true, at(3 * 24 * 60)).unwrap();
+    assert!(edit.body.contains(&format!(
+        "**Not clear to merge yet.** {behind}{REMINDER}\n\n"
+    )));
+    assert_eq!(ready_of(&threads).reminded, Some(stamp(at(152))));
 
     // A push: one edit without it, and a reminder 2 hours on.
     let push = 4 * 24 * 60;
@@ -2213,6 +2267,7 @@ fn an_answer_left_waiting_on_the_agent_reminds_it_once() {
     let edit = tell(&mut threads, &mut journal, None, true, at(push)).unwrap();
     assert!(!edit.body.contains("Reminder"));
     assert_eq!(ready_of(&threads).since, stamp(at(push)));
+    assert_eq!(ready_of(&threads).reminded, None);
     assert!(!said_at(
         &mut threads,
         waits('b', conflict),
@@ -2292,11 +2347,72 @@ fn the_agent_is_reminded_only_on_a_comment_it_can_see() {
         at(9 * 60)
     ));
     assert_eq!(off[0].ready.as_ref().unwrap().nudged, None);
-    // Nor once the comment is gone.
+    // Nor once the comment is gone. A reminder whose edit finds it gone
+    // never reached the agent.
     let mut gone = late;
     gone[0].gone = true;
     assert!(!said_at(&mut gone, fails(), &[], at(9 * 60)));
     assert_eq!(gone[0].ready.as_ref().unwrap().nudged, None);
+    let planned = next(&threads[0], None, true, at(7 * 60)).unwrap();
+    assert_eq!(planned.action, Action::EditComment);
+    let id = record(&mut journal, &planned, at(7 * 60));
+    let missing = "gh: Not Found (HTTP 404)".to_string();
+    settle(
+        &mut threads,
+        &mut journal,
+        &id,
+        &planned,
+        Err(missing),
+        at(7 * 60),
+    );
+    assert!(threads[0].gone);
+    assert_eq!(ready_of(&threads).nudged, Some(stamp(at(7 * 60))));
+    assert_eq!(ready_of(&threads).reminded, None);
+}
+
+/// A first post that reached GitHub without Orbit hearing back, and that
+/// Orbit finds later, starts the agent's wait when Orbit finds it.
+#[test]
+fn a_comment_found_after_a_cut_off_post_starts_the_agents_wait_then() {
+    use crate::readiness::WaitKind;
+    let fails = || {
+        waiting_on(
+            'a',
+            WaitKind::Checks,
+            Turn::Author,
+            "CI / Rust fails on aaaaaaa.",
+        )
+    };
+    let mut threads = vec![];
+    let mut journal = vec![];
+    said_at(&mut threads, fails(), &[], at(0));
+    let post = next(&threads[0], None, true, at(5 * 60)).unwrap();
+    assert_eq!(post.action, Action::PostComment);
+    let id = record(&mut journal, &post, at(5 * 60));
+    settle(
+        &mut threads,
+        &mut journal,
+        &id,
+        &post,
+        Err("timed out".into()),
+        at(5 * 60),
+    );
+    assert!(threads[0].unsure);
+    assert_eq!(ready_of(&threads).since, stamp(at(0)));
+    let find = next(&threads[0], None, true, at(5 * 60 + 1)).unwrap();
+    assert_eq!(find.action, Action::Find);
+    let found = Posted {
+        id: 9,
+        number: Some(12),
+        url: "https://github.com/a/b/issues/12#issuecomment-9".into(),
+        updated_at: String::new(),
+        body: String::new(),
+    };
+    looked(&mut threads, &find, Ok(Some(found)), at(5 * 60 + 1));
+    assert_eq!(threads[0].comment_id, Some(9));
+    assert_eq!(ready_of(&threads).since, stamp(at(5 * 60 + 1)));
+    assert!(!said_at(&mut threads, fails(), &[], at(7 * 60)));
+    assert!(said_at(&mut threads, fails(), &[], at(7 * 60 + 1)));
 }
 
 /// A failing check or the base moving on is the agent's only until it
@@ -2389,10 +2505,15 @@ fn an_answer_left_waiting_on_a_person_is_nudged_once_without_an_edit() {
             !said_at(&mut threads, waits(), &[], at(3 * 24 * 60)),
             "{kind:?}"
         );
-        // Without a comment too, as Bit asks first.
+        // Without a comment too, as Bit asks first. Posted later, it is
+        // the same wait: when it started, and the nudge, stay.
         let mut quiet = vec![];
         said_at(&mut quiet, waits(), &[], at(0));
         assert!(said_at(&mut quiet, waits(), &[], at(24 * 60)), "{kind:?}");
+        let before = ready_of(&quiet).clone();
+        let post = tell(&mut quiet, &mut journal, None, true, at(30 * 60)).unwrap();
+        assert_eq!(post.action, Action::PostComment);
+        assert_eq!(ready_of(&quiet), &before, "{kind:?}");
     }
     let never = [
         waiting_on(

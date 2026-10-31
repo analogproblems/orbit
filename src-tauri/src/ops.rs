@@ -173,8 +173,8 @@ pub struct Ready {
     /// Orbit couldn't check.
     pub text: String,
     /// When Orbit first gave this answer, words aside, by Orbit's clock.
-    /// It starts again once the comment is first posted, when the agent
-    /// can see it.
+    /// A wait on the agent starts again once the comment is first on
+    /// GitHub, when the agent can see it (`first_shown`).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub since: String,
     /// When Orbit nudged whoever's move it is, once, as it had waited
@@ -182,6 +182,10 @@ pub struct Ready {
     /// you.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nudged: Option<String>,
+    /// When GitHub took the comment reminding the agent, which may be
+    /// later than `nudged`, or never once it is gone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reminded: Option<String>,
 }
 impl Ready {
     fn of(r: &Readiness) -> Ready {
@@ -224,6 +228,7 @@ impl Ready {
             text: String::new(),
             since: String::new(),
             nudged: None,
+            reminded: None,
             ..r.clone()
         };
         answer(self) == answer(other)
@@ -696,6 +701,7 @@ pub fn ready(
             since => since.into(),
         };
         answer.nudged = kept.nudged.clone();
+        answer.reminded = kept.reminded.clone();
         let due = a.is_some_and(|a| nudges(t, a, &answer.since, now));
         if answer.nudged.is_none() && watch && due {
             answer.nudged = Some(at.clone());
@@ -1822,12 +1828,26 @@ pub fn looked(
             t.posted.clear();
             match t.kind {
                 ThreadKind::Comment => {
+                    // When it got there is unknown, so the agent's wait
+                    // starts now.
+                    first_shown(t, &stamp(now));
                     t.comment_id = Some(found.id);
                     t.read_to = t.read_to.max(found.id);
                 }
                 ThreadKind::Issue => t.number = found.number.or(t.number),
             }
         }
+    }
+}
+/// A wait on the agent starts once its comment is first on GitHub, as the
+/// agent can only see it from then on. A person's doesn't: their wait,
+/// and the Needs you item it makes, are the same whether Orbit posted.
+fn first_shown(t: &mut Thread, at: &str) {
+    if t.comment_id.is_some() {
+        return;
+    }
+    if let Some(r) = t.ready.as_mut().filter(|r| r.turn == Some(Turn::Author)) {
+        r.since = at.into();
     }
 }
 fn wait(t: &mut Thread, error: String, now: DateTime<Utc>) {
@@ -1887,9 +1907,12 @@ pub fn settle(
                 // Never sent as a write; see `looked`.
                 Action::Find => {}
                 Action::PostComment | Action::EditComment => {
-                    // The agent sees the answer from the first post on.
-                    if let Some(r) = t.ready.as_mut().filter(|_| t.comment_id.is_none()) {
-                        r.since = at.clone();
+                    first_shown(t, &at);
+                    // GitHub has the reminder once it took a body giving it.
+                    if let Some(r) = t.ready.as_mut().filter(|r| r.reminds()) {
+                        if r.reminded.is_none() && planned.body.contains(&ready_text(r)) {
+                            r.reminded = Some(at.clone());
+                        }
                     }
                     t.comment_id = Some(posted.id);
                     t.url = posted.url;
