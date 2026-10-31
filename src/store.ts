@@ -134,7 +134,7 @@ let demo: Snapshot;
 const mutationTails = new Map<string, Promise<unknown>>();
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 /** What stands after Orbit's review loop in a readiness answer. */
-const afterReview: WaitKind[] = ["checks", "base", "merge"];
+const afterReview: WaitKind[] = ["checks", "base", "merge", "reviews"];
 function commit() {
   try {
     localStorage.setItem("orbit-demo-v3", JSON.stringify(demo));
@@ -662,6 +662,8 @@ async function demoAction(
         ...r,
         baseSha: "",
         clear: false,
+        // GitHub's answer goes with Watch CI.
+        reviews: undefined,
         waits: [
           ...r.waits.filter((w) => !afterReview.includes(w.kind)),
           {

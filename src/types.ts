@@ -1265,7 +1265,7 @@ export interface ActionsStorage {
 }
 /** What is in the way of merging a pull request. */
 export type WaitKind =
-  "review" | "findings" | "loop" | "checks" | "base" | "merge";
+  "review" | "findings" | "loop" | "checks" | "base" | "merge" | "reviews";
 /** Whose move it is: the author's (or their agent's), a person's (you, or
  * whoever a rule on GitHub waits for), or nobody's yet while Orbit, CI or
  * GitHub is still at work. */
@@ -1288,6 +1288,46 @@ export interface Readiness {
   clear: boolean;
   /** What is in the way, first things first. */
   waits: Wait[];
+  /** Who was asked to review it and where each stands, and what its base
+   * branch's rules need, once Orbit has asked GitHub at this head and
+   * base. */
+  reviews?: Reviews;
+}
+/** Where a reviewer stands on a pull request's latest commit. An approval
+ * of an older commit doesn't count, and a request for changes stands until
+ * they review again. */
+export type Stand =
+  "asked" | "approved" | "approved_older" | "changes_requested";
+/** Someone asked to review a pull request, or who reviewed it. */
+export interface Reviewer {
+  /** A login, or `owner/slug` for a team. Someone else's words. */
+  name: string;
+  team: boolean;
+  stand: Stand;
+  /** The commit their latest approval or request for changes was of. */
+  commit: string;
+  /** For an approval of the latest commit or a request for changes,
+   * whether they have write access, without which GitHub's rules don't
+   * count it; null when Orbit couldn't tell. */
+  mayApprove?: boolean | null;
+}
+/** What a base branch's rules need before a pull request merges. */
+export interface ReviewRule {
+  /** Approvals, which Orbit counts only of the latest commit. */
+  approvals: number;
+  /** A code owner's approval, which Orbit leaves to GitHub. */
+  codeOwners: boolean;
+}
+export interface Reviews {
+  reviewers: Reviewer[];
+  /** What the rules need, or null when Orbit can't see them, with why in
+   * `unseen`. */
+  rule?: ReviewRule | null;
+  unseen?: string | null;
+  /** Why Orbit couldn't read the reviews, so `reviewers` is empty. */
+  unread?: string | null;
+  /** It has more reviews than Orbit reads, so `reviewers` is empty. */
+  tooMany?: boolean;
 }
 /** What GitHub last said about whether a pull request can merge. */
 export interface Merge {
@@ -1302,13 +1342,18 @@ export interface Merge {
   error?: string | null;
   tries: number;
   retryAt?: string | null;
+  /** Who was asked to review it and their reviews, as GitHub said then. */
+  reviews?: Reviews | null;
 }
 /** A readiness answer in one line, as Orbit says it. */
 export function readinessLine(r: Readiness) {
   const first = r.waits[0];
-  if (!first)
-    return `Clear to merge at ${r.headSha.slice(0, 7)} against ${r.base} at ${r.baseSha.slice(0, 7)}.`;
-  return `Not clear to merge yet. ${first.text}`;
+  if (first) return `Not clear to merge yet. ${first.text}`;
+  const line = `Clear to merge at ${r.headSha.slice(0, 7)} against ${r.base} at ${r.baseSha.slice(0, 7)}.`;
+  // What Orbit couldn't check.
+  return r.reviews && !r.reviews.rule
+    ? `${line} Orbit can't see ${r.base}'s rules, so it left its reviews to GitHub.`
+    : line;
 }
 /** What Orbit found in a repository where no CI runs on pull requests. */
 export interface CiFound {

@@ -3,6 +3,9 @@ import {
   Button,
   HStack,
   Heading,
+  List,
+  ListItem,
+  StatusDot,
   Text,
   Token,
   VStack,
@@ -14,7 +17,11 @@ import {
   readinessLine,
   type LoopState,
   type LoopStatus,
+  type Readiness,
+  type Reviewer,
+  type Reviews,
   type Snapshot,
+  type Stand,
 } from "./types";
 
 const loopColors: Record<
@@ -144,11 +151,114 @@ export function ReadinessPanel({ prId }: { prId: string }) {
       ) : (
         r.waits.map((w) => <Text key={`${w.kind}:${w.text}`}>{w.text}</Text>)
       )}
+      {r.reviews && <ReviewsList r={r} reviews={r.reviews} />}
       <Text type="supporting" color="secondary">
         Clear means Orbit’s review of this commit is clean, every check passed
-        with the base branch’s latest commit, and GitHub says it merges. Orbit
-        tells the agent at the top of its comment on the pull request once it is
-        clear or waits on someone, but never merges it itself.
+        with the base branch’s latest commit, GitHub says it merges, and where
+        the branch’s rules need approvals, enough people approved this commit.
+        Orbit tells the agent at the top of its comment on the pull request once
+        it is clear or waits on someone, but never merges it itself.
+      </Text>
+    </VStack>
+  );
+}
+
+type Dot = {
+  variant: "success" | "warning" | "error" | "neutral";
+  label: string;
+};
+const stands: Record<Stand, Dot> = {
+  asked: { variant: "neutral", label: "Asked" },
+  approved: { variant: "success", label: "Approved" },
+  approved_older: { variant: "warning", label: "Approved an older commit" },
+  changes_requested: { variant: "error", label: "Asked for changes" },
+};
+/** A reviewer's dot: an approval or request for changes from someone
+ * without write access, or whose access Orbit can't tell, doesn't count
+ * as one. */
+function dotOf(x: Reviewer): Dot {
+  if (x.stand === "approved" && x.mayApprove !== true)
+    return { variant: "warning", label: "Approval doesn’t count" };
+  if (x.stand === "changes_requested" && x.mayApprove === false)
+    return { variant: "neutral", label: "Request doesn’t count" };
+  return stands[x.stand];
+}
+const short = (sha: string) => sha.slice(0, 7);
+/** Where a reviewer stands on the latest commit, `head`. */
+function standText(x: Reviewer, head: string) {
+  switch (x.stand) {
+    case "asked":
+      return `Hasn’t reviewed ${short(head)} yet.`;
+    case "approved":
+      if (x.mayApprove === false)
+        return `Approved ${short(head)}, but without write access that doesn’t count.`;
+      if (x.mayApprove !== true)
+        return `Approved ${short(head)}, but Orbit can’t tell whether they have write access.`;
+      return `Approved ${short(head)}.`;
+    case "approved_older":
+      return `Approved ${short(x.commit)}, but not ${short(head)}.`;
+    case "changes_requested":
+      if (x.mayApprove === false)
+        return `Asked for changes on ${short(x.commit)}, but without write access that doesn’t hold it back.`;
+      return x.commit === head
+        ? `Asked for changes on ${short(head)}.`
+        : `Asked for changes on ${short(x.commit)}, and hasn’t reviewed ${short(head)} since.`;
+  }
+}
+/** What the base branch's rules need, or why Orbit can't tell. */
+function ruleText(r: Readiness, reviews: Reviews) {
+  const rule = reviews.rule;
+  if (!rule) return reviews.unseen ?? `Orbit can’t see ${r.base}’s rules.`;
+  const owners = "a code owner’s approval, which GitHub checks";
+  if (rule.approvals === 0)
+    return rule.codeOwners
+      ? `${r.base}’s rules need ${owners}.`
+      : `${r.base}’s rules need no approvals.`;
+  const count =
+    rule.approvals === 1 ? "1 approval" : `${rule.approvals} approvals`;
+  return `${r.base}’s rules need ${count}${rule.codeOwners ? `, and ${owners}` : ""}. Only approvals of ${short(r.headSha)}, its latest commit, count.`;
+}
+/** Who was asked to review the pull request, where each stands, and what
+ * its base branch's rules need. */
+function ReviewsList({ r, reviews }: { r: Readiness; reviews: Reviews }) {
+  return (
+    <VStack gap={1}>
+      <Heading level={4}>Reviews</Heading>
+      {reviews.tooMany ? (
+        <Text color="secondary">
+          It has more reviews than Orbit reads, so Orbit can’t list them.
+        </Text>
+      ) : reviews.unread ? (
+        <Text color="secondary">
+          Orbit couldn’t read its reviews: {reviews.unread}.
+        </Text>
+      ) : reviews.reviewers.length > 0 ? (
+        <List hasDividers density="compact" aria-label="Reviewers">
+          {reviews.reviewers.map((x) => {
+            const stand = dotOf(x);
+            return (
+              <ListItem
+                key={`${x.team ? "team" : "user"}:${x.name}`}
+                startContent={
+                  <StatusDot variant={stand.variant} label={stand.label} />
+                }
+                label={
+                  <Text weight="medium">
+                    {x.team ? `${x.name} team` : x.name}
+                  </Text>
+                }
+                description={
+                  <Text color="secondary">{standText(x, r.headSha)}</Text>
+                }
+              />
+            );
+          })}
+        </List>
+      ) : (
+        <Text color="secondary">Nobody is asked to review it.</Text>
+      )}
+      <Text type="supporting" color="secondary">
+        {ruleText(r, reviews)}
       </Text>
     </VStack>
   );

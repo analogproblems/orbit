@@ -163,7 +163,8 @@ pub struct Ready {
     /// Whose move it is while it isn't clear; none once Orbit stopped
     /// working it out.
     pub turn: Option<Turn>,
-    /// What is in the way, in Orbit's words.
+    /// What is in the way, in Orbit's words, or once it is clear, what
+    /// Orbit couldn't check.
     pub text: String,
 }
 impl Ready {
@@ -179,7 +180,10 @@ impl Ready {
                 String::new()
             },
             turn: first.map(|w| w.turn),
-            text: first.map(|w| w.text.clone()).unwrap_or_default(),
+            text: first
+                .map(|w| w.text.clone())
+                .or(r.note())
+                .unwrap_or_default(),
         }
     }
     /// What a pull request Orbit no longer works it out for says.
@@ -1426,12 +1430,17 @@ fn hidden(v: &serde_json::Value) -> String {
 /// tell a stale answer from a fresh one.
 fn ready_text(r: &Ready) -> String {
     let line = if r.clear {
-        format!(
+        let line = format!(
             "**Clear to merge** at {} against {} at {}.",
             code(short(&r.head_sha)),
             code(&r.base),
             code(short(&r.base_sha))
-        )
+        );
+        // What Orbit couldn't check.
+        match r.text.as_str() {
+            "" => line,
+            note => format!("{line} {}", plain(note)),
+        }
     } else if r.turn.is_none() {
         format!("**Not clear to merge.** {}", plain(&r.text))
     } else {

@@ -1639,6 +1639,7 @@ fn answer(head: char, wait: Option<(Turn, &str)>) -> Readiness {
             })
             .into_iter()
             .collect(),
+        reviews: None,
     }
 }
 fn say(threads: &mut Vec<Thread>, head: char, a: Readiness, problems: &[Problem]) -> bool {
@@ -1689,6 +1690,40 @@ fn the_merge_answer_gets_a_comment_once_it_tells_something() {
     // Nothing more while nothing changes.
     assert!(!say(&mut threads, 'a', answer('a', None), &[]));
     assert_eq!(next(&threads[0], None, true, t0()), None);
+}
+
+/// A clear answer where Orbit can't see the base branch's rules says so
+/// on the comment, and a clear one where it can says nothing more.
+#[test]
+fn a_clear_answer_says_when_orbit_couldnt_check_its_reviews() {
+    let unseen = crate::readiness::Reviews {
+        unseen: Some("Orbit's GitHub sign-in can't see main's rules.".into()),
+        ..Default::default()
+    };
+    let seen = crate::readiness::Reviews {
+        rule: Some(Default::default()),
+        ..Default::default()
+    };
+    let cases = [
+        (
+            Some(unseen),
+            " Orbit can't see main's rules, so it left its reviews to GitHub.",
+        ),
+        (Some(seen), ""),
+        (None, ""),
+    ];
+    for (reviews, note) in cases {
+        let mut threads = vec![];
+        let a = Readiness {
+            reviews,
+            ..answer('a', None)
+        };
+        say(&mut threads, 'a', a, &[]);
+        let r = threads[0].ready.as_ref().unwrap();
+        assert!(ready_text(r).starts_with(&format!(
+            "**Clear to merge** at `aaaaaaa` against `main` at `ccccccc`.{note}\n\n<!-- orbit-ready "
+        )));
+    }
 }
 
 /// The answer on the comment changes only when it turns clear or not, its
@@ -2048,11 +2083,22 @@ fn the_reply_skill_shows_the_answer_as_orbit_writes_it() {
         ..Default::default()
     };
     let conflict = Ready {
+        clear: false,
+        base_sha: String::new(),
         turn: Some(Turn::Author),
         text: "It conflicts with main: merge main in and fix the conflicts.".into(),
         ..clear.clone()
     };
-    for r in [clear, conflict] {
+    let reviews = Ready {
+        turn: Some(Turn::Person),
+        text: "main needs 1 approval of abc1234 and it has none: alice approved 9f8e7d6 but not abc1234.".into(),
+        ..conflict.clone()
+    };
+    let unseen = Ready {
+        text: "Orbit can't see main's rules, so it left its reviews to GitHub.".into(),
+        ..clear.clone()
+    };
+    for r in [clear, conflict, reviews, unseen] {
         let text = ready_text(&r);
         let (line, hidden) = text.split_once("\n\n<!-- orbit-ready ").unwrap();
         assert!(skill.contains(&format!("\n- {line}\n")), "{line}");
