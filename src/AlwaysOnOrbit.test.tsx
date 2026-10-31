@@ -55,6 +55,21 @@ it("shows the always-on Orbit in use, and stops using it", () => {
   expect(invokeMock).toHaveBeenCalledWith("stop_always_on", {});
 });
 
+it("takes a new link while using the always-on Orbit", () => {
+  useOrbit.setState({
+    alwaysOn: { host: "box.example.ts.net", chosen: true },
+  });
+  invokeMock.mockResolvedValue(null);
+  render(<AlwaysOnOrbit />);
+  fireEvent.change(screen.getByLabelText(/Its new link/), {
+    target: { value: link },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Use the new link" }));
+  // It goes to this app, never on to the Orbit it shows.
+  expect(invokeMock).toHaveBeenCalledWith("use_always_on", { link });
+  expect(invokeMock).not.toHaveBeenCalledWith("forward", expect.anything());
+});
+
 it("explains Orbit without a window on this computer", () => {
   useOrbit.setState({
     alwaysOn: { host: "127.0.0.1:4317", chosen: false },

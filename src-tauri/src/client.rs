@@ -5,31 +5,49 @@
 //! app passes to the window as they come. The notifications it sent
 //! (`Snapshot.notices`) are shown here too, each once.
 //!
-//! The link is kept in the desktop app's data folder, in `always-on.json`.
-//! The app's own Orbit isn't started while it's there, and its state stays
-//! as it was, for when you switch back.
+//! The link is kept in the desktop app's data folder, in `always-on.json`,
+//! which only Settings writes. The app's own Orbit isn't started while it's
+//! there, and its state stays as it was, for when you switch back. The
+//! notifications already shown are kept apart, in `always-on-seen.json`,
+//! so keeping them never rewrites the link.
 use crate::attention::SentNotice;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::HashSet, path::Path, time::Duration};
 
 const FILE: &str = "always-on.json";
-/// How long the event stream may stay silent: the always-on Orbit writes
-/// at least every 15 seconds.
-const SILENCE: Duration = Duration::from_secs(45);
+const SEEN_FILE: &str = "always-on-seen.json";
 /// How long reaching the always-on Orbit may take.
 const CONNECT: Duration = Duration::from_secs(15);
-/// How long a link you paste may take to answer before Orbit uses it.
-const CHECK: Duration = Duration::from_secs(20);
 /// How long Orbit without a window on this computer may take to answer
 /// while the desktop app starts.
 const HERE: Duration = Duration::from_secs(3);
 
+/// How long Orbit waits on the always-on Orbit before giving up.
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    /// How long the event stream may stay silent, its answer included:
+    /// the always-on Orbit writes at least every 15 seconds.
+    pub silence: Duration,
+    /// For its snapshot, which it has to hand.
+    pub snapshot: Duration,
+    /// For anything else, which may run as long as a sync or a publish.
+    pub action: Duration,
+}
+impl Default for Limits {
+    fn default() -> Self {
+        Limits {
+            silence: Duration::from_secs(45),
+            snapshot: Duration::from_secs(20),
+            action: Duration::from_secs(10 * 60),
+        }
+    }
+}
+
 pub const NOT_A_LINK: &str =
     "That isn't an Orbit access link. Copy the whole link, including the part after #token=.";
 pub const NOT_PRIVATE: &str = "That link isn't private: use the https link through Tailscale, or an http link only on this computer.";
-pub const EXPIRED: &str =
-    "The always-on Orbit's link no longer works. Paste its current link in Settings, Devices.";
+pub const EXPIRED: &str = "The always-on Orbit's link no longer works. Paste its current link in Settings, Other devices.";
 pub const LOST: &str = "Lost connection to the always-on Orbit. Reconnecting…";
 pub const OWN_LINK: &str = "That's this app's own link. Paste the always-on Orbit's link: `orbit-server link` shows it on that computer.";
 
@@ -92,32 +110,30 @@ fn local(url: &reqwest::Url) -> bool {
 #[serde(rename_all = "camelCase", default)]
 struct Saved {
     link: Option<Link>,
-    /// The notifications already shown here, when any snapshot arrived.
-    seen: Option<Vec<String>>,
 }
-fn read(root: &Path) -> Saved {
-    std::fs::read(root.join(FILE))
+fn write_file(root: &Path, name: &str, value: &impl Serialize) -> Result<(), String> {
+    std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
+    let bytes = serde_json::to_vec(value).map_err(|e| e.to_string())?;
+    crate::remote::write_private(&root.join(name), &bytes)
+}
+fn read_file<T: serde::de::DeserializeOwned + Default>(root: &Path, name: &str) -> T {
+    std::fs::read(root.join(name))
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default()
 }
-fn write(root: &Path, saved: &Saved) -> Result<(), String> {
-    std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
-    let bytes = serde_json::to_vec(saved).map_err(|e| e.to_string())?;
-    crate::remote::write_private(&root.join(FILE), &bytes)
-}
 /// The always-on Orbit this app uses, if it uses one.
 pub fn load(root: &Path) -> Option<Link> {
-    read(root).link
+    read_file::<Saved>(root, FILE).link
 }
 /// Uses the always-on Orbit at `link` from now on. Its notifications are
 /// shown from the next one it sends.
 pub fn save(root: &Path, link: &Link) -> Result<(), String> {
-    write(
+    write_file(
         root,
+        FILE,
         &Saved {
             link: Some(link.clone()),
-            seen: None,
         },
     )
 }
@@ -130,13 +146,35 @@ pub fn forget(root: &Path) -> Result<(), String> {
         _ => Ok(()),
     }
 }
-fn seen(root: &Path) -> Option<Vec<String>> {
-    read(root).seen
+
+/// What `always-on-seen.json` holds: the notifications shown here from
+/// the Orbit at one link, named by a hash of it, so what a follower writes
+/// late, after the link changed, counts for nothing.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct Seen {
+    link: String,
+    ids: Vec<String>,
 }
-fn remember(root: &Path, seen: Vec<String>) -> Result<(), String> {
-    let mut saved = read(root);
-    saved.seen = Some(seen);
-    write(root, &saved)
+fn link_id(link: &Link) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(format!("{}#{}", link.base, link.token).as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+/// The notifications already shown from the Orbit at `link`, if any
+/// snapshot from it arrived.
+fn seen(root: &Path, link: &Link) -> Option<Vec<String>> {
+    let seen: Seen = read_file(root, SEEN_FILE);
+    (seen.link == link_id(link)).then_some(seen.ids)
+}
+fn remember(root: &Path, link: &Link, ids: Vec<String>) -> Result<(), String> {
+    let seen = Seen {
+        link: link_id(link),
+        ids,
+    };
+    write_file(root, SEEN_FILE, &seen)
 }
 
 /// Orbit without a window running on this computer with the data folder
@@ -155,9 +193,13 @@ pub async fn running_here(root: &Path) -> Option<Link> {
 pub struct Client {
     link: Link,
     http: reqwest::Client,
+    limits: Limits,
 }
 impl Client {
     pub fn new(link: Link) -> Result<Client, String> {
+        Client::with_limits(link, Limits::default())
+    }
+    pub fn with_limits(link: Link, limits: Limits) -> Result<Client, String> {
         // Not through a proxy, which can't reach your tailnet, and no
         // redirects, which would carry the token on to another site.
         let http = reqwest::Client::builder()
@@ -166,24 +208,35 @@ impl Client {
             .no_proxy()
             .build()
             .map_err(|e| e.to_string())?;
-        Ok(Client { link, http })
+        Ok(Client { link, http, limits })
     }
     pub fn link(&self) -> &Link {
         &self.link
     }
     /// Runs `command` there, as the desktop app's command of that name
-    /// runs here.
+    /// runs here. It gives up after `Limits`, though the always-on Orbit
+    /// still finishes what it started.
     pub async fn call(&self, command: &str, args: &Value) -> Result<Value, String> {
+        let limit = if command == "get_snapshot" {
+            self.limits.snapshot
+        } else {
+            self.limits.action
+        };
         let response = self
             .http
             .post(format!("{}api/{command}", self.link.base))
             .bearer_auth(&self.link.token)
             .json(args)
+            .timeout(limit)
             .send()
             .await
             .map_err(|e| self.unreachable(e))?;
         let status = response.status();
-        let body: Value = response.json().await.unwrap_or(Value::Null);
+        let body: Value = match response.json().await {
+            Ok(body) => body,
+            Err(e) if e.is_timeout() => return Err(self.unreachable(e)),
+            Err(_) => Value::Null,
+        };
         if status == reqwest::StatusCode::UNAUTHORIZED {
             return Err(EXPIRED.into());
         }
@@ -196,24 +249,18 @@ impl Client {
         Ok(body)
     }
     fn unreachable(&self, e: reqwest::Error) -> String {
-        if e.is_timeout() || e.is_connect() {
-            self.cannot_reach()
+        let host = self.link.host();
+        if e.is_connect() {
+            format!("Orbit can't reach the always-on Orbit at {host}. Check that it's running and that Tailscale is on.")
+        } else if e.is_timeout() {
+            format!("The always-on Orbit at {host} didn't answer in time. If it was busy, it may still finish: look again in a moment.")
         } else {
-            format!("Orbit lost the always-on Orbit at {}.", self.link.host())
+            format!("Orbit lost the always-on Orbit at {host}.")
         }
-    }
-    fn cannot_reach(&self) -> String {
-        format!(
-            "Orbit can't reach the always-on Orbit at {}. Check that it's running and that Tailscale is on.",
-            self.link.host()
-        )
     }
     /// Checks that the always-on Orbit answers, before the app uses it.
     pub async fn check(&self) -> Result<(), String> {
-        match tokio::time::timeout(CHECK, self.call("get_snapshot", &json!({}))).await {
-            Ok(answer) => answer.map(drop),
-            Err(_) => Err(self.cannot_reach()),
-        }
+        self.call("get_snapshot", &json!({})).await.map(drop)
     }
     /// Follows the always-on Orbit's snapshots, giving each to `show`, and
     /// the notifications to show here to `notify`. `problem` hears what's
@@ -228,7 +275,7 @@ impl Client {
         mut notify: impl FnMut(&SentNotice),
         mut problem: impl FnMut(Option<&str>),
     ) {
-        let mut relay = Relay::new(seen(root));
+        let mut relay = Relay::new(seen(root, &self.link));
         let mut wait = Duration::from_secs(1);
         loop {
             match self
@@ -236,7 +283,7 @@ impl Client {
                     wait = Duration::from_secs(1);
                     let (new, remembered) = relay.take(snapshot);
                     if let Some(ids) = remembered {
-                        let _ = remember(root, ids);
+                        let _ = remember(root, &self.link, ids);
                     }
                     show(snapshot);
                     new.iter().for_each(&mut notify);
@@ -254,22 +301,24 @@ impl Client {
             wait = (wait * 2).min(Duration::from_secs(15));
         }
     }
-    /// Reads one event stream until it ends.
+    /// Reads one event stream until it ends. Silence, before its answer
+    /// or between its lines, ends it as lost; nothing limits how long it
+    /// runs.
     async fn stream(&self, mut each: impl FnMut(&Value)) -> Ended {
+        let silence = self.limits.silence;
         let response = self
             .http
             .get(format!("{}api/events", self.link.base))
             .bearer_auth(&self.link.token)
-            .send()
-            .await;
-        let mut response = match response {
-            Ok(r) if r.status() == reqwest::StatusCode::UNAUTHORIZED => return Ended::Expired,
-            Ok(r) if r.status().is_success() => r,
+            .send();
+        let mut response = match tokio::time::timeout(silence, response).await {
+            Ok(Ok(r)) if r.status() == reqwest::StatusCode::UNAUTHORIZED => return Ended::Expired,
+            Ok(Ok(r)) if r.status().is_success() => r,
             _ => return Ended::Lost,
         };
         let mut buffered: Vec<u8> = vec![];
         loop {
-            let chunk = match tokio::time::timeout(SILENCE, response.chunk()).await {
+            let chunk = match tokio::time::timeout(silence, response.chunk()).await {
                 Ok(Ok(Some(chunk))) => chunk,
                 _ => return Ended::Lost,
             };

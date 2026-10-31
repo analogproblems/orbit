@@ -94,19 +94,51 @@ fn keeps_the_link_privately_until_you_stop() {
             .mode();
         assert_eq!(mode & 0o777, 0o600);
     }
-    remember(&root, vec!["a".into()]).unwrap();
-    assert_eq!(seen(&root), Some(vec!["a".to_string()]));
+    assert_eq!(seen(&root, &link), None);
+    remember(&root, &link, vec!["a".into()]).unwrap();
+    assert_eq!(seen(&root, &link), Some(vec!["a".to_string()]));
     assert_eq!(load(&root), Some(link.clone()));
     // A new link starts again: what the other Orbit sent before isn't shown.
     let other = Link::parse(&format!("https://other.example.ts.net/#token={OTHER}")).unwrap();
     save(&root, &other).unwrap();
-    assert_eq!(seen(&root), None);
+    assert_eq!(seen(&root, &other), None);
+    // Nor with a new link to the same Orbit.
+    let renewed = Link::parse(&format!("https://box.example.ts.net/#token={OTHER}")).unwrap();
+    assert_eq!(seen(&root, &renewed), None);
     forget(&root).unwrap();
     assert_eq!(load(&root), None);
     assert!(!root.join(FILE).exists());
     // A damaged file is no link, so the app runs its own Orbit.
     std::fs::write(root.join(FILE), "{not json").unwrap();
     assert_eq!(load(&root), None);
+}
+
+/// What was shown is noted while the app follows an Orbit, which can be
+/// just as you stop using it or give it a new link. A note written after
+/// that never brings the old link back.
+#[test]
+fn a_late_note_of_what_was_shown_never_brings_a_link_back() {
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path();
+    let old = Link::parse(&format!("https://box.example.ts.net/#token={TOKEN}")).unwrap();
+    let new = Link::parse(&format!("https://other.example.ts.net/#token={OTHER}")).unwrap();
+    save(root, &old).unwrap();
+    remember(root, &old, vec!["a".into()]).unwrap();
+    // You tap Stop using it, then the note is written.
+    forget(root).unwrap();
+    remember(root, &old, vec!["a".into(), "b".into()]).unwrap();
+    assert_eq!(load(root), None);
+    // You give it a new link, then the old follower's note is written.
+    save(root, &old).unwrap();
+    save(root, &new).unwrap();
+    remember(root, &old, vec!["c".into()]).unwrap();
+    assert_eq!(load(root), Some(new.clone()));
+    // And it counts for nothing with the new link.
+    assert_eq!(seen(root, &new), None);
+    remember(root, &new, vec!["d".into()]).unwrap();
+    assert_eq!(seen(root, &new), Some(vec!["d".to_string()]));
+    assert_eq!(seen(root, &old), None);
+    assert_eq!(load(root), Some(new));
 }
 
 fn notice(id: &str, key: &str) -> Value {
@@ -226,6 +258,13 @@ fn assets() -> Assets {
     Arc::new(|_: &str| -> Option<Asset> { None })
 }
 async fn remote_orbit() -> Remote {
+    remote_orbit_on(
+        tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap(),
+    )
+}
+fn remote_orbit_on(listener: tokio::net::TcpListener) -> Remote {
     let d = tempfile::tempdir().unwrap();
     let hub = Hub::default();
     let browsers = hub.clone();
@@ -233,9 +272,6 @@ async fn remote_orbit() -> Remote {
         browsers.publish(s)
     })
     .unwrap();
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .unwrap();
     let port = listener.local_addr().unwrap().port();
     let stop = serve(listener, &engine, &hub);
     Remote {
@@ -273,6 +309,41 @@ fn serve(
 }
 fn client(port: u16, token: &str) -> Client {
     Client::new(Link::parse(&format!("http://127.0.0.1:{port}/#token={token}")).unwrap()).unwrap()
+}
+/// A client that waits a fraction of a second for anything.
+fn impatient(port: u16) -> Client {
+    let link = Link::parse(&format!("http://127.0.0.1:{port}/#token={TOKEN}")).unwrap();
+    let short = std::time::Duration::from_millis(300);
+    let limits = Limits {
+        silence: short,
+        snapshot: short,
+        action: short * 2,
+    };
+    Client::with_limits(link, limits).unwrap()
+}
+/// Binds `port` again, once whatever had it lets it go.
+async fn rebind(port: u16) -> tokio::net::TcpListener {
+    loop {
+        match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+            Ok(listener) => break listener,
+            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+        }
+    }
+}
+/// A port that takes connections and never answers on them, as a stuck
+/// server or proxy would.
+async fn silent() -> (u16, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let task = tokio::spawn(async move {
+        let mut held = vec![];
+        while let Ok((stream, _)) = listener.accept().await {
+            held.push(stream);
+        }
+    });
+    (port, task)
 }
 
 #[tokio::test]
@@ -327,6 +398,29 @@ async fn says_when_the_always_on_orbit_cannot_be_reached() {
     assert!(error.contains(&format!("127.0.0.1:{port}")), "{error}");
 }
 
+#[tokio::test]
+async fn gives_up_on_an_orbit_that_takes_the_connection_but_never_answers() {
+    let (port, _silent) = silent().await;
+    let c = impatient(port);
+    let started = std::time::Instant::now();
+    // Bounded here too, so a regression fails rather than hangs.
+    let soon = std::time::Duration::from_secs(5);
+    for command in ["get_snapshot", "poll_now"] {
+        let error = tokio::time::timeout(soon, c.call(command, &json!({})))
+            .await
+            .expect("it should give up")
+            .unwrap_err();
+        assert!(
+            error.contains("didn't answer in time"),
+            "{command}: {error}"
+        );
+        assert!(error.contains(&format!("127.0.0.1:{port}")), "{error}");
+    }
+    let checked = tokio::time::timeout(soon, c.check()).await;
+    assert!(matches!(checked, Ok(Err(_))), "{checked:?}");
+    assert!(started.elapsed() < soon);
+}
+
 #[derive(Debug)]
 enum Heard {
     Shown(Value),
@@ -335,8 +429,10 @@ enum Heard {
 }
 /// Follows the Orbit at `port` in the background, passing on what it hears.
 fn follow(port: u16, token: &str, root: PathBuf) -> mpsc::UnboundedReceiver<Heard> {
+    follow_with(client(port, token), root)
+}
+fn follow_with(c: Client, root: PathBuf) -> mpsc::UnboundedReceiver<Heard> {
     let (tx, rx) = mpsc::unbounded_channel();
-    let c = client(port, token);
     tokio::spawn(async move {
         let (shown, notified, problem) = (tx.clone(), tx.clone(), tx);
         c.follow(
@@ -386,13 +482,7 @@ async fn follows_the_always_on_orbit_and_reconnects() {
         Heard::Problem(Some(p)) => assert_eq!(p, LOST),
         other => panic!("expected the connection lost, heard {other:?}"),
     }
-    let listener = loop {
-        match tokio::net::TcpListener::bind(("127.0.0.1", r.port)).await {
-            Ok(listener) => break listener,
-            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
-        }
-    };
-    let _again = serve(listener, &r.engine, &r.hub);
+    let _again = serve(rebind(r.port).await, &r.engine, &r.hub);
     loop {
         match next(&mut rx).await {
             // It may try more than once while the port comes back.
@@ -405,6 +495,33 @@ async fn follows_the_always_on_orbit_and_reconnects() {
         }
     }
     assert!(matches!(next(&mut rx).await, Heard::Problem(None)));
+}
+
+/// A stuck server or proxy takes the connection and never answers. The app
+/// says so and tries again, rather than waiting for ever, so it shows the
+/// Orbit once it's back.
+#[tokio::test]
+async fn follows_again_after_an_orbit_that_never_answered() {
+    let (port, stuck) = silent().await;
+    let here = tempfile::tempdir().unwrap();
+    let mut rx = follow_with(impatient(port), here.path().into());
+    match next(&mut rx).await {
+        Heard::Problem(Some(p)) => assert_eq!(p, LOST),
+        other => panic!("expected the connection lost, heard {other:?}"),
+    }
+    stuck.abort();
+    let _ = stuck.await;
+    let _r = remote_orbit_on(rebind(port).await);
+    loop {
+        match next(&mut rx).await {
+            Heard::Problem(Some(p)) => assert_eq!(p, LOST),
+            Heard::Shown(s) => {
+                assert!(s["settings"].is_object());
+                break;
+            }
+            other => panic!("expected a snapshot, heard {other:?}"),
+        }
+    }
 }
 
 #[tokio::test]
