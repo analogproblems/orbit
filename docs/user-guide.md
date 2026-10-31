@@ -742,7 +742,7 @@ Orbit only reviews while it runs. To keep reviewing while your laptop is closed,
 2. In a copy of Orbit's source, run `npm ci`, then `npm run server`. It builds the browser page and Orbit, then starts Orbit with no window. It prints where it keeps its data and the link for your other devices.
 3. Run the `tailscale serve` command it shows, once, then open the link on your other device. Sign in to GitHub and Codex there: both sign-ins give you a code to enter in a browser, so they work from any device.
 
-By default it uses the desktop app's data folder, so a computer that has the desktop app picks up its repositories and history. Only one Orbit can use a data folder at a time: close the desktop app first, or give the server its own folder. It listens on this computer only, on port 4317 unless you choose another, and Tailscale forwards your other devices to it.
+By default it uses the desktop app's data folder, so a computer that has the desktop app picks up its repositories and history. Only one Orbit can use a data folder at a time: close the desktop app first, or give the server its own folder. While it runs, opening the desktop app on that computer [shows it](#use-it-from-the-desktop-app) instead. It listens on this computer only, on port 4317 unless you choose another, and Tailscale forwards your other devices to it.
 
 Ctrl+C, or a stop signal from your system, saves and stops it. If it can't start, it says why in the terminal and stops.
 
@@ -759,7 +759,7 @@ Ctrl+C, or a stop signal from your system, saves and stops it. If it can't start
 | `orbit-server logs`            | Shows the service's log. `--follow` keeps showing new lines.                                                                                     |
 | `orbit-server uninstall`       | Stops and removes the service and its copy of Orbit. Your data folder stays.                                                                     |
 
-With `npm run server`, add options after `--`, such as `npm run server -- --port 5000`. The link works like a key, so Orbit only prints it when you run it in a terminal; anywhere else, such as a log, it says to run `orbit-server link` instead. The controls a browser can't use stay on that computer: the link is only shown and changed there, a repository's local clone is a path on that computer (leave it empty and Orbit downloads its own copy), and links open in a new tab on your device. Notifications only reach a desktop app, so check **Needs you** in the browser.
+With `npm run server`, add options after `--`, such as `npm run server -- --port 5000`. The link works like a key, so Orbit only prints it when you run it in a terminal; anywhere else, such as a log, it says to run `orbit-server link` instead. The controls a browser can't use stay on that computer: the link is only shown and changed there, a repository's local clone is a path on that computer (leave it empty and Orbit downloads its own copy), and links open in a new tab on your device. Notifications reach a desktop app that [uses it](#use-it-from-the-desktop-app); in a browser, check **Needs you**.
 
 ### Keep it running
 
@@ -779,9 +779,22 @@ The commands install shows name Orbit's copy in full, since it isn't on your `PA
 
 The service starts Orbit with the data folder and port you gave install, or the desktop app's folder if you gave none. Installing again keeps them unless you give new ones. The data folder can't be inside the folder Orbit's copy goes in, since uninstall removes that copy. A stop from the system (shutting down, or `systemctl --user stop orbit`) saves and stops it like Ctrl+C. If Orbit can't start, such as while the desktop app has the same data folder open, it tries again every 10 seconds, and `orbit-server logs` shows why.
 
+### Use it from the desktop app
+
+The desktop app can show an always-on Orbit instead of running its own. The window looks and works as it does with its own Orbit, notifications included, while the reviewing happens on the computer that stays on.
+
+1. On that computer, run `orbit-server link` and copy the link. Use the `https://` link through Tailscale. A plain `http://` link is taken only for an Orbit on the same computer, so the link's key never crosses a network unencrypted.
+2. In the desktop app, open **Settings → Other devices → Use an always-on Orbit**, paste the link and tap **Use it**. Orbit checks that it answers, then starts again showing it.
+
+From then on the app runs no Orbit of its own. Everything you do in the window happens on the always-on Orbit, and its repositories, settings, reviews and history are the ones you see. The app's own stay in its data folder as they were. Each notification the always-on Orbit sends shows on this computer too, once, while notifications are on there and the item still needs you. Ones it sent before you started using it aren't shown. Exported reports and decisions are saved on this computer. A repository's local clone is a path on the always-on computer, so **Browse…** isn't offered, and browser access is set up there, with `orbit-server link`.
+
+When the connection drops, the window says so and reconnects on its own. If the link stops working, such as after `orbit-server link --new`, the window says so; paste the new link. **Stop using it** switches back: the app starts again with its own Orbit, as you left it.
+
+If Orbit without a window runs on the same computer with the desktop app's data folder, the app can't run its own, since only one Orbit can use a data folder at a time. Opening the app then shows that one instead, and **Settings → Other devices** says so. To run the app's own, stop Orbit without a window, then open the app again.
+
 ### One Orbit at a time
 
-Two Orbits following the same pull requests, such as the desktop app on your laptop and an always-on Orbit, would both tell the agent everything. So each Orbit signs what it posts on a pull request, its reviews and its comment about CI and merging, with a hidden line that names it, and checks what was posted there just before it posts. When another Orbit posted there after it did, it stops reviewing and posting on that pull request, and **Needs you** says so. The other Orbit carries on. If both post at once, each posts once, and then the later one carries on. Both Orbits put two posts made in the same second in the same order, so even then only one carries on.
+Two Orbits following the same pull requests, such as the desktop app on your laptop and an always-on Orbit, would both tell the agent everything. A desktop app that [shows the always-on Orbit](#use-it-from-the-desktop-app) runs none of its own, so this only happens when both run. So each Orbit signs what it posts on a pull request, its reviews and its comment about CI and merging, with a hidden line that names it, and checks what was posted there just before it posts. When another Orbit posted there after it did, it stops reviewing and posting on that pull request, and **Needs you** says so. The other Orbit carries on. If both post at once, each posts once, and then the later one carries on. Both Orbits put two posts made in the same second in the same order, so even then only one carries on.
 
 Only signatures that end a post count, so quoting one in a reply changes nothing. And only those from accounts Orbit trusts count: its own GitHub account, the repository's owners, members and collaborators, and the accounts you trust in Settings. Anyone else could copy a signature, so Orbit ignores theirs.
 

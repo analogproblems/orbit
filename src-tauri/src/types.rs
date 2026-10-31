@@ -1320,6 +1320,9 @@ pub struct Snapshot {
     pub state_write_error: Option<String>,
     /// Keys of the open items already announced, so each is announced once.
     pub announced: Vec<String>,
+    /// The latest notifications Orbit sent, newest last, so an app showing
+    /// this Orbit from another computer shows them too.
+    pub notices: Vec<crate::attention::SentNotice>,
     /// Everything waiting on the developer. Derived like `loop_states`.
     #[serde(skip_deserializing, skip_serializing_if = "Vec::is_empty")]
     pub attention: Vec<Attention>,

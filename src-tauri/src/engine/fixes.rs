@@ -97,12 +97,15 @@ impl Engine {
         })
         .await;
         if handed_back {
-            let notice = {
-                let s = self.state.lock().await;
-                s.settings
-                    .notify
-                    .then(|| crate::attention::notice(&s, item.clone()))
-            };
+            let mut notice = None;
+            self.update(|s| {
+                if s.settings.notify {
+                    let n = crate::attention::notice(s, item.clone());
+                    crate::attention::record(s, &n);
+                    notice = Some(n);
+                }
+            })
+            .await;
             if let (Some(notice), Some(notify)) = (notice, self.notifier.get()) {
                 notify(&notice);
             }

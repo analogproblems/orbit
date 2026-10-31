@@ -107,6 +107,9 @@ mod worktrees_tests;
 #[cfg(test)]
 mod writeup_tests;
 
+/// Why an Orbit can't start: another one uses its data folder.
+pub const ALREADY_RUNNING: &str = "Orbit is already running for this workspace.";
+
 type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// Orbit's review engine. Its methods are split by area: `connection` (Codex),
 /// `settings` (workspace settings and checkouts), `queue` (sync and scheduling),
@@ -275,7 +278,7 @@ impl Engine {
             .map_err(|e| e.to_string())?;
         instance_lock
             .try_lock()
-            .map_err(|_| "Orbit is already running for this workspace.".to_string())?;
+            .map_err(|_| ALREADY_RUNNING.to_string())?;
         let path = root.join("state.json");
         let mut state: Snapshot = if path.exists() {
             serde_json::from_slice(&std::fs::read(&path).map_err(|e| e.to_string())?).map_err(
@@ -472,7 +475,15 @@ impl Engine {
             None => true,
         });
         self.fixing.lock().unwrap().extend(fixing);
-        if recorded || noted {
+        let enabled = s.settings.notify;
+        // Kept with the state, so an app showing this Orbit from another
+        // computer shows them too.
+        if enabled {
+            notices
+                .iter()
+                .for_each(|n| crate::attention::record(&mut s, n));
+        }
+        if recorded || noted || (enabled && !notices.is_empty()) {
             self.dirty.store(true, Ordering::SeqCst);
         }
         let mut result = Ok(());
@@ -491,7 +502,6 @@ impl Engine {
         } else if self.changed.swap(false, Ordering::SeqCst) {
             (self.emit)(&s);
         }
-        let enabled = s.settings.notify;
         drop(s);
         if enabled {
             if let Some(notify) = self.notifier.get() {

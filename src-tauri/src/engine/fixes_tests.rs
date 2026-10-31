@@ -219,6 +219,9 @@ async fn a_queued_fix_waits_for_nothing_that_isnt_bits_to_do_any_more() {
         Some(format!("loop:{pr}:Round limit reached.").as_str())
     );
     assert_eq!(*shown.lock().unwrap(), ["A review loop needs you"]);
+    // Kept as sent, so an app showing this Orbit elsewhere shows it too.
+    let kept: Vec<_> = s.notices.iter().map(|n| n.title.as_str()).collect();
+    assert_eq!(kept, ["A review loop needs you"]);
 
     // You turn Bit off: not done, nothing written, notified as usual.
     let (_d, e, shown) = at_round_limit("do_it").await;

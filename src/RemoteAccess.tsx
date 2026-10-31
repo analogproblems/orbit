@@ -34,6 +34,9 @@ export function shareLink(status: RemoteAccessStatus) {
 
 export function RemoteAccess() {
   const action = useOrbit((state) => state.action);
+  const alwaysOn = useOrbit((state) => state.alwaysOn);
+  // Showing an always-on Orbit, this app serves no browsers of its own.
+  const own = desktop && !alwaysOn;
   const [status, setStatus] = useState<RemoteAccessStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -52,7 +55,7 @@ export function RemoteAccess() {
     else setError(result.error);
   };
   useEffect(() => {
-    if (!desktop) return;
+    if (!own) return;
     void action<RemoteAccessStatus>(
       "get_remote_access",
       {},
@@ -62,7 +65,7 @@ export function RemoteAccess() {
       if (result.ok) setStatus(result.data);
       else setLoadError(result.error);
     });
-  }, [action]);
+  }, [action, own]);
   const link = status && shareLink(status);
   return (
     <Card>
@@ -81,13 +84,20 @@ export function RemoteAccess() {
             --new there, then start it again.
           </Text>
         )}
+        {desktop && !own && (
+          <Text color="secondary">
+            This app shows an always-on Orbit, so browsers open that one. Its
+            link is shown on the computer it runs on: run orbit-server link
+            there.
+          </Text>
+        )}
         {!desktop && !remote && (
           <Text color="secondary">
             Open Orbit on your phone or laptop over Tailscale. Available in the
             desktop app.
           </Text>
         )}
-        {desktop && status && (
+        {own && status && (
           <>
             <Switch
               label="Allow access from a browser"
