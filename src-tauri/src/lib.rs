@@ -21,6 +21,7 @@ pub mod logs;
 pub mod models;
 pub mod ollama;
 pub mod ops;
+pub mod orbits;
 pub mod problems;
 pub mod readiness;
 pub mod remote;

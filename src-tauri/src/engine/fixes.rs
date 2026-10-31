@@ -16,6 +16,13 @@ fn still_mine(s: &Snapshot, item: &Attention, fix: Fix) -> Result<(), String> {
     if open.fix != Some(fix) || open.review_id != item.review_id {
         return Err("That isn't the fix for this any more.".into());
     }
+    if open
+        .pr_id
+        .as_deref()
+        .is_some_and(|pr| crate::orbits::stepped_back(&s.posting, pr))
+    {
+        return Err(crate::orbits::STEPPED_BACK.into());
+    }
     if crate::buddy::will_fix(s, &open) != Some(fix) {
         return Err("My rule for this isn't Do it any more.".into());
     }
@@ -162,6 +169,12 @@ impl Engine {
                 })
                 .await
                 .map(|_| ()),
+            // What waited goes out now; reviews start from the next sync.
+            Fix::PostHereAgain => {
+                self.post_here_again(pr()?).await?;
+                self.tell_agents().await;
+                Ok(())
+            }
             // Done once the item closes, whatever else is still off.
             Fix::CheckConnections => {
                 let _ = self.check_connections().await;

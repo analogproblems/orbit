@@ -1372,6 +1372,11 @@ pub struct Snapshot {
     pub readiness: Vec<crate::readiness::Readiness>,
     /// Bit's morning briefs: the latest, and the day Orbit last looked.
     pub brief: crate::brief::Briefs,
+    /// Who this Orbit is, by the name that signs what it posts on pull
+    /// requests (see `crate::orbits`).
+    pub instance: crate::orbits::Instance,
+    /// Each pull request where Orbit read whether another Orbit posts.
+    pub posting: Vec<crate::orbits::Posting>,
 }
 /// How reading the pull-request history is going.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -1527,6 +1532,9 @@ pub enum AttentionKind {
     Stuck,
     /// Bit's morning brief, to read (`crate::brief`).
     Brief,
+    /// Another Orbit posted on a pull request after this one, so this one
+    /// stepped back from it (`crate::orbits`).
+    AnotherOrbit,
 }
 /// Something only the developer can resolve.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1592,6 +1600,8 @@ pub fn eligible(pr: &PullRequest, s: &Snapshot) -> bool {
                 && ((r.head_sha == pr.head_sha && r.base_sha == pr.base_sha) || active(&r.status))
         })
         && crate::review_loop::allows_new_round(pr, s)
+        // Another Orbit reviews it.
+        && !crate::orbits::stepped_back(&s.posting, &pr.id)
 }
 /// Whether a review's report matches the PR as it is now. `publish()` checks
 /// the review's status itself when it claims the review.
@@ -1679,6 +1689,19 @@ pub(crate) mod tests {
             provider: Default::default(),
             dev_container: Default::default(),
         });
+        assert!(eligible(&p, &s));
+        // Not where Orbit stepped back for another Orbit, which reviews it.
+        s.posting.push(crate::orbits::Posting {
+            pr_id: p.id.clone(),
+            other: Some(crate::orbits::Post {
+                url: "u".into(),
+                at: "2026-10-31T09:00:00Z".into(),
+                by: "f".repeat(32),
+            }),
+            ..Default::default()
+        });
+        assert!(!eligible(&p, &s));
+        s.posting[0].resume();
         assert!(eligible(&p, &s));
         let mut fork = p.clone();
         fork.head_repo = "someone/b".into();

@@ -18,14 +18,31 @@ use serde_json::Value;
 use std::sync::{atomic::Ordering, Arc};
 
 /// The next thing any thread needs, as things stand now: reruns first, so
-/// what Orbit posts says it reran a job.
+/// what Orbit posts says it reran a job. Nothing is planned on a pull
+/// request Orbit stepped back from, as another Orbit posts there
+/// (`crate::orbits`).
 fn plan(s: &Snapshot, now: chrono::DateTime<chrono::Utc>) -> Option<Planned> {
-    reruns::all(s, now).into_iter().next().or_else(|| {
-        s.ops.iter().find_map(|t| {
+    let held = |key: &str| {
+        s.ops.iter().any(|t| {
+            t.key == key
+                && t.pr_id
+                    .as_deref()
+                    .is_some_and(|pr| crate::orbits::stepped_back(&s.posting, pr))
+        })
+    };
+    let mut reruns = reruns::all(s, now).into_iter();
+    reruns.find(|p| !held(&p.thread)).or_else(|| {
+        s.ops.iter().filter(|t| !held(&t.key)).find_map(|t| {
             let problem = ops::problem_of(t, &s.problems, &s.ci);
             ops::next(t, problem, ops::may_post(s, t), now)
         })
     })
+}
+/// The pull request a write is on, as its id and number: a comment on it,
+/// or a rerun of one of its jobs.
+fn on_pr(s: &Snapshot, planned: &Planned) -> Option<(String, u64)> {
+    let t = s.ops.iter().find(|t| t.key == planned.thread)?;
+    Some((t.pr_id.clone()?, t.number?))
 }
 /// Works out each pull request's answer to whether it is clear to merge
 /// again, from things as they are now, so a write planned before Orbit
@@ -87,9 +104,11 @@ impl Engine {
                 }
                 // Orbit's sign-in is how it finds its own comments again.
                 let login = s.github_user.clone();
-                plan(&s, now).zip(login)
+                plan(&s, now)
+                    .zip(login)
+                    .map(|(p, login)| (on_pr(&s, &p), s.instance.name.clone(), p, login))
             };
-            let Some((planned, login)) = next else {
+            let Some((pr, me, planned, login)) = next else {
                 break;
             };
             if let Some(job) = &planned.rerun {
@@ -129,6 +148,33 @@ impl Engine {
                     continue;
                 }
             }
+            // Last, just before the write: not where another Orbit posted
+            // later, which leaves this pull request out from now on.
+            if let Some((pr_id, number)) = &pr {
+                let clear = match self.clear_to_post(&planned.repo, *number, pr_id).await {
+                    Ok(clear) => clear,
+                    // GitHub couldn't say. Editing a comment GitHub shows
+                    // this Orbit wrote last keeps what's on GitHub true,
+                    // such as taking back a clear to merge. Anything new,
+                    // another Orbit's comment, or anything once what was
+                    // read shows another Orbit posted later, waits.
+                    Err(unsure) => {
+                        let own = match (planned.action, planned.comment_id) {
+                            (Action::EditComment, Some(id)) if !unsure.behind => {
+                                self.own_comment(&planned.repo, id, &planned.marker).await
+                            }
+                            _ => false,
+                        };
+                        if !own {
+                            break;
+                        }
+                        true
+                    }
+                };
+                if !clear || !self.still_wanted(&planned).await {
+                    continue;
+                }
+            }
             let id = {
                 let mut s = self.state.lock().await;
                 let s = &mut *s;
@@ -140,7 +186,7 @@ impl Engine {
             // Saved before it is sent, so after a restart Orbit knows it may
             // have gone, and looks before sending it again.
             let result = match self.flush().await {
-                Ok(()) => send(&planned).await,
+                Ok(()) => send(&planned, &me).await,
                 Err(_) => Err("Orbit couldn't save its journal, so it didn't send this.".into()),
             };
             let sent = result.is_ok();
@@ -403,18 +449,25 @@ async fn find(p: &Planned, login: &str) -> Result<Option<Posted>, String> {
     }
 }
 
-/// Sends one write.
-async fn send(p: &Planned) -> Result<Posted, String> {
+/// Sends one write. A comment on a pull request is signed as this
+/// Orbit's (`me`), so another Orbit there steps back; an issue isn't, so
+/// two Orbits never edit one back and forth.
+async fn send(p: &Planned, me: &str) -> Result<Posted, String> {
     let known =
         |n: Option<u64>| n.ok_or_else(|| "Orbit doesn't know where this is on GitHub.".to_string());
     match p.action {
         Action::Find => Err("Looking isn't a write.".into()),
         Action::RerunJob => reruns::send(p).await,
-        Action::PostComment | Action::NoteOnIssue => {
+        Action::PostComment => {
+            let body = crate::orbits::signed(&p.body, me);
+            github::post_comment(&p.repo, known(p.number)?, &body, &p.marker).await
+        }
+        Action::NoteOnIssue => {
             github::post_comment(&p.repo, known(p.number)?, &p.body, &p.marker).await
         }
         Action::EditComment => {
-            github::edit_comment(&p.repo, known(p.comment_id)?, &p.body, &p.marker).await
+            let body = crate::orbits::signed(&p.body, me);
+            github::edit_comment(&p.repo, known(p.comment_id)?, &body, &p.marker).await
         }
         Action::OpenIssue => {
             github::open_issue(&p.repo, &p.title, &p.body, ops::LABEL, &p.marker).await

@@ -25,6 +25,7 @@ mod fixes;
 mod inline;
 mod ledger;
 mod ops;
+mod orbits;
 mod prune;
 mod publish;
 mod queue;
@@ -299,6 +300,10 @@ impl Engine {
         state.settings.repositories = repositories;
         state.settings.buddy.normalize();
         crate::buddy::recover(&mut state.buddy_feed);
+        // Saved at the first flush, before anything is signed with it.
+        state
+            .instance
+            .settle(&crate::orbits::home(&root), chrono::Utc::now());
         for p in state.prs.iter_mut().chain(state.history_prs.iter_mut()) {
             p.id = p.id.to_ascii_lowercase();
         }

@@ -29,6 +29,7 @@ import {
   buddyOf,
   defaults,
   offeredFix,
+  asksFirst,
   readinessLine,
   withPatch,
   type Attention,
@@ -347,6 +348,14 @@ describe("Bit's fixes", () => {
     // A settings change has no rule; it is always a button.
     s.attention = [{ ...item("turn_on_autopilot"), key: "autopilot-paused" }];
     expect(offeredFix(s, "autopilot-paused")?.fix).toBe("turn_on_autopilot");
+    // Nor do checking connections and posting again where another Orbit
+    // posts.
+    for (const fix of ["check_connections", "post_here_again"] as const) {
+      s.attention = [{ ...item(fix), key: fix }];
+      expect(offeredFix(s, fix)?.fix).toBe(fix);
+      expect(asksFirst(fix)).toBe(true);
+    }
+    expect(asksFirst("continue_loop")).toBe(false);
     s.attention = [item(null)];
     expect(offeredFix(s, item(null).key)).toBeUndefined();
   });

@@ -141,6 +141,38 @@ describe("needs you list", () => {
     expect(go.onChoose).toHaveBeenCalledWith(pr, undefined);
     open.mockRestore();
   });
+  it("posts again where another Orbit posts only when you tap", () => {
+    const snapshot = freshDemo();
+    const pr = snapshot.prs[4];
+    snapshot.attention = [
+      {
+        key: `another-orbit:${pr.id}:`,
+        kind: "another_orbit",
+        prId: pr.id,
+        reviewId: null,
+        approvalId: null,
+        repo: null,
+        reason:
+          "Another Orbit, maybe on another computer, posted here after this one did.",
+        fix: "post_here_again",
+      },
+    ];
+    const action = vi.fn().mockResolvedValue({ ok: true });
+    useOrbit.setState({ action });
+    const go = show(snapshot);
+    const needs = list("Needs you");
+    expect(
+      within(needs).getByText(`Another Orbit posts here · ${pr.id}`),
+    ).toBeTruthy();
+    fireEvent.click(
+      within(needs).getByRole("button", { name: "Post here again" }),
+    );
+    expect(action).toHaveBeenCalledWith("use_fix", {
+      key: `another-orbit:${pr.id}:`,
+    });
+    fireEvent.click(within(needs).getByText(pr.title));
+    expect(go.onChoose).toHaveBeenCalledWith(pr, undefined);
+  });
   it("shows no list when nothing needs you", () => {
     show({ ...freshDemo(), attention: [] });
     expect(screen.queryByRole("heading", { name: "Needs you" })).toBeNull();

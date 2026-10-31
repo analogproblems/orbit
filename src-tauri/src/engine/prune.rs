@@ -13,7 +13,8 @@ pub(super) const KEEP_CHAT_DAYS: i64 = 30;
 /// request, and the chat of those kept once `KEEP_CHAT_DAYS` have passed.
 /// A review still running, waiting on an approval or a Needs you item, or
 /// with a worktree to clean up is never touched. Closed CI problems go
-/// after `problems::KEEP_CLOSED`. Says whether anything changed.
+/// after `problems::KEEP_CLOSED`, and what Orbit read about other Orbits
+/// on a pull request once it closes. Says whether anything changed.
 pub(super) fn prune(s: &mut Snapshot, now: chrono::DateTime<chrono::Utc>) -> bool {
     let open: HashSet<&str> = s.prs.iter().map(|p| p.id.as_str()).collect();
     let pinned: HashSet<String> = s
@@ -62,6 +63,10 @@ pub(super) fn prune(s: &mut Snapshot, now: chrono::DateTime<chrono::Utc>) -> boo
             changed = true;
         }
     }
+    // Whether another Orbit posts on a closed pull request no longer matters.
+    let before = s.posting.len();
+    s.posting.retain(|p| open.contains(p.pr_id.as_str()));
+    changed |= s.posting.len() != before;
     let pinned = crate::ops::pinned(&s.ops, &s.prs);
     changed |= crate::problems::prune(&mut s.problems, &pinned, now);
     changed |= crate::ops::prune(&mut s.ops, &mut s.journal, &s.problems, &s.prs, now);

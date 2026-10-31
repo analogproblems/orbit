@@ -524,7 +524,7 @@ If Orbit closes or Codex disconnects during a scan, the scan is marked **Interru
 
 ### What needs you
 
-When something can only move forward with you, the sidebar shows **Needs you** with a count, and the **Review loops** page lists each item at the top with its reason and one main action: **Approve or deny** for an approval, **Publish** for a held report or one waiting for you, **Continue loop** when the round limit is reached, **Check again** for a connection, **Open repositories** or **Open settings** for sync and save problems, **Open operations** for failing CI and runs waiting for a runner, **Open on GitHub** for a pull request left waiting on a person, **Got it** for Bit's morning brief, and **Open chat** otherwise. Selecting the item itself opens where it is resolved: the review's chat, the PR, **Repositories**, **Operations**, **Settings**, or Bit's page for the brief. An approval item opens that exact request. An item appears when:
+When something can only move forward with you, the sidebar shows **Needs you** with a count, and the **Review loops** page lists each item at the top with its reason and one main action: **Approve or deny** for an approval, **Publish** for a held report or one waiting for you, **Continue loop** when the round limit is reached, **Check again** for a connection, **Open repositories** or **Open settings** for sync and save problems, **Open operations** for failing CI and runs waiting for a runner, **Open on GitHub** for a pull request left waiting on a person, **Post here again** where another Orbit posts, **Got it** for Bit's morning brief, and **Open chat** otherwise. Selecting the item itself opens where it is resolved: the review's chat, the PR, **Repositories**, **Operations**, **Settings**, or Bit's page for the brief. An approval item opens that exact request. An item appears when:
 
 - a review is waiting for your approval;
 - an automatic report was held instead of published, with the reason;
@@ -538,6 +538,7 @@ When something can only move forward with you, the sidebar shows **Needs you** w
 - a project's agent asks for a person about a failing check (`Need a person on I2: …`), with its question, until the check passes or the agent answers again (see [Telling agents](#telling-agents));
 - a repository's runs have waited more than 30 minutes for a runner, with what Orbit sees of its runners (see [Runners](#runners));
 - a pull request Orbit reviews automatically has waited on a person, a reviewer or a rule on GitHub, for more than a day, with what it waits for (see [Clear to merge](#clear-to-merge));
+- another Orbit posted on a pull request after this one did, so this one stopped reviewing and posting there (see [One Orbit at a time](#one-orbit-at-a-time));
 - Bit's morning brief came, until you tap **Got it** or the next brief's time comes (see [Morning brief](#morning-brief)). It comes first in the list, and doesn't make Bit worried.
 
 An item disappears once it is resolved. A stopped loop lists only its approvals, since you have already taken it over.
@@ -636,16 +637,17 @@ When something needs you and one of Orbit's own controls fixes it, Bit's note ab
 | **Sync now**               | Syncing with GitHub, or a repository, failed 3 times in a row.                                                                                                                                                                                                        |
 | **Turn autopilot back on** | A failed save turned Autopilot off.                                                                                                                                                                                                                                   |
 | **Check again**            | Codex, Claude, Antigravity, or Docker and the Dev Container CLI isn't connected while a repository uses it. Checks every connection again, like **Settings → Connections → Check again**, and the item closes once that one is connected.                             |
+| **Post here again**        | Another Orbit posted on a pull request after this one, so this one stepped back. This one posts there again, and the other steps back once it sees that (see [One Orbit at a time](#one-orbit-at-a-time)).                                                            |
 
 These buttons never answer a reviewer's request to run a command or change files, never change a repository's setup, and never touch the code under review. When a button's action fails, its error shows under the button.
 
-In **Settings → Buddy → What Bit can do**, each button except **Turn autopilot back on** and **Check again** has a rule. Every button's rule starts on **Ask first**:
+In **Settings → Buddy → What Bit can do**, each button except **Turn autopilot back on**, **Check again** and **Post here again** has a rule. Every button's rule starts on **Ask first**:
 
 - **Do it**: when the item first opens, Bit uses the control itself instead of a desktop notification. It notes that it's on it, then that it's done. Right before acting, Bit checks again that the item still needs you, that Bit is still on and that the rule is still **Do it**. Before publishing, it also checks with GitHub that the pull request still comes from a source automatic publication would trust. If the item has closed in the meantime, Bit lets it go. If the fix doesn't work, or isn't Bit's to do any more, Bit says why, offers the button, and the item is notified as usual. Bit does it once per item, not again after a restart. Bit continues a loop on its own only once: when the extra rounds run out too, the loop waits for you.
 - **Ask first**: Bit offers the button and waits for your tap.
 - **Leave it to me**: Bit offers no button. The item still appears in **Needs you** with its usual action.
 
-Turning Autopilot back on changes settings, and checking connections needs you to sign in first, so both always wait for your tap. With Bit turned off, Bit does nothing on its own.
+Turning Autopilot back on changes settings, checking connections needs you to sign in first, and only you know whether another Orbit still runs, so these always wait for your tap. With Bit turned off, Bit does nothing on its own.
 
 Bit's face shows its mood: **worried** while anything but the morning brief needs you, **busy** while a review runs, **sleepy** when Autopilot is off or there are no pull requests, and **happy** otherwise.
 
@@ -776,6 +778,18 @@ From a fresh computer:
 The commands install shows name Orbit's copy in full, since it isn't on your `PATH`; from the source folder, `npm run server -- status` and the like work too. To update Orbit, get the new source (`git pull` and `npm ci`) and run `npm run server -- install` again: it replaces the copy and restarts the service. Run it again after installing a new tool too, so the service finds it. `orbit-server uninstall` removes the service and the copy, and keeps your data folder.
 
 The service starts Orbit with the data folder and port you gave install, or the desktop app's folder if you gave none. Installing again keeps them unless you give new ones. The data folder can't be inside the folder Orbit's copy goes in, since uninstall removes that copy. A stop from the system (shutting down, or `systemctl --user stop orbit`) saves and stops it like Ctrl+C. If Orbit can't start, such as while the desktop app has the same data folder open, it tries again every 10 seconds, and `orbit-server logs` shows why.
+
+### One Orbit at a time
+
+Two Orbits following the same pull requests, such as the desktop app on your laptop and an always-on Orbit, would both tell the agent everything. So each Orbit signs what it posts on a pull request, its reviews and its comment about CI and merging, with a hidden line that names it, and checks what was posted there just before it posts. When another Orbit posted there after it did, it stops reviewing and posting on that pull request, and **Needs you** says so. The other Orbit carries on. If both post at once, each posts once, and then the later one carries on. Both Orbits put two posts made in the same second in the same order, so even then only one carries on.
+
+Only signatures that end a post count, so quoting one in a reply changes nothing. And only those from accounts Orbit trusts count: its own GitHub account, the repository's owners, members and collaborators, and the accounts you trust in Settings. Anyone else could copy a signature, so Orbit ignores theirs.
+
+If you've stopped the other Orbit, or want this one to take over, tap **Post here again**. This one posts what it held back, and the other steps back once it sees that. Only you can make an Orbit post again, since only you know whether the other one still runs. Publishing a report yourself always goes ahead.
+
+While GitHub can't say what was posted, Orbit posts nothing new on that pull request. It still keeps its own comment up to date, so a **Clear to merge** can always be taken back. But it holds even that once what it could read shows another Orbit wrote that comment last or posted after this one, so it never writes over another Orbit's. Orbit reads both the comments and the reviews before it steps back, since a newer review can outweigh an older comment. Posts from before Orbit signed its own belong to no Orbit, and Orbit's issues about a failing default branch aren't signed.
+
+An Orbit's name goes with its data folder on one computer. A copy of the folder, or the folder moved to another computer, is a new Orbit that counts what the old one posted until then as its own. So it carries on where the old one left off, and the old one steps back from a pull request once the copy posts there. What the old one posts after the copy was made is another Orbit's, so you can still hand a pull request back to it with **Post here again**.
 
 ## Restart, retained data, and cleanup
 

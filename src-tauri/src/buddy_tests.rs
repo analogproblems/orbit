@@ -645,6 +645,20 @@ fn the_app_offers_the_same_choices() {
 }
 
 #[test]
+fn settings_connections_and_posting_again_always_ask_first() {
+    let mut rules = Rules::default();
+    for rule in rules.each_mut() {
+        *rule = "do_it".into();
+    }
+    for fix in FIXES {
+        let asks = matches!(
+            fix,
+            Fix::TurnOnAutopilot | Fix::CheckConnections | Fix::PostHereAgain
+        );
+        assert_eq!(rules.of(fix) == "ask_first", asks, "{fix:?}");
+    }
+}
+#[test]
 fn rules_use_the_names_the_app_sends() {
     // The app keys rules by fix name, both for what it reads and for the one
     // rule at a time it saves.
@@ -652,9 +666,12 @@ fn rules_use_the_names_the_app_sends() {
         serde_json::from_str(include_str!("../../test-fixtures/buddy-options.json")).unwrap();
     let defaults = &fixture["defaultRules"];
     assert_eq!(serde_json::to_value(Rules::default()).unwrap(), *defaults);
-    let ruled = FIXES
-        .into_iter()
-        .filter(|&f| !matches!(f, Fix::TurnOnAutopilot | Fix::CheckConnections));
+    let ruled = FIXES.into_iter().filter(|&f| {
+        !matches!(
+            f,
+            Fix::TurnOnAutopilot | Fix::CheckConnections | Fix::PostHereAgain
+        )
+    });
     for fix in ruled {
         let name = serde_json::to_value(fix).unwrap();
         let name = name.as_str().unwrap();

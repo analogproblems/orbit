@@ -1169,8 +1169,11 @@ async fn an_approval_of_an_older_commit_keeps_it_waiting_on_its_reviewer() {
     // Read again later, still waiting: nothing more is sent.
     again().await;
     watch().await;
-    assert_eq!(sent(d.path(), "GET repos/a/b/pulls/1/reviews"), 2);
     assert_eq!(writes(d.path()).len(), 1);
+    // Once each time, and once before each write, for whether another
+    // Orbit posted since (`crate::orbits`).
+    let reads = |d: &Path| sent(d, "GET repos/a/b/pulls/1/reviews") - writes(d).len();
+    assert_eq!(reads(d.path()), 2);
 
     // Alice approves the latest commit: one edit, to clear.
     reviews(
@@ -1276,7 +1279,7 @@ async fn an_approval_of_an_older_commit_keeps_it_waiting_on_its_reviewer() {
         line(&e).await,
         "Not clear to merge yet. main needs 2 approvals of aaaaaaa and it has 1: bob hasn't reviewed aaaaaaa yet."
     );
-    assert_eq!(sent(d.path(), "GET repos/a/b/pulls/1/reviews"), 9);
+    assert_eq!(reads(d.path()), 9);
     assert_eq!(
         sent(d.path(), "GET repos/a/b/collaborators/alice/permission"),
         7

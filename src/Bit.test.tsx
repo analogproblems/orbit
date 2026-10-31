@@ -132,13 +132,17 @@ describe("Bit", () => {
       ...options.helpActions,
     ]);
     expect(memoryLimits).toEqual(options.memoryLimits);
-    // Every fix but a settings change or checking connections has a rule,
+    // Every fix but a settings change, checking connections or posting
+    // again where another Orbit posts has a rule,
     // which starts on Ask first, and so does each post that tells an agent
     // about failing CI, which starts on Do it, under the same names the
     // engine saves and accepts.
     expect(Object.keys(defaultBuddy.rules)).toEqual([
       ...options.fixes.filter(
-        (f) => f !== "turn_on_autopilot" && f !== "check_connections",
+        (f) =>
+          f !== "turn_on_autopilot" &&
+          f !== "check_connections" &&
+          f !== "post_here_again",
       ),
       ...options.posts,
     ]);

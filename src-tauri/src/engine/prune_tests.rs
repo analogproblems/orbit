@@ -74,3 +74,26 @@ fn a_review_still_in_use_is_never_pruned() {
     assert!(!s.reviews[0].messages.is_empty() && !s.reviews[1].messages.is_empty());
     assert!(s.reviews[2].messages.is_empty() && s.reviews[3].messages.is_empty());
 }
+
+#[test]
+fn what_orbit_read_about_other_orbits_goes_once_a_pull_request_closes() {
+    let open = crate::types::tests::pr();
+    let posting = |pr_id: &str| crate::orbits::Posting {
+        pr_id: pr_id.into(),
+        mine: Some(crate::orbits::Post {
+            url: "u".into(),
+            at: "2026-10-01T10:00:00Z".into(),
+            by: "0".repeat(32),
+        }),
+        ..Default::default()
+    };
+    let mut s = Snapshot {
+        prs: vec![open.clone()],
+        posting: vec![posting(&open.id), posting("a/b#2")],
+        ..Default::default()
+    };
+    let now = at("2026-10-02T10:00:00Z");
+    assert!(prune(&mut s, now));
+    assert_eq!(s.posting, [posting(&open.id)]);
+    assert!(!prune(&mut s, now));
+}

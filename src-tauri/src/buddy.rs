@@ -157,6 +157,10 @@ pub enum Fix {
     /// isn't connected. It always waits for your tap: what fixes it is
     /// usually signing in on the computer first.
     CheckConnections,
+    /// Posts on a pull request again where Orbit stepped back for another
+    /// Orbit (`crate::orbits`). It always waits for your tap: only you
+    /// know whether the other one still runs.
+    PostHereAgain,
 }
 
 /// The rule for each fix Bit can do on its own, keyed by the fix's own name
@@ -204,7 +208,7 @@ impl Rules {
             Fix::ReviewAgain => &self.review_again,
             Fix::Publish => &self.publish,
             Fix::SyncNow => &self.sync_now,
-            Fix::TurnOnAutopilot | Fix::CheckConnections => "ask_first",
+            Fix::TurnOnAutopilot | Fix::CheckConnections | Fix::PostHereAgain => "ask_first",
         }
     }
     fn each(&self) -> [&str; 9] {
@@ -991,18 +995,21 @@ mod say {
             ("calm", Fix::SyncNow) => "Syncing works again.".into(),
             ("calm", Fix::TurnOnAutopilot) => "Autopilot is on again.".into(),
             ("calm", Fix::CheckConnections) => "That's connected again.".into(),
+            ("calm", Fix::PostHereAgain) => format!("Posting on {pr} again."),
             ("dry", Fix::ContinueLoop) => format!("{pr} gets two more rounds."),
             ("dry", Fix::ReviewAgain) => format!("{pr} is queued for another go."),
             ("dry", Fix::Publish) => format!("{pr}'s report is out."),
             ("dry", Fix::SyncNow) => "Synced. Finally.".into(),
             ("dry", Fix::TurnOnAutopilot) => "Autopilot: on.".into(),
             ("dry", Fix::CheckConnections) => "Reconnected. Good.".into(),
+            ("dry", Fix::PostHereAgain) => format!("{pr} is mine again."),
             (_, Fix::ContinueLoop) => format!("Gave {pr} two more rounds!"),
             (_, Fix::ReviewAgain) => format!("Queued a new review of {pr}. Fingers crossed!"),
             (_, Fix::Publish) => format!("Published the report on {pr}! 📬"),
             (_, Fix::SyncNow) => "Synced with GitHub. All good again!".into(),
             (_, Fix::TurnOnAutopilot) => "Autopilot is back on!".into(),
             (_, Fix::CheckConnections) => "It's connected again. All good!".into(),
+            (_, Fix::PostHereAgain) => format!("I'll post on {pr} again!"),
         }
     }
     pub fn not_done(tone: &str, fix: Fix, pr: &str, error: &str) -> String {
@@ -1013,6 +1020,7 @@ mod say {
             Fix::SyncNow => "sync with GitHub".into(),
             Fix::TurnOnAutopilot => "turn autopilot back on".into(),
             Fix::CheckConnections => "reconnect".into(),
+            Fix::PostHereAgain => format!("post on {pr} again"),
         };
         let error = error.trim();
         match tone {
@@ -1130,13 +1138,14 @@ pub(crate) fn samples(tone: &str) -> Vec<(NoteKind, String)> {
 }
 /// Every fix, for tests.
 #[cfg(test)]
-pub(crate) const FIXES: [Fix; 6] = [
+pub(crate) const FIXES: [Fix; 7] = [
     Fix::ContinueLoop,
     Fix::ReviewAgain,
     Fix::Publish,
     Fix::SyncNow,
     Fix::TurnOnAutopilot,
     Fix::CheckConnections,
+    Fix::PostHereAgain,
 ];
 
 /// Compares the loops with what Bit last saw and writes a note for each
@@ -1422,7 +1431,8 @@ pub fn observe_decisions(s: &mut Snapshot, items: &[ToDecide]) -> bool {
 }
 
 /// The fix Bit does on its own for an item that just opened: one whose rule
-/// is Do it, while Bit is on. A loop is continued on its own only once: a
+/// is Do it, while Bit is on, and not on a pull request Orbit stepped back
+/// from for another Orbit. A loop is continued on its own only once: a
 /// loop that has been given more rounds and used them up again waits for
 /// you, so a builder and reviewer that never agree can't go round forever.
 pub fn will_fix(s: &Snapshot, item: &Attention) -> Option<Fix> {
@@ -1432,10 +1442,18 @@ pub fn will_fix(s: &Snapshot, item: &Attention) -> Option<Fix> {
             .iter()
             .any(|c| Some(&*c.pr_id) == item.pr_id.as_deref() && c.extra_rounds > 0)
     };
+    // Where another Orbit posts, Bit leaves what it would do on its own to
+    // that one.
+    let elsewhere = || {
+        item.pr_id
+            .as_deref()
+            .is_some_and(|pr| crate::orbits::stepped_back(&s.posting, pr))
+    };
     item.fix.filter(|&fix| {
         buddy.enabled
             && buddy.rules.of(fix) == "do_it"
             && !(fix == Fix::ContinueLoop && continued())
+            && !elsewhere()
     })
 }
 fn pr_or_this(s: &Snapshot, item: &Attention) -> String {
