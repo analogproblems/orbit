@@ -19,11 +19,24 @@ it("keeps a change that arrives before the first snapshot", async () => {
     return () => {};
   });
   let answer: (s: Partial<Snapshot>) => void = () => {};
-  invokeMock.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+  const first = new Promise((resolve) => (answer = resolve));
+  // This app runs its own Orbit.
+  invokeMock.mockImplementation(async (command: string) =>
+    command === "get_always_on" ? null : first,
+  );
   const started = useOrbit.getState().init();
-  await vi.waitFor(() => expect(invokeMock).toHaveBeenCalled());
+  await vi.waitFor(() =>
+    expect(invokeMock).toHaveBeenCalledWith("get_snapshot"),
+  );
   send({ payload: { prs: [], githubUser: "newer" } });
   answer({ prs: [], githubUser: "older" });
   await started;
   expect(useOrbit.getState().snapshot.githubUser).toBe("newer");
+  expect(useOrbit.getState().alwaysOn).toBeNull();
+  // Its actions run here.
+  invokeMock.mockResolvedValue("review-1");
+  await useOrbit.getState().action("start_review", { prId: "a/b#1" });
+  expect(invokeMock).toHaveBeenLastCalledWith("start_review", {
+    prId: "a/b#1",
+  });
 });

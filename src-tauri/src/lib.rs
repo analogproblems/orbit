@@ -11,6 +11,7 @@ pub mod buddy;
 pub mod ci;
 pub mod claude;
 pub mod cli;
+pub mod client;
 pub mod devcontainer;
 pub mod engine;
 pub mod extras;
@@ -43,12 +44,27 @@ pub mod workflows;
 #[cfg(feature = "desktop")]
 mod desktop {
     use super::*;
-    use serde_json::Value;
-    use std::sync::Arc;
-    use tauri::{Emitter, Manager, State};
+    use serde_json::{json, Value};
+    use std::{path::PathBuf, sync::Arc};
+    use tauri::{AppHandle, Emitter, Manager, State};
     use tauri_plugin_dialog::DialogExt;
     use tauri_plugin_notification::NotificationExt;
     type AppState = Arc<engine::Engine>;
+    /// The always-on Orbit this app shows instead of running its own
+    /// (`crate::client`). `chosen` when you gave its link in Settings;
+    /// otherwise it's Orbit without a window using this app's data folder,
+    /// shown while it runs.
+    struct AlwaysOn {
+        client: Arc<client::Client>,
+        chosen: bool,
+    }
+    /// What Settings shows about the always-on Orbit in use.
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct AlwaysOnStatus {
+        host: String,
+        chosen: bool,
+    }
     /// The item of the latest notification sent while Orbit was in the
     /// background. Desktop notifications report no clicks, so the item opens
     /// when Orbit next comes to the front, as clicking the notification does.
@@ -108,16 +124,28 @@ mod desktop {
         review_id: String,
     ) -> Result<Option<String>, String> {
         let (name, text) = engine.export_report(&review_id).await?;
-        // Rust owns the dialog and generated content; no general file-write API
-        // or frontend-supplied destination is exposed.
+        save_markdown(app, name, text, REPORT).await
+    }
+    /// How the save dialog asks for a report, and for the Decisions page.
+    const REPORT: (&str, &str) = ("Save Markdown report (.md)", "Markdown report");
+    const DECISIONS: (&str, &str) = ("Save decisions (.md)", "Markdown");
+    /// Asks where to save `text`, suggesting `name`, and saves it there.
+    /// Rust owns the dialog and the content; no general file-write API or
+    /// frontend-supplied destination is exposed.
+    async fn save_markdown(
+        app: AppHandle,
+        name: String,
+        text: String,
+        (title, filter): (&'static str, &'static str),
+    ) -> Result<Option<String>, String> {
         tauri::async_runtime::spawn_blocking(move || {
             let path = storage::select_report_path(name.into(), |suggested| {
                 let mut dialog = app
                     .dialog()
                     .file()
-                    .set_title("Save Markdown report (.md)")
+                    .set_title(title)
                     .set_file_name(suggested.file_name().unwrap_or_default().to_string_lossy())
-                    .add_filter("Markdown report", &["md"]);
+                    .add_filter(filter, &["md"]);
                 if let Some(parent) = suggested.parent().filter(|p| !p.as_os_str().is_empty()) {
                     dialog = dialog.set_directory(parent);
                 }
@@ -177,8 +205,7 @@ mod desktop {
         engine.refresh_ledger_fully();
         Ok(())
     }
-    /// Saves the Decisions page as Markdown where you choose, as
-    /// `export_report` does.
+    /// Saves the Decisions page as Markdown where you choose.
     #[tauri::command]
     async fn export_decisions(
         app: tauri::AppHandle,
@@ -186,27 +213,7 @@ mod desktop {
         repo: Option<String>,
     ) -> Result<Option<String>, String> {
         let (name, text) = engine.export_decisions(repo).await?;
-        // As with reports, Rust owns the dialog and the content.
-        tauri::async_runtime::spawn_blocking(move || {
-            let path = storage::select_report_path(name.into(), |suggested| {
-                let mut dialog = app
-                    .dialog()
-                    .file()
-                    .set_title("Save decisions (.md)")
-                    .set_file_name(suggested.file_name().unwrap_or_default().to_string_lossy())
-                    .add_filter("Markdown", &["md"]);
-                if let Some(parent) = suggested.parent().filter(|p| !p.as_os_str().is_empty()) {
-                    dialog = dialog.set_directory(parent);
-                }
-                dialog
-                    .blocking_save_file()
-                    .map(|p| p.into_path().map_err(|e| e.to_string()))
-                    .transpose()
-            })?;
-            storage::write_report(path.as_deref(), &text)
-        })
-        .await
-        .map_err(|e| e.to_string())?
+        save_markdown(app, name, text, DECISIONS).await
     }
     #[tauri::command]
     async fn connect_services(engine: State<'_, AppState>) -> Result<(), String> {
@@ -415,6 +422,117 @@ mod desktop {
     ) -> Result<remote::Status, String> {
         access.reset_link().await
     }
+    // The always-on Orbit is chosen from the desktop window only, so these
+    // are left out of `remote::COMMANDS` too.
+    #[tauri::command]
+    async fn get_always_on(app: AppHandle) -> Result<Option<AlwaysOnStatus>, String> {
+        Ok(app.try_state::<AlwaysOn>().map(|a| AlwaysOnStatus {
+            host: a.client.link().host().into(),
+            chosen: a.chosen,
+        }))
+    }
+    /// Runs one of `remote::COMMANDS` on the always-on Orbit this app shows,
+    /// as a browser there would. Reports and decisions come back as text,
+    /// and are saved on this computer.
+    #[tauri::command]
+    async fn forward(app: AppHandle, command: String, args: Value) -> Result<Value, String> {
+        let Some(always_on) = app.try_state::<AlwaysOn>().map(|a| a.client.clone()) else {
+            return Err("This app isn't using an always-on Orbit.".into());
+        };
+        if !remote::COMMANDS.contains(&command.as_str()) {
+            return Err("This action is not available here.".into());
+        }
+        let answer = always_on.call(&command, &args).await?;
+        let ask = match command.as_str() {
+            "export_report" => REPORT,
+            "export_decisions" => DECISIONS,
+            _ => return Ok(answer),
+        };
+        let text = answer["text"]
+            .as_str()
+            .ok_or("The always-on Orbit sent nothing to save.")?;
+        // Only its name: a folder there means nothing here.
+        let name = answer["fileName"]
+            .as_str()
+            .and_then(|n| std::path::Path::new(n).file_name())
+            .map_or_else(|| "orbit.md".into(), |n| n.to_string_lossy().into_owned());
+        Ok(json!(save_markdown(app, name, text.into(), ask).await?))
+    }
+    /// Uses the always-on Orbit at `link` from now on, once it answers: the
+    /// app starts again showing it, with no Orbit of its own.
+    #[tauri::command]
+    async fn use_always_on(app: AppHandle, link: String) -> Result<(), String> {
+        let link = client::Link::parse(&link)?;
+        let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        // While this app runs its own Orbit, the token in its folder is its own.
+        if app.try_state::<AppState>().is_some()
+            && remote::saved_token(&root).as_deref() == Some(link.token.as_str())
+        {
+            return Err(client::OWN_LINK.into());
+        }
+        client::Client::new(link.clone())?.check().await?;
+        client::save(&root, &link)?;
+        app.request_restart();
+        Ok(())
+    }
+    /// Stops using the always-on Orbit: the app starts again with its own.
+    #[tauri::command]
+    async fn stop_always_on(app: AppHandle) -> Result<(), String> {
+        let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        client::forget(&root)?;
+        app.request_restart();
+        Ok(())
+    }
+    /// Shows a notification, and keeps its item to open when Orbit next
+    /// comes to the front if it's in the background.
+    fn notify(app: &AppHandle, title: &str, body: &str, item: &types::Attention) {
+        let _ = app.notification().builder().title(title).body(body).show();
+        let focused = app
+            .get_webview_window("main")
+            .and_then(|w| w.is_focused().ok())
+            .unwrap_or(false);
+        if !focused {
+            *app.state::<Unseen>().0.lock().unwrap() = Some(item.clone());
+        }
+    }
+    /// Shows the always-on Orbit at `link` in the window, with its
+    /// notifications, instead of running an Orbit here.
+    fn show_always_on(
+        app: &AppHandle,
+        root: PathBuf,
+        link: client::Link,
+        chosen: bool,
+    ) -> Result<(), String> {
+        let client = Arc::new(client::Client::new(link)?);
+        app.manage(AlwaysOn {
+            client: client.clone(),
+            chosen,
+        });
+        let (shown, notified, problem) = (app.clone(), app.clone(), app.clone());
+        tauri::async_runtime::spawn(async move {
+            client
+                .follow(
+                    &root,
+                    |snapshot| {
+                        let _ = shown.emit("orbit-state", snapshot);
+                    },
+                    |n| notify(&notified, &n.title, &n.body, &n.item),
+                    |p| {
+                        let _ = problem.emit("orbit-connection", p);
+                    },
+                )
+                .await;
+        });
+        Ok(())
+    }
+    /// Shows Orbit without a window using the data folder `root` on this
+    /// computer, if it answers.
+    fn show_running_here(app: &AppHandle, root: &std::path::Path) -> bool {
+        let Some(link) = tauri::async_runtime::block_on(client::running_here(root)) else {
+            return false;
+        };
+        show_always_on(app, root.into(), link, false).is_ok()
+    }
     pub fn run() {
         tauri::Builder::default()
             .plugin(tauri_plugin_dialog::init())
@@ -422,6 +540,11 @@ mod desktop {
             .setup(|app| {
                 let handle = app.handle().clone();
                 let root = app.path().app_data_dir()?;
+                app.manage(Unseen::default());
+                if let Some(link) = client::load(&root) {
+                    show_always_on(app.handle(), root, link, true)?;
+                    return Ok(());
+                }
                 let hub = remote::Hub::default();
                 let browsers = hub.clone();
                 let engine =
@@ -430,6 +553,13 @@ mod desktop {
                         browsers.publish(snapshot);
                     }) {
                         Ok(engine) => engine,
+                        // Orbit without a window uses this folder: show it.
+                        Err(error)
+                            if error == engine::ALREADY_RUNNING
+                                && show_running_here(app.handle(), &root) =>
+                        {
+                            return Ok(());
+                        }
                         Err(error) => {
                             // Returning the error would end Orbit with nothing
                             // on screen, so it's shown before Orbit closes.
@@ -458,23 +588,8 @@ mod desktop {
                 let access = remote::Access::new(engine.clone(), hub, root, assets);
                 app.manage(access.clone());
                 tauri::async_runtime::spawn(async move { access.start().await });
-                app.manage(Unseen::default());
                 let handle = app.handle().clone();
-                engine.on_notice(move |notice| {
-                    let _ = handle
-                        .notification()
-                        .builder()
-                        .title(&notice.title)
-                        .body(&notice.body)
-                        .show();
-                    let focused = handle
-                        .get_webview_window("main")
-                        .and_then(|w| w.is_focused().ok())
-                        .unwrap_or(false);
-                    if !focused {
-                        *handle.state::<Unseen>().0.lock().unwrap() = Some(notice.item.clone());
-                    }
-                });
+                engine.on_notice(move |n| notify(&handle, &n.title, &n.body, &n.item));
                 app.manage(engine.clone());
                 tauri::async_runtime::spawn(async move {
                     engine.launch();
@@ -536,7 +651,11 @@ mod desktop {
                 open_github,
                 get_remote_access,
                 set_remote_access,
-                reset_remote_link
+                reset_remote_link,
+                get_always_on,
+                forward,
+                use_always_on,
+                stop_always_on
             ])
             .build(tauri::generate_context!())
             .expect("Unable to start Orbit")

@@ -1147,6 +1147,23 @@ export interface Snapshot {
   instance?: OrbitInstance;
   /** Each pull request where Orbit read whether another Orbit posts. */
   posting?: Posting[];
+  /** The latest notifications Orbit sent, newest last, so a desktop app
+   * showing this Orbit from another computer shows them too. */
+  notices?: SentNotice[];
+}
+/** A notification an Orbit sent. */
+export interface SentNotice {
+  id: string;
+  title: string;
+  body: string;
+  item: Attention;
+}
+/** The always-on Orbit the desktop app shows instead of running its own.
+ * `chosen` when you gave its link in Settings; otherwise it's Orbit without
+ * a window using the app's data folder on this computer. */
+export interface AlwaysOn {
+  host: string;
+  chosen: boolean;
 }
 /** Who an Orbit is. Its name goes with its data folder on one computer. */
 export interface OrbitInstance {

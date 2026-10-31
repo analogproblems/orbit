@@ -3,6 +3,7 @@
 //! so it is announced once while it stays open. Where one of Orbit's own
 //! controls resolves an item, the item names it as its fix.
 use crate::{buddy::Fix, text::sentence, types::*};
+use serde::{Deserialize, Serialize};
 
 /// Consecutive failed syncs before a repository needs the developer.
 pub const SYNC_FAILURES: u32 = 3;
@@ -444,6 +445,30 @@ pub struct Notice {
     pub item: Attention,
     pub title: String,
     pub body: String,
+}
+/// How many of the notifications it sent an Orbit keeps in its state.
+pub const SENT_KEPT: usize = 20;
+/// A notification an Orbit sent, kept so an app showing that Orbit from
+/// another computer can show it too (`crate::client`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SentNotice {
+    /// Tells it apart from every other, whatever else changes.
+    pub id: String,
+    pub title: String,
+    pub body: String,
+    pub item: Attention,
+}
+/// Keeps a notification about to be sent, with the newest `SENT_KEPT`.
+pub fn record(s: &mut Snapshot, n: &Notice) {
+    s.notices.push(SentNotice {
+        id: uuid::Uuid::new_v4().simple().to_string(),
+        title: n.title.clone(),
+        body: n.body.clone(),
+        item: n.item.clone(),
+    });
+    let extra = s.notices.len().saturating_sub(SENT_KEPT);
+    s.notices.drain(..extra);
 }
 pub fn notice(s: &Snapshot, a: Attention) -> Notice {
     let title = match a.kind {

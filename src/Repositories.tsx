@@ -271,7 +271,7 @@ export function Repositories({
 } = {}) {
   const formId = useId();
   const [scanning, setScanning] = useState<string | null>(null);
-  const { snapshot: s, action, mutate, saves } = useOrbit();
+  const { snapshot: s, action, mutate, saves, alwaysOn } = useOrbit();
   const [repoError, setRepoError] = useState<string | null>(null);
   const [editing, setEditing] = useState<Repository | null>(null);
   const [original, setOriginal] = useState<string | null>(null);
@@ -486,7 +486,7 @@ export function Repositories({
                         isDisabled={busy}
                         onChange={(path) => setEditing({ ...editing, path })}
                       />
-                      {desktop && (
+                      {desktop && !alwaysOn && (
                         <Button
                           label="Browse…"
                           icon={<FolderOpen />}

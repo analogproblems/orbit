@@ -84,13 +84,18 @@ pub const COMMANDS: &[&str] = &[
 ];
 /// Desktop commands a browser cannot run: opening links starts a program on
 /// the host, the folder picker opens on the host's screen, and the remote
-/// access controls stay with the desktop window.
+/// access controls and the choice of an always-on Orbit to show
+/// (`crate::client`) stay with the desktop window.
 pub const DESKTOP_ONLY: &[&str] = &[
     "open_github",
     "get_remote_access",
     "set_remote_access",
     "reset_remote_link",
     "choose_checkout",
+    "get_always_on",
+    "forward",
+    "use_always_on",
+    "stop_always_on",
 ];
 /// How often an idle event stream sends an empty line, so the browser can
 /// tell a quiet workspace from a dropped connection.
@@ -159,7 +164,7 @@ pub(crate) fn new_token(root: &Path) -> Result<String, String> {
     write_private(&path, token.as_bytes())?;
     Ok(token)
 }
-fn valid_token(token: &str) -> bool {
+pub(crate) fn valid_token(token: &str) -> bool {
     token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
@@ -678,7 +683,7 @@ async fn bind(port: u16, again: bool) -> std::io::Result<TcpListener> {
         }
     }
 }
-fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]

@@ -36,6 +36,7 @@ import {
 } from "./types";
 import { SaveFeedback } from "./SaveFeedback";
 import { Storage } from "./Storage";
+import { AlwaysOnOrbit } from "./AlwaysOnOrbit";
 import { RemoteAccess } from "./RemoteAccess";
 import {
   CliConnection,
@@ -103,7 +104,12 @@ export function SettingsPage() {
     automation: <AutomationSettings />,
     decisions: <DecisionSettings />,
     buddy: <BuddySettings />,
-    devices: <RemoteAccess />,
+    devices: (
+      <>
+        <AlwaysOnOrbit />
+        <RemoteAccess />
+      </>
+    ),
     storage: <Storage />,
   };
   return (

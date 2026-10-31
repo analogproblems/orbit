@@ -38,6 +38,7 @@ import {
   type ScanPluginStatus,
   type SecurityScan,
   type Snapshot,
+  type AlwaysOn,
   type Settings,
   type ChangedFile,
   type ActionResult,
@@ -106,6 +107,9 @@ interface Store {
   snapshot: Snapshot;
   loaded: boolean;
   error: string | null;
+  /** The always-on Orbit the desktop app shows instead of its own, once
+   * known. */
+  alwaysOn: AlwaysOn | null;
   saves: Record<string, SaveState>;
   cleanup: { running: boolean; results: CleanupResult[]; error?: string };
   removeWorktrees: (ids: string[]) => Promise<ActionResult<CleanupResult[]>>;
@@ -1072,10 +1076,19 @@ async function remoteAction<T>(
   download(report.fileName, report.text);
   return report.fileName as T;
 }
+/** Commands the desktop app runs itself while it shows an always-on Orbit;
+ * it sends every other one there (`forward` in lib.rs). */
+const runHere = new Set([
+  "open_github",
+  "get_always_on",
+  "use_always_on",
+  "stop_always_on",
+]);
 export const useOrbit = create<Store>((set, get) => ({
   snapshot: empty,
   loaded: false,
   error: null,
+  alwaysOn: null,
   saves: {},
   cleanup: { running: false, results: [] },
   removeWorktrees: async (ids) => {
@@ -1204,6 +1217,13 @@ export const useOrbit = create<Store>((set, get) => ({
       set({ snapshot: structuredClone(demo), loaded: true });
       return () => {};
     }
+    let alwaysOn: AlwaysOn | null = null;
+    try {
+      alwaysOn = await invoke<AlwaysOn | null>("get_always_on");
+    } catch {
+      // An app from before always-on Orbits runs its own.
+    }
+    set({ alwaysOn });
     // Every change is sent as it happens, so once one has arrived the
     // first snapshot can only be as new as it, or older.
     let heard = false;
@@ -1211,13 +1231,38 @@ export const useOrbit = create<Store>((set, get) => ({
       heard = true;
       set({ snapshot: event.payload, loaded: true });
     });
+    // What's wrong with the connection to the always-on Orbit, shown
+    // until it's back.
+    let problem: string | null = null;
+    const unlistenConnection = alwaysOn
+      ? await listen<string | null>("orbit-connection", (event) => {
+          const was = problem;
+          problem = event.payload;
+          set((s) =>
+            problem
+              ? { error: problem, loaded: true }
+              : s.error !== null && s.error === was
+                ? { error: null }
+                : {},
+          );
+        })
+      : () => {};
     try {
-      const first = await invoke<Snapshot>("get_snapshot");
+      const first = alwaysOn
+        ? await invoke<Snapshot>("forward", {
+            command: "get_snapshot",
+            args: {},
+          })
+        : await invoke<Snapshot>("get_snapshot");
       if (!heard) set({ snapshot: first, loaded: true });
     } catch (e) {
+      if (alwaysOn) problem = String(e);
       set({ error: String(e), loaded: true });
     }
-    return unlisten;
+    return () => {
+      unlisten();
+      unlistenConnection();
+    };
   },
   action: async <T>(
     command: string,
@@ -1227,7 +1272,9 @@ export const useOrbit = create<Store>((set, get) => ({
     try {
       if (!options.quiet) set({ error: null });
       const result = desktop
-        ? await invoke<T>(command, args)
+        ? get().alwaysOn && !runHere.has(command)
+          ? await invoke<T>("forward", { command, args })
+          : await invoke<T>(command, args)
         : remote
           ? await remoteAction<T>(linkToken(), command, args)
           : ((await demoAction(command, args)) as T);
