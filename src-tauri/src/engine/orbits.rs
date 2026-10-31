@@ -1,21 +1,37 @@
 //! Reading, before posting on a pull request, whether another Orbit posts
 //! there (see `crate::orbits`).
 use super::Engine;
-use crate::{github, orbits::Posting};
+use crate::{github, orbits::Posting, types::Snapshot};
 use serde_json::Value;
+
+/// Why Orbit couldn't say whether it may post on a pull request.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct Unsure {
+    /// What GitHub said.
+    pub error: String,
+    /// Whether what Orbit did read shows another Orbit posted after it.
+    pub behind: bool,
+}
+impl From<Unsure> for String {
+    fn from(unsure: Unsure) -> String {
+        unsure.error
+    }
+}
 
 impl Engine {
     /// Reads what was posted on pull request `number` of `repo` since
-    /// Orbit's own last post there, comments first and then reviews, and
-    /// returns whether Orbit may post: not when another Orbit posted later.
-    /// What one read shows counts even when the next fails. An error means
-    /// GitHub couldn't say, so nothing new should be posted yet.
+    /// Orbit's own last post there, comments and then reviews, and returns
+    /// whether Orbit may post: not when another Orbit posted later. Both
+    /// are read before anything is decided or kept, as a newer post in
+    /// either can outweigh the other. When the reviews can't be read,
+    /// what the comments show still says whether Orbit is `behind`, but
+    /// isn't kept.
     pub(super) async fn clear_to_post(
         &self,
         repo: &str,
         number: u64,
         pr_id: &str,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, Unsure> {
         let since = {
             let s = self.state.lock().await;
             s.posting
@@ -24,38 +40,55 @@ impl Engine {
                 .map(|p| p.since().to_string())
                 .unwrap_or_default()
         };
-        let comments = github::comments_since(repo, number, &since).await?;
-        if !self.take_in(pr_id, &comments).await {
-            return Ok(false);
+        let mut posts = github::comments_since(repo, number, &since)
+            .await
+            .map_err(|error| Unsure {
+                error,
+                behind: false,
+            })?;
+        match github::reviews(repo, number).await {
+            Ok(reviews) => posts.extend(reviews),
+            Err(error) => {
+                let behind = !self.read_posts(pr_id, &posts, false).await;
+                return Err(Unsure { error, behind });
+            }
         }
-        let reviews = github::reviews(repo, number).await?;
-        Ok(self.take_in(pr_id, &reviews).await)
+        Ok(self.read_posts(pr_id, &posts, true).await)
     }
-    /// Takes posts read on a pull request into what Orbit knows there,
-    /// those from accounts it trusts (`crate::orbits::trusted`), and
-    /// returns whether Orbit may still post.
-    async fn take_in(&self, pr_id: &str, posts: &[Value]) -> bool {
-        let mut clear = true;
-        self.update(|s| {
+    /// Reads posts from a pull request into what Orbit knows there, those
+    /// from accounts it trusts (`crate::orbits::trusted`), and returns
+    /// whether Orbit may still post. Only a full read is kept.
+    async fn read_posts(&self, pr_id: &str, posts: &[Value], keep: bool) -> bool {
+        let read = |s: &Snapshot| {
             let login = s.github_user.clone().unwrap_or_default();
             let believed: Vec<Value> = posts
                 .iter()
                 .filter(|p| crate::orbits::trusted(p, &login, &s.settings.trusted_authors))
                 .cloned()
                 .collect();
-            let i = match s.posting.iter().position(|p| p.pr_id == pr_id) {
-                Some(i) => i,
-                None => {
-                    s.posting.push(Posting {
-                        pr_id: pr_id.to_string(),
-                        ..Posting::default()
-                    });
-                    s.posting.len() - 1
-                }
-            };
-            let me = s.instance.clone();
-            s.posting[i].read(&believed, &me);
-            clear = !s.posting[i].stepped_back();
+            let mut posting = s
+                .posting
+                .iter()
+                .find(|p| p.pr_id == pr_id)
+                .cloned()
+                .unwrap_or_else(|| Posting {
+                    pr_id: pr_id.to_string(),
+                    ..Posting::default()
+                });
+            posting.read(&believed, &s.instance);
+            posting
+        };
+        if !keep {
+            return !read(&*self.state.lock().await).stepped_back();
+        }
+        let mut clear = true;
+        self.update(|s| {
+            let posting = read(s);
+            clear = !posting.stepped_back();
+            match s.posting.iter_mut().find(|p| p.pr_id == pr_id) {
+                Some(p) => *p = posting,
+                None => s.posting.push(posting),
+            }
         })
         .await;
         clear

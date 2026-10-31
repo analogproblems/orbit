@@ -684,6 +684,130 @@ async fn only_one_orbit_posts_on_a_pull_request() {
     assert_eq!(github(d.path())["comments"].as_array().unwrap().len(), 1);
 }
 
+/// A comment on pull request 12 of the fake GitHub, signed `by`, at `at`,
+/// by the same account as this Orbit and before anything the fake GitHub
+/// makes itself.
+fn commented_by(dir: &Path, by: &str, at: &str) {
+    let comment = json!({
+        "id": 50, "issue": 12, "user": { "login": "me" },
+        "body": crate::orbits::signed("Every check passes.", by),
+        "html_url": "https://github.com/a/b/pull/12#issuecomment-50",
+        "created_at": at, "updated_at": at, "node_id": "IC_50",
+    });
+    let db = json!({ "next": 100, "issues": [], "comments": [comment] });
+    std::fs::write(dir.join("github.json"), db.to_string()).unwrap();
+}
+/// A review of pull request 12 on the fake GitHub, signed `by`, at `at`.
+fn reviewed_by(dir: &Path, by: &str, at: &str) {
+    let review = json!([{
+        "id": 7, "user": { "login": "me" },
+        "body": crate::orbits::signed("<!-- orbit-review:r1 -->\nNo findings.", by),
+        "html_url": "https://github.com/a/b/pull/12#pullrequestreview-7",
+        "submitted_at": at,
+    }]);
+    std::fs::write(dir.join("reviews-12.json"), review.to_string()).unwrap();
+}
+/// Orbit reads the comments and the reviews before it decides, as a newer
+/// post in either outweighs an older one in the other: of two Orbits, the
+/// one whose review came after the other's comment carries on, and the
+/// other steps back, whichever came last.
+#[cfg(unix)]
+#[tokio::test]
+async fn comments_and_reviews_are_both_read_before_deciding() {
+    for review_last in [true, false] {
+        let d = tempfile::tempdir().unwrap();
+        let gh = fake_gh(d.path());
+        let a = connected(&d.path().join("a")).await;
+        let b = connected(&d.path().join("b")).await;
+        let (na, nb) = (
+            a.snapshot().await.instance.name,
+            b.snapshot().await.instance.name,
+        );
+        // B's comment about CI, and A's review a second later, or before.
+        let (comment, review) = match review_last {
+            true => ("2026-10-31T10:00:01Z", "2026-10-31T10:00:02Z"),
+            false => ("2026-10-31T10:00:02Z", "2026-10-31T10:00:01Z"),
+        };
+        commented_by(d.path(), &nb, comment);
+        reviewed_by(d.path(), &na, review);
+        let check = |e: &Arc<Engine>| {
+            crate::github::GH.scope(gh.clone(), {
+                let e = e.clone();
+                async move { e.clear_to_post("a/b", 12, "a/b#12").await }
+            })
+        };
+        assert_eq!(check(&a).await, Ok(review_last), "{review_last}");
+        assert_eq!(check(&b).await, Ok(!review_last), "{review_last}");
+        // Each kept what it read, so they agree from then on.
+        for (e, clear) in [(&a, review_last), (&b, !review_last)] {
+            let s = e.snapshot().await;
+            assert_eq!(
+                crate::orbits::stepped_back(&s.posting, "a/b#12"),
+                !clear,
+                "{review_last}"
+            );
+        }
+        // With the reviews unreadable, what the comments show says whether
+        // Orbit is behind, and nothing is kept.
+        let c = connected(&d.path().join("c")).await;
+        std::fs::write(
+            d.path().join("reviews-error"),
+            "gh: Bad Gateway (HTTP 502)\n",
+        )
+        .unwrap();
+        let unsure = check(&c).await.unwrap_err();
+        assert!(unsure.behind);
+        assert!(unsure.error.contains("Bad Gateway"));
+        assert!(c.snapshot().await.posting.is_empty());
+    }
+}
+
+/// One tap on Post here again takes over, even where the other Orbit's
+/// newest post is a review that came after its comment.
+#[cfg(unix)]
+#[tokio::test]
+async fn one_tap_takes_over_after_the_other_orbits_comment_and_review() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let e = connected(d.path()).await;
+    e.update(|s| s.prs = vec![pr('5')]).await;
+    let other = "f".repeat(32);
+    commented_by(d.path(), &other, "2026-10-29T11:00:00Z");
+    reviewed_by(d.path(), &other, "2026-10-29T11:00:05Z");
+    answer(
+        d.path(),
+        '1',
+        &[("Rust", "SUCCESS")],
+        Some(('5', &[("Rust", "FAILURE")])),
+    );
+    watch(&e, &gh).await;
+    assert!(writes(d.path()).is_empty());
+    let item = e
+        .shown_snapshot()
+        .await
+        .attention
+        .into_iter()
+        .find(|a| a.kind == AttentionKind::AnotherOrbit)
+        .expect("stepped back");
+    crate::github::GH
+        .scope(gh.clone(), e.fix(&item.key))
+        .await
+        .unwrap();
+    assert_eq!(writes(d.path()), ["POST repos/a/b/issues/12/comments"]);
+    let s = e.snapshot().await;
+    assert_eq!(
+        s.posting[0].resumed.as_ref().map(|p| p.at.as_str()),
+        Some("2026-10-29T11:00:05Z")
+    );
+    assert!(!crate::orbits::stepped_back(&s.posting, "a/b#12"));
+    assert!(!e
+        .shown_snapshot()
+        .await
+        .attention
+        .iter()
+        .any(|a| a.kind == AttentionKind::AnotherOrbit));
+}
+
 /// Two Orbits keep one comment on a pull request, each taking it over in
 /// turn. While GitHub can't list the comments, only the Orbit that wrote it
 /// last keeps it up to date; the other, which hasn't seen that yet, never
@@ -805,6 +929,36 @@ async fn nothing_new_is_posted_while_github_cant_say_who_posted_last() {
         .unwrap()
         .contains("Every check passes at `5555555`."));
     assert!(e.shown_snapshot().await.attention.is_empty());
+
+    // Once the comments show another Orbit posted after it, even its own
+    // comment waits, though nothing is decided until the reviews are read.
+    let mut db = github(d.path());
+    let at = "2026-10-30T00:00:00Z";
+    db["comments"].as_array_mut().unwrap().push(json!({
+        "id": 60, "issue": 12, "user": { "login": "me" },
+        "body": crate::orbits::signed("Every check passes.", &"f".repeat(32)),
+        "html_url": "https://github.com/a/b/pull/12#issuecomment-60",
+        "created_at": at, "updated_at": at, "node_id": "IC_60",
+    }));
+    std::fs::write(d.path().join("github.json"), db.to_string()).unwrap();
+    answer(
+        d.path(),
+        '1',
+        &[("Rust", "SUCCESS")],
+        Some(('5', &[("Lint", "FAILURE")])),
+    );
+    watch(&e, &gh).await;
+    assert_eq!(writes(d.path()).len(), 2);
+    assert!(e.shown_snapshot().await.attention.is_empty());
+    std::fs::remove_file(d.path().join("reviews-error")).unwrap();
+    watch(&e, &gh).await;
+    assert_eq!(writes(d.path()).len(), 2);
+    assert!(e
+        .shown_snapshot()
+        .await
+        .attention
+        .iter()
+        .any(|a| a.kind == AttentionKind::AnotherOrbit));
 }
 
 /// With Leave it to me nothing is posted; with Ask first nothing is posted

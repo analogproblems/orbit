@@ -156,10 +156,11 @@ impl Engine {
                     // GitHub couldn't say. Editing a comment GitHub shows
                     // this Orbit wrote last keeps what's on GitHub true,
                     // such as taking back a clear to merge. Anything new,
-                    // or another Orbit's comment, waits.
-                    Err(_) => {
+                    // another Orbit's comment, or anything once what was
+                    // read shows another Orbit posted later, waits.
+                    Err(unsure) => {
                         let own = match (planned.action, planned.comment_id) {
-                            (Action::EditComment, Some(id)) => {
+                            (Action::EditComment, Some(id)) if !unsure.behind => {
                                 self.own_comment(&planned.repo, id, &planned.marker).await
                             }
                             _ => false,
