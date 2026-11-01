@@ -9,6 +9,7 @@ import {
   lostConnection,
   readToken,
 } from "./remote";
+import { relayNotices } from "./notices";
 import {
   buddyOf,
   defaultWriteUps,
@@ -78,6 +79,13 @@ export const windowless =
 function linkToken(): string {
   if (remoteToken === null) throw Error(expiredLink);
   return remoteToken;
+}
+/** This Orbit's access link, as this browser opened it, to copy for a page
+ * that starts without it, such as one added to the Home Screen. */
+export function accessLink(): string | null {
+  return remoteToken === null
+    ? null
+    : `${location.origin}/#token=${remoteToken}`;
 }
 /** Connected to a real workspace, rather than the browser demo. */
 export const live = desktop || remote;
@@ -1174,7 +1182,10 @@ export const useOrbit = create<Store>((set, get) => ({
       }
       return follow(
         remoteToken,
-        (snapshot) => set({ snapshot, loaded: true }),
+        (snapshot) => {
+          relayNotices(snapshot);
+          set({ snapshot, loaded: true });
+        },
         (problem) =>
           set((s) =>
             problem

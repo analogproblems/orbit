@@ -319,6 +319,8 @@ fn names_each_built_files_type() {
         ("worker.mjs", "text/javascript"),
         ("assets/index-Tjr8_2mL.css", "text/css"),
         ("manifest.json", "application/json"),
+        ("sw.js", "text/javascript"),
+        ("manifest.webmanifest", "application/manifest+json"),
         ("assets/app.js.map", "application/json"),
         ("orbit.svg", "image/svg+xml"),
         ("icon.png", "image/png"),

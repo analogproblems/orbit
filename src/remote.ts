@@ -5,6 +5,8 @@
 import type { Snapshot } from "./types";
 
 const tokenKey = "orbit-remote-token";
+/** Where an access link carries its token: `#token=` and 64 hex digits. */
+const tokenPattern = /(?:^#|&)token=([0-9a-f]{64})(?:&|$)/;
 export const expiredLink =
   "This access link no longer works. Open Orbit's current link to reconnect.";
 export const lostConnection = "Lost connection to Orbit. Reconnecting…";
@@ -15,7 +17,7 @@ const silence = 45_000;
 export function readToken(): string | null {
   // Outside a browser (tests run under Node) there is no address to read.
   if (typeof location === "undefined") return null;
-  const match = /(?:^#|&)token=([0-9a-f]{64})(?:&|$)/.exec(location.hash);
+  const match = tokenPattern.exec(location.hash);
   if (match) {
     try {
       localStorage.setItem(tokenKey, match[1]);
@@ -31,6 +33,36 @@ export function readToken(): string | null {
   } catch {
     return null;
   }
+}
+/** The token in a pasted access link, if it is a link to this Orbit, at
+ * `origin`, or else what is wrong with it. */
+export function linkedToken(
+  link: string,
+  origin: string,
+): { token: string } | { problem: string } {
+  let url: URL;
+  try {
+    url = new URL(link.trim());
+  } catch {
+    return { problem: notALink };
+  }
+  const match = tokenPattern.exec(url.hash);
+  if (!match) return { problem: notALink };
+  if (url.origin !== origin)
+    return {
+      problem: `That link opens the Orbit at ${url.host}. Open it there.`,
+    };
+  return { token: match[1] };
+}
+const notALink =
+  "That isn’t Orbit’s access link. Copy the whole link, with #token= in it.";
+/** Opens Orbit again as from its access link with `token`, so a page that
+ * started without one keeps it, such as one added to the Home Screen,
+ * which starts without what Safari kept. The token goes in the fragment,
+ * as in the link, never in a URL sent to the server. */
+export function openWith(token: string) {
+  history.replaceState(null, "", `${location.pathname}#token=${token}`);
+  location.reload();
 }
 function forgetToken() {
   try {

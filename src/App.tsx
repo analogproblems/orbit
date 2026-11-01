@@ -45,7 +45,10 @@ import {
   SlidersHorizontal,
   Workflow,
 } from "lucide-react";
-import { useOrbit, desktop, live } from "./store";
+import { useOrbit, desktop, live, remote } from "./store";
+import { startBrowserNotices } from "./notices";
+import { expiredLink } from "./remote";
+import { PasteLink } from "./PasteLink";
 import { listen } from "@tauri-apps/api/event";
 import {
   activeStatuses,
@@ -165,6 +168,11 @@ export default function App() {
       openNotified.current(e.payload),
     );
     return () => void off.then((f) => f());
+  }, []);
+  // In a browser, a tap on one of Orbit's notifications opens its item too.
+  useEffect(() => {
+    if (!remote) return;
+    return startBrowserNotices((item) => openNotified.current(item));
   }, []);
   useEffect(() => {
     let off: (() => void) | undefined;
@@ -616,6 +624,7 @@ export default function App() {
                     container="section"
                   />
                 )}
+                {remote && error === expiredLink && <PasteLink />}
                 {offeredApproval && (
                   <Banner
                     status="warning"

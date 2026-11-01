@@ -543,7 +543,7 @@ When something can only move forward with you, the sidebar shows **Needs you** w
 
 An item disappears once it is resolved. A stopped loop lists only its approvals, since you have already taken it over.
 
-Orbit also shows a desktop notification once when an item first appears, and not again while it stays open, even after a restart. A follow-up chat on the review hides the item until the chat ends, and it isn't announced again afterwards. When Orbit comes to the front after a notification, it opens that item. Turn off **Notify me when a review needs attention** in Settings to stop notifications; the list and count still appear.
+Orbit also shows a desktop notification once when an item first appears, and not again while it stays open, even after a restart. A follow-up chat on the review hides the item until the chat ends, and it isn't announced again afterwards. When Orbit comes to the front after a notification, it opens that item. A browser using Orbit can show them too once you turn them on in it (see [Use Orbit from your phone or laptop](#use-orbit-from-your-phone-or-laptop)). Turn off **Notify me when a review needs attention** in Settings to stop notifications everywhere; the list and count still appear.
 
 ### Bit, your buddy
 
@@ -730,7 +730,7 @@ While Orbit runs on your computer, you can open the same workspace in a browser 
 
 The link works like a key. Anyone with it can do everything you can in the desktop window, including running repository setup commands on this computer. Only open it on your own devices. **Make a new link** signs out every browser that uses the old one. Turning access off does the same, so a link from before never works again, even on a phone you've lost. You can only change these controls from the desktop app, or with `orbit-server link` for [Orbit without a window](#run-orbit-without-a-window).
 
-Your computer has to stay on with Orbit running, or you can [run Orbit without a window](#run-orbit-without-a-window) on a computer that stays on. Desktop notifications appear on the computer only, but **Needs you** shows every item in the browser too. When the connection drops, the browser says so and reconnects on its own.
+Your computer has to stay on with Orbit running, or you can [run Orbit without a window](#run-orbit-without-a-window) on a computer that stays on. **Needs you** shows every item in the browser too, and the browser can show Orbit's notifications as well: open **Settings → Automation** there and tap **Show them in this browser** under **Notify me when a review needs attention**. Your browser asks you first. They show while Orbit's page is open in that browser, each one once, and a tap on one opens its item. Browsers only show them on the https link, and an iPhone or iPad only after you add the page to the Home Screen (**Share → Add to Home Screen** in Safari) and open Orbit from there. Orbit on the Home Screen starts without the link Safari kept, so it asks for it once: tap **Copy the access link** under the notify switch in Safari first, then paste it into **Access link** and tap **Connect**. Any browser page that has lost the link asks the same way, and only takes a link to the same Orbit. When the connection drops, the browser says so and reconnects on its own.
 
 On a phone-sized screen, the sidebar moves into a menu: tap the menu button at the top right to reach every page, including Bit.
 

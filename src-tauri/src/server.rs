@@ -406,6 +406,7 @@ fn mime_type(path: &str) -> &'static str {
         Some("js" | "mjs") => "text/javascript",
         Some("css") => "text/css",
         Some("json" | "map") => "application/json",
+        Some("webmanifest") => "application/manifest+json",
         Some("svg") => "image/svg+xml",
         Some("png") => "image/png",
         Some("jpg" | "jpeg") => "image/jpeg",
