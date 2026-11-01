@@ -175,6 +175,30 @@ impl Engine {
                     continue;
                 }
             }
+            // Last, just before the write: nothing about security alerts
+            // goes to GitHub unless GitHub says now that the repository is
+            // private, whatever Orbit read before.
+            let security = ops::about_security(&*self.state.lock().await, &planned.thread);
+            if security {
+                match crate::security::private_now(&planned.repo).await {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        self.update(|s| {
+                            let repo = &planned.repo;
+                            crate::problems::see_private(
+                                &mut s.problems,
+                                &mut s.security,
+                                repo,
+                                false,
+                            );
+                        })
+                        .await;
+                        continue;
+                    }
+                    // GitHub couldn't say, so it waits for a later pass.
+                    Err(_) => break,
+                }
+            }
             let id = {
                 let mut s = self.state.lock().await;
                 let s = &mut *s;

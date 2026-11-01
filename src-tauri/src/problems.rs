@@ -725,6 +725,9 @@ pub fn see_security(
             }
         });
         p.vanished.extend(vanished);
+        // One listed again is open, whatever GitHub said before.
+        p.vanished
+            .retain(|n| !kind.alerts.iter().any(|a| a.number == *n));
         let mut new: Vec<Alert> = vec![];
         for a in &kind.alerts {
             match p.security_alerts.iter_mut().find(|b| b.number == a.number) {
@@ -762,6 +765,25 @@ pub fn see_security(
         }
         sort(&mut p.security_alerts);
         tell(p, &at);
+    }
+}
+/// Records what GitHub said just now about whether a repository is
+/// private, on each of its security problems, open or closed, and on what
+/// Orbit read of its alerts.
+pub fn see_private(
+    problems: &mut [Problem],
+    security: &mut [crate::security::RepoSecurity],
+    repo: &str,
+    private: bool,
+) {
+    let theirs = problems
+        .iter_mut()
+        .filter(|p| p.kind == ProblemKind::Security && same_repo(&p.repo, repo));
+    for p in theirs {
+        p.private = private;
+    }
+    for r in security.iter_mut().filter(|r| same_repo(&r.repo, repo)) {
+        r.private = private;
     }
 }
 /// Notes when Orbit asked GitHub about each of a repository's alerts in

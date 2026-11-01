@@ -2722,11 +2722,10 @@ mod security {
         read(private, vec![kind(Source::Dependabot, alerts)])
     }
 
-    /// Once GitHub says a repository isn't private, nothing new about its
+    /// Once GitHub says a repository isn't private, nothing about its
     /// alerts goes out: the issue Bit was asking about doesn't open, even
-    /// with your tap, and one already on GitHub takes no new alert, edit or
-    /// reopening, until GitHub says it is private again. It still closes
-    /// once its alerts are fixed, with nothing new in it.
+    /// with your tap, and one already on GitHub takes no new alert, edit,
+    /// reopening or closing, until GitHub says it is private again.
     #[test]
     fn nothing_new_goes_out_once_a_repository_isnt_private() {
         let lodash = || dependabot(1, "lodash", "critical");
@@ -2778,7 +2777,8 @@ mod security {
         assert!(send(&mut threads, &mut journal, &problems[0], true, t0()).is_none());
         assert!(threads[0].items.iter().all(|i| i.alert != 3));
 
-        // Its alerts are fixed: it closes, still without the new one.
+        // Its alerts are fixed. Closing could show what GitHub never had
+        // from Orbit, so it waits too.
         crate::problems::see_security(
             &mut problems,
             &deps(false, &[]),
@@ -2786,6 +2786,13 @@ mod security {
             t0(),
         );
         assert!(problems[0].resolved());
+        assert!(withheld(&threads[0], &problems[0]));
+        refresh(&mut threads, &problems, t0());
+        assert!(send(&mut threads, &mut journal, &problems[0], true, t0()).is_none());
+
+        // GitHub says it's private again: it closes, without the new one.
+        let mut security = vec![];
+        crate::problems::see_private(&mut problems, &mut security, "a/b", true);
         assert!(!withheld(&threads[0], &problems[0]));
         refresh(&mut threads, &problems, t0());
         let note = send(&mut threads, &mut journal, &problems[0], true, t0()).unwrap();

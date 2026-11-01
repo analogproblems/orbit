@@ -128,11 +128,11 @@ function ruleOf(s: Snapshot, p: Problem) {
     : rules.comment_on_prs;
 }
 
-/** Whether nothing new about a problem's security alerts goes to GitHub,
- * as its repository isn't private now, as the engine has it (`withheld`).
- * What is already on GitHub stays. */
+/** Whether nothing about a problem's security alerts goes to GitHub, as
+ * GitHub last said its repository isn't private, as the engine has it
+ * (`withheld`). What is already on GitHub stays as it is. */
 function withheld(p: Problem) {
-  return p.kind === "security" && !p.private && !p.closedAt;
+  return p.kind === "security" && !p.private;
 }
 
 /** Whether Bit waits for your tap before it posts about a problem. */
@@ -187,7 +187,7 @@ export function toldText(s: Snapshot, p: Problem, t: OpsThread | undefined) {
     return "Only a person can revoke a secret, so Orbit doesn’t tell an agent.";
   if (withheld(p))
     return t?.url
-      ? `Orbit told the repository’s agent in issue #${t.number}, but the repository isn’t private now, so Orbit adds nothing new there. These alerts stay with you.`
+      ? `Orbit told the repository’s agent in issue #${t.number}, but the repository isn’t private now, so Orbit leaves that issue as it is. These alerts stay with you.`
       : "Orbit keeps these alerts with you, as the repository isn’t private and an issue would show others where the weakness is.";
   const buddy = buddyOf(s.settings);
   const proposal = p.kind === "no_ci";

@@ -340,13 +340,12 @@ fn fields(source: Source, list: bool) -> Vec<(&'static str, String)> {
 
 /// Reads whether a repository is private, and its open alerts of every
 /// kind.
-pub async fn read(repo: &str) -> Result<RepoSecurity, String> {
+pub async fn read(repo: &str, private: bool) -> Result<RepoSecurity, String> {
     validate_repo(repo)?;
-    let about = crate::github::api(&format!("repos/{repo}"), "GET", &[], None).await;
     let mut read = RepoSecurity {
         repo: repo.to_string(),
         read_at: stamp(Utc::now()),
-        private: private(about)?,
+        private,
         ..Default::default()
     };
     for source in Source::ALL {
@@ -361,10 +360,16 @@ pub async fn read(repo: &str) -> Result<RepoSecurity, String> {
     }
     Ok(read)
 }
+/// Whether GitHub says now that a repository is private. Asked before
+/// each read of its alerts, and again just before each write about them,
+/// as only a private repository's agent hears of them.
+pub async fn private_now(repo: &str) -> Result<bool, String> {
+    validate_repo(repo)?;
+    private(crate::github::api(&format!("repos/{repo}"), "GET", &[], None).await)
+}
 /// Whether GitHub's answer about a repository says it is private: an
-/// internal one isn't. One it didn't give fails the read, so what Orbit
-/// knew before stands and nothing new is read until GitHub says, as an
-/// agent hears of alerts only in a private repository.
+/// internal one isn't. One it didn't give is an error, never taken as
+/// either: it fails the read, and holds back any write about alerts.
 pub fn private(answer: Result<Value, String>) -> Result<bool, String> {
     let v = answer?;
     Ok(v["private"] == true && v["visibility"].as_str().is_none_or(|w| w == "private"))

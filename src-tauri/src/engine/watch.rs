@@ -386,7 +386,13 @@ impl Engine {
                 .await;
         }
         for repo in &wanted {
-            let result = security::read(repo).await;
+            // On its own, so what GitHub says counts even if a list then
+            // fails to read.
+            let visible = security::private_now(repo).await;
+            let result = match &visible {
+                Ok(private) => security::read(repo, *private).await,
+                Err(e) => Err(e.clone()),
+            };
             let mut limited = result.as_ref().is_err_and(|e| logs::rate_limited(e));
             // What became of the alerts that left a list, and which Orbit
             // asked about, so the others go first next time.
@@ -418,6 +424,9 @@ impl Engine {
                     return;
                 }
                 let now = chrono::Utc::now();
+                if let Ok(private) = visible {
+                    problems::see_private(&mut s.problems, &mut s.security, repo, private);
+                }
                 if let Ok(read) = &result {
                     problems::looked_up(&mut s.problems, repo, &asked, now);
                     problems::see_security(&mut s.problems, read, &left, now);

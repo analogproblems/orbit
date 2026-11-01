@@ -801,14 +801,19 @@ pub fn tells_agent(p: &Problem) -> bool {
         _ => true,
     }
 }
-/// Whether a thread about security alerts takes nothing new now: its
-/// problem is open, but in a repository GitHub no longer says is private,
-/// so anything new there could show more people where a weakness is than
-/// when Orbit told the agent. Its issue opens, reopens and takes new
-/// details only while the repository is private; what is already there
-/// stays as it is, and it still closes once its problem is over.
+/// Whether a thread about security alerts takes nothing now: GitHub last
+/// said its repository isn't private, so anything Orbit writes there could
+/// show more people where a weakness is than when Orbit told the agent,
+/// even closing, whose text may hold an alert GitHub never had from
+/// Orbit. Its issue stays as it is on GitHub until GitHub says the
+/// repository is private again. Each write is also held until GitHub says
+/// so just before it (`Engine::tell_agents`).
 pub fn withheld(t: &Thread, p: &Problem) -> bool {
-    t.source.is_some() && p.is_open() && !tells_agent(p)
+    t.source.is_some() && !tells_agent(p)
+}
+/// Whether a thread is about security alerts.
+pub fn about_security(s: &Snapshot, key: &str) -> bool {
+    s.ops.iter().any(|t| t.key == key && t.source.is_some())
 }
 /// `withheld`, for a thread by its key as things stand now: checked again
 /// under the lock each write is recorded in.
@@ -1261,9 +1266,9 @@ pub fn next(
         }
         ThreadKind::Issue => {
             let p = problem?;
-            // Nothing new about security alerts where more people may read
-            // it than when Orbit told the agent: no issue opens or reopens,
-            // and none takes new details.
+            // Nothing about security alerts where more people may read it
+            // than when Orbit told the agent: no issue opens, reopens,
+            // takes new details or closes.
             if withheld(t, p) {
                 return None;
             }

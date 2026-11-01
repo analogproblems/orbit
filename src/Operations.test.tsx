@@ -850,7 +850,7 @@ describe("operations page", () => {
     issue.number = 57;
     show(s);
     expect(rows()[1].textContent).toContain(
-      "Orbit told the repository’s agent in issue #57, but the repository isn’t private now, so Orbit adds nothing new there. These alerts stay with you.",
+      "Orbit told the repository’s agent in issue #57, but the repository isn’t private now, so Orbit leaves that issue as it is. These alerts stay with you.",
     );
     cleanup();
     deps.private = true;
