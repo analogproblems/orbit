@@ -2748,15 +2748,6 @@ mod security {
         assert!(withheld(&threads[0], &problems[0]));
         assert!(send(&mut threads, &mut journal, &problems[0], true, t0()).is_none());
         assert!(threads[0].items.iter().all(|i| i.alert != 2));
-        let s = Snapshot {
-            ops: threads.clone(),
-            problems: problems.clone(),
-            ..Default::default()
-        };
-        assert!(
-            withheld_now(&s, &threads[0].key),
-            "checked as it is recorded"
-        );
 
         // Private again: it opens, with what is open now.
         crate::problems::see_security(&mut problems, &deps(true, &[lodash(), qs()]), &[], t0());

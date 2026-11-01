@@ -25,7 +25,8 @@
 // list in <dir>/artifacts.json, or none, in pages; while <dir>/cache-error or
 // <dir>/artifacts-error exists, reading them fails with its text.
 // Repository a/b is <dir>/repo.json, or public; while <dir>/repo-error
-// exists, reading it fails with its text. The security alerts of
+// exists, reading it fails with its text. While <dir>/repo-hold exists,
+// reading it writes <dir>/repo-held and waits until it is gone. The security alerts of
 // a/b of each kind are the list in
 // <dir>/alerts-dependabot.json, <dir>/alerts-code-scanning.json or
 // <dir>/alerts-secret-scanning.json, or none, in pages, those in the
@@ -309,6 +310,15 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
 } else if (endpoint === "repos/a/b") {
   const about = path.join(dir, "repo.json");
   const failed = path.join(dir, "repo-error");
+  const hold = path.join(dir, "repo-hold");
+  if (fs.existsSync(hold)) {
+    // Says it is held, then waits until the test lets it go.
+    fs.writeFileSync(path.join(dir, "repo-held"), "");
+    const until = Date.now() + 10000;
+    const pause = new Int32Array(new SharedArrayBuffer(4));
+    while (fs.existsSync(hold) && Date.now() < until)
+      Atomics.wait(pause, 0, 0, 20);
+  }
   if (fs.existsSync(failed)) {
     process.stderr.write(fs.readFileSync(failed, "utf8"));
     process.exit(1);

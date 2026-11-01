@@ -815,16 +815,6 @@ pub fn withheld(t: &Thread, p: &Problem) -> bool {
 pub fn about_security(s: &Snapshot, key: &str) -> bool {
     s.ops.iter().any(|t| t.key == key && t.source.is_some())
 }
-/// `withheld`, for a thread by its key as things stand now: checked again
-/// under the lock each write is recorded in.
-pub fn withheld_now(s: &Snapshot, key: &str) -> bool {
-    s.ops.iter().any(|t| {
-        t.key == key
-            && s.problems
-                .iter()
-                .any(|p| p.id == t.problem_id && withheld(t, p))
-    })
-}
 fn key_of(p: &Problem) -> String {
     match p.kind {
         ProblemKind::DefaultBranch

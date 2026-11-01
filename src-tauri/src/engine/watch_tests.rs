@@ -2652,3 +2652,63 @@ async fn nothing_about_alerts_reaches_github_unless_github_says_now_the_reposito
     let body = fake_github(d.path())["issues"][0]["body"].to_string();
     assert!(body.contains("minimist"));
 }
+
+/// A rule or switch you change while Orbit asks GitHub whether the
+/// repository is private counts: the issue it was about to open isn't sent.
+#[tokio::test]
+async fn a_change_while_orbit_asks_github_about_a_repository_counts() {
+    use crate::security::tests::dependabot;
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    std::fs::write(
+        d.path().join("answer.json"),
+        answer(&"1".repeat(40), "SUCCESS"),
+    )
+    .unwrap();
+    std::fs::write(
+        d.path().join("repo.json"),
+        json!({ "full_name": "a/b", "private": true, "visibility": "private" }).to_string(),
+    )
+    .unwrap();
+    alerts(
+        d.path(),
+        "dependabot",
+        &[dependabot(1, "lodash", "critical")],
+    );
+    let e = connected(d.path()).await;
+    e.update(|s| {
+        s.github_user = Some("me".into());
+        s.settings.buddy.rules.open_issues = "ask_first".into();
+    })
+    .await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let key = e.snapshot().await.ops[0].key.clone();
+    let changes: [fn(&mut Snapshot); 2] = [
+        |s| s.settings.buddy.rules.open_issues = "leave_it".into(),
+        |s| s.settings.watch_security = false,
+    ];
+    for change in changes {
+        e.update(|s| {
+            s.settings.buddy.rules.open_issues = "ask_first".into();
+            s.settings.watch_security = true;
+        })
+        .await;
+        e.allow_telling(&key).await.unwrap();
+        let hold = d.path().join("repo-hold");
+        let held = d.path().join("repo-held");
+        std::fs::write(&hold, "").unwrap();
+        let _ = std::fs::remove_file(&held);
+        let telling = {
+            let (e, gh) = (e.clone(), gh.clone());
+            tokio::spawn(crate::github::GH.scope(gh, async move { e.tell_agents().await }))
+        };
+        // You change it while GitHub hasn't answered yet.
+        while !held.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        e.update(change).await;
+        std::fs::remove_file(&hold).unwrap();
+        telling.await.unwrap();
+        assert!(writes(d.path()).is_empty(), "{:?}", writes(d.path()));
+    }
+}
