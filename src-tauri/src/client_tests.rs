@@ -318,6 +318,7 @@ fn impatient(port: u16) -> Client {
         silence: short,
         snapshot: short,
         action: short * 2,
+        moving: short * 2,
     };
     Client::with_limits(link, limits).unwrap()
 }
@@ -419,6 +420,75 @@ async fn gives_up_on_an_orbit_that_takes_the_connection_but_never_answers() {
     let checked = tokio::time::timeout(soon, c.check()).await;
     assert!(matches!(checked, Ok(Err(_))), "{checked:?}");
     assert!(started.elapsed() < soon);
+}
+
+/// This app's Orbit moves through the link to an always-on Orbit with
+/// nothing of its own yet, signed in as the same account, and only once.
+#[tokio::test]
+async fn moves_into_an_always_on_orbit_with_nothing_of_its_own() {
+    let r = remote_orbit().await;
+    r.engine.update(|s| s.github_user = Some("me".into())).await;
+    let c = client(r.port, TOKEN);
+    let before = c.snapshot().await.unwrap();
+    assert_eq!(can_take_in(&before, Some("Me")), Ok(()));
+    assert_eq!(can_take_in(&before, None), Ok(()));
+    let error = can_take_in(&before, Some("you")).unwrap_err();
+    assert!(error.contains("signed in to GitHub as me"), "{error}");
+    let signed_out = json!({ "settings": { "repositories": [] }, "githubUser": null });
+    assert_eq!(can_take_in(&signed_out, None), Err(NOT_SIGNED_IN.into()));
+
+    let d = tempfile::tempdir().unwrap();
+    let here = Engine::new(d.path().into(), |_| {}).unwrap();
+    here.update(|s| {
+        s.settings.concurrency = 3;
+        s.scans = vec![crate::types::SecurityScan {
+            id: "scan-1".into(),
+            repo: "a/b".into(),
+            status: "completed".into(),
+            ..Default::default()
+        }];
+    })
+    .await;
+    let name = here.snapshot().await.instance.name;
+    let moved = here.pack().await.unwrap();
+    // A link that no longer works says so, and moves nothing.
+    assert_eq!(
+        client(r.port, OTHER).move_in(&moved).await,
+        Err(EXPIRED.into())
+    );
+    c.move_in(&moved).await.unwrap();
+    let after = c.snapshot().await.unwrap();
+    assert_eq!(after["settings"]["concurrency"], 3);
+    assert!(took_in(&before, &after, &name));
+    assert!(!took_in(&after, &after, &name));
+    assert!(!took_in(&before, &before, &name));
+    assert_eq!(can_take_in(&after, Some("me")), Err(NOT_EMPTY.into()));
+    let error = c.move_in(&moved).await.unwrap_err();
+    assert!(error.contains("already has repositories"), "{error}");
+}
+
+/// An always-on Orbit from before moving was possible says it needs
+/// updating.
+#[tokio::test]
+async fn an_always_on_orbit_too_old_to_take_one_in_says_so() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    // As one did, it knows no move-in and answers as for a command it
+    // doesn't run.
+    let old = axum::Router::new().fallback(|| async {
+        (
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(json!({ "error": "This action is not available here." })),
+        )
+    });
+    tokio::spawn(async move { axum::serve(listener, old).await });
+    let moved = crate::moving::Moved::default();
+    assert_eq!(
+        client(port, TOKEN).move_in(&moved).await,
+        Err(TOO_OLD.into())
+    );
 }
 
 #[derive(Debug)]

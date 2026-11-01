@@ -20,6 +20,7 @@ pub mod guide;
 pub mod ledger;
 pub mod logs;
 pub mod models;
+pub mod moving;
 pub mod ollama;
 pub mod ops;
 pub mod orbits;
@@ -475,6 +476,75 @@ mod desktop {
         app.request_restart();
         Ok(())
     }
+    /// Moves this app's Orbit to the always-on Orbit at `link`, then uses
+    /// it as `use_always_on` does: its repositories, settings, reviews,
+    /// Bit's notes and memory, CI notes and history (see `crate::moving`).
+    /// That Orbit must have nothing of its own yet and be signed in to
+    /// GitHub as this one is. This app's Orbit stops first, so nothing
+    /// changes while it moves, and keeps its state with autopilot off. If
+    /// the move doesn't finish, a message says why and this app's Orbit
+    /// starts again as it was.
+    #[tauri::command]
+    async fn move_to_always_on(
+        app: AppHandle,
+        engine: State<'_, AppState>,
+        link: String,
+    ) -> Result<(), String> {
+        let link = client::Link::parse(&link)?;
+        let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        if remote::saved_token(&root).as_deref() == Some(link.token.as_str()) {
+            return Err(client::OWN_LINK.into());
+        }
+        let always_on = client::Client::new(link.clone())?;
+        let before = always_on.snapshot().await?;
+        let here = engine.snapshot().await;
+        client::can_take_in(&before, here.github_user.as_deref())?;
+        if let Some(why) = engine.cannot_move().await {
+            return Err(why);
+        }
+        // From here on this app's Orbit has stopped, so the app starts
+        // again whatever happens.
+        engine.shutdown().await;
+        let moved = async {
+            let error = match always_on.move_in(&engine.pack().await?).await {
+                Ok(()) => return Ok(()),
+                Err(error) => error,
+            };
+            // The answer may be lost when the move finished anyway.
+            match always_on.snapshot().await {
+                Ok(after) if client::took_in(&before, &after, &here.instance.name) => Ok(()),
+                _ => Err(error),
+            }
+        }
+        .await;
+        let problem = match moved {
+            Ok(()) => {
+                // It runs again only if you stop using the always-on Orbit.
+                let _ = engine.moved_out().await;
+                match client::save(&root, &link) {
+                    Ok(()) => {
+                        app.request_restart();
+                        return Ok(());
+                    }
+                    Err(e) => (
+                        "Orbit moved",
+                        format!("Orbit moved, but the app couldn't keep the always-on Orbit's link: {e}. Paste it in Settings, Other devices, then tap Use it."),
+                    ),
+                }
+            }
+            Err(error) => (
+                "Orbit didn't move",
+                format!("{error}\n\nThis app's own Orbit starts again as it was."),
+            ),
+        };
+        let restart = app.clone();
+        app.dialog()
+            .message(problem.1.clone())
+            .title(problem.0)
+            .kind(tauri_plugin_dialog::MessageDialogKind::Error)
+            .show(move |_| restart.request_restart());
+        Err(problem.1)
+    }
     /// Stops using the always-on Orbit: the app starts again with its own.
     #[tauri::command]
     async fn stop_always_on(app: AppHandle) -> Result<(), String> {
@@ -655,6 +725,7 @@ mod desktop {
                 get_always_on,
                 forward,
                 use_always_on,
+                move_to_always_on,
                 stop_always_on
             ])
             .build(tauri::generate_context!())

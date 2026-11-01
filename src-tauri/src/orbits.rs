@@ -78,6 +78,31 @@ impl Instance {
         self.home = home.to_string();
         true
     }
+    /// Takes over from the Orbit `from`, which moved here: what it posted
+    /// under its name and its earlier names, until `until` and until each
+    /// stopped, counts as this Orbit's own. Keeps the newest `FORMER`.
+    pub fn take_over(&mut self, from: Instance, until: DateTime<Utc>) {
+        let mut former = std::mem::take(&mut self.former);
+        former.extend(from.former);
+        if !from.name.is_empty() {
+            former.push(Former {
+                name: from.name,
+                until: until.to_rfc3339_opts(SecondsFormat::Secs, true),
+            });
+        }
+        former.retain(|f| f.name != self.name);
+        // Newest last, each name once, at its latest.
+        former.sort_by(|a, b| time_order(&a.until, &b.until));
+        let mut kept: Vec<Former> = vec![];
+        for f in former.into_iter().rev() {
+            if !kept.iter().any(|k| k.name == f.name) {
+                kept.push(f);
+            }
+        }
+        kept.truncate(FORMER);
+        kept.reverse();
+        self.former = kept;
+    }
     /// Whether this Orbit signed a post as `by` that GitHub last took `at`:
     /// under its name now, or an earlier one until it stopped using it.
     pub fn is(&self, by: &str, at: &str) -> bool {

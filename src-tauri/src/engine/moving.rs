@@ -1,0 +1,216 @@
+//! Moving an Orbit into an always-on Orbit: packing this one once it has
+//! stopped, and an always-on Orbit taking one in (see `crate::moving`).
+use super::{
+    ledger::{blocking, Reading},
+    settings::validate_checkout,
+    *,
+};
+use crate::moving::{self, Moved};
+
+/// How long taking an Orbit in waits for reads already running to finish.
+const QUIET: Duration = Duration::from_secs(60);
+/// How long after a move the moved Orbit's posts still count as the
+/// always-on Orbit's own, as the two computers' clocks may differ. The
+/// moved Orbit has stopped by then.
+const CLOCKS: chrono::Duration = chrono::Duration::minutes(5);
+
+/// Why an Orbit can't move now, if it can't: a scan can only finish where
+/// it started.
+fn cannot_move(s: &Snapshot) -> Option<String> {
+    s.scans.iter().any(|x| scan_active(&x.status)).then(|| {
+        "A security scan is running here. Wait for it to finish, or cancel it, then move.".into()
+    })
+}
+/// Why an Orbit can't take another in, if it can't: it has its own
+/// repositories, reviews or scans, which the move would mix up.
+fn cannot_take_in(s: &Snapshot) -> Option<String> {
+    (!s.settings.repositories.is_empty() || !s.reviews.is_empty() || !s.scans.is_empty()).then(|| {
+        "This Orbit already has repositories or reviews of its own, so it can't take in another. Use it as it is instead.".into()
+    })
+}
+
+impl Engine {
+    /// Why this Orbit can't move now, if it can't.
+    pub async fn cannot_move(&self) -> Option<String> {
+        cannot_move(&*self.state.lock().await)
+    }
+    /// This Orbit, packed to move: its state as it saves it, and the files
+    /// that go with it. Called once it has shut down, so nothing changes
+    /// meanwhile.
+    pub async fn pack(&self) -> Result<Moved, String> {
+        let s = self.snapshot().await;
+        if let Some(why) = cannot_move(&s) {
+            return Err(why);
+        }
+        let state = saved(&s)?;
+        let scans: Vec<String> = s.scans.iter().map(|x| x.id.clone()).collect();
+        let root = self.root.clone();
+        let files = blocking(move || moving::collect(&root, &scans)).await?;
+        Ok(Moved { state, files })
+    }
+    /// Turns autopilot off once this Orbit has moved, so it reviews nothing
+    /// on its own if you use it again.
+    pub async fn moved_out(&self) -> Result<(), String> {
+        self.update(|s| s.settings.automatic = false).await;
+        self.flush().await
+    }
+    /// Takes in an Orbit that moved here, if this one has nothing of its
+    /// own yet. What was running there ends as it would if that Orbit
+    /// restarted. Each repository uses its folder here when this computer
+    /// has the same clone at the same place, or else Orbit's own copy,
+    /// downloaded now and kept up to date. This Orbit keeps its name, and
+    /// what the moved one posted until now counts as its own, so it picks up
+    /// where that one left off. What belongs to this computer stays as it
+    /// is: sign-ins, API keys, reviewers and access link.
+    pub async fn take_in(self: &Arc<Self>, moved: Moved) -> Result<(), String> {
+        let mut state: Snapshot = serde_json::from_value(moved.state)
+            .map_err(|e| format!("Orbit can't read the moved Orbit's state: {e}"))?;
+        // A folder on another kind of computer, such as `C:\…` here, isn't
+        // even a path: Orbit's own copy goes there instead.
+        for repo in &mut state.settings.repositories {
+            if !std::path::Path::new(&repo.path).is_absolute() {
+                if let Ok(folder) = crate::setup::clone_folder(&self.root, &repo.name) {
+                    repo.path = folder.to_string_lossy().into_owned();
+                }
+            }
+        }
+        let recovered = recover(&mut state)?;
+        if let Some(why) = cannot_move(&state) {
+            return Err(why);
+        }
+        if let Some(why) = cannot_take_in(&*self.state.lock().await) {
+            return Err(why);
+        }
+        // Nothing that reads into the state runs meanwhile, so nothing
+        // read before the move lands after it.
+        let poll = self.poll_lock.lock().await;
+        let quiet = self.quiet().await?;
+        let cloning = self.cloning.lock().await;
+        for repo in &mut state.settings.repositories {
+            if let Ok(path) = validate_checkout(&repo.name, &repo.path).await {
+                repo.path = path;
+                continue;
+            }
+            let folder = self.own_copy(&repo.name).await?;
+            repo.path = validate_checkout(&repo.name, &folder.to_string_lossy())
+                .await
+                .map_err(|e| format!("Orbit's copy of {} can't be used: {e}", repo.name))?;
+            repo.keep_updated = true;
+        }
+        let scans: Vec<String> = state.scans.iter().map(|x| x.id.clone()).collect();
+        let (root, files) = (self.root.clone(), moved.files);
+        blocking(move || moving::put(&root, &files, &scans)).await?;
+        {
+            let mut s = self.state.lock().await;
+            if let Some(why) = cannot_take_in(&s) {
+                return Err(why);
+            }
+            let until = chrono::Utc::now() + CLOCKS;
+            self.save(
+                &mut s,
+                |next| {
+                    keep_here(&mut state, next, until);
+                    *next = state;
+                    Ok(())
+                },
+                |e| format!("Orbit couldn't save the moved Orbit: {e}"),
+            )?;
+            (self.emit)(&s);
+        }
+        drop((cloning, quiet, poll));
+        self.recovered_publications
+            .lock()
+            .unwrap()
+            .extend(recovered);
+        self.publish_recovered();
+        // The moved settings' model, among the models Codex has here.
+        let models = {
+            let s = self.state.lock().await;
+            s.model_catalog_ready.then(|| s.models.clone())
+        };
+        if let Some(models) = models {
+            let _ = self.apply_model_discovery(models, Ok(Value::Null)).await;
+        }
+        Ok(())
+    }
+    /// Reads, in the background, what an Orbit just taken in needs from
+    /// here: who answers Bit, then GitHub and CI.
+    pub fn settle_in(self: &Arc<Self>) {
+        let e = self.clone();
+        tokio::spawn(async move {
+            e.check_bit_answerer().await;
+            e.pick_bit_answerer().await;
+            let _ = e.poll().await;
+            e.watch_ci().await;
+            e.update_clones().await;
+        });
+    }
+    /// Waits for the background reads running to finish, and holds off new
+    /// ones until the guards drop.
+    async fn quiet(&self) -> Result<Vec<Reading<'_>>, String> {
+        let until = std::time::Instant::now() + QUIET;
+        let mut held = vec![];
+        for flag in [
+            &self.refreshing_ledger,
+            &self.writing_up,
+            &self.watching_ci,
+            &self.telling,
+            &self.reading_runners,
+            &self.reading_storage,
+            &self.updating_clones,
+        ] {
+            while flag.swap(true, Ordering::SeqCst) {
+                if std::time::Instant::now() >= until {
+                    return Err("This Orbit is busy reading GitHub. Try again in a minute.".into());
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            held.push(Reading(flag));
+        }
+        Ok(held)
+    }
+}
+
+/// Keeps what belongs to this computer in the moved state `moved`, from
+/// this Orbit's own state `here`: who it is, with the moved Orbit's names
+/// as its own until `until`, its sign-ins and reviewers as last checked,
+/// and nothing of what the moved Orbit's computer held, such as worktrees.
+fn keep_here(moved: &mut Snapshot, here: &Snapshot, until: chrono::DateTime<chrono::Utc>) {
+    let mut instance = here.instance.clone();
+    instance.take_over(std::mem::take(&mut moved.instance), until);
+    moved.instance = instance;
+    moved.posting = here.posting.clone();
+    moved.github_user = here.github_user.clone();
+    moved.github_error = here.github_error.clone();
+    moved.codex_error = here.codex_error.clone();
+    moved.last_poll = here.last_poll.clone();
+    moved.polling = here.polling;
+    moved.poll_failures = here.poll_failures;
+    moved.state_write_error = here.state_write_error.clone();
+    moved.codex_ready = here.codex_ready;
+    moved.models = here.models.clone();
+    moved.model_catalog_ready = here.model_catalog_ready;
+    moved.model_configuration_error = here.model_configuration_error.clone();
+    moved.claude = here.claude.clone();
+    moved.claude_models = here.claude_models.clone();
+    moved.antigravity = here.antigravity.clone();
+    moved.antigravity_models = here.antigravity_models.clone();
+    moved.dev_containers = here.dev_containers.clone();
+    moved.ollama = here.ollama.clone();
+    moved.ollama_models = here.ollama_models.clone();
+    moved.api_keys = here.api_keys.clone();
+    moved.usage = here.usage.clone();
+    // Read again here.
+    moved.clone_updates.clear();
+    moved.sync_failures.clear();
+    moved.queue_failures.clear();
+    moved.ledger.version = here.ledger.version.max(moved.ledger.version) + 1;
+    for r in &mut moved.reviews {
+        r.worktree = None;
+    }
+    for x in &mut moved.scans {
+        x.worktree = None;
+        x.scan_dir = None;
+        x.disk_bytes = None;
+    }
+}

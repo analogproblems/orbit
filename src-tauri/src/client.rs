@@ -33,6 +33,9 @@ pub struct Limits {
     pub snapshot: Duration,
     /// For anything else, which may run as long as a sync or a publish.
     pub action: Duration,
+    /// For moving this app's Orbit there, which may download each of its
+    /// repositories.
+    pub moving: Duration,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -40,6 +43,7 @@ impl Default for Limits {
             silence: Duration::from_secs(45),
             snapshot: Duration::from_secs(20),
             action: Duration::from_secs(10 * 60),
+            moving: Duration::from_secs(30 * 60),
         }
     }
 }
@@ -50,6 +54,10 @@ pub const NOT_PRIVATE: &str = "That link isn't private: use the https link throu
 pub const EXPIRED: &str = "The always-on Orbit's link no longer works. Paste its current link in Settings, Other devices.";
 pub const LOST: &str = "Lost connection to the always-on Orbit. Reconnecting…";
 pub const OWN_LINK: &str = "That's this app's own link. Paste the always-on Orbit's link: `orbit-server link` shows it on that computer.";
+pub const NOT_EMPTY: &str = "The always-on Orbit already has repositories or reviews of its own, so this one can't move there. Use it as it is with Use it instead.";
+pub const NOT_SIGNED_IN: &str = "The always-on Orbit isn't signed in to GitHub yet. On that computer, run gh auth login, then try again.";
+pub const TOO_OLD: &str =
+    "The always-on Orbit is too old to take this one in. Update it, then try again.";
 
 /// An always-on Orbit's access link.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -189,6 +197,34 @@ pub async fn running_here(root: &Path) -> Option<Link> {
     matches!(answer, Ok(Ok(_))).then_some(link)
 }
 
+/// Whether the always-on Orbit whose snapshot is `there` can take in this
+/// app's Orbit, signed in to GitHub as `login` when known: only when it has
+/// nothing of its own yet, and is signed in as the same account.
+pub fn can_take_in(there: &Value, login: Option<&str>) -> Result<(), String> {
+    let has = |list: &Value| list.as_array().is_some_and(|l| !l.is_empty());
+    if has(&there["settings"]["repositories"]) || has(&there["reviews"]) || has(&there["scans"]) {
+        return Err(NOT_EMPTY.into());
+    }
+    match (there["githubUser"].as_str(), login) {
+        (None, _) => Err(NOT_SIGNED_IN.into()),
+        (Some(there), Some(here)) if !there.eq_ignore_ascii_case(here) => Err(format!(
+            "The always-on Orbit is signed in to GitHub as {there}, and this one as {here}. Sign it in as {here} on that computer, then try again."
+        )),
+        _ => Ok(()),
+    }
+}
+/// Whether the always-on Orbit took in the Orbit named `name`: its
+/// snapshot `after` counts that name as one of its own, and `before`
+/// didn't. Used when a move's answer was lost.
+pub fn took_in(before: &Value, after: &Value, name: &str) -> bool {
+    let counts = |s: &Value| {
+        s["instance"]["former"]
+            .as_array()
+            .is_some_and(|f| f.iter().any(|f| f["name"] == name))
+    };
+    !name.is_empty() && !counts(before) && counts(after)
+}
+
 /// Talks to an always-on Orbit.
 pub struct Client {
     link: Link,
@@ -231,6 +267,10 @@ impl Client {
             .send()
             .await
             .map_err(|e| self.unreachable(e))?;
+        self.answer(response).await
+    }
+    /// What the always-on Orbit answered, or what went wrong.
+    async fn answer(&self, response: reqwest::Response) -> Result<Value, String> {
         let status = response.status();
         let body: Value = match response.json().await {
             Ok(body) => body,
@@ -260,7 +300,28 @@ impl Client {
     }
     /// Checks that the always-on Orbit answers, before the app uses it.
     pub async fn check(&self) -> Result<(), String> {
-        self.call("get_snapshot", &json!({})).await.map(drop)
+        self.snapshot().await.map(drop)
+    }
+    /// The always-on Orbit's snapshot, as it shows it.
+    pub async fn snapshot(&self) -> Result<Value, String> {
+        self.call("get_snapshot", &json!({})).await
+    }
+    /// Moves this app's Orbit there (see `crate::moving`). An always-on
+    /// Orbit from before moving was possible doesn't know the request.
+    pub async fn move_in(&self, moved: &crate::moving::Moved) -> Result<(), String> {
+        let response = self
+            .http
+            .post(format!("{}api/move-in", self.link.base))
+            .bearer_auth(&self.link.token)
+            .json(moved)
+            .timeout(self.limits.moving)
+            .send()
+            .await
+            .map_err(|e| self.unreachable(e))?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(TOO_OLD.into());
+        }
+        self.answer(response).await.map(drop)
     }
     /// Follows the always-on Orbit's snapshots, giving each to `show`, and
     /// the notifications to show here to `notify`. `problem` hears what's

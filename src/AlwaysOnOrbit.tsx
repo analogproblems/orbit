@@ -34,6 +34,9 @@ export function AlwaysOnOrbit() {
   const use = () => {
     if (link.trim()) void run("use_always_on", { link: link.trim() });
   };
+  const move = () => {
+    if (link.trim()) void run("move_to_always_on", { link: link.trim() });
+  };
   const linkField = (label: string, description: string, button: string) => (
     <>
       <TextInput
@@ -85,6 +88,20 @@ export function AlwaysOnOrbit() {
               "Run orbit-server link on that computer and paste the link it shows.",
               "Use it",
             )}
+            <VStack gap={1}>
+              <Button
+                label="Move to it"
+                isLoading={busy === "move_to_always_on"}
+                isDisabled={!link.trim() || busy !== null}
+                onClick={move}
+              />
+              <Text color="secondary" type="supporting">
+                Or take this app’s repositories, settings, reviews, history and
+                Bit’s notes there, if it has none of its own yet. It can take a
+                few minutes while it downloads your repositories. This app keeps
+                its own copy, with autopilot off.
+              </Text>
+            </VStack>
           </>
         )}
         {desktop && alwaysOn?.chosen && (

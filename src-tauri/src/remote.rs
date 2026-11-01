@@ -7,6 +7,7 @@
 //!   same camelCase arguments the desktop window sends to Tauri.
 //! - `GET /api/events` streams snapshots as JSON lines: the current one first,
 //!   then each change. Empty lines keep the connection alive.
+//! - `POST /api/move-in` takes in an Orbit moving here (`crate::moving`).
 //! - Any other `GET` serves the built frontend.
 //!
 //! [`Access`] runs the server as Settings ask: on or off, which port, and a
@@ -95,6 +96,7 @@ pub const DESKTOP_ONLY: &[&str] = &[
     "get_always_on",
     "forward",
     "use_always_on",
+    "move_to_always_on",
     "stop_always_on",
 ];
 /// How often an idle event stream sends an empty line, so the browser can
@@ -191,6 +193,7 @@ pub fn router(
 ) -> Router {
     Router::new()
         .route("/api/events", get(events))
+        .route("/api/move-in", post(move_in))
         .route("/api/{command}", post(command))
         .fallback(get(asset))
         .with_state(Remote {
@@ -263,6 +266,41 @@ async fn command(
     match crate::engine::carry_on(async move { dispatch(&engine, &name, &args).await }).await {
         Ok(value) => {
             let mut response = Json(value).into_response();
+            no_store(&mut response);
+            response
+        }
+        Err(error) => failure(StatusCode::UNPROCESSABLE_ENTITY, error),
+    }
+}
+
+/// Takes in an Orbit moving here (see `crate::moving`), as the desktop
+/// app's Move to it sends it. Its body is read only once the token checks
+/// out, and may be far larger than a command's. It isn't carried on: if
+/// the Orbit moving here goes away, the move stops, and it carries on
+/// where it was.
+async fn move_in(State(remote): State<Remote>, headers: HeaderMap, body: Body) -> Response {
+    if let Some(denied) = denied(&remote, &headers) {
+        return denied;
+    }
+    let Ok(bytes) = axum::body::to_bytes(body, crate::moving::LIMIT).await else {
+        return failure(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "That Orbit is too big to move here in one go.",
+        );
+    };
+    let moved = match serde_json::from_slice(&bytes) {
+        Ok(moved) => moved,
+        Err(e) => {
+            return failure(
+                StatusCode::BAD_REQUEST,
+                format!("Orbit can't read the move: {e}"),
+            )
+        }
+    };
+    match remote.engine.take_in(moved).await {
+        Ok(()) => {
+            remote.engine.settle_in();
+            let mut response = Json(json!({})).into_response();
             no_store(&mut response);
             response
         }
