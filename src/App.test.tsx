@@ -1329,6 +1329,11 @@ describe("Bit", () => {
     const zone = await screen.findByRole("combobox", { name: /^Time zone/ });
     expect(screen.getByText(/^This computer/)).toBeTruthy();
     await user().click(zone);
+    // A click puts the choice in the box to edit, a frame later: wait for
+    // it, or it lands after the box is cleared and the search misses.
+    await waitFor(() =>
+      expect((zone as HTMLInputElement).value).toBe("This computer"),
+    );
     await user().clear(zone);
     await user().type(zone, "tokyo");
     await user().click(

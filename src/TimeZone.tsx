@@ -19,13 +19,15 @@ export function deviceZone(): string {
     return "";
   }
 }
-/** Every time zone this browser knows. */
+/** Every time zone this browser knows, and UTC, which some leave out. */
 function knownZones(): string[] {
+  let zones: string[] = [];
   try {
-    return Intl.supportedValuesOf("timeZone");
+    zones = Intl.supportedValuesOf("timeZone");
   } catch {
-    return [];
+    // None listed: the suggestions and UTC still are.
   }
+  return zones.includes("UTC") ? zones : [...zones, "UTC"];
 }
 
 interface Props {
