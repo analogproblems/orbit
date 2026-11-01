@@ -221,6 +221,41 @@ fn schema() -> Value {
 }
 
 #[test]
+fn a_password_store_that_could_not_start_is_tried_again_and_then_kept() {
+    // The real keychain's path, with keyring's own in-memory store standing
+    // in for the system's: not there for two tries (as a Secret Service
+    // that starts after Orbit), then there.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static TRIES: AtomicUsize = AtomicUsize::new(0);
+    fn start() -> keyring_core::Result<Store> {
+        if TRIES.fetch_add(1, Ordering::SeqCst) < 2 {
+            return Err(keyring_core::Error::NoStorageAccess(
+                "no session bus".into(),
+            ));
+        }
+        Ok(keyring_core::mock::Store::new()?)
+    }
+    let keychain = Keychain::starting_with(start);
+    let name = "openai-api-key";
+    assert!(keychain.missing().unwrap().contains("no session bus"));
+    let refused = keychain.set(name, KEY).unwrap_err();
+    assert!(
+        refused.starts_with("Orbit couldn't use your system's password store"),
+        "{refused}"
+    );
+    assert_eq!(TRIES.load(Ordering::SeqCst), 2);
+    // Checked again once it's there: found, with no restart.
+    assert_eq!(keychain.missing(), None);
+    keychain.set(name, KEY).unwrap();
+    assert_eq!(keychain.get(name).unwrap().as_deref(), Some(KEY));
+    keychain.delete(name).unwrap();
+    assert_eq!(keychain.get(name).unwrap(), None);
+    keychain.delete(name).unwrap();
+    // Started once it was there, and kept.
+    assert_eq!(TRIES.load(Ordering::SeqCst), 3);
+}
+
+#[test]
 fn keys_are_pasted_whole_on_one_line() {
     assert!(validate_key(KEY).is_ok());
     assert!(validate_key("sk-ant-api03-abcdefgh_ijkl-mnop").is_ok());

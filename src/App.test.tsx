@@ -1456,6 +1456,16 @@ describe("Bit", () => {
     expect(invoke).toHaveBeenCalledWith("update_settings", {
       patch: { buddy: { answerer: "ollama" } },
     });
+    // Once Orbit finds a store (a check after it starts), the key can be
+    // chosen and saved again.
+    delete snapshot.passwordStore;
+    snapshot.settings.buddy = {
+      ...buddyOf(snapshot.settings),
+      answerer: "openai",
+    };
+    emit();
+    expect(await screen.findByLabelText(/^OpenAI API key/)).toBeTruthy();
+    expect(screen.queryByText(said)).toBeNull();
   });
 
   it("saves an API key for Bit and never keeps it in the page", async () => {
