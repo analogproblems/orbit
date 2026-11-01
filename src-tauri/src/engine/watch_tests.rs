@@ -2298,3 +2298,77 @@ async fn security_alerts_orbit_cant_read_keep_what_it_saw() {
         Some("The repository was disconnected.")
     );
 }
+
+/// More alerts left the newest 100 than Orbit looks up in a pass, and
+/// GitHub still has them open: each pass asks about those it asked about
+/// longest ago, a failed lookup included, so one GitHub fixed still goes.
+#[cfg(unix)]
+#[tokio::test]
+async fn alerts_beyond_the_newest_hundred_each_get_looked_up() {
+    use crate::security::tests::dependabot;
+    use crate::security::{Source, LOOK_UPS};
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    std::fs::write(
+        d.path().join("answer.json"),
+        answer(&"1".repeat(40), "SUCCESS"),
+    )
+    .unwrap();
+    let old: Vec<serde_json::Value> = (1..=12)
+        .rev()
+        .map(|n| dependabot(n, "old", "low"))
+        .collect();
+    alerts(d.path(), "dependabot", &old);
+    let e = connected(d.path()).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    // A hundred newer ones come first in GitHub's list, so the old ones
+    // are no longer in what Orbit reads, though GitHub has them open.
+    let mut all: Vec<serde_json::Value> = (13..=112)
+        .rev()
+        .map(|n| dependabot(n, "new", "low"))
+        .collect();
+    all.extend(old.clone());
+    alerts(d.path(), "dependabot", &all);
+    std::fs::write(
+        d.path().join("alerts-dependabot-3-error"),
+        "gh: Bad Gateway (HTTP 502)\n",
+    )
+    .unwrap();
+    let asked = |n: u64| sent(d.path(), &format!("GET repos/a/b/dependabot/alerts/{n}"));
+    security_read_long_ago(&e).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!((3..=12).map(asked).sum::<usize>(), LOOK_UPS);
+    assert_eq!((asked(1), asked(2)), (0, 0));
+    let shown = e.shown_snapshot().await;
+    let deps = shown
+        .problems
+        .iter()
+        .find(|p| p.is_open() && p.source == Some(Source::Dependabot))
+        .unwrap();
+    assert_eq!(deps.security_alerts.len(), 112);
+    let failed = deps.security_alerts.iter().find(|a| a.number == 3).unwrap();
+    assert!(!failed.looked_at.is_empty(), "a failed lookup had its turn");
+
+    // GitHub fixes the oldest: the next pass asks about it first, and it
+    // goes.
+    let mut fixed = all.clone();
+    fixed.last_mut().unwrap()["state"] = json!("fixed");
+    alerts(d.path(), "dependabot", &fixed);
+    security_read_long_ago(&e).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!((asked(1), asked(2)), (1, 1));
+    let shown = e.shown_snapshot().await;
+    let deps = shown
+        .problems
+        .iter()
+        .find(|p| p.is_open() && p.source == Some(Source::Dependabot))
+        .unwrap();
+    assert_eq!(deps.security_alerts.len(), 111);
+    assert!(deps.security_alerts.iter().all(|a| a.number != 1));
+    assert!(deps
+        .timeline
+        .iter()
+        .any(|t| t.text == "Dependabot alert 1, old: fixed, GitHub says."));
+    // Each of the other old ones has been asked about once or twice.
+    assert!((2..=12).all(|n| (1..=2).contains(&asked(n))));
+}

@@ -153,6 +153,11 @@ pub struct Alert {
     pub validity: String,
     /// For a secret: someone pushed it past push protection.
     pub bypassed: bool,
+    /// When Orbit last asked GitHub about it on its own, after it left its
+    /// list, whatever the answer, so each missing alert gets its turn
+    /// (`to_look_up`). Empty until then.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub looked_at: String,
 }
 impl Alert {
     /// Whether only you should see to it now: every secret, as only a person
@@ -592,13 +597,15 @@ pub fn outcome_text(a: &Alert, outcome: &Outcome) -> String {
 }
 
 /// The alerts of a repository's open problems that its latest read no
-/// longer lists, to look up, at most `LOOK_UPS`. Kinds Orbit can't see now
-/// are left out, as their problems close.
+/// longer lists, to look up, at most `LOOK_UPS`: those never looked up
+/// first, then those looked up longest ago, so one GitHub still has open,
+/// or one it didn't answer for, never keeps the others from their turn.
+/// Kinds Orbit can't see now are left out, as their problems close.
 pub fn to_look_up(
     problems: &[crate::problems::Problem],
     read: &RepoSecurity,
 ) -> Vec<(Source, u64)> {
-    let mut out = vec![];
+    let mut out: Vec<(&str, Source, u64)> = vec![];
     for kind in read.kinds.iter().filter(|k| k.unseen.is_none()) {
         let key = crate::problems::security_key(&read.repo, kind.source);
         let Some(p) = problems.iter().find(|p| p.key == key && p.is_open()) else {
@@ -606,12 +613,16 @@ pub fn to_look_up(
         };
         for a in &p.security_alerts {
             if !kind.alerts.iter().any(|b| b.number == a.number) {
-                out.push((kind.source, a.number));
+                out.push((&a.looked_at, kind.source, a.number));
             }
         }
     }
-    out.truncate(LOOK_UPS);
-    out
+    // Stable, so alerts looked up together keep their order.
+    out.sort_by(|a, b| a.0.cmp(b.0));
+    out.into_iter()
+        .take(LOOK_UPS)
+        .map(|(_, source, number)| (source, number))
+        .collect()
 }
 /// Asks GitHub what became of one alert.
 pub async fn look_up(repo: &str, source: Source, number: u64) -> Result<Outcome, String> {

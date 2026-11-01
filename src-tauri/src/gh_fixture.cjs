@@ -30,7 +30,8 @@
 // `state` asked for when it is given; each alert is also read on its own
 // by number, or 404. A secret's value is sent unless `hide_secret` is
 // true. While <dir>/alerts-<kind>-error exists, listing them fails with
-// its text.
+// its text, and while <dir>/alerts-<kind>-<n>-error exists, reading
+// alert <n> on its own does.
 // Pull request <n> of a/b is <dir>/pull-<n>.json, or 404; while
 // <dir>/pull-error exists, reading one fails with its text. Its reviews
 // are <dir>/reviews-<n>.json, or none, in pages, and while
@@ -359,6 +360,11 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
     const { secret: _, ...hidden } = a;
     return hidden;
   });
+  const failed = path.join(dir, `alerts-${m[1]}-${m[2]}-error`);
+  if (m[2] && fs.existsSync(failed)) {
+    process.stderr.write(fs.readFileSync(failed, "utf8"));
+    process.exit(1);
+  }
   if (m[2]) {
     const one = all.find((a) => a.number === Number(m[2]));
     if (!one) missing();

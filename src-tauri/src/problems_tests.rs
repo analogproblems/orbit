@@ -1136,4 +1136,72 @@ mod security {
             Some("Orbit stopped watching security alerts.")
         );
     }
+
+    /// More alerts left their lists than Orbit looks up in one pass, and
+    /// GitHub still has the first ones open: the others get their turn,
+    /// across kinds, so a revoked secret still goes.
+    #[test]
+    fn alerts_that_left_their_lists_take_turns_to_be_looked_up() {
+        use crate::security::{to_look_up, LOOK_UPS};
+        let deps: Vec<Value> = (1..=12).map(|n| dependabot(n, "pkg", "low")).collect();
+        let mut problems = vec![];
+        let first = read(vec![
+            kind(Source::Dependabot, &deps),
+            kind(Source::SecretScanning, &[secret(30)]),
+        ]);
+        see_security(&mut problems, &first, &[], at(0));
+        // None is listed now, as newer ones fill the newest 100.
+        let now = read(vec![
+            kind(Source::Dependabot, &[dependabot(200, "new", "low")]),
+            kind(Source::SecretScanning, &[]),
+        ]);
+        // A pass: Orbit asks about its turn's alerts, and GitHub says they're
+        // still open, but the secret is revoked once `revoke`.
+        let pass = |problems: &mut Vec<Problem>, revoke: bool, minutes| {
+            let asked = to_look_up(problems, &now);
+            assert_eq!(asked.len(), LOOK_UPS);
+            let left: Vec<Left> = asked
+                .iter()
+                .map(|&(source, number)| Left {
+                    source,
+                    number,
+                    outcome: if revoke && source == Source::SecretScanning {
+                        Outcome::Closed {
+                            fixed: true,
+                            by: String::new(),
+                            why: "revoked".into(),
+                        }
+                    } else {
+                        Outcome::Open
+                    },
+                })
+                .collect();
+            looked_up(problems, "a/b", &asked, at(minutes));
+            see_security(problems, &now, &left, at(minutes));
+            asked
+        };
+        let one = pass(&mut problems, false, 30);
+        assert!(!one.contains(&(Source::SecretScanning, 30)));
+        // Next time, those not asked about yet go first, the secret too.
+        let two = to_look_up(&problems, &now);
+        assert_eq!(
+            two[..3],
+            [
+                (Source::Dependabot, 2),
+                (Source::Dependabot, 1),
+                (Source::SecretScanning, 30)
+            ]
+        );
+        assert!(two[3..].iter().all(|a| one.contains(a)));
+        pass(&mut problems, true, 60);
+        let secrets = problems
+            .iter()
+            .find(|p| p.source == Some(Source::SecretScanning))
+            .unwrap();
+        assert!(!secrets.is_open());
+        // And then the rest of the first batch's turn comes round again.
+        let three = to_look_up(&problems, &now);
+        assert!(three.iter().all(|&(_, n)| n <= 12));
+        assert!(three.contains(&(Source::Dependabot, 3)));
+    }
 }

@@ -1400,6 +1400,8 @@ export interface SecurityAlert {
   validity: string;
   /** For a secret: someone pushed it past push protection. */
   bypassed: boolean;
+  /** When Orbit last asked GitHub about it after it left its list. */
+  lookedAt?: string;
 }
 /** What Orbit read of one kind of alert in a repository. */
 export interface AlertKind {

@@ -382,8 +382,10 @@ impl Engine {
         for repo in &wanted {
             let result = security::read(repo).await;
             let mut limited = result.as_ref().is_err_and(|e| logs::rate_limited(e));
-            // What became of the alerts that left a list.
+            // What became of the alerts that left a list, and which Orbit
+            // asked about, so the others go first next time.
             let mut left = vec![];
+            let mut asked = vec![];
             if let Ok(read) = &result {
                 let asks = security::to_look_up(&self.state.lock().await.problems, read);
                 for (source, number) in asks {
@@ -397,9 +399,10 @@ impl Engine {
                             limited = true;
                             break;
                         }
-                        // Looked up again next time; it stays meanwhile.
+                        // It stays meanwhile, and waits its turn again.
                         Err(_) => {}
                     }
+                    asked.push((source, number));
                 }
             }
             self.update(|s| {
@@ -410,6 +413,7 @@ impl Engine {
                 }
                 let now = chrono::Utc::now();
                 if let Ok(read) = &result {
+                    problems::looked_up(&mut s.problems, repo, &asked, now);
                     problems::see_security(&mut s.problems, read, &left, now);
                 }
                 security::record(&mut s.security, repo, result, now);

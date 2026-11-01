@@ -737,6 +737,28 @@ pub fn see_security(
         tell(p, &at);
     }
 }
+/// Notes when Orbit asked GitHub about each of a repository's alerts in
+/// `asked`, whatever it answered, so the next pass asks about the others
+/// first (`security::to_look_up`).
+pub fn looked_up(
+    problems: &mut [Problem],
+    repo: &str,
+    asked: &[(crate::security::Source, u64)],
+    now: DateTime<Utc>,
+) {
+    let at = stamp(now);
+    for &(source, number) in asked {
+        let key = security_key(repo, source);
+        let alert = problems
+            .iter_mut()
+            .filter(|p| p.key == key && p.is_open())
+            .flat_map(|p| p.security_alerts.iter_mut())
+            .find(|a| a.number == number);
+        if let Some(a) = alert {
+            a.looked_at = at.clone();
+        }
+    }
+}
 /// Tells you about a security problem's alerts that need you and that it
 /// hasn't told you about, and forgets those no longer open, so one that
 /// opens again tells you again.
