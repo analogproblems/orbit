@@ -24,7 +24,8 @@
 // The cache usage of a/b is <dir>/cache.json, or none, and its artifacts the
 // list in <dir>/artifacts.json, or none, in pages; while <dir>/cache-error or
 // <dir>/artifacts-error exists, reading them fails with its text.
-// Repository a/b is <dir>/repo.json, or public. The security alerts of
+// Repository a/b is <dir>/repo.json, or public; while <dir>/repo-error
+// exists, reading it fails with its text. The security alerts of
 // a/b of each kind are the list in
 // <dir>/alerts-dependabot.json, <dir>/alerts-code-scanning.json or
 // <dir>/alerts-secret-scanning.json, or none, in pages, those in the
@@ -307,6 +308,11 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
   answer(i);
 } else if (endpoint === "repos/a/b") {
   const about = path.join(dir, "repo.json");
+  const failed = path.join(dir, "repo-error");
+  if (fs.existsSync(failed)) {
+    process.stderr.write(fs.readFileSync(failed, "utf8"));
+    process.exit(1);
+  }
   answer(
     fs.existsSync(about)
       ? JSON.parse(fs.readFileSync(about, "utf8"))

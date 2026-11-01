@@ -1374,6 +1374,9 @@ export interface Problem {
   /** For `security`: GitHub says the repository is private, so Orbit can
    * tell its agent in an issue. */
   private?: boolean;
+  /** For `security`: the alerts that left GitHub's list without GitHub
+   * saying what became of them, as it no longer had them. */
+  vanished?: number[];
 }
 /** Where GitHub found a security alert. */
 export type AlertSource = "dependabot" | "code_scanning" | "secret_scanning";

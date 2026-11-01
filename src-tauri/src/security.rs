@@ -361,17 +361,13 @@ pub async fn read(repo: &str) -> Result<RepoSecurity, String> {
     }
     Ok(read)
 }
-/// Whether GitHub's answer about a repository says it is private. One it
-/// didn't give counts as public, the cautious answer, but a rate limit is
-/// tried again.
+/// Whether GitHub's answer about a repository says it is private: an
+/// internal one isn't. One it didn't give fails the read, so what Orbit
+/// knew before stands and nothing new is read until GitHub says, as an
+/// agent hears of alerts only in a private repository.
 pub fn private(answer: Result<Value, String>) -> Result<bool, String> {
-    match answer {
-        Ok(v) => {
-            Ok(v["private"] == true && v["visibility"].as_str().is_none_or(|w| w == "private"))
-        }
-        Err(e) if logs::rate_limited(&e) => Err(e),
-        Err(_) => Ok(false),
-    }
+    let v = answer?;
+    Ok(v["private"] == true && v["visibility"].as_str().is_none_or(|w| w == "private"))
 }
 /// What GitHub's answer for one kind says, or the error to try again
 /// after. A refusal is kept as why Orbit can't see them; a rate limit is

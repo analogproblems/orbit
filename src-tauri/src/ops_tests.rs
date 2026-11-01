@@ -2705,13 +2705,148 @@ mod security {
             .unwrap();
         let body = issue_body(&threads[1], code, false);
         assert!(body.contains("- **I1** · code scanning alert 5 · `js/sql-injection` (high) in `src/db.ts` line 12 · Database query built from user-controlled sources · [alert]"), "{body}");
-        // A repository that turns public keeps its issue true, but no new
-        // one opens.
+    }
+
+    fn fixed(n: u64) -> Left {
+        Left {
+            source: Source::Dependabot,
+            number: n,
+            outcome: Outcome::Closed {
+                fixed: true,
+                by: String::new(),
+                why: String::new(),
+            },
+        }
+    }
+    fn deps(private: bool, alerts: &[serde_json::Value]) -> RepoSecurity {
+        read(private, vec![kind(Source::Dependabot, alerts)])
+    }
+
+    /// Once GitHub says a repository isn't private, nothing new about its
+    /// alerts goes out: the issue Bit was asking about doesn't open, even
+    /// with your tap, and one already on GitHub takes no new alert, edit or
+    /// reopening, until GitHub says it is private again. It still closes
+    /// once its alerts are fixed, with nothing new in it.
+    #[test]
+    fn nothing_new_goes_out_once_a_repository_isnt_private() {
+        let lodash = || dependabot(1, "lodash", "critical");
+        let qs = || dependabot(2, "qs", "low");
+        let minimist = || dependabot(3, "minimist", "high");
         let mut problems = vec![];
-        crate::problems::see_security(&mut problems, &read(false, all()), &[], t0());
-        let mut fresh = vec![];
-        refresh(&mut fresh, &problems, t0());
-        assert!(fresh.is_empty());
+        crate::problems::see_security(&mut problems, &deps(true, &[lodash()]), &[], t0());
+        let mut threads = vec![];
+        let mut journal = vec![];
+        refresh(&mut threads, &problems, t0());
+        // Bit asks first, so it waits for your tap.
+        assert!(send(&mut threads, &mut journal, &problems[0], false, t0()).is_none());
+
+        // GitHub says it's public now. The same thread stays, but neither
+        // your tap nor Do it opens it, and it takes no new alert.
+        crate::problems::see_security(&mut problems, &deps(false, &[lodash(), qs()]), &[], t0());
+        refresh(&mut threads, &problems, t0());
+        assert_eq!(threads.len(), 1);
+        threads[0].allowed = true;
+        assert!(withheld(&threads[0], &problems[0]));
+        assert!(send(&mut threads, &mut journal, &problems[0], true, t0()).is_none());
+        assert!(threads[0].items.iter().all(|i| i.alert != 2));
+        let s = Snapshot {
+            ops: threads.clone(),
+            problems: problems.clone(),
+            ..Default::default()
+        };
+        assert!(
+            withheld_now(&s, &threads[0].key),
+            "checked as it is recorded"
+        );
+
+        // Private again: it opens, with what is open now.
+        crate::problems::see_security(&mut problems, &deps(true, &[lodash(), qs()]), &[], t0());
+        refresh(&mut threads, &problems, t0());
+        let open = send(&mut threads, &mut journal, &problems[0], true, t0()).unwrap();
+        assert_eq!(open.action, Action::OpenIssue);
+        assert!(open.body.contains("`qs`"));
+
+        // Public again, with a new alert: the issue on GitHub stays as it
+        // is.
+        crate::problems::see_security(
+            &mut problems,
+            &deps(false, &[lodash(), qs(), minimist()]),
+            &[],
+            t0(),
+        );
+        refresh(&mut threads, &problems, t0());
+        assert!(send(&mut threads, &mut journal, &problems[0], true, t0()).is_none());
+        assert!(threads[0].items.iter().all(|i| i.alert != 3));
+
+        // Its alerts are fixed: it closes, still without the new one.
+        crate::problems::see_security(
+            &mut problems,
+            &deps(false, &[]),
+            &[fixed(1), fixed(2), fixed(3)],
+            t0(),
+        );
+        assert!(problems[0].resolved());
+        assert!(!withheld(&threads[0], &problems[0]));
+        refresh(&mut threads, &problems, t0());
+        let note = send(&mut threads, &mut journal, &problems[0], true, t0()).unwrap();
+        assert_eq!(note.action, Action::NoteOnIssue);
+        let close = send(&mut threads, &mut journal, &problems[0], true, t0()).unwrap();
+        assert_eq!(close.action, Action::CloseIssue);
+        for body in [&note.body, &close.body] {
+            assert!(!body.contains("minimist"), "{body}");
+        }
+    }
+
+    /// An alert GitHub no longer has, without saying what became of it,
+    /// isn't called fixed: once none is left open, the issue closes, not
+    /// as done, saying Orbit can't say.
+    #[test]
+    fn an_alert_github_no_longer_has_isnt_called_fixed() {
+        let mut problems = vec![];
+        crate::problems::see_security(
+            &mut problems,
+            &deps(true, &[dependabot(1, "lodash", "critical")]),
+            &[],
+            t0(),
+        );
+        let mut threads = vec![];
+        let mut journal = vec![];
+        refresh(&mut threads, &problems, t0());
+        send(&mut threads, &mut journal, &problems[0], true, t0()).unwrap();
+        let gone = Left {
+            source: Source::Dependabot,
+            number: 1,
+            outcome: Outcome::Gone,
+        };
+        crate::problems::see_security(&mut problems, &deps(true, &[]), &[gone], t0());
+        let p = &problems[0];
+        assert!(!p.is_open());
+        assert!(p.cleared() && !p.resolved());
+        assert_eq!(p.vanished, [1]);
+        refresh(&mut threads, &problems, t0());
+        let note = send(&mut threads, &mut journal, &problems[0], true, t0()).unwrap();
+        assert_eq!(note.action, Action::NoteOnIssue);
+        assert!(
+            note.body.starts_with("No Dependabot alerts are open here now, so Orbit is closing this issue. GitHub no longer has 1 of them, so Orbit can't say it was fixed or dismissed."),
+            "{}",
+            note.body
+        );
+        let close = send(&mut threads, &mut journal, &problems[0], true, t0()).unwrap();
+        assert_eq!(close.action, Action::CloseIssue);
+        assert!(!close.completed);
+        assert!(close.body.contains("No Dependabot alerts are open here now. GitHub no longer has 1 of them, so Orbit can't say it was fixed or dismissed."));
+        assert!(close.body.contains("- **I1** · Dependabot alert 1, lodash · GitHub no longer has it, so Orbit can't say it was fixed or dismissed"), "{}", close.body);
+        assert!(!close.body.contains("fixed or dismissed. Nothing is left"));
+        assert_eq!(
+            event_text(
+                &threads,
+                &problems,
+                &Event::Closed("issue:".to_string() + &problems[0].id)
+            )
+            .unwrap()
+            .2,
+            "Orbit closed issue #45 on a/b. Dependabot alert 1, lodash: GitHub no longer has it."
+        );
     }
 
     /// An agent's fix counts once GitHub marks the alert fixed: until then
@@ -2753,15 +2888,6 @@ mod security {
                 &[dependabot(1, "lodash", "critical")],
             )],
         );
-        let fixed = |n| Left {
-            source: Source::Dependabot,
-            number: n,
-            outcome: Outcome::Closed {
-                fixed: true,
-                by: String::new(),
-                why: String::new(),
-            },
-        };
         crate::problems::see_security(&mut problems, &still, &[fixed(2)], t0());
         refresh(&mut threads, &problems, t0());
         let edit = send(&mut threads, &mut journal, &problems[0], true, t0()).unwrap();

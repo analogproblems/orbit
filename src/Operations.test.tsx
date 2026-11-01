@@ -834,6 +834,28 @@ describe("operations page", () => {
       key: "issue:demo-security-1",
     });
     cleanup();
+    // Not private now: no tap opens it.
+    const deps = s.problems!.find((p) => p.id === "demo-security-1")!;
+    deps.private = false;
+    show(s);
+    expect(rows()[1].textContent).toContain(
+      "Orbit keeps these alerts with you, as the repository isn’t private",
+    );
+    expect(
+      within(rows()[1]).queryByRole("button", { name: "Open issue" }),
+    ).toBeNull();
+    cleanup();
+    // Nor does one on GitHub take anything new.
+    issue.url = "https://github.com/acme/api/issues/57";
+    issue.number = 57;
+    show(s);
+    expect(rows()[1].textContent).toContain(
+      "Orbit told the repository’s agent in issue #57, but the repository isn’t private now, so Orbit adds nothing new there. These alerts stay with you.",
+    );
+    cleanup();
+    deps.private = true;
+    issue.url = "";
+    issue.number = null;
     s.settings.buddy!.rules.open_issues = "leave_it";
     show(s);
     expect(rows()[1].textContent).toContain(

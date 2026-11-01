@@ -178,6 +178,11 @@ impl Engine {
             let id = {
                 let mut s = self.state.lock().await;
                 let s = &mut *s;
+                // Under the lock it is recorded in, as a read may have found
+                // meanwhile that a repository isn't private any more.
+                if ops::withheld_now(s, &planned.thread) {
+                    continue;
+                }
                 let id = ops::record(&mut s.journal, &planned, chrono::Utc::now());
                 reruns::sending(&mut s.ops, &mut s.journal, &id, &planned);
                 id

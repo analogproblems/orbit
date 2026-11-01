@@ -801,6 +801,25 @@ pub fn tells_agent(p: &Problem) -> bool {
         _ => true,
     }
 }
+/// Whether a thread about security alerts takes nothing new now: its
+/// problem is open, but in a repository GitHub no longer says is private,
+/// so anything new there could show more people where a weakness is than
+/// when Orbit told the agent. Its issue opens, reopens and takes new
+/// details only while the repository is private; what is already there
+/// stays as it is, and it still closes once its problem is over.
+pub fn withheld(t: &Thread, p: &Problem) -> bool {
+    t.source.is_some() && p.is_open() && !tells_agent(p)
+}
+/// `withheld`, for a thread by its key as things stand now: checked again
+/// under the lock each write is recorded in.
+pub fn withheld_now(s: &Snapshot, key: &str) -> bool {
+    s.ops.iter().any(|t| {
+        t.key == key
+            && s.problems
+                .iter()
+                .any(|p| p.id == t.problem_id && withheld(t, p))
+    })
+}
 fn key_of(p: &Problem) -> String {
     match p.kind {
         ProblemKind::DefaultBranch
@@ -899,7 +918,7 @@ fn items_from(t: &mut Thread, p: &Problem) {
 /// then; when Orbit stopped watching instead, items stay as it last saw
 /// them.
 fn alert_items(t: &mut Thread, p: &Problem) {
-    if !p.is_open() && !p.resolved() {
+    if (!p.is_open() && !p.cleared()) || withheld(t, p) {
         return;
     }
     for item in t.items.iter_mut().filter(|i| i.kind == ItemKind::Alert) {
@@ -1242,6 +1261,12 @@ pub fn next(
         }
         ThreadKind::Issue => {
             let p = problem?;
+            // Nothing new about security alerts where more people may read
+            // it than when Orbit told the agent: no issue opens or reopens,
+            // and none takes new details.
+            if withheld(t, p) {
+                return None;
+            }
             if t.number.is_none() {
                 return (p.is_open() && may_post).then(|| Planned {
                     title: issue_title(t, p),
@@ -1490,6 +1515,8 @@ fn alert_line(item: &Item, t: &Thread, p: &Problem) -> String {
     let Some(a) = open else {
         let state = if item.failing {
             "open when Orbit stopped watching"
+        } else if p.vanished.contains(&item.alert) {
+            "GitHub no longer has it, so Orbit can't say it was fixed or dismissed"
         } else {
             "no longer open on GitHub"
         };
@@ -1914,6 +1941,12 @@ fn security_body(t: &Thread, p: &Problem) -> String {
             "GitHub says every {} here is fixed or dismissed. Nothing is left to do here.",
             source.one()
         )
+    } else if p.cleared() {
+        format!(
+            "No {} are open here now. {}",
+            source.many(),
+            vanished_text(p)
+        )
     } else {
         format!(
             "Orbit has stopped watching these alerts. {}",
@@ -1921,7 +1954,7 @@ fn security_body(t: &Thread, p: &Problem) -> String {
         )
     };
     format!(
-        "## Orbit · Security\n\n{status}\n\n{}\n\nOrbit opened this issue because GitHub found these alerts in this private repository. It edits this issue as they change, and closes it once GitHub says each one is fixed or dismissed. An item counts as fixed only once GitHub marks its alert fixed, which can wait until GitHub checks the default branch again. Dismissing an alert is a person's call.\n\n{}",
+        "## Orbit · Security\n\n{status}\n\n{}\n\nOrbit opened this issue because GitHub found these alerts in this private repository. It edits this issue as they change, and closes it once none of them is open on GitHub. An item counts as fixed only once GitHub marks its alert fixed, which can wait until GitHub checks the default branch again. Dismissing an alert is a person's call.\n\n{}",
         items_text(t, p),
         data(t, Some(p))
     )
@@ -1934,6 +1967,16 @@ fn and(parts: &[String]) -> String {
         [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
 }
+/// How many of a problem's alerts GitHub no longer has, without saying
+/// what became of them, in a sentence.
+fn vanished_text(p: &Problem) -> String {
+    match p.vanished.len() {
+        1 => "GitHub no longer has 1 of them, so Orbit can't say it was fixed or dismissed.".into(),
+        n => format!(
+            "GitHub no longer has {n} of them, so Orbit can't say they were fixed or dismissed."
+        ),
+    }
+}
 /// The note Orbit leaves on an issue as it closes it.
 pub fn closing_note(t: &Thread, p: &Problem) -> String {
     let closed_at = p.closed_at.as_deref().unwrap_or_default();
@@ -1941,6 +1984,12 @@ pub fn closing_note(t: &Thread, p: &Problem) -> String {
         format!(
             "GitHub says every {} here is fixed or dismissed, so Orbit is closing this issue.",
             p.source.unwrap_or_default().one()
+        )
+    } else if p.cleared() {
+        format!(
+            "No {} are open here now, so Orbit is closing this issue. {}",
+            p.source.unwrap_or_default().many(),
+            vanished_text(p)
         )
     } else if p.passed() && p.kind == ProblemKind::NoCi {
         format!(

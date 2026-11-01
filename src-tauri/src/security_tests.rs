@@ -460,7 +460,9 @@ fn only_a_repository_github_says_is_private_counts_as_one() {
         Ok(false)
     );
     assert_eq!(private(Ok(json!([]))), Ok(false));
-    assert_eq!(private(Err("gh: Not Found (HTTP 404)".into())), Ok(false));
+    // Not knowing fails the read, so it is never taken as either.
+    assert!(private(Err("gh: Not Found (HTTP 404)".into())).is_err());
+    assert!(private(Err("gh: Bad Gateway (HTTP 502)".into())).is_err());
     assert!(private(Err(
         "gh: API rate limit exceeded for user ID 1. (HTTP 403)".into()
     ))

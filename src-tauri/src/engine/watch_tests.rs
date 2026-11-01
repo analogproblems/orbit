@@ -2527,3 +2527,74 @@ async fn a_private_repositorys_agent_hears_of_its_alerts_until_github_says_they_
         .all(|a| !a.key.contains(":declined:")));
     assert!(!g.to_string().contains("THISISTHESECRETVALUE"));
 }
+
+/// Once GitHub says a repository isn't private, or can't say, nothing new
+/// about its alerts reaches GitHub: its issue takes no new alert until
+/// GitHub says it is private again.
+#[tokio::test]
+async fn nothing_new_about_alerts_reaches_github_once_a_repository_isnt_private() {
+    use crate::security::tests::dependabot;
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    std::fs::write(
+        d.path().join("answer.json"),
+        answer(&"1".repeat(40), "SUCCESS"),
+    )
+    .unwrap();
+    let about = |private: bool| {
+        let visibility = if private { "private" } else { "public" };
+        std::fs::write(
+            d.path().join("repo.json"),
+            json!({ "full_name": "a/b", "private": private, "visibility": visibility }).to_string(),
+        )
+        .unwrap();
+    };
+    about(true);
+    let lodash = dependabot(1, "lodash", "critical");
+    let minimist = dependabot(3, "minimist", "high");
+    alerts(d.path(), "dependabot", std::slice::from_ref(&lodash));
+    let e = connected(d.path()).await;
+    e.update(|s| s.github_user = Some("me".into())).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!(writes(d.path()), ["POST repos/a/b/issues"]);
+
+    // Public now, with a new alert: the issue stays as it was.
+    about(false);
+    alerts(d.path(), "dependabot", &[lodash.clone(), minimist.clone()]);
+    security_read_long_ago(&e).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!(writes(d.path()), ["POST repos/a/b/issues"]);
+    let shown = e.shown_snapshot().await;
+    assert_eq!(shown.problems[0].security_alerts.len(), 2);
+    assert!(!shown.problems[0].private);
+    let body = fake_github(d.path())["issues"][0]["body"].to_string();
+    assert!(!body.contains("minimist"));
+
+    // Private, but GitHub doesn't answer about it: the read fails, and
+    // still nothing new goes out.
+    about(true);
+    std::fs::write(d.path().join("repo-error"), "gh: Bad Gateway (HTTP 502)\n").unwrap();
+    security_read_long_ago(&e).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!(writes(d.path()), ["POST repos/a/b/issues"]);
+    let shown = e.shown_snapshot().await;
+    assert_eq!(
+        shown.security[0].error.as_deref(),
+        Some("Orbit couldn't read the security alerts yet: Bad Gateway (HTTP 502). It tries again later.")
+    );
+    assert!(!shown.problems[0].private);
+
+    // GitHub says it's private again: the issue catches up.
+    std::fs::remove_file(d.path().join("repo-error")).unwrap();
+    e.update(|s| {
+        for r in &mut s.security {
+            r.read_at = "2020-01-01T00:00:00.000Z".into();
+            r.retry_at = None;
+        }
+    })
+    .await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!(writes(d.path())[1..], ["PATCH repos/a/b/issues/101"]);
+    let body = fake_github(d.path())["issues"][0]["body"].to_string();
+    assert!(body.contains("minimist"));
+}
