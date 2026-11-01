@@ -16,8 +16,13 @@ pub(crate) struct Memory {
     pub keys: Mutex<HashMap<String, String>>,
     /// An error every use of the store gives.
     pub broken: Option<String>,
+    /// Why there's no store at all, as on a server without one.
+    pub missing: Option<String>,
 }
 impl Secrets for Memory {
+    fn missing(&self) -> Option<String> {
+        self.missing.clone()
+    }
     fn get(&self, name: &str) -> Result<Option<String>, String> {
         match &self.broken {
             Some(e) => Err(e.clone()),

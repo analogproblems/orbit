@@ -66,8 +66,17 @@ impl Api {
     }
 }
 
+/// Said when the computer running Orbit has no password store, as many
+/// servers haven't: no API key can be kept there.
+pub const NO_STORE: &str = "The computer running Orbit has no password store to keep API keys in, so they can't be used there. Use Codex, Claude, Antigravity or Ollama instead, in Settings, under Buddy.";
+
 /// Where API keys are kept.
 pub trait Secrets: Send + Sync {
+    /// Why there's nowhere to keep keys, if there isn't, as on a server with
+    /// no password store. Opens no key, so it never asks to unlock one.
+    fn missing(&self) -> Option<String> {
+        None
+    }
     fn get(&self, name: &str) -> Result<Option<String>, String>;
     fn set(&self, name: &str, value: &str) -> Result<(), String>;
     fn delete(&self, name: &str) -> Result<(), String>;
@@ -81,6 +90,13 @@ impl Keychain {
     }
 }
 impl Secrets for Keychain {
+    fn missing(&self) -> Option<String> {
+        // Starts the system's store once, as the first key would.
+        keyring::Entry::store_status()
+            .as_ref()
+            .err()
+            .map(|e| e.to_string())
+    }
     fn get(&self, name: &str) -> Result<Option<String>, String> {
         match Self::entry(name)?.get_password() {
             Ok(key) => Ok(Some(key)),
@@ -121,6 +137,14 @@ impl Default for Setup {
 impl Setup {
     pub fn base(&self, api: Api) -> &str {
         &self.bases[Api::ALL.iter().position(|a| *a == api).unwrap_or(0)]
+    }
+    /// Why there's nowhere to keep keys, if there isn't (`Secrets::missing`),
+    /// off the async threads, as starting the store may block.
+    pub async fn missing(&self) -> Option<String> {
+        let secrets = self.secrets.clone();
+        tokio::task::spawn_blocking(move || secrets.missing())
+            .await
+            .unwrap_or_default()
     }
     /// The saved key for `api`, if any. The password store may block, so
     /// it is read off the async threads.

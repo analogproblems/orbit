@@ -1429,6 +1429,35 @@ describe("Bit", () => {
     });
   });
 
+  it("says when the computer running Orbit has nowhere to keep API keys", async () => {
+    snapshot.passwordStore = "no session bus";
+    snapshot.settings.buddy = {
+      ...buddyOf(snapshot.settings),
+      answerer: "openai",
+    };
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Settings" }));
+    await openSettingsTab("Buddy");
+    const said =
+      "The computer running Orbit has no password store to keep API keys in, so they can’t be used there. Choose Codex, Claude, Antigravity or Ollama to answer instead.";
+    // Under the choice, and instead of the key's field.
+    expect((await screen.findAllByText(said)).length).toBe(2);
+    expect(screen.queryByLabelText(/^OpenAI API key/)).toBeNull();
+    // The keys can't be chosen; the others can.
+    await user().click(
+      screen.getByRole("combobox", { name: /^Who answers your questions/ }),
+    );
+    for (const name of [/^OpenAI/, /^Anthropic/, /^Google/]) {
+      expect(
+        screen.getByRole("option", { name }).getAttribute("aria-disabled"),
+      ).toBe("true");
+    }
+    await user().click(await screen.findByRole("option", { name: /^Ollama/ }));
+    expect(invoke).toHaveBeenCalledWith("update_settings", {
+      patch: { buddy: { answerer: "ollama" } },
+    });
+  });
+
   it("saves an API key for Bit and never keeps it in the page", async () => {
     const key = "sk-ant-api03-test-key";
     invoke.mockImplementation(async (cmd, args) => {

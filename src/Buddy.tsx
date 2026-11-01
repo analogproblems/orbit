@@ -727,6 +727,7 @@ function ApiKeySettings({ provider }: { provider: ApiProvider }) {
   const models = saved?.models ?? [];
   const field = `${provider}Model` as const;
   const saving = saves[`buddy.${field}`]?.state === "saving";
+  if (s.passwordStore) return <Banner status="warning" title={noStore} />;
   const save = async (next: string | null) => {
     if (next !== null && !next.trim()) return;
     setError(null);
@@ -828,6 +829,10 @@ function ApiKeySettings({ provider }: { provider: ApiProvider }) {
   );
 }
 
+/** Said when the computer running Orbit has nowhere to keep API keys. */
+const noStore =
+  "The computer running Orbit has no password store to keep API keys in, so they can’t be used there. Choose Codex, Claude, Antigravity or Ollama to answer instead.";
+
 /** What answering with the chosen answerer means, and whether it can yet. */
 function answererDescription(s: Snapshot, buddy: Buddy): string {
   const ready = {
@@ -839,6 +844,7 @@ function answererDescription(s: Snapshot, buddy: Buddy): string {
     anthropic: !!s.apiKeys?.anthropic.status.ready,
     google: !!s.apiKeys?.google.status.ready,
   }[buddy.answerer];
+  if (s.passwordStore && buddy.answerer in apiProviders) return noStore;
   const only = `${buddy.name} only answers and offers buttons; nothing changes until you tap one.`;
   const uses =
     buddy.answerer === "ollama"
@@ -1087,7 +1093,17 @@ export function BuddySettings() {
             isDisabled={pending("answerer")}
             options={(
               Object.entries(buddyAnswerers) as [BuddyAnswerer, string][]
-            ).map(([value, label]) => ({ value, label }))}
+            ).map(([value, label]) =>
+              // No key can be kept on a computer without a password store.
+              s.passwordStore && value in apiProviders
+                ? {
+                    value,
+                    label,
+                    description: "Needs a password store, which isn’t there",
+                    disabled: true,
+                  }
+                : { value, label },
+            )}
             onChange={(answerer) =>
               void save({ answerer: answerer as BuddyAnswerer }, "answerer")
             }
