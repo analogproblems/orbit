@@ -2145,18 +2145,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "keyring"
-version = "4.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2270074a3d26bcac93c1dc5d2845eb4c089e8d761ccf6e0ea266a16004640627"
-dependencies = [
- "apple-native-keyring-store",
- "keyring-core",
- "windows-native-keyring-store",
- "zbus-secret-service-keyring-store",
-]
-
-[[package]]
 name = "keyring-core"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2729,13 +2717,14 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 name = "orbit"
 version = "0.2.0"
 dependencies = [
+ "apple-native-keyring-store",
  "axum",
  "chrono",
  "chrono-tz",
  "futures-util",
  "http-body-util",
  "iana-time-zone",
- "keyring",
+ "keyring-core",
  "libc",
  "pulldown-cmark",
  "regex",
@@ -2751,6 +2740,8 @@ dependencies = [
  "tokio",
  "tower",
  "uuid",
+ "windows-native-keyring-store",
+ "zbus-secret-service-keyring-store",
 ]
 
 [[package]]

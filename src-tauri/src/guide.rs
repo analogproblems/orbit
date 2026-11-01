@@ -43,6 +43,9 @@ impl Connection {
             "github" if error.contains("gh auth login") => Remedy::SignIn,
             "codex" if error.contains("not signed in") => Remedy::SignIn,
             "github" | "codex" => Remedy::CheckAgain,
+            // Nothing to install for a key: a password store, or another
+            // answerer.
+            _ if error == crate::api::NO_STORE => Remedy::CheckAgain,
             // The reviewers' pages say how to install them and sign in.
             _ => Remedy::Install,
         }
@@ -110,6 +113,9 @@ fn ollama_ready(s: &Snapshot, model: &str) -> Result<(), String> {
 fn api_ready(s: &Snapshot, api: Api, model: &str) -> Result<(), String> {
     let key = s.api_keys.get(api);
     let company = api.company();
+    if s.password_store.is_some() && !key.status.ready {
+        return Err(crate::api::NO_STORE.into());
+    }
     if !key.saved {
         return Err(format!(
             "Save your {company} API key in Settings, under Buddy."
@@ -309,7 +315,7 @@ pub fn all_connections(s: &Snapshot) -> Vec<Connection> {
                 "Get an API key from Google AI Studio, then save it in Settings, under Buddy.",
             ),
         };
-        out.push(cli(
+        let mut c = cli(
             name,
             key_name,
             &key.status,
@@ -318,7 +324,12 @@ pub fn all_connections(s: &Snapshot) -> Vec<Connection> {
             how,
             program,
             page,
-        ));
+        );
+        // Nowhere to keep a key: no key can connect it here.
+        if s.password_store.is_some() && !c.ready {
+            c.error = Some(crate::api::NO_STORE.into());
+        }
+        out.push(c);
     }
     out
 }
@@ -490,9 +501,16 @@ fn bit_connection(g: &mut Guide, s: &Snapshot) -> bool {
         .filter(|&a| a != by && bit_ready(s, a).is_ok())
         .collect();
     let names: Vec<&str> = ready.iter().map(|a| a.label()).collect();
+    // Without a password store, no API key can answer here.
+    let keys = s.password_store.is_none();
     match names[..] {
         [] => g.lines.extend([
-            "First, I need something to answer your questions with: Codex, Claude, Antigravity, Ollama or your own API key. Tap one below to set it up.".into(),
+            if keys {
+                "First, I need something to answer your questions with: Codex, Claude, Antigravity, Ollama or your own API key. Tap one below to set it up."
+            } else {
+                "First, I need something to answer your questions with: Codex, Claude, Antigravity or Ollama. Tap one below to set it up."
+            }
+            .into(),
             problem,
         ]),
         [one] => g.lines.extend([
@@ -527,7 +545,7 @@ fn bit_connection(g: &mut Guide, s: &Snapshot) -> bool {
     }
     let others = [Answerer::Ollama]
         .into_iter()
-        .chain(Api::ALL.map(Answerer::Api))
+        .chain(Api::ALL.map(Answerer::Api).into_iter().filter(|_| keys))
         .filter(|&a| a != by);
     for a in others {
         if let Some(c) = connection_of(&all, a) {

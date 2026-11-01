@@ -1104,6 +1104,9 @@ export interface Snapshot {
   /** Your API keys, by provider; the keys themselves are only in your
    * system's password store. */
   apiKeys?: Record<ApiProvider, ApiKeyStatus>;
+  /** Why the computer running Orbit has no password store for API keys,
+   * when it hasn't: then no key can be kept or used there. */
+  passwordStore?: string | null;
   modelCatalogReady: boolean;
   modelConfigurationError?: string | null;
   modelSelectionNotice?: string | null;

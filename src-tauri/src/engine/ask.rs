@@ -344,11 +344,21 @@ impl Engine {
     /// Checks whoever answers Bit and isn't checked with the reviewers:
     /// Ollama, or your key for a provider's API.
     pub async fn check_bit_answerer(&self) {
+        self.check_password_store().await;
         self.check_ollama().await;
         let answerer = self.state.lock().await.settings.buddy.answered_by();
         if let Answerer::Api(api) = answerer {
             let _turn = self.api_lock.lock().await;
             self.check_api(api).await;
+        }
+    }
+    /// Notes whether this computer has a password store to keep API keys
+    /// in, so the app and Bit can say so before you paste one.
+    async fn check_password_store(&self) {
+        let setup = self.apis.lock().unwrap().clone();
+        let missing = setup.missing().await;
+        if self.state.lock().await.password_store != missing {
+            self.update_live(|s| s.password_store = missing).await;
         }
     }
     /// Saves your key for a provider's API in your system's password store,
@@ -362,6 +372,10 @@ impl Engine {
         }
         let _turn = self.api_lock.lock().await;
         let setup = self.apis.lock().unwrap().clone();
+        if key.is_some() && setup.missing().await.is_some() {
+            self.check_password_store().await;
+            return Err(api::NO_STORE.into());
+        }
         setup.save(api, key.clone()).await?;
         self.update(|s| {
             *s.api_keys.get_mut(api) = ApiKey {

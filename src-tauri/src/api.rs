@@ -66,40 +66,113 @@ impl Api {
     }
 }
 
+/// Said when the computer running Orbit has no password store, as many
+/// servers haven't: no API key can be kept there.
+pub const NO_STORE: &str = "The computer running Orbit has no password store to keep API keys in, so they can't be used there. Use Codex, Claude, Antigravity or Ollama instead, in Settings, under Buddy.";
+
 /// Where API keys are kept.
 pub trait Secrets: Send + Sync {
+    /// Why there's nowhere to keep keys, if there isn't, as on a server with
+    /// no password store. Opens no key, so it never asks to unlock one.
+    fn missing(&self) -> Option<String> {
+        None
+    }
     fn get(&self, name: &str) -> Result<Option<String>, String>;
     fn set(&self, name: &str, value: &str) -> Result<(), String>;
     fn delete(&self, name: &str) -> Result<(), String>;
 }
 
-/// Your system's password store.
-pub struct Keychain;
+/// A password store, started when a key is first used.
+type Store = Arc<keyring_core::CredentialStore>;
+
+/// Your system's password store, started the first time it's there. A store
+/// that couldn't start (no Secret Service yet, say) is tried again next
+/// time, so one that starts after Orbit, or a server that gains one, is
+/// found on Check again with no restart. (The keyring crate's own start is
+/// tried once a run, which is why Orbit starts the store itself.)
+pub struct Keychain {
+    store: std::sync::Mutex<Option<Store>>,
+    start: fn() -> keyring_core::Result<Store>,
+}
 impl Keychain {
-    fn entry(name: &str) -> Result<keyring::Entry, String> {
-        keyring::Entry::new(SERVICE, name).map_err(store_error)
+    /// The system's store: the Keychain on macOS, Credential Manager on
+    /// Windows, the Secret Service elsewhere.
+    pub fn system() -> Self {
+        Self::starting_with(system_store)
+    }
+    fn starting_with(start: fn() -> keyring_core::Result<Store>) -> Self {
+        Self {
+            store: std::sync::Mutex::new(None),
+            start,
+        }
+    }
+    /// The store, starting it if it hasn't started yet. Opens no key.
+    fn store(&self) -> keyring_core::Result<Store> {
+        let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(store) = &*store {
+            return Ok(store.clone());
+        }
+        let started = (self.start)()?;
+        *store = Some(started.clone());
+        Ok(started)
+    }
+    fn entry(&self, name: &str) -> Result<keyring_core::Entry, String> {
+        self.store()
+            .and_then(|store| store.build(SERVICE, name, None))
+            .map_err(store_error)
     }
 }
 impl Secrets for Keychain {
+    fn missing(&self) -> Option<String> {
+        self.store().err().map(|e| e.to_string())
+    }
     fn get(&self, name: &str) -> Result<Option<String>, String> {
-        match Self::entry(name)?.get_password() {
+        match self.entry(name)?.get_password() {
             Ok(key) => Ok(Some(key)),
-            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(keyring_core::Error::NoEntry) => Ok(None),
             Err(e) => Err(store_error(e)),
         }
     }
     fn set(&self, name: &str, value: &str) -> Result<(), String> {
-        Self::entry(name)?.set_password(value).map_err(store_error)
+        self.entry(name)?.set_password(value).map_err(store_error)
     }
     fn delete(&self, name: &str) -> Result<(), String> {
-        match Self::entry(name)?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        match self.entry(name)?.delete_credential() {
+            Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
             Err(e) => Err(store_error(e)),
         }
     }
 }
-fn store_error(e: keyring::Error) -> String {
+fn store_error(e: keyring_core::Error) -> String {
     format!("Orbit couldn't use your system's password store: {e}")
+}
+#[cfg(target_os = "macos")]
+fn system_store() -> keyring_core::Result<Store> {
+    Ok(apple_native_keyring_store::keychain::Store::new()?)
+}
+#[cfg(target_os = "windows")]
+fn system_store() -> keyring_core::Result<Store> {
+    Ok(windows_native_keyring_store::Store::new()?)
+}
+#[cfg(all(
+    unix,
+    not(any(target_os = "macos", target_os = "ios", target_os = "android"))
+))]
+fn system_store() -> keyring_core::Result<Store> {
+    Ok(zbus_secret_service_keyring_store::Store::new()?)
+}
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "windows",
+    all(
+        unix,
+        not(any(target_os = "macos", target_os = "ios", target_os = "android"))
+    )
+)))]
+fn system_store() -> keyring_core::Result<Store> {
+    Err(keyring_core::Error::NotSupportedByStore(
+        "Orbit keeps API keys only on macOS, Windows and Linux".into(),
+    ))
 }
 
 /// Where keys are kept and where each provider answers; tests use a fake
@@ -113,7 +186,7 @@ pub struct Setup {
 impl Default for Setup {
     fn default() -> Self {
         Self {
-            secrets: Arc::new(Keychain),
+            secrets: Arc::new(Keychain::system()),
             bases: Api::ALL.map(|a| a.base().to_string()),
         }
     }
@@ -121,6 +194,14 @@ impl Default for Setup {
 impl Setup {
     pub fn base(&self, api: Api) -> &str {
         &self.bases[Api::ALL.iter().position(|a| *a == api).unwrap_or(0)]
+    }
+    /// Why there's nowhere to keep keys, if there isn't (`Secrets::missing`),
+    /// off the async threads, as starting the store may block.
+    pub async fn missing(&self) -> Option<String> {
+        let secrets = self.secrets.clone();
+        tokio::task::spawn_blocking(move || secrets.missing())
+            .await
+            .unwrap_or_default()
     }
     /// The saved key for `api`, if any. The password store may block, so
     /// it is read off the async threads.

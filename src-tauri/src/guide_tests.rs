@@ -584,3 +584,43 @@ fn a_button_offered_twice_shows_once() {
         (0..g.proposals.len() as u32).collect::<Vec<_>>()
     );
 }
+
+/// With no password store on the computer running Orbit, no API key can
+/// answer, so Bit offers only what can.
+#[test]
+fn with_no_password_store_bit_offers_only_what_can_answer() {
+    let mut s = Snapshot {
+        codex_error: Some("Codex is not signed in. Run codex login, then reconnect.".into()),
+        password_store: Some("no session bus".into()),
+        ..Default::default()
+    };
+    let g = bit_setup(&s);
+    assert_eq!(
+        g.lines,
+        [
+            "First, I need something to answer your questions with: Codex, Claude, Antigravity or Ollama. Tap one below to set it up.",
+            "Codex isn't signed in. Tap Sign in to Codex and I'll give you a code to enter on its website.",
+        ]
+    );
+    assert_eq!(
+        labels(&g),
+        [
+            "SignIn Sign in to Codex",
+            "OpenPage Get Claude Code",
+            "OpenPage Get Antigravity",
+            "ChangeSettings Use Ollama",
+            "CheckConnections - ",
+        ]
+    );
+    // Answering with a key already chosen: why it can't, with nothing to
+    // install for it.
+    s.settings.buddy.answerer = "google".into();
+    let g = bit_setup(&s);
+    assert_eq!(
+        g.lines[1],
+        format!("Gemini API isn't connected. {}", crate::api::NO_STORE)
+    );
+    assert!(!labels(&g)
+        .iter()
+        .any(|l| l.contains("API key") || l.contains("Gemini")));
+}

@@ -633,10 +633,11 @@ impl Engine {
 /// The state as `state.json` holds it.
 pub(crate) fn saved(s: &Snapshot) -> Result<Value, String> {
     let mut saved = serde_json::to_value(s).map_err(|e| e.to_string())?;
-    // Usage describes the signed-in account right now, so it is shown but
-    // never saved.
+    // Usage describes the signed-in account right now, and the password
+    // store this computer has right now, so they are shown but never saved.
     if let Some(saved) = saved.as_object_mut() {
         saved.remove("usage");
+        saved.remove("passwordStore");
     }
     Ok(saved)
 }

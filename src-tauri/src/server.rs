@@ -3,7 +3,7 @@
 //! browser page (see `remote`) from the built frontend's files, so the page
 //! is the only way in. Its controls are on the command line, which a browser
 //! can't reach, as the desktop-only controls are.
-use crate::{engine::Engine, remote, service};
+use crate::{api::Secrets, engine::Engine, remote, service};
 use std::{
     ffi::OsString,
     io::{IsTerminal, Write},
@@ -560,6 +560,11 @@ Listening on http://127.0.0.1:{port}, on this computer only.",
         data.display(),
         web.display()
     ));
+    // Many servers have no password store, so Bit can't use an API key.
+    let keys = tokio::task::spawn_blocking(|| crate::api::Keychain::system().missing()).await;
+    if let Ok(Some(_)) = keys {
+        say("This computer has no password store to keep API keys in, so Bit can't answer with one here. Choose Codex, Claude, Antigravity or Ollama for Bit, in Settings, under Buddy.");
+    }
     // A service's log is kept, so the link, which works like a key, is only
     // shown in a terminal.
     if std::io::stdout().is_terminal() {

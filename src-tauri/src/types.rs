@@ -1320,6 +1320,11 @@ pub struct Snapshot {
     pub state_write_error: Option<String>,
     /// Keys of the open items already announced, so each is announced once.
     pub announced: Vec<String>,
+    /// Why the computer running Orbit has no password store for API keys,
+    /// when it hasn't (`api::Secrets::missing`). Read as Orbit connects,
+    /// never saved.
+    #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub password_store: Option<String>,
     /// The latest notifications Orbit sent, newest last, so an app showing
     /// this Orbit from another computer shows them too.
     pub notices: Vec<crate::attention::SentNotice>,

@@ -1124,3 +1124,48 @@ async fn a_password_store_that_wont_open_says_so() {
     );
     assert!(!e.snapshot().await.api_keys.anthropic.saved);
 }
+
+/// Part 4c's Done when: on a server with no password store, Orbit says so
+/// before you paste a key, refuses one it can't keep, and Bit's setup help
+/// offers Codex, Claude, Antigravity or Ollama instead of a key.
+#[tokio::test]
+async fn a_server_with_no_password_store_says_so_and_offers_the_others() {
+    use crate::api::{tests::KEY, Api, NO_STORE};
+    let (_dir, e, _store) = answering_with_api(Api::OpenAi, "gpt-5", provider_with("{}")).await;
+    assert_eq!(e.snapshot().await.password_store, None);
+    e.apis.lock().unwrap().secrets = Arc::new(crate::api::tests::Memory {
+        missing: Some("no session bus".into()),
+        ..Default::default()
+    });
+    e.check_bit_answerer().await;
+    let s = e.shown_snapshot().await;
+    assert_eq!(s.password_store.as_deref(), Some("no session bus"));
+    // Never saved: a restart reads it again.
+    let saved = serde_json::to_value(crate::engine::saved(&s).unwrap()).unwrap();
+    assert!(
+        saved.get("passwordStore").is_none_or(|v| v.is_null()),
+        "{saved}"
+    );
+    // A key it couldn't keep is refused, in plain words.
+    assert_eq!(
+        e.set_api_key("openai", Some(KEY.into())).await.unwrap_err(),
+        NO_STORE
+    );
+    assert!(!e.snapshot().await.api_keys.openai.saved);
+    // Bit says why it can't answer, and offers what can, never a key.
+    let (lines, buttons) = cant_answer(&e, "Hi?").await;
+    assert!(lines.iter().any(|l| l.contains(NO_STORE)), "{lines:?}");
+    assert!(!lines.iter().any(|l| l.contains("API key.")), "{lines:?}");
+    assert!(
+        !buttons.iter().any(|b| b.contains("API key")),
+        "{buttons:?}"
+    );
+    let help = crate::guide::connections(&s);
+    let c = help.iter().find(|c| c.key == "openai-api").unwrap();
+    assert_eq!(c.error.as_deref(), Some(NO_STORE));
+    assert!(crate::guide::fix(c).is_none());
+    // Once the computer has one, Orbit sees it as it next connects.
+    e.apis.lock().unwrap().secrets = Arc::new(crate::api::tests::Memory::default());
+    e.check_bit_answerer().await;
+    assert_eq!(e.snapshot().await.password_store, None);
+}
