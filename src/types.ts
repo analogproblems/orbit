@@ -459,8 +459,11 @@ export interface Buddy {
   googleModel: string;
   /** Whether Bit sends a morning brief. */
   brief: boolean;
-  /** When, by this computer's clock, as HH:MM. */
+  /** When, as HH:MM, in timeZone. */
   briefAt: string;
+  /** The time zone the brief comes by, such as Europe/London. Empty: the
+   * clock of the computer Orbit runs on. */
+  timeZone: string;
 }
 /** One of Orbit's own controls, offered for something that needs you. */
 export type Fix =
@@ -561,6 +564,7 @@ export const defaultBuddy: Buddy = {
   googleModel: "",
   brief: true,
   briefAt: "09:00",
+  timeZone: "",
 };
 export const buddyTones: Record<BuddyTone, string> = {
   cheerful: "Cheerful",
@@ -1113,6 +1117,8 @@ export interface Snapshot {
   buddyFeed?: BuddyFeed;
   /** How Bit feels. Derived by the engine for display. */
   mood?: Mood | null;
+  /** The time zone of the computer Orbit runs on, such as Etc/UTC. */
+  clockZone?: string;
   /** Reading each repository's pull-request history for the Decisions page. */
   ledger?: LedgerStatus;
   /** Each connected repository's CI, as last read. */
@@ -1219,7 +1225,7 @@ export interface BriefLine {
 }
 /** A morning brief Orbit sent. */
 export interface Brief {
-  /** The day it is for, by this computer's clock, such as 2026-10-31. */
+  /** The day it is for, in Bit's time zone, such as 2026-10-31. */
   day: string;
   at: string;
   text: string;

@@ -56,6 +56,7 @@ const buddyLabels: Record<keyof Buddy, string> = {
   googleModel: "Gemini model",
   brief: "Morning brief",
   briefAt: "Brief time",
+  timeZone: "Time zone",
 };
 
 /** A buddy setting's value as the settings page names it, such as Pink. */
@@ -69,7 +70,11 @@ function buddyValue(field: string, v: unknown): unknown {
           ? bitHats[v as BuddyHat]
           : field === "look"
             ? bitLooks[v as BuddyLook]?.label
-            : undefined;
+            : field === "timeZone"
+              ? (v as string) === ""
+                ? "Orbit’s computer"
+                : (v as string).replace(/_/g, " ")
+              : undefined;
   return name ?? v;
 }
 

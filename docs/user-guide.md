@@ -563,7 +563,7 @@ Bit is Orbit's buddy: a little character with a face, at the bottom of the sideb
 
 #### Morning brief
 
-Once a day, at the time you choose under **Settings**, **Buddy**, **Brief time** (09:00 unless you change it, by this computer's clock), Bit sums up in one note:
+Once a day, at the time you choose under **Settings**, **Buddy**, **Brief time** (09:00 unless you change it), Bit sums up in one note:
 
 - the pull requests Orbit reviews automatically that are clear to merge, with the head and base they're clear at;
 - the stuck ones, and whose move it is: those Orbit already reminded the author about, after 2 hours, or put on **Needs you** for a person, after a day (see [Clear to merge](#clear-to-merge));
@@ -571,6 +571,8 @@ Once a day, at the time you choose under **Settings**, **Buddy**, **Brief time**
 - notes on runners and storage: runs waiting for a runner, a repository's or organization's self-hosted runners that are all offline, and caches near GitHub's usual limit. These need **Watch CI** on, as Orbit only reads runners and storage then.
 
 The note starts with how many of each, then how many lines are new since the last brief, each marked **New**, and how many things from the last brief have settled, such as a check that passes again or a pull request that merged. A day when nothing is new and nothing settled gets no brief. Nor does a first day with nothing to say. The brief also goes on **Needs you**, with a desktop notification, until you tap **Got it** there or under the note, or the next day's brief time comes. If Orbit isn't running at the brief time, the brief comes when it next is, that day. It waits while Orbit's latest sync of your pull requests or read of a repository's CI failed, for any repository, or its latest question to GitHub about whether a pull request merges failed while nothing else is in that pull request's way, so it never sums up what Orbit couldn't read. It comes on the next pass that reads them all, that day; while a repository keeps failing, **Needs you** says so instead. Runners and storage are read less often, so their notes don't wait: they say when Orbit's latest read of them failed and may be out of date, and when GitHub has more runners than Orbit read, they speak only of those Orbit read. Turn **Morning brief** off to stop it; turning Bit or the brief off also takes an open brief off **Needs you**. Bit works it all out from what Orbit already knows, without any AI.
+
+The brief time follows the clock of the computer Orbit runs on, until you choose a **Time zone** under it. Search for yours by region or city, such as London or New York. That matters when Orbit [runs on a computer that stays on](#run-orbit-without-a-window) set to another zone, as many servers keep UTC: in a browser or a desktop app using that Orbit, the list suggests this device's zone, and Settings says when the two differ. Choose **This computer** (**Orbit's computer** away from it) to go back to its clock.
 
 #### Ask Bit
 
@@ -701,7 +703,7 @@ Settings has seven pages: **Connections**, **Reviewers** (Codex, Claude and Anti
 | Buddy: colour                          | Lime                               | Its own colours or one of 20 theme colours.                                                                                |
 | Buddy: hat                             | None                               | None or one of 20 hats.                                                                                                    |
 | Buddy: tone                            | Cheerful                           | Cheerful, calm, or dry.                                                                                                    |
-| Buddy: morning brief                   | On, at 09:00                       | On/off, and a time on a 24-hour clock, by this computer's clock.                                                           |
+| Buddy: morning brief                   | On, at 09:00                       | On/off, a time on a 24-hour clock, and a time zone (the computer's own until you choose).                                  |
 | Buddy: personality                     | Empty                              | Up to 4000 characters.                                                                                                     |
 | Buddy: rules                           | Ask first                          | Do it, ask first, or leave it to me, for Continue loop, Review again, Publish report and Sync now.                         |
 | Buddy: post rules                      | Do it                              | Do it, ask first, or leave it to me, for Comment on pull requests and Open issues.                                         |

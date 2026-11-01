@@ -1,7 +1,7 @@
 //! Bit's morning brief: once a day, at the time you choose in Bit's
-//! settings, Bit sums up the pull requests clear to merge, the stuck ones
-//! and whose move it is, the open CI problems, and what it notes about
-//! runners and storage. It marks each line that is new since the last brief
+//! settings, in the time zone chosen there (`crate::clock`), Bit sums up
+//! the pull requests clear to merge, the stuck ones and whose move it is,
+//! the open CI problems, and what it notes about runners and storage. It marks each line that is new since the last brief
 //! and counts what settled since then. On a day with nothing new and
 //! nothing settled, nothing is sent. A brief shows in Bit's conversation
 //! and in Needs you until you mark it read or the next brief's time comes.
@@ -36,7 +36,7 @@ pub struct Line {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Brief {
-    /// The day it is for, by this computer's clock: `2026-10-31`.
+    /// The day it is for, in Bit's time zone: `2026-10-31`.
     pub day: String,
     /// When Orbit made it, by Orbit's clock.
     pub at: String,
@@ -74,7 +74,7 @@ pub fn time_of(at: &str) -> Option<NaiveTime> {
     }
     NaiveTime::parse_from_str(at, "%H:%M").ok()
 }
-/// The day a brief is due for at `now`, this computer's time, if one is:
+/// The day a brief is due for at `now`, in Bit's time zone, if one is:
 /// once `at` has come on a day later than the one Orbit last looked on.
 pub fn due(looked: &str, at: &str, now: NaiveDateTime) -> Option<String> {
     let day = now.date().format("%Y-%m-%d").to_string();
@@ -297,9 +297,9 @@ fn merge_unread(s: &Snapshot, r: &crate::readiness::Readiness) -> bool {
 }
 
 /// Looks once a day, at the time Bit's settings give, whether there is a
-/// brief to send, and makes it if there is. `local` is this computer's
-/// time and `now` Orbit's clock. Looking takes yesterday's brief out of
-/// Needs you. Nothing happens while Bit or the brief is off, or while a
+/// brief to send, and makes it if there is. `local` is the time in Bit's
+/// time zone (`crate::clock::local`) and `now` Orbit's clock. Looking
+/// takes yesterday's brief out of Needs you. Nothing happens while Bit or the brief is off, or while a
 /// read it sums up failed (`unread`), so a brief is never made from what
 /// Orbit couldn't read, and the day waits for a pass that reads it all.
 /// Returns whether anything changed.

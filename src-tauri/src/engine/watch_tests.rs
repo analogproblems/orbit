@@ -1869,10 +1869,20 @@ async fn a_day_with_changes_gives_one_brief_and_a_quiet_day_none() {
     let titles = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
     let told = titles.clone();
     e.on_notice(move |n| told.lock().unwrap().push(n.title.clone()));
+    // In a time zone you chose, whose day isn't this computer's: the brief
+    // is for your day. (These two zones are 26 hours apart, so one of them
+    // always is on another day.)
+    let mine = |zone: &str| crate::clock::local(zone, chrono::Utc::now()).date();
+    let computer = chrono::Local::now().date_naive();
+    let zone = ["Pacific/Kiritimati", "Etc/GMT+12"]
+        .into_iter()
+        .find(|z| mine(z) != computer)
+        .unwrap();
     e.update(|s| {
         s.github_user = Some("me".into());
         s.settings.buddy.brief = true;
         s.settings.buddy.brief_at = "00:00".into();
+        s.settings.buddy.time_zone = zone.into();
     })
     .await;
     let p = reviewed(&e).await;
@@ -1911,7 +1921,7 @@ async fn a_day_with_changes_gives_one_brief_and_a_quiet_day_none() {
     // A day with a pull request clear to merge.
     watch().await;
     let (b, notes, items, told) = briefs().await;
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let today = mine(zone).format("%Y-%m-%d").to_string();
     let first = b.latest.unwrap();
     assert_eq!(
         (b.looked.as_str(), first.day.as_str()),

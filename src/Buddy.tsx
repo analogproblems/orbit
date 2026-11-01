@@ -39,7 +39,7 @@ import {
 } from "@astryxdesign/core";
 import { createISOTimeString } from "@astryxdesign/core/utils";
 import { ExternalLink, RefreshCw, Trash2 } from "lucide-react";
-import { openLink, useOrbit } from "./store";
+import { openLink, remote, useOrbit } from "./store";
 import {
   actionLabels,
   apiProviders,
@@ -84,6 +84,7 @@ import { useReconnect } from "./CliReviewers";
 import { SafeMarkdown } from "./SafeMarkdown";
 import { describePatch, describeRepositoryPatch } from "./describePatch";
 import { recentTimestamp } from "./timestamps";
+import { TimeZoneSelector } from "./TimeZone";
 
 /** The buddy as it will be once saves in progress land. */
 function useBuddy(): Buddy {
@@ -853,7 +854,7 @@ function answererDescription(s: Snapshot, buddy: Buddy): string {
 /** The buddy's part of Settings: on or off, name, colour, hat, tone, who
  * answers and personality, with a live preview. */
 export function BuddySettings() {
-  const { snapshot: s, updateSettings, saves } = useOrbit();
+  const { snapshot: s, updateSettings, saves, alwaysOn } = useOrbit();
   const buddy = useBuddy();
   const [preview, setPreview] = useState<Mood>("happy");
   const [name, setName] = useState<string | null>(null);
@@ -1057,7 +1058,7 @@ export function BuddySettings() {
             <>
               <TimeInput
                 label="Brief time"
-                description="By this computer's clock. If Orbit isn't running then, the brief comes when it next is."
+                description="If Orbit isn't running then, the brief comes when it next is."
                 hourFormat="24h"
                 value={createISOTimeString(buddy.briefAt) ?? undefined}
                 isDisabled={pending("briefAt")}
@@ -1067,6 +1068,14 @@ export function BuddySettings() {
                 }}
               />
               <SaveFeedback saveKey="buddy.briefAt" />
+              <TimeZoneSelector
+                value={buddy.timeZone ?? ""}
+                clockZone={s.clockZone ?? ""}
+                elsewhere={remote || Boolean(alwaysOn)}
+                isDisabled={pending("timeZone")}
+                onChange={(timeZone) => void save({ timeZone }, "timeZone")}
+              />
+              <SaveFeedback saveKey="buddy.timeZone" />
             </>
           )}
         </VStack>

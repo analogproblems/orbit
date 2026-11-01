@@ -280,8 +280,12 @@ pub struct Buddy {
     pub google_model: String,
     /// Whether Bit sends a morning brief (`crate::brief`).
     pub brief: bool,
-    /// When, by this computer's clock, as `HH:MM`.
+    /// When, as `HH:MM`, in `time_zone`.
     pub brief_at: String,
+    /// The time zone the brief comes by, such as `Europe/London`, for an
+    /// Orbit on a computer set to another zone (`crate::clock`). Empty: the
+    /// clock of the computer Orbit runs on.
+    pub time_zone: String,
 }
 impl Default for Buddy {
     fn default() -> Self {
@@ -302,6 +306,7 @@ impl Default for Buddy {
             google_model: String::new(),
             brief: true,
             brief_at: crate::brief::DEFAULT_AT.into(),
+            time_zone: String::new(),
         }
     }
 }
@@ -355,6 +360,12 @@ impl Buddy {
             return Err(format!(
                 "'{}' isn't a time for the morning brief. Give hours and minutes, such as 09:00.",
                 self.brief_at
+            ));
+        }
+        if !crate::clock::valid(&self.time_zone) {
+            return Err(format!(
+                "'{}' isn't a time zone Orbit knows. Choose one from the list, such as Europe/London.",
+                self.time_zone
             ));
         }
         Ok(())
@@ -431,6 +442,9 @@ impl Buddy {
         if crate::brief::time_of(&self.brief_at).is_none() {
             self.brief_at = default.brief_at;
         }
+        if !crate::clock::valid(&self.time_zone) {
+            self.time_zone = default.time_zone;
+        }
     }
 }
 /// Only supplied fields change.
@@ -453,6 +467,7 @@ pub struct BuddyPatch {
     pub google_model: Option<String>,
     pub brief: Option<bool>,
     pub brief_at: Option<String>,
+    pub time_zone: Option<String>,
 }
 impl BuddyPatch {
     pub fn apply(self, buddy: &mut Buddy) {
@@ -491,6 +506,9 @@ impl BuddyPatch {
         }
         if let Some(v) = self.brief_at {
             buddy.brief_at = v.trim().to_string();
+        }
+        if let Some(v) = self.time_zone {
+            buddy.time_zone = v.trim().to_string();
         }
         for (api, v) in [
             (Api::OpenAi, self.openai_model),

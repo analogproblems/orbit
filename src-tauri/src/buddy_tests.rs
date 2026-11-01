@@ -483,6 +483,11 @@ fn settings_check_the_name_and_choices() {
             "9am",
             "'9am' isn't a time for the morning brief. Give hours and minutes, such as 09:00.",
         ),
+        (
+            "time_zone",
+            "Mars/Olympus",
+            "'Mars/Olympus' isn't a time zone Orbit knows. Choose one from the list, such as Europe/London.",
+        ),
     ] {
         let mut bad = b.clone();
         match field {
@@ -493,6 +498,7 @@ fn settings_check_the_name_and_choices() {
             "answerer" => bad.answerer = value.into(),
             "ollama_url" => bad.ollama_url = value.into(),
             "brief_at" => bad.brief_at = value.into(),
+            "time_zone" => bad.time_zone = value.into(),
             _ => bad.tone = value.into(),
         }
         assert_eq!(bad.validate().unwrap_err(), error, "{field}");
@@ -513,6 +519,13 @@ fn settings_check_the_name_and_choices() {
         serde_json::from_value(json!({"brief": false, "briefAt": " 17:30 "})).unwrap();
     patch.apply(&mut b);
     assert_eq!((b.brief, b.brief_at.as_str()), (false, "17:30"));
+    assert!(b.validate().is_ok());
+    // By this computer's clock until you choose a time zone.
+    assert_eq!(b.time_zone, "");
+    let patch: BuddyPatch =
+        serde_json::from_value(json!({"timeZone": " America/New_York "})).unwrap();
+    patch.apply(&mut b);
+    assert_eq!(b.time_zone, "America/New_York");
     assert!(b.validate().is_ok());
     // Codex answers until you choose another.
     assert_eq!(b.answered_by(), Answerer::Codex);
@@ -580,6 +593,14 @@ fn saved_state_from_another_version_falls_back_to_defaults() {
     assert_eq!((b.brief, b.brief_at.as_str()), (false, "09:00"));
     let b: Buddy = serde_json::from_value(json!({"name": "Sprocket"})).unwrap();
     assert_eq!((b.brief, b.brief_at.as_str()), (true, "09:00"));
+    // A time zone this version doesn't know, and none from before zones:
+    // the computer's clock.
+    let mut b: Buddy = serde_json::from_value(json!({"timeZone": "Mars/Olympus"})).unwrap();
+    b.normalize();
+    assert_eq!(b.time_zone, "");
+    let mut b: Buddy = serde_json::from_value(json!({"timeZone": "Asia/Tokyo"})).unwrap();
+    b.normalize();
+    assert_eq!(b.time_zone, "Asia/Tokyo");
     // An Ollama address Orbit can't use.
     let mut b: Buddy =
         serde_json::from_value(json!({"ollamaUrl": "file:///etc", "ollamaModel": "a\nb"})).unwrap();

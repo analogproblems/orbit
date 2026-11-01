@@ -317,6 +317,37 @@ fn no_brief_while_bit_or_the_brief_is_off_or_orbit_cant_sync() {
     assert!(latest(&s).open);
 }
 
+/// Part 4b's Done when: the brief comes at your time on a server set to
+/// another zone. Whatever this computer's clock says, Orbit looks at the
+/// time in the zone you chose.
+#[test]
+fn the_brief_comes_at_your_time_in_the_zone_you_chose() {
+    let utc = |at: &str| {
+        DateTime::parse_from_rfc3339(at)
+            .unwrap()
+            .with_timezone(&Utc)
+    };
+    let look_at = |s: &mut Snapshot, now: &str| {
+        let now = utc(now);
+        let local = crate::clock::local(&s.settings.buddy.time_zone, now);
+        look(s, local, now)
+    };
+    let mut s = busy();
+    s.settings.buddy.time_zone = "America/New_York".into();
+    // 9:00 in New York is 14:00 in UTC in November: not at 9:00 UTC.
+    assert!(!look_at(&mut s, "2026-11-02T09:00:00Z"));
+    assert!(!look_at(&mut s, "2026-11-02T13:59:00Z"));
+    assert!(look_at(&mut s, "2026-11-02T14:00:00Z"));
+    assert_eq!(latest(&s).day, "2026-11-02");
+    // A zone a day ahead of UTC gives that day's brief the evening before,
+    // by UTC.
+    let mut s = busy();
+    s.settings.buddy.time_zone = "Pacific/Auckland".into();
+    assert!(!look_at(&mut s, "2026-11-01T19:59:00Z"));
+    assert!(look_at(&mut s, "2026-11-01T20:00:00Z"));
+    assert_eq!(latest(&s).day, "2026-11-02");
+}
+
 /// A read the brief sums up failed: no brief from what Orbit kept from
 /// before, and the day isn't used up, so the brief comes once a read works
 /// that day.
