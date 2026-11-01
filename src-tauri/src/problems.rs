@@ -6,7 +6,9 @@
 //! request whose checks passed before its base branch moved on, and a
 //! repository where no CI runs on pull requests. Runs that wait a long time
 //! for a runner tell you like a failing default branch, as only a person
-//! can add or fix a runner.
+//! can add or fix a runner. A repository's open security alerts of each
+//! kind are a problem too (`see_security`); those only a person should see
+//! to tell you once each.
 //!
 //! Everything here is worked out from what Orbit read; nothing reaches
 //! GitHub.
@@ -48,6 +50,9 @@ pub enum ProblemKind {
     /// A repository's runs have waited a long time for a runner (see
     /// `crate::runners`).
     Waiting,
+    /// A repository's open security alerts of one kind (see
+    /// `crate::security`).
+    Security,
 }
 /// Something that happened to a problem.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,8 +68,9 @@ pub struct Problem {
     /// What the problem is about, the same while it stays the same thing:
     /// `ci:owner/name` for a default branch, `ci:owner/name#12` for a pull
     /// request, `base:owner/name#12` for its base moving on,
-    /// `setup:owner/name` for a repository with no CI on pull requests, and
-    /// `wait:owner/name` for its runs waiting for a runner.
+    /// `setup:owner/name` for a repository with no CI on pull requests,
+    /// `wait:owner/name` for its runs waiting for a runner, and
+    /// `security:owner/name:dependabot` for its security alerts of a kind.
     pub key: String,
     pub kind: ProblemKind,
     pub repo: String,
@@ -114,6 +120,15 @@ pub struct Problem {
     /// them, the longest first.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub waiting: Vec<Waiting>,
+    /// For security alerts: which kind, those open when Orbit last read
+    /// them, the most severe first, and those that need you it told you
+    /// about, by number.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<crate::security::Source>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub security_alerts: Vec<crate::security::Alert>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub told_alerts: Vec<u64>,
 }
 impl Problem {
     pub fn is_open(&self) -> bool {
@@ -124,9 +139,16 @@ impl Problem {
         format!("problem:{}:{}", self.id, self.alerts)
     }
     /// Whether it is yours to know about, rather than a pull request
-    /// author's to fix.
+    /// author's to fix: security alerts only while one of them needs you.
     pub fn needs_you(&self) -> bool {
-        matches!(self.kind, ProblemKind::DefaultBranch | ProblemKind::Waiting)
+        match self.kind {
+            ProblemKind::DefaultBranch | ProblemKind::Waiting => true,
+            ProblemKind::Security => self
+                .security_alerts
+                .iter()
+                .any(crate::security::Alert::needs_you),
+            _ => false,
+        }
     }
     fn note(&mut self, at: &str, text: String) {
         self.timeline.push(ProblemEvent {
@@ -200,6 +222,10 @@ pub fn setup_key(repo: &str) -> String {
 /// The key of a repository's problem about runs waiting for a runner.
 pub fn waiting_key(repo: &str) -> String {
     format!("wait:{}", repo.to_ascii_lowercase())
+}
+/// The key of a repository's problem about its security alerts of a kind.
+pub fn security_key(repo: &str, source: crate::security::Source) -> String {
+    format!("security:{}:{}", repo.to_ascii_lowercase(), source.key())
 }
 /// Runs waiting for a runner in a sentence: "A run of CI in acme/api has
 /// waited more than 30 minutes for a runner."
@@ -606,6 +632,162 @@ pub fn see_waiting(
     }
 }
 
+/// Opens, updates or closes the problems about a repository's security
+/// alerts, one for each kind, from what Orbit just read (`read`) and what
+/// it looked up of the alerts that left a list (`left`). An alert leaves
+/// its problem only once GitHub says it's no longer open, and the timeline
+/// says what became of it; the problem closes once none is left. It tells
+/// you once for each alert that needs you (`security::Alert::needs_you`),
+/// including one that came to need you. A kind Orbit can't see now closes
+/// its problem, saying so, as Orbit can no longer tell what became of it.
+pub fn see_security(
+    problems: &mut Vec<Problem>,
+    read: &crate::security::RepoSecurity,
+    left: &[crate::security::Left],
+    now: DateTime<Utc>,
+) {
+    use crate::security::{open_text, outcome_text, sort, Alert, Outcome};
+    let at = stamp(now);
+    for kind in &read.kinds {
+        let key = security_key(&read.repo, kind.source);
+        let open = problems.iter_mut().find(|p| p.key == key && p.is_open());
+        if let Some(why) = &kind.unseen {
+            if let Some(p) = open {
+                p.close(
+                    &at,
+                    format!("{why} Orbit can't see what became of its alerts now."),
+                );
+            }
+            continue;
+        }
+        let Some(p) = open else {
+            if kind.alerts.is_empty() {
+                continue;
+            }
+            let mut p = Problem {
+                id: id(),
+                key,
+                kind: ProblemKind::Security,
+                repo: read.repo.clone(),
+                opened_at: at.clone(),
+                source: Some(kind.source),
+                security_alerts: kind.alerts.clone(),
+                ..Default::default()
+            };
+            sort(&mut p.security_alerts);
+            p.note(&at, open_text(kind.source, &p.security_alerts));
+            tell(&mut p, &at);
+            problems.push(p);
+            continue;
+        };
+        // Those no longer listed go only once GitHub says what became of
+        // them; until then they stay as they were.
+        let mut gone = vec![];
+        p.security_alerts.retain(|a| {
+            if kind.alerts.iter().any(|b| b.number == a.number) {
+                return true;
+            }
+            match left
+                .iter()
+                .find(|l| l.source == kind.source && l.number == a.number)
+            {
+                Some(l) if l.outcome != Outcome::Open => {
+                    gone.push(outcome_text(a, &l.outcome));
+                    false
+                }
+                _ => true,
+            }
+        });
+        let mut new: Vec<Alert> = vec![];
+        for a in &kind.alerts {
+            match p.security_alerts.iter_mut().find(|b| b.number == a.number) {
+                Some(b) => *b = a.clone(),
+                None => new.push(a.clone()),
+            }
+        }
+        if p.security_alerts.is_empty() && new.is_empty() {
+            let reason = match gone.as_slice() {
+                [one] => one.clone(),
+                _ => {
+                    for text in &gone {
+                        p.note(&at, text.clone());
+                    }
+                    format!("No {} are open on GitHub now.", kind.source.many())
+                }
+            };
+            p.close(&at, reason);
+            continue;
+        }
+        for text in gone {
+            p.note(&at, text);
+        }
+        if !new.is_empty() {
+            sort(&mut new);
+            let names: Vec<String> = new.iter().map(Alert::name).collect();
+            let text = match names.as_slice() {
+                [one] => format!("New: {one}."),
+                [a, b] => format!("New: {a} and {b}."),
+                [a, b, rest @ ..] => format!("New: {a}, {b} and {} more.", rest.len()),
+                [] => unreachable!(),
+            };
+            p.note(&at, text);
+            p.security_alerts.extend(new);
+        }
+        sort(&mut p.security_alerts);
+        tell(p, &at);
+    }
+}
+/// Notes when Orbit asked GitHub about each of a repository's alerts in
+/// `asked`, whatever it answered, so the next pass asks about the others
+/// first (`security::to_look_up`).
+pub fn looked_up(
+    problems: &mut [Problem],
+    repo: &str,
+    asked: &[(crate::security::Source, u64)],
+    now: DateTime<Utc>,
+) {
+    let at = stamp(now);
+    for &(source, number) in asked {
+        let key = security_key(repo, source);
+        let alert = problems
+            .iter_mut()
+            .filter(|p| p.key == key && p.is_open())
+            .flat_map(|p| p.security_alerts.iter_mut())
+            .find(|a| a.number == number);
+        if let Some(a) = alert {
+            a.looked_at = at.clone();
+        }
+    }
+}
+/// Tells you about a security problem's alerts that need you and that it
+/// hasn't told you about, and forgets those no longer open, so one that
+/// opens again tells you again.
+fn tell(p: &mut Problem, at: &str) {
+    let open: Vec<u64> = p.security_alerts.iter().map(|a| a.number).collect();
+    p.told_alerts.retain(|n| open.contains(n));
+    let fresh: Vec<u64> = p
+        .security_alerts
+        .iter()
+        .filter(|a| a.needs_you() && !p.told_alerts.contains(&a.number))
+        .map(|a| a.number)
+        .collect();
+    if !fresh.is_empty() {
+        p.told_alerts.extend(fresh);
+        p.alert(at);
+    }
+}
+/// Closes every open security problem, once you turn Watch security alerts
+/// off.
+pub fn close_security(problems: &mut [Problem], now: DateTime<Utc>) {
+    let at = stamp(now);
+    for p in problems
+        .iter_mut()
+        .filter(|p| p.is_open() && p.kind == ProblemKind::Security)
+    {
+        p.close(&at, "Orbit stopped watching security alerts.".into());
+    }
+}
+
 /// Opens, updates or closes the problem `seen` is about.
 fn see(problems: &mut Vec<Problem>, seen: Seen, now: DateTime<Utc>) {
     let at = stamp(now);
@@ -717,8 +899,9 @@ fn raise(standing: Standing, worse: bool, now: DateTime<Utc>, cooldown: Duration
 }
 
 /// Closes the open problems of a repository that is no longer connected,
-/// and every open problem when `everything` is set, such as when you turn
-/// Watch CI off.
+/// and every open problem about CI when `everything` is set, such as when
+/// you turn Watch CI off. Security alerts have a switch of their own
+/// (`close_security`).
 pub fn close_unwatched(
     problems: &mut [Problem],
     connected: &[String],
@@ -727,9 +910,10 @@ pub fn close_unwatched(
 ) {
     let at = stamp(now);
     for p in problems.iter_mut().filter(|p| p.is_open()) {
-        if everything {
+        let security = p.kind == ProblemKind::Security;
+        if everything && !security {
             p.close(&at, "Orbit stopped watching CI.".into());
-        } else if !connected.iter().any(|r| same_repo(r, &p.repo)) {
+        } else if !everything && !connected.iter().any(|r| same_repo(r, &p.repo)) {
             p.close(&at, "The repository was disconnected.".into());
         }
     }

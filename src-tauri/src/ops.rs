@@ -577,13 +577,14 @@ pub fn watching(s: &Snapshot, t: &Thread) -> bool {
 /// Brings each thread up to date with its problem, and starts one for each
 /// open problem without one: an issue's thread for a default branch's
 /// problem, and the pull request's thread for a pull request's. Runs
-/// waiting for a runner get none, as only a person can add or fix one.
+/// waiting for a runner get none, as only a person can add or fix one, nor
+/// do security alerts yet, which are only listed and in Needs you.
 /// Returns whether anything changed.
 pub fn refresh(threads: &mut Vec<Thread>, problems: &[Problem], now: DateTime<Utc>) -> bool {
     let before = threads.clone();
     let mut order: Vec<&Problem> = problems
         .iter()
-        .filter(|p| p.kind != ProblemKind::Waiting)
+        .filter(|p| !matches!(p.kind, ProblemKind::Waiting | ProblemKind::Security))
         .collect();
     // Older first, so a pull request's newest problem is the one it keeps.
     order.sort_by(|a, b| a.opened_at.cmp(&b.opened_at));
@@ -595,16 +596,18 @@ pub fn refresh(threads: &mut Vec<Thread>, problems: &[Problem], now: DateTime<Ut
                 threads.push(Thread {
                     key,
                     kind: match p.kind {
-                        ProblemKind::DefaultBranch | ProblemKind::NoCi | ProblemKind::Waiting => {
-                            ThreadKind::Issue
-                        }
+                        ProblemKind::DefaultBranch
+                        | ProblemKind::NoCi
+                        | ProblemKind::Waiting
+                        | ProblemKind::Security => ThreadKind::Issue,
                         ProblemKind::PullRequest | ProblemKind::BaseMoved => ThreadKind::Comment,
                     },
                     repo: p.repo.clone(),
                     number: match p.kind {
-                        ProblemKind::DefaultBranch | ProblemKind::NoCi | ProblemKind::Waiting => {
-                            None
-                        }
+                        ProblemKind::DefaultBranch
+                        | ProblemKind::NoCi
+                        | ProblemKind::Waiting
+                        | ProblemKind::Security => None,
                         ProblemKind::PullRequest | ProblemKind::BaseMoved => {
                             p.pr_id.as_deref().and_then(pr_number)
                         }
@@ -764,9 +767,10 @@ fn answered(t: &Thread) -> bool {
 }
 fn key_of(p: &Problem) -> String {
     match p.kind {
-        ProblemKind::DefaultBranch | ProblemKind::NoCi | ProblemKind::Waiting => {
-            format!("issue:{}", p.id)
-        }
+        ProblemKind::DefaultBranch
+        | ProblemKind::NoCi
+        | ProblemKind::Waiting
+        | ProblemKind::Security => format!("issue:{}", p.id),
         // A pull request's problems share its one comment.
         ProblemKind::PullRequest | ProblemKind::BaseMoved => {
             format!("pr:{}", p.pr_id.as_deref().unwrap_or(&p.repo))

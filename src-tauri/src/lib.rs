@@ -35,6 +35,7 @@ pub mod review_loop;
 pub mod rpc;
 pub mod runners;
 pub mod scans;
+pub mod security;
 pub mod server;
 pub mod service;
 pub mod setup;

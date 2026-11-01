@@ -254,6 +254,7 @@ impl Engine {
             &self.telling,
             &self.reading_runners,
             &self.reading_storage,
+            &self.reading_security,
             &self.updating_clones,
         ] {
             while flag.swap(true, Ordering::SeqCst) {

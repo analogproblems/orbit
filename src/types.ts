@@ -368,6 +368,9 @@ export interface Settings {
   /** Watch CI on each repository's default branch and on the pull requests
    * Orbit follows; missing means on. */
   watchCi?: boolean;
+  /** Read each repository's Dependabot, code scanning and secret scanning
+   * alerts and keep track of those open; missing means on. */
+  watchSecurity?: boolean;
   /** Bit, Orbit's buddy. Older saved state has none. */
   buddy?: Buddy;
   /** Plain-language write-ups on the Decisions page. Older saved state has
@@ -965,7 +968,8 @@ export type AttentionKind =
   | "runs_waiting"
   | "stuck"
   | "brief"
-  | "another_orbit";
+  | "another_orbit"
+  | "security_alert";
 /** Something only the developer can resolve. */
 export interface Attention {
   /** Stays the same while the item is open. */
@@ -994,6 +998,7 @@ export const attentionLabels: Record<AttentionKind, string> = {
   stuck: "Stuck",
   brief: "Morning brief",
   another_orbit: "Another Orbit posts here",
+  security_alert: "Security alert",
 };
 /** The day a morning brief's item is for, from its key. */
 export const briefDay = (a: Attention) => a.key.replace(/^brief:/, "");
@@ -1017,7 +1022,8 @@ export function attentionAction(
   if (
     a.kind === "ci_failing" ||
     a.kind === "ci_question" ||
-    a.kind === "runs_waiting"
+    a.kind === "runs_waiting" ||
+    a.kind === "security_alert"
   )
     return go.onOperations;
   if (
@@ -1143,6 +1149,9 @@ export interface Snapshot {
   /** Each connected repository's GitHub Actions caches and artifacts, as
    * Orbit last read them. */
   actionsStorage?: ActionsStorage[];
+  /** Each connected repository's open security alerts, as Orbit last read
+   * them. */
+  security?: RepoSecurity[];
   /** What GitHub last said about whether each pull request Orbit reviews
    * can merge. */
   merges?: Merge[];
@@ -1306,7 +1315,12 @@ export interface RepoCi {
   error?: string | null;
 }
 export type ProblemKind =
-  "default_branch" | "pull_request" | "base_moved" | "no_ci" | "waiting";
+  | "default_branch"
+  | "pull_request"
+  | "base_moved"
+  | "no_ci"
+  | "waiting"
+  | "security";
 export interface ProblemEvent {
   at: string;
   text: string;
@@ -1316,7 +1330,9 @@ export interface ProblemEvent {
  * time for a runner (`waiting`); a pull request's is its author's to fix,
  * as is a pull request whose checks passed before its base moved on
  * (`base_moved`). A repository where no CI runs on pull requests (`no_ci`)
- * is listed with the repository. */
+ * is listed with the repository. A repository's open security alerts of
+ * one kind (`security`) are listed on their own, and need you while one of
+ * them does (`alertNeedsYou`). */
 export interface Problem {
   id: string;
   key: string;
@@ -1350,6 +1366,73 @@ export interface Problem {
   /** For `waiting`: the runs waiting when Orbit last read them, the longest
    * first. */
   waiting?: WaitingRun[];
+  /** For `security`: which kind, the alerts open when Orbit last read them,
+   * the most severe first, and those that need you it told you about. */
+  source?: AlertSource | null;
+  securityAlerts?: SecurityAlert[];
+  toldAlerts?: number[];
+}
+/** Where GitHub found a security alert. */
+export type AlertSource = "dependabot" | "code_scanning" | "secret_scanning";
+export type AlertSeverity = "low" | "medium" | "high" | "critical";
+/** One open security alert, in GitHub's or its tool's words, shown as
+ * plain text. A secret's value is never in it. */
+export interface SecurityAlert {
+  source: AlertSource;
+  number: number;
+  severity: AlertSeverity;
+  /** The advisory's summary, the rule's description, or the kind of
+   * secret. */
+  title: string;
+  /** The package, the rule's ID, or the secret's type. */
+  subject: string;
+  /** The manifest, the file with the code, or where the secret was first
+   * found; empty when GitHub didn't say. */
+  path: string;
+  /** The line in that file, or 0. */
+  line: number;
+  /** The version that fixes a dependency, when there is one. */
+  fixedIn: string;
+  url: string;
+  createdAt: string;
+  /** For a secret: "active" when GitHub says it still works, "inactive"
+   * when it doesn't, or empty. */
+  validity: string;
+  /** For a secret: someone pushed it past push protection. */
+  bypassed: boolean;
+  /** When Orbit last asked GitHub about it after it left its list. */
+  lookedAt?: string;
+}
+/** What Orbit read of one kind of alert in a repository. */
+export interface AlertKind {
+  source: AlertSource;
+  /** The open ones, the most severe first. */
+  alerts: SecurityAlert[];
+  /** GitHub has more open ones than the newest 100 Orbit reads. */
+  more?: boolean;
+  /** Why Orbit can't see them. */
+  unseen?: string | null;
+  /** They're off for the repository, rather than hidden from Orbit. */
+  off?: boolean;
+}
+/** What Orbit read of one repository's security alerts. */
+export interface RepoSecurity {
+  repo: string;
+  readAt: string;
+  kinds: AlertKind[];
+  /** Why the last read failed; what was read before is kept. */
+  error?: string | null;
+  tries: number;
+  retryAt?: string | null;
+}
+/** Whether only you should see to an alert now: every secret, and every
+ * high or critical alert, as the engine has it (`security.rs`). */
+export function alertNeedsYou(a: SecurityAlert) {
+  return (
+    a.source === "secret_scanning" ||
+    a.severity === "high" ||
+    a.severity === "critical"
+  );
 }
 /** A run that has waited for a runner since `since`. */
 export interface WaitingRun {
@@ -1901,6 +1984,7 @@ export const defaults: Settings = {
   notify: true,
   keepScanArtifacts: false,
   watchCi: true,
+  watchSecurity: true,
   buddy: defaultBuddy,
   writeUps: defaultWriteUps,
 };

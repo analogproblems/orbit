@@ -30,6 +30,9 @@ import {
   type RepositorySummary,
   type RunnerPlace,
   type ActionsStorage,
+  type Attention,
+  type RepoSecurity,
+  type SecurityAlert,
   type SecurityScan,
 } from "./types";
 
@@ -607,12 +610,15 @@ export function freshDemo(): Snapshot {
   const ids = (rounds: Review[]) => rounds.map((r) => r.id).reverse();
   const label = (p: PullRequest) => `${p.repo.split("/")[1]}#${p.number}`;
   const ci = demoCi(prs);
+  const security = demoSecurity();
   const red = ci.problems![0];
   const redReason = `CI is failing on main in acme/orbit since ${red.sinceSha.slice(0, 7)}: ${checkNames(red.failing)}.`;
   const brief = demoBrief(prs, ci.problems!, ago(12));
   return {
     prs,
     ...ci,
+    problems: [...ci.problems!, ...security.problems],
+    security: security.security,
     reviews: [review, ...limited, ...waiting, ...clean],
     // The browser demo has no engine to derive these, so they are fixed.
     attention: [
@@ -646,6 +652,7 @@ export function freshDemo(): Snapshot {
         repo: red.repo,
         reason: `${redReason} It still fails at ${red.sha.slice(0, 7)}. It started failing with #208, merged as 7d41e09; 3b8e6f4 before it passed.`,
       },
+      ...security.attention,
     ],
     loopStates: [
       {
@@ -1560,6 +1567,187 @@ export function demoCi(
     setups,
     runners,
     actionsStorage,
+  };
+}
+/** Security alerts in the demo: a critical Dependabot alert and a found
+ * token in acme/api, which need you, a low code scanning alert in
+ * acme/orbit, Dependabot off for acme/docs, and acme/dashboard's secret
+ * scanning alerts hidden from Orbit's sign-in. */
+function demoSecurity(): {
+  security: RepoSecurity[];
+  problems: Problem[];
+  attention: Attention[];
+} {
+  const alert = (a: Partial<SecurityAlert>): SecurityAlert => ({
+    source: "dependabot",
+    number: 1,
+    severity: "low",
+    title: "",
+    subject: "",
+    path: "",
+    line: 0,
+    fixedIn: "",
+    url: "",
+    createdAt: ago(300),
+    validity: "",
+    bypassed: false,
+    ...a,
+  });
+  const lodash = alert({
+    number: 14,
+    severity: "critical",
+    title: "Prototype pollution in lodash",
+    subject: "lodash",
+    path: "package-lock.json",
+    fixedIn: "4.17.21",
+    url: "https://github.com/acme/api/security/dependabot/14",
+  });
+  const qs = alert({
+    number: 11,
+    severity: "medium",
+    title: "qs vulnerable to prototype pollution",
+    subject: "qs",
+    path: "package-lock.json",
+    fixedIn: "6.10.3",
+    url: "https://github.com/acme/api/security/dependabot/11",
+  });
+  const token = alert({
+    source: "secret_scanning",
+    number: 3,
+    severity: "critical",
+    title: "GitHub Personal Access Token",
+    subject: "github_personal_access_token",
+    path: "scripts/deploy.sh",
+    line: 8,
+    url: "https://github.com/acme/api/security/secret-scanning/3",
+    validity: "active",
+  });
+  const regex = alert({
+    source: "code_scanning",
+    number: 7,
+    severity: "low",
+    title: "Inefficient regular expression",
+    subject: "js/redos",
+    path: "src/search.ts",
+    line: 42,
+    url: "https://github.com/acme/orbit/security/code-scanning/7",
+  });
+  const read = (repo: string, kinds: RepoSecurity["kinds"]): RepoSecurity => ({
+    repo,
+    readAt: ago(14),
+    kinds,
+    tries: 0,
+  });
+  const none = (source: SecurityAlert["source"]) => ({ source, alerts: [] });
+  const security: RepoSecurity[] = [
+    read("acme/orbit", [
+      none("dependabot"),
+      { source: "code_scanning", alerts: [regex] },
+      none("secret_scanning"),
+    ]),
+    read("acme/api", [
+      { source: "dependabot", alerts: [lodash, qs] },
+      {
+        source: "code_scanning",
+        alerts: [],
+        unseen: "No code scanning runs on acme/api.",
+        off: true,
+      },
+      { source: "secret_scanning", alerts: [token] },
+    ]),
+    read("acme/dashboard", [
+      none("dependabot"),
+      none("code_scanning"),
+      {
+        source: "secret_scanning",
+        alerts: [],
+        unseen:
+          "GitHub doesn't show acme/dashboard's secret scanning alerts to Orbit's sign-in. It shows them to admins and security managers.",
+      },
+    ]),
+    read("acme/docs", [
+      {
+        source: "dependabot",
+        alerts: [],
+        unseen: "Dependabot alerts are off for acme/docs.",
+        off: true,
+      },
+      none("code_scanning"),
+      none("secret_scanning"),
+    ]),
+  ];
+  const problem = (
+    id: string,
+    repo: string,
+    source: SecurityAlert["source"],
+    alerts: SecurityAlert[],
+    first: string,
+    told: number[],
+  ): Problem => ({
+    id,
+    key: `security:${repo}:${source}`,
+    kind: "security",
+    repo,
+    branch: "",
+    sha: "",
+    sinceSha: "",
+    failing: [],
+    openedAt: ago(300),
+    updatedAt: ago(300),
+    timeline: [{ at: ago(300), text: first }],
+    alerts: told.length ? 1 : 0,
+    source,
+    securityAlerts: alerts,
+    toldAlerts: told,
+  });
+  const problems = [
+    problem(
+      "demo-security-1",
+      "acme/api",
+      "dependabot",
+      [lodash, qs],
+      "2 open Dependabot alerts: lodash (critical) and qs (medium).",
+      [14],
+    ),
+    problem(
+      "demo-security-2",
+      "acme/api",
+      "secret_scanning",
+      [token],
+      "1 open secret scanning alert: a GitHub Personal Access Token in scripts/deploy.sh line 8.",
+      [3],
+    ),
+    problem(
+      "demo-security-3",
+      "acme/orbit",
+      "code_scanning",
+      [regex],
+      "1 open code scanning alert: Inefficient regular expression in src/search.ts line 42 (low).",
+      [],
+    ),
+  ];
+  const item = (p: Problem, reason: string): Attention => ({
+    key: `problem:${p.id}:${p.alerts}`,
+    kind: "security_alert",
+    prId: null,
+    reviewId: null,
+    approvalId: null,
+    repo: p.repo,
+    reason,
+  });
+  return {
+    security,
+    problems,
+    attention: [
+      item(
+        problems[0],
+        "acme/api has a high or critical Dependabot alert: lodash (critical).",
+      ),
+      item(
+        problems[1],
+        "GitHub found a secret in acme/api: a GitHub Personal Access Token in scripts/deploy.sh line 8. Revoke it, then close its alert on GitHub.",
+      ),
+    ],
   };
 }
 /** The browser demo: the fresh workspace plus two weeks of history. */

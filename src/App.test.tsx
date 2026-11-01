@@ -420,7 +420,7 @@ describe("PR review regressions", () => {
     onTestFinished(() => wide.mockRestore());
     await mount();
     const item = screen.getByRole("button", { name: /^Needs you/ });
-    expect(item.parentElement?.textContent).toContain("3");
+    expect(item.parentElement?.textContent).toContain("5");
     await user().click(item);
     expect(
       await screen.findByRole("heading", { name: "Needs you" }),
@@ -432,7 +432,7 @@ describe("PR review regressions", () => {
     );
   });
 
-  it("marks Operations while CI fails, and while runs wait for a runner", async () => {
+  it("marks Operations while CI fails, a security alert needs you, or runs wait for a runner", async () => {
     const wide = vi.spyOn(window, "innerWidth", "get").mockReturnValue(1400);
     onTestFinished(() => wide.mockRestore());
     await mount();
@@ -455,11 +455,29 @@ describe("PR review regressions", () => {
       expect(within(operations()).getByLabelText("Runs waiting")).toBeTruthy(),
     );
     expect(within(operations()).queryByLabelText("CI failing")).toBeNull();
+    // A security alert that needs you comes before runs waiting.
+    snapshot.attention = [
+      waiting,
+      {
+        ...waiting,
+        key: "problem:secrets:1",
+        kind: "security_alert",
+        reason: "GitHub found a secret in acme/api.",
+      },
+    ];
+    emit();
+    await waitFor(() =>
+      expect(
+        within(operations()).getByLabelText("Security alert"),
+      ).toBeTruthy(),
+    );
+    expect(within(operations()).queryByLabelText("Runs waiting")).toBeNull();
     snapshot.attention = [];
     emit();
     await waitFor(() =>
       expect(within(operations()).queryByLabelText("Runs waiting")).toBeNull(),
     );
+    expect(within(operations()).queryByLabelText("Security alert")).toBeNull();
   });
 
   it("opens a pull request from Ready to merge and says what is in its way", async () => {
@@ -485,7 +503,7 @@ describe("PR review regressions", () => {
       screen.getByRole("heading", { level: 1, name: "Live" }),
     ).toBeTruthy();
     expect(
-      screen.getByText("Autopilot · 2 loops running · 3 need you"),
+      screen.getByText("Autopilot · 2 loops running · 5 need you"),
     ).toBeTruthy();
     fireEvent.keyDown(document, { key: "k", ctrlKey: true });
     const search = await screen.findByPlaceholderText("Search pull requests…");
@@ -928,7 +946,7 @@ describe("Bit", () => {
       question: "needs_you",
     });
     const answer = await within(chat()).findByRole("list", {
-      name: "3 things need you. Here's the list:",
+      name: "5 things need you. Here's the list:",
     });
     expect(within(answer).getAllByRole("listitem")[0].textContent).toContain(
       "Round limit reached.",

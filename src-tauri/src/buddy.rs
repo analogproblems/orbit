@@ -1919,6 +1919,7 @@ fn answer(
                 if let Some(storage) = storage {
                     text.push_str(&crate::actions_storage::sentence(storage));
                 }
+                text.push_str(&security_sentence(s, &repo.name));
                 // A failing sync first: CI can't be read without one.
                 let about = |kind: AttentionKind| {
                     items.iter().find(|a| {
@@ -1928,7 +1929,8 @@ fn answer(
                 };
                 let item = about(AttentionKind::SyncFailing)
                     .or(about(AttentionKind::CiFailing))
-                    .or(about(AttentionKind::RunsWaiting));
+                    .or(about(AttentionKind::RunsWaiting))
+                    .or(about(AttentionKind::SecurityAlert));
                 lines.push(line(text, None, item));
             }
             let text = say::repositories_answer(tone, s.settings.repositories.len() as u32);
@@ -1946,6 +1948,38 @@ fn answer(
     }
 }
 
+/// A repository's open security alerts, as a sentence to follow its line
+/// in How are my repositories, or nothing when none are open.
+fn security_sentence(s: &Snapshot, repo: &str) -> String {
+    let alerts: Vec<&crate::security::Alert> = s
+        .problems
+        .iter()
+        .filter(|p| {
+            p.is_open()
+                && p.kind == crate::problems::ProblemKind::Security
+                && same_repo(&p.repo, repo)
+        })
+        .flat_map(|p| &p.security_alerts)
+        .collect();
+    let urgent = alerts.iter().filter(|a| a.needs_you()).count();
+    let rest = alerts.len() - urgent;
+    match (urgent, rest) {
+        (0, 0) => String::new(),
+        (0, n) => format!(
+            " {} open, none high or critical.",
+            plural(n as u32, "security alert is", "security alerts are")
+        ),
+        (n, 0) => format!(
+            " {} you.",
+            plural(n as u32, "security alert needs", "security alerts need")
+        ),
+        (n, more) => format!(
+            " {} you, and {more} more {} open.",
+            plural(n as u32, "security alert needs", "security alerts need"),
+            if more == 1 { "is" } else { "are" }
+        ),
+    }
+}
 /// How a repository's default branch's CI stands, as a sentence to follow
 /// its line in How are my repositories, or nothing when nothing ran.
 fn ci_sentence(ci: &crate::ci::RepoCi) -> String {

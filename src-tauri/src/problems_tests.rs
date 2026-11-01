@@ -904,3 +904,304 @@ fn waiting_runs_read_as_a_sentence() {
         "2 runs in a/b have waited more than 30 minutes for a runner."
     );
 }
+
+mod security {
+    use super::*;
+    use crate::security::tests::{code_scanning, dependabot, secret};
+    use crate::security::{alert, Kind, Left, Outcome, RepoSecurity, Source};
+    use serde_json::Value;
+
+    fn kind(source: Source, alerts: &[Value]) -> Kind {
+        let mut alerts: Vec<_> = alerts.iter().filter_map(|v| alert(source, v)).collect();
+        crate::security::sort(&mut alerts);
+        Kind {
+            source,
+            alerts,
+            ..Default::default()
+        }
+    }
+    fn read(kinds: Vec<Kind>) -> RepoSecurity {
+        RepoSecurity {
+            repo: "a/b".into(),
+            kinds,
+            ..Default::default()
+        }
+    }
+    fn numbers(p: &Problem) -> Vec<u64> {
+        p.security_alerts.iter().map(|a| a.number).collect()
+    }
+    fn fixed(source: Source, number: u64) -> Left {
+        Left {
+            source,
+            number,
+            outcome: Outcome::Closed {
+                fixed: true,
+                by: String::new(),
+                why: String::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn each_kind_of_alert_is_a_problem_and_only_urgent_ones_tell_you() {
+        let mut problems = vec![];
+        let now = read(vec![
+            kind(
+                Source::Dependabot,
+                &[
+                    dependabot(1, "lodash", "critical"),
+                    dependabot(2, "qs", "low"),
+                ],
+            ),
+            kind(Source::CodeScanning, &[code_scanning(5, Some("medium"))]),
+            kind(Source::SecretScanning, &[]),
+        ]);
+        see_security(&mut problems, &now, &[], at(0));
+        assert_eq!(problems.len(), 2, "no problem for a kind with none open");
+        let deps = &problems[0];
+        assert_eq!(deps.key, "security:a/b:dependabot");
+        assert_eq!(deps.kind, ProblemKind::Security);
+        assert_eq!(deps.source, Some(Source::Dependabot));
+        assert_eq!(numbers(deps), [1, 2]);
+        assert!(deps.needs_you());
+        assert_eq!(deps.alerts, 1);
+        assert_eq!(deps.told_alerts, [1]);
+        assert_eq!(
+            timeline(deps),
+            ["2 open Dependabot alerts: lodash (critical) and qs (low)."]
+        );
+        let code = &problems[1];
+        assert!(!code.needs_you(), "a medium alert is only listed");
+        assert_eq!(code.alerts, 0);
+
+        // The same again tells you nothing more.
+        see_security(&mut problems, &now, &[], at(30));
+        assert_eq!(problems[0].alerts, 1);
+        assert_eq!(timeline(&problems[0]).len(), 1);
+
+        // A new urgent one tells you again; the code alert turning high does
+        // too.
+        let later = read(vec![
+            kind(
+                Source::Dependabot,
+                &[
+                    dependabot(1, "lodash", "critical"),
+                    dependabot(2, "qs", "low"),
+                    dependabot(3, "minimist", "high"),
+                ],
+            ),
+            kind(Source::CodeScanning, &[code_scanning(5, Some("high"))]),
+        ]);
+        see_security(&mut problems, &later, &[], at(60));
+        assert_eq!(numbers(&problems[0]), [1, 3, 2]);
+        assert_eq!(problems[0].alerts, 2);
+        assert_eq!(problems[0].told_alerts, [1, 3]);
+        assert_eq!(
+            timeline(&problems[0]).last(),
+            Some(&"New: minimist (high).")
+        );
+        assert_eq!(problems[1].alerts, 1);
+        assert!(problems[1].needs_you());
+    }
+
+    #[test]
+    fn an_alert_leaves_only_once_github_says_what_became_of_it() {
+        let mut problems = vec![];
+        let both = read(vec![kind(
+            Source::Dependabot,
+            &[
+                dependabot(1, "lodash", "critical"),
+                dependabot(2, "qs", "low"),
+            ],
+        )]);
+        see_security(&mut problems, &both, &[], at(0));
+        let only_qs = read(vec![kind(
+            Source::Dependabot,
+            &[dependabot(2, "qs", "low")],
+        )]);
+        // Not looked up yet, or still open past the newest Orbit reads:
+        // it stays.
+        see_security(&mut problems, &only_qs, &[], at(30));
+        let still = Left {
+            source: Source::Dependabot,
+            number: 1,
+            outcome: Outcome::Open,
+        };
+        see_security(&mut problems, &only_qs, &[still], at(31));
+        assert_eq!(numbers(&problems[0]), [1, 2]);
+        assert!(problems[0].needs_you());
+        // GitHub says it's fixed.
+        see_security(
+            &mut problems,
+            &only_qs,
+            &[fixed(Source::Dependabot, 1)],
+            at(60),
+        );
+        assert_eq!(numbers(&problems[0]), [2]);
+        assert!(!problems[0].needs_you());
+        assert!(problems[0].told_alerts.is_empty());
+        assert_eq!(
+            timeline(&problems[0]).last(),
+            Some(&"Dependabot alert 1, lodash: fixed, GitHub says.")
+        );
+        // The last one goes: the problem closes with what became of it.
+        let none = read(vec![kind(Source::Dependabot, &[])]);
+        let dismissed = Left {
+            source: Source::Dependabot,
+            number: 2,
+            outcome: Outcome::Closed {
+                fixed: false,
+                by: "sam".into(),
+                why: "tolerable risk".into(),
+            },
+        };
+        see_security(&mut problems, &none, &[dismissed], at(90));
+        assert!(open(&problems).is_empty());
+        assert_eq!(
+            problems[0].closed_reason.as_deref(),
+            Some("Dependabot alert 2, qs: dismissed by @sam as tolerable risk.")
+        );
+        // It comes back open: a new problem tells you again.
+        see_security(&mut problems, &both, &[], at(120));
+        assert_eq!(problems.len(), 2);
+        assert_eq!(open(&problems)[0].alerts, 1);
+    }
+
+    #[test]
+    fn several_leaving_at_once_are_each_noted_before_it_closes() {
+        let mut problems = vec![];
+        let secrets = read(vec![kind(Source::SecretScanning, &[secret(3), secret(4)])]);
+        see_security(&mut problems, &secrets, &[], at(0));
+        assert_eq!(
+            problems[0].alerts, 1,
+            "two secrets found at once tell you once"
+        );
+        let none = read(vec![kind(Source::SecretScanning, &[])]);
+        let left = [
+            fixed(Source::SecretScanning, 3),
+            Left {
+                source: Source::SecretScanning,
+                number: 4,
+                outcome: Outcome::Gone,
+            },
+        ];
+        see_security(&mut problems, &none, &left, at(30));
+        let p = &problems[0];
+        assert!(!p.is_open());
+        assert_eq!(
+            p.closed_reason.as_deref(),
+            Some("No secret scanning alerts are open on GitHub now.")
+        );
+        assert_eq!(
+            timeline(p)[1..],
+            [
+                "Secret scanning alert 4, GitHub Personal Access Token: GitHub no longer has it.",
+                "Secret scanning alert 3, GitHub Personal Access Token: closed as revoked.",
+                "No secret scanning alerts are open on GitHub now."
+            ]
+        );
+    }
+
+    #[test]
+    fn a_kind_orbit_cant_see_now_closes_saying_so_and_the_switch_closes_the_rest() {
+        let mut problems = vec![];
+        let now = read(vec![
+            kind(Source::Dependabot, &[dependabot(1, "lodash", "critical")]),
+            kind(Source::CodeScanning, &[code_scanning(5, Some("low"))]),
+        ]);
+        see_security(&mut problems, &now, &[], at(0));
+        let mut off = kind(Source::Dependabot, &[]);
+        off.unseen = Some("Dependabot alerts are off for a/b.".into());
+        off.off = true;
+        see_security(&mut problems, &read(vec![off]), &[], at(30));
+        assert_eq!(
+            problems[0].closed_reason.as_deref(),
+            Some(
+                "Dependabot alerts are off for a/b. Orbit can't see what became of its alerts now."
+            )
+        );
+        // Turning Watch CI off leaves security alerts be.
+        close_unwatched(&mut problems, &[], true, at(40));
+        assert!(problems[1].is_open());
+        close_unwatched(&mut problems, &["a/c".to_string()], false, at(41));
+        assert_eq!(
+            problems[1].closed_reason.as_deref(),
+            Some("The repository was disconnected.")
+        );
+        see_security(&mut problems, &now, &[], at(50));
+        close_security(&mut problems, at(60));
+        assert!(open(&problems).is_empty());
+        assert_eq!(
+            problems.last().unwrap().closed_reason.as_deref(),
+            Some("Orbit stopped watching security alerts.")
+        );
+    }
+
+    /// More alerts left their lists than Orbit looks up in one pass, and
+    /// GitHub still has the first ones open: the others get their turn,
+    /// across kinds, so a revoked secret still goes.
+    #[test]
+    fn alerts_that_left_their_lists_take_turns_to_be_looked_up() {
+        use crate::security::{to_look_up, LOOK_UPS};
+        let deps: Vec<Value> = (1..=12).map(|n| dependabot(n, "pkg", "low")).collect();
+        let mut problems = vec![];
+        let first = read(vec![
+            kind(Source::Dependabot, &deps),
+            kind(Source::SecretScanning, &[secret(30)]),
+        ]);
+        see_security(&mut problems, &first, &[], at(0));
+        // None is listed now, as newer ones fill the newest 100.
+        let now = read(vec![
+            kind(Source::Dependabot, &[dependabot(200, "new", "low")]),
+            kind(Source::SecretScanning, &[]),
+        ]);
+        // A pass: Orbit asks about its turn's alerts, and GitHub says they're
+        // still open, but the secret is revoked once `revoke`.
+        let pass = |problems: &mut Vec<Problem>, revoke: bool, minutes| {
+            let asked = to_look_up(problems, &now);
+            assert_eq!(asked.len(), LOOK_UPS);
+            let left: Vec<Left> = asked
+                .iter()
+                .map(|&(source, number)| Left {
+                    source,
+                    number,
+                    outcome: if revoke && source == Source::SecretScanning {
+                        Outcome::Closed {
+                            fixed: true,
+                            by: String::new(),
+                            why: "revoked".into(),
+                        }
+                    } else {
+                        Outcome::Open
+                    },
+                })
+                .collect();
+            looked_up(problems, "a/b", &asked, at(minutes));
+            see_security(problems, &now, &left, at(minutes));
+            asked
+        };
+        let one = pass(&mut problems, false, 30);
+        assert!(!one.contains(&(Source::SecretScanning, 30)));
+        // Next time, those not asked about yet go first, the secret too.
+        let two = to_look_up(&problems, &now);
+        assert_eq!(
+            two[..3],
+            [
+                (Source::Dependabot, 2),
+                (Source::Dependabot, 1),
+                (Source::SecretScanning, 30)
+            ]
+        );
+        assert!(two[3..].iter().all(|a| one.contains(a)));
+        pass(&mut problems, true, 60);
+        let secrets = problems
+            .iter()
+            .find(|p| p.source == Some(Source::SecretScanning))
+            .unwrap();
+        assert!(!secrets.is_open());
+        // And then the rest of the first batch's turn comes round again.
+        let three = to_look_up(&problems, &now);
+        assert!(three.iter().all(|&(_, n)| n <= 12));
+        assert!(three.contains(&(Source::Dependabot, 3)));
+    }
+}

@@ -10,12 +10,14 @@ import {
   StatusDot,
   Text,
   Timestamp,
+  Token,
   VStack,
 } from "@astryxdesign/core";
 import { FolderGit2, Workflow } from "lucide-react";
 import { openLink, useOrbit } from "./store";
 import { SaveFeedback } from "./SaveFeedback";
 import {
+  alertNeedsYou,
   buddyOf,
   checkNames,
   readinessLine,
@@ -23,6 +25,8 @@ import {
   shortSha,
   trustedSource,
   type ActionsStorage,
+  type AlertSeverity,
+  type AlertSource,
   type AttentionHandlers,
   type Broke,
   type CiFailure,
@@ -35,6 +39,7 @@ import {
   type RepoCi,
   type Runner,
   type RunnerPlace,
+  type SecurityAlert,
   type Snapshot,
 } from "./types";
 
@@ -45,6 +50,8 @@ const EVENTS = 5;
 /** How many waiting runs a problem lists, and runners a place lists. */
 const RUNS = 5;
 const RUNNERS = 10;
+/** How many of each kind of security alert a repository lists. */
+const ALERTS = 5;
 /** A gigabyte as GitHub counts storage, GitHub's usual limit for a
  * repository's caches, and how near it counts as near, as the engine has
  * them (`actions_storage`). */
@@ -435,6 +442,8 @@ function Why({ s, p, t }: { s: Snapshot; p: Problem; t?: OpsThread }) {
 
 /** A problem's name: its repository and branch, or its pull request. */
 function title(s: Snapshot, p: Problem) {
+  if (p.kind === "security")
+    return `${p.repo}: ${alertKinds[p.source ?? "dependabot"].many}`;
   if (p.kind === "no_ci") return `${p.repo}: CI on pull requests`;
   if (p.kind === "waiting") return `${p.repo}: runs waiting for a runner`;
   if (p.kind === "default_branch")
@@ -576,8 +585,9 @@ function Timeline({ p }: { p: Problem }) {
 function OpenProblems({ go }: { go: AttentionHandlers }) {
   const { snapshot: s, action } = useOrbit();
   // A repository with no CI is listed with the repository: nothing fails.
+  // Security alerts have a section of their own.
   const open = (s.problems ?? [])
-    .filter((p) => !p.closedAt && p.kind !== "no_ci")
+    .filter((p) => !p.closedAt && p.kind !== "no_ci" && p.kind !== "security")
     .sort(
       (a, b) =>
         Number(!needsYou(a)) - Number(!needsYou(b)) ||
@@ -737,6 +747,207 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
         })}
       </List>
     </Card>
+  );
+}
+
+/** Each kind of security alert, as the engine names them
+ * (`security.rs`). */
+const alertKinds: Record<AlertSource, { many: string; title: string }> = {
+  dependabot: { many: "Dependabot alerts", title: "Dependabot" },
+  code_scanning: { many: "code scanning alerts", title: "Code scanning" },
+  secret_scanning: { many: "secret scanning alerts", title: "Secret scanning" },
+};
+const sources: AlertSource[] = [
+  "dependabot",
+  "code_scanning",
+  "secret_scanning",
+];
+const severityColours: Record<
+  AlertSeverity,
+  "red" | "orange" | "yellow" | "gray"
+> = {
+  critical: "red",
+  high: "orange",
+  medium: "yellow",
+  low: "gray",
+};
+const severityLabels: Record<AlertSeverity, string> = {
+  critical: "Critical",
+  high: "High",
+  medium: "Medium",
+  low: "Low",
+};
+
+/** Where an alert is: "package.json", "src/db.ts line 12", or nothing. */
+export function alertPlace(a: SecurityAlert) {
+  if (!a.path) return "";
+  return a.line ? `${a.path} line ${a.line}` : a.path;
+}
+/** An alert on one line, such as "lodash in package-lock.json: Prototype
+ * pollution in lodash. Fixed in 4.17.21." */
+export function alertText(a: SecurityAlert) {
+  const place = alertPlace(a);
+  if (a.source === "secret_scanning") {
+    const parts = [
+      `${a.title || a.subject || "A secret"}${place ? ` in ${place}` : ""}.`,
+    ];
+    if (a.validity === "active") parts.push("GitHub says it still works.");
+    if (a.validity === "inactive")
+      parts.push("GitHub says it no longer works.");
+    if (a.bypassed) parts.push("It was pushed past push protection.");
+    return parts.join(" ");
+  }
+  const what = a.source === "dependabot" ? a.subject : a.title || a.subject;
+  const about = a.source === "dependabot" && a.title ? `: ${a.title}` : "";
+  const parts = [`${what}${place ? ` in ${place}` : ""}${about}.`];
+  if (a.fixedIn) parts.push(`Fixed in ${a.fixedIn}.`);
+  return parts.join(" ");
+}
+/** How many of a kind are open, and how many need you, to follow its
+ * name: "2 open alerts, 1 high or critical." */
+export function alertCount(source: AlertSource, alerts: SecurityAlert[]) {
+  const n = alerts.length;
+  if (source === "secret_scanning")
+    return n
+      ? `${n} ${n === 1 ? "secret" : "secrets"} found.`
+      : "no secrets found.";
+  if (!n) return "no open alerts.";
+  const open = `${n} open ${n === 1 ? "alert" : "alerts"}`;
+  const urgent = alerts.filter(alertNeedsYou).length;
+  if (!urgent) return `${open}.`;
+  return urgent === n
+    ? `${open}, ${n === 1 ? "high or critical" : "all high or critical"}.`
+    : `${open}, ${urgent} high or critical.`;
+}
+
+/** Each connected repository's open security alerts, kind by kind, and
+ * what Orbit can't see. */
+function Security() {
+  const { snapshot: s } = useOrbit();
+  const read = (s.security ?? []).filter((r) => r.readAt || r.error);
+  return (
+    <VStack gap={3}>
+      <Heading level={3}>Security alerts</Heading>
+      <Text color="secondary">
+        Orbit reads each repository’s Dependabot, code scanning and secret
+        scanning alerts every half hour. A secret GitHub found, or a high or
+        critical alert, needs you; the rest are listed here. Orbit never keeps a
+        secret’s value.
+      </Text>
+      {!read.length ? (
+        <Card padding={3}>
+          <HStack gap={3} vAlign="center">
+            <StatusDot variant="neutral" label="Not read yet" />
+            <Text>Orbit hasn’t read any security alerts yet.</Text>
+          </HStack>
+        </Card>
+      ) : (
+        <Card padding={0}>
+          <List hasDividers aria-label="Security alerts">
+            {read.map((r) => {
+              const open = (s.problems ?? []).filter(
+                (p) =>
+                  !p.closedAt &&
+                  p.kind === "security" &&
+                  sameRepo(p.repo, r.repo),
+              );
+              const alertsOf = (source: AlertSource) =>
+                open.find((p) => p.source === source)?.securityAlerts ?? [];
+              const all = sources.flatMap(alertsOf);
+              const urgent = all.filter(alertNeedsYou).length;
+              const unseen = r.kinds.some((k) => k.unseen && !k.off);
+              const dot = urgent
+                ? { variant: "error" as const, label: "Needs you" }
+                : all.length
+                  ? { variant: "warning" as const, label: "Open alerts" }
+                  : unseen || !r.readAt
+                    ? { variant: "neutral" as const, label: "Not all seen" }
+                    : { variant: "success" as const, label: "None open" };
+              return (
+                <ListItem
+                  key={r.repo}
+                  startContent={
+                    <StatusDot variant={dot.variant} label={dot.label} />
+                  }
+                  label={<Text weight="medium">{r.repo}</Text>}
+                  description={
+                    <VStack gap={2}>
+                      {r.readAt &&
+                        sources.map((source) => {
+                          const kind = r.kinds.find((k) => k.source === source);
+                          if (!kind) return null;
+                          const alerts = alertsOf(source);
+                          return (
+                            <VStack key={source} gap={1}>
+                              <Text>
+                                {kind.unseen ??
+                                  `${alertKinds[source].title}: ${alertCount(source, alerts)}`}
+                              </Text>
+                              {!kind.unseen &&
+                                alerts.slice(0, ALERTS).map((a) => (
+                                  <HStack key={a.number} gap={2} vAlign="start">
+                                    {source === "secret_scanning" ? (
+                                      <Token
+                                        label="Secret"
+                                        color="red"
+                                        size="sm"
+                                      />
+                                    ) : (
+                                      <Token
+                                        label={severityLabels[a.severity]}
+                                        color={severityColours[a.severity]}
+                                        size="sm"
+                                      />
+                                    )}
+                                    <Text color="secondary" maxLines={2}>
+                                      {alertText(a)}
+                                    </Text>
+                                  </HStack>
+                                ))}
+                              {!kind.unseen && alerts.length > ALERTS && (
+                                <Text color="secondary">
+                                  And {alerts.length - ALERTS} more.
+                                </Text>
+                              )}
+                              {kind.more && (
+                                <Text color="secondary">
+                                  GitHub has more open than the newest 100 Orbit
+                                  reads.
+                                </Text>
+                              )}
+                            </VStack>
+                          );
+                        })}
+                      {r.error && (
+                        <HStack gap={2} vAlign="center">
+                          <StatusDot variant="warning" label="Not read" />
+                          <Text color="secondary">{r.error}</Text>
+                        </HStack>
+                      )}
+                    </VStack>
+                  }
+                  endContent={
+                    <VStack gap={2} hAlign="end">
+                      <Button
+                        label="Open on GitHub"
+                        size="sm"
+                        variant="secondary"
+                        onClick={() =>
+                          openLink(`https://github.com/${r.repo}/security`)
+                        }
+                      />
+                      {r.readAt && (
+                        <Timestamp value={r.readAt} format="relative_short" />
+                      )}
+                    </VStack>
+                  }
+                />
+              );
+            })}
+          </List>
+        </Card>
+      )}
+    </VStack>
   );
 }
 
@@ -1061,6 +1272,7 @@ function Posted() {
 export function Operations(go: AttentionHandlers) {
   const { snapshot: s, updateSettings } = useOrbit();
   const watching = s.settings.watchCi ?? true;
+  const security = s.settings.watchSecurity ?? true;
   return (
     <VStack gap={6} padding={6} maxWidth={1100} className="content-page">
       <VStack gap={2}>
@@ -1070,7 +1282,8 @@ export function Operations(go: AttentionHandlers) {
           failing pull request is its author’s to fix. Either way, Orbit tells
           the project’s agent on GitHub: an issue for a default branch, one
           comment on a pull request. Runs that wait more than half an hour for a
-          runner need you too, as only a person can add or fix a runner.
+          runner need you too, as only a person can add or fix a runner, and so
+          do secrets GitHub finds and high or critical security alerts.
         </Text>
       </VStack>
       {!watching ? (
@@ -1088,6 +1301,7 @@ export function Operations(go: AttentionHandlers) {
             }
           />
           <SaveFeedback saveKey="watchCi" />
+          {security && <Security />}
         </>
       ) : (
         <>
@@ -1100,6 +1314,7 @@ export function Operations(go: AttentionHandlers) {
             <Heading level={3}>CI by repository</Heading>
             <Repositories go={go} />
           </VStack>
+          {security && <Security />}
           <Runners />
           <StorageUse />
           <RecentlyFixed />

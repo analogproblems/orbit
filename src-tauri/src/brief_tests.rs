@@ -793,3 +793,70 @@ fn what_orbit_keeps_about_briefs_saves_and_loads() {
         serde_json::json!({})
     );
 }
+
+/// Security alerts that need you are in the brief after the CI problems,
+/// one line a kind; one Orbit tells again is new again, and alerts that
+/// don't need you aren't in it.
+#[test]
+fn security_alerts_that_need_you_are_in_the_brief() {
+    use crate::security::tests::{dependabot, secret};
+    use crate::security::{alert, Source};
+    let security = |id: &str, source: Source, alerts: Vec<crate::security::Alert>| Problem {
+        source: Some(source),
+        security_alerts: alerts,
+        ..problem(id, ProblemKind::Security)
+    };
+    let dep = |n, sev| alert(Source::Dependabot, &dependabot(n, "lodash", sev)).unwrap();
+    let token = alert(Source::SecretScanning, &secret(3)).unwrap();
+    let mut s = busy();
+    s.problems.push(security(
+        "deps",
+        Source::Dependabot,
+        vec![dep(1, "critical")],
+    ));
+    s.problems
+        .push(security("low", Source::Dependabot, vec![dep(2, "low")]));
+    s.problems
+        .push(security("secrets", Source::SecretScanning, vec![token]));
+    let keys: Vec<String> = lines(&s).into_iter().map(|l| l.key).collect();
+    let at = keys.iter().position(|k| k == "problem:setup").unwrap();
+    assert_eq!(
+        keys[at + 1..at + 3],
+        ["security:deps:0", "security:secrets:0"]
+    );
+    assert!(!keys.iter().any(|k| k.starts_with("security:low")));
+    assert!(look(&mut s, at_day("2026-10-31"), now()));
+    let b = latest(&s).clone();
+    assert_eq!(
+        b.text,
+        "Here's your morning brief! 1 pull request is clear to merge, 4 CI problems are open, 2 security problems need you and 4 notes are about runners or storage."
+    );
+    assert!(b
+        .lines
+        .iter()
+        .any(|l| l.text == "a/b has a high or critical Dependabot alert: lodash (critical)."));
+    // A newly told alert is new in the next brief; nothing else is.
+    let deps = s.problems.iter_mut().find(|p| p.id == "deps").unwrap();
+    deps.security_alerts.push(dep(4, "high"));
+    deps.alerts += 1;
+    assert!(look(&mut s, at_day("2026-11-01"), now()));
+    let new: Vec<&str> = latest(&s)
+        .lines
+        .iter()
+        .filter(|l| l.new)
+        .map(|l| l.text.as_str())
+        .collect();
+    assert_eq!(
+        new,
+        ["a/b has 2 high or critical Dependabot alerts: lodash (critical) and lodash (high)."]
+    );
+    // It changed, so nothing from the last brief has settled.
+    assert_eq!(latest(&s).settled, 0);
+    // Once it's fixed, it has.
+    s.problems.retain(|p| p.id != "deps");
+    assert!(look(&mut s, at_day("2026-11-02"), now()));
+    assert_eq!(latest(&s).settled, 1);
+}
+fn at_day(day: &str) -> NaiveDateTime {
+    at(day, "09:00")
+}

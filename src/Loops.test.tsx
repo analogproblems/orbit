@@ -328,7 +328,7 @@ describe("loops", () => {
   it("summarises autopilot for the header", () => {
     const snapshot = freshDemo();
     expect(autopilotSummary(snapshot)).toBe(
-      "Autopilot · 2 loops running · 3 need you",
+      "Autopilot · 2 loops running · 5 need you",
     );
     snapshot.attention = [];
     snapshot.loopStates = snapshot.loopStates!.slice(2);

@@ -121,6 +121,57 @@ fn the_summary_holds_what_bit_needs_and_nothing_more() {
         assert!(!text.contains(private), "{private}");
     }
 }
+/// Bit hears of each repository's security alerts, kind by kind, but
+/// never a secret's value, and nothing while the switch is off.
+#[test]
+fn bit_hears_of_security_alerts_but_never_a_secret() {
+    use crate::security::tests::{dependabot, secret};
+    use crate::security::{alert, Kind, RepoSecurity, Source};
+    let mut s = snapshot();
+    // As GitHub would send it without being asked to hide it.
+    let token = secret(3);
+    assert!(token.to_string().contains("THISISTHESECRETVALUE"));
+    let read = RepoSecurity {
+        repo: "a/b".into(),
+        read_at: "2026-11-01T09:00:00.000Z".into(),
+        kinds: vec![
+            Kind {
+                source: Source::Dependabot,
+                alerts: vec![alert(Source::Dependabot, &dependabot(1, "lodash", "high")).unwrap()],
+                ..Default::default()
+            },
+            Kind {
+                source: Source::CodeScanning,
+                unseen: Some("No code scanning runs on a/b.".into()),
+                off: true,
+                ..Default::default()
+            },
+            Kind {
+                source: Source::SecretScanning,
+                alerts: vec![alert(Source::SecretScanning, &token).unwrap()],
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    crate::problems::see_security(&mut s.problems, &read, &[], chrono::Utc::now());
+    s.security.push(read);
+    let b = briefing(&s, &Lookups::default());
+    let alerts = &b["repositories"][0]["securityAlerts"];
+    assert_eq!(alerts["readAt"], "2026-11-01T09:00:00.000Z");
+    assert_eq!(
+        alerts["kinds"],
+        json!([
+            {"kind": "dependabot", "unseen": null, "open": 1, "needYou": 1, "first": ["lodash (high)"]},
+            {"kind": "code_scanning", "unseen": "No code scanning runs on a/b.", "open": 0, "needYou": 0, "first": []},
+            {"kind": "secret_scanning", "unseen": null, "open": 1, "needYou": 1, "first": ["a GitHub Personal Access Token in src/config.ts line 4"]},
+        ])
+    );
+    assert!(!b.to_string().contains("THISISTHESECRETVALUE"));
+    s.settings.watch_security = false;
+    let b = briefing(&s, &Lookups::default());
+    assert_eq!(b["repositories"][0]["securityAlerts"], Value::Null);
+}
 #[test]
 fn every_setting_bit_may_change_fits_a_settings_patch() {
     let saved = serde_json::to_value(Settings::default()).unwrap();

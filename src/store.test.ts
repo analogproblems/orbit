@@ -165,6 +165,32 @@ describe("older demo storage", () => {
 });
 
 describe("demo ci", () => {
+  it("lets an older demo turn security alerts off, which closes what was open", async () => {
+    const old = structuredClone(useOrbit.getState().snapshot);
+    delete old.settings.watchSecurity;
+    localStorage.setItem("orbit-demo-v3", JSON.stringify(old));
+    await useOrbit.getState().init();
+    expect(useOrbit.getState().snapshot.security?.length).toBeGreaterThan(0);
+    const result = await useOrbit
+      .getState()
+      .updateSettings({ watchSecurity: false });
+    expect(result.ok).toBe(true);
+    const s = useOrbit.getState().snapshot;
+    expect(s.settings.watchSecurity).toBe(false);
+    expect(s.security).toEqual([]);
+    const security = s.problems?.filter((p) => p.kind === "security") ?? [];
+    expect(security.length).toBeGreaterThan(0);
+    expect(
+      security.every(
+        (p) => p.closedReason === "Orbit stopped watching security alerts.",
+      ),
+    ).toBe(true);
+    expect(s.attention?.some((a) => a.kind === "security_alert")).toBe(false);
+    // CI problems stay as they were.
+    expect(s.problems?.some((p) => p.kind !== "security" && !p.closedAt)).toBe(
+      true,
+    );
+  });
   it("lets an older demo turn Watch CI off, which closes what was open", async () => {
     const old = structuredClone(useOrbit.getState().snapshot);
     delete old.settings.watchCi;
@@ -191,7 +217,17 @@ describe("demo ci", () => {
     expect(s.ci).toEqual([]);
     expect(s.runners).toEqual([]);
     expect(s.actionsStorage).toEqual([]);
-    expect(s.problems?.every((p) => p.closedAt)).toBe(true);
+    // Security alerts have a switch of their own.
+    const ci = s.problems?.filter((p) => p.kind !== "security");
+    expect(ci?.length).toBeGreaterThan(0);
+    expect(ci?.every((p) => p.closedAt)).toBe(true);
+    expect(
+      s.problems
+        ?.filter((p) => p.kind === "security")
+        .every((p) => !p.closedAt),
+    ).toBe(true);
+    expect(s.security?.length).toBeGreaterThan(0);
+    expect(s.attention?.some((a) => a.kind === "security_alert")).toBe(true);
     expect(s.attention?.some((a) => a.kind === "ci_failing")).toBe(false);
     expect(s.attention?.some((a) => a.kind === "runs_waiting")).toBe(false);
     expect(s.merges).toEqual([]);

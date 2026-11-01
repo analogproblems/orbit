@@ -150,7 +150,7 @@ describe("live page", () => {
     const go = show(s);
     const panel = screen.getByRole("region", { name: "Needs you" });
     expect(
-      within(panel).getByRole("heading", { name: "4 things need you" }),
+      within(panel).getByRole("heading", { name: "6 things need you" }),
     ).toBeTruthy();
     expect(within(panel).getByText("Codex is disconnected")).toBeTruthy();
     fireEvent.click(
@@ -164,9 +164,13 @@ describe("live page", () => {
       within(panel).getAllByRole("button", { name: "Open settings" })[0],
     );
     expect(go.onSettings).toHaveBeenCalled();
-    // A failing default branch leads to the Operations page.
+    // A failing default branch leads to the Operations page, as do
+    // security alerts.
+    expect(
+      within(panel).getAllByRole("button", { name: "Open operations" }),
+    ).toHaveLength(3);
     fireEvent.click(
-      within(panel).getByRole("button", { name: "Open operations" }),
+      within(panel).getAllByRole("button", { name: "Open operations" })[0],
     );
     expect(go.onOperations).toHaveBeenCalled();
     cleanup();
