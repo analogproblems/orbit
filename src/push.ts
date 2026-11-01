@@ -10,6 +10,9 @@ import type { Snapshot } from "./types";
 /** Where the service worker finds this device's id and key. */
 const cacheName = "orbit-push";
 const entry = "/orbit-push-device";
+/** Held while this browser is signed up or out, by its pages and its
+ * worker alike. */
+const lockName = "orbit-push";
 /** This device's id, for the page, which reads it at once. */
 const idKey = "orbit-push-device";
 /** How long turning this on waits for Orbit's service worker to start. */
@@ -33,7 +36,8 @@ export function pushSupported(): boolean {
     window.isSecureContext &&
     "serviceWorker" in navigator &&
     "PushManager" in window &&
-    "caches" in window
+    "caches" in window &&
+    "locks" in navigator
   );
 }
 
@@ -52,7 +56,12 @@ const listeners = new Set<() => void>();
 export function useSavedDevice(): string | null {
   return useSyncExternalStore((changed) => {
     listeners.add(changed);
-    return () => listeners.delete(changed);
+    // Turned on or off in another page of this Orbit.
+    window.addEventListener("storage", changed);
+    return () => {
+      listeners.delete(changed);
+      window.removeEventListener("storage", changed);
+    };
   }, savedDevice);
 }
 /** Whether `snapshot`'s Orbit still wakes this browser. */
@@ -114,52 +123,89 @@ function same(a: ArrayBuffer | null | undefined, b: Uint8Array) {
   return left.every((byte, i) => byte === b[i]);
 }
 
+/** Runs `work` while no other page of this Orbit in this browser, nor its
+ * worker, signs this browser up or out, as they share one sign-up and one
+ * key. */
+function alone<T>(work: () => Promise<T>): Promise<T> {
+  // Its answer is `work`'s, which DOM types wrap in a second promise.
+  return navigator.locks.request(lockName, work) as unknown as Promise<T>;
+}
+
 /** Has Orbit wake this browser when it sends a notification, even with
  * its page closed, after a tap. Notifications must be allowed already. */
-export async function turnOnPush(action: Action): Promise<void> {
-  const registration = await worker();
-  const key = await action<string>("push_key");
-  if (!key.ok) throw Error(key.error);
-  const server = bytes(key.data);
-  let signedUp = await registration.pushManager.getSubscription();
-  // One made for another Orbit, or an older key, can't take these wake-ups.
-  if (signedUp && !same(signedUp.options.applicationServerKey, server)) {
-    await signedUp.unsubscribe();
-    signedUp = null;
-  }
-  try {
-    signedUp ??= await registration.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: server,
+export function turnOnPush(action: Action): Promise<void> {
+  return alone(async () => {
+    const registration = await worker();
+    const key = await action<string>("push_key");
+    if (!key.ok) throw Error(key.error);
+    const server = bytes(key.data);
+    let signedUp = await registration.pushManager.getSubscription();
+    // One made for another Orbit, or an older key, can't take these
+    // wake-ups.
+    if (signedUp && !same(signedUp.options.applicationServerKey, server)) {
+      await signedUp.unsubscribe();
+      signedUp = null;
+    }
+    const made = !signedUp;
+    try {
+      signedUp ??= await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: server,
+      });
+    } catch {
+      throw Error(
+        "This browser wouldn’t sign up for Orbit’s wake-ups. Check that it allows Orbit’s notifications, then try again.",
+      );
+    }
+    const added = await action<AddedDevice>("add_push_device", {
+      endpoint: signedUp.endpoint,
+      name: deviceName(),
     });
-  } catch {
-    throw Error(
-      "This browser wouldn’t sign up for Orbit’s wake-ups. Check that it allows Orbit’s notifications, then try again.",
-    );
-  }
-  const added = await action<AddedDevice>("add_push_device", {
-    endpoint: signedUp.endpoint,
-    name: deviceName(),
+    if (!added.ok) {
+      // A sign-up made just now goes; one Orbit already wakes stays.
+      if (made) await signedUp.unsubscribe().catch(() => false);
+      throw Error(added.error);
+    }
+    try {
+      await keep(added.data);
+    } catch {
+      // Without its key here, the worker couldn't read what it's woken
+      // for. Orbit replaced any older one, so nothing is left to keep.
+      await action("remove_push_device", { id: added.data.id });
+      await forget();
+      throw Error(
+        "This browser wouldn’t keep the key it reads Orbit’s alerts with, so Orbit won’t wake it. Check that it has room for Orbit’s page, then try again.",
+      );
+    }
   });
-  if (!added.ok) {
-    await signedUp.unsubscribe().catch(() => false);
-    throw Error(added.error);
-  }
-  await keep(added.data);
 }
 
 /** Stops Orbit waking this browser. */
-export async function turnOffPush(action: Action): Promise<void> {
-  const id = savedDevice();
-  if (id) {
+export function turnOffPush(action: Action): Promise<void> {
+  return alone(async () => {
+    const id = savedDevice();
+    if (id) {
+      const removed = await action("remove_push_device", { id });
+      if (!removed.ok) throw Error(removed.error);
+    }
+    await forget();
+  });
+}
+
+/** Stops Orbit waking the device `id`, from the list of them. When it's
+ * this browser, it's signed out here too. */
+export async function removeDevice(action: Action, id: string): Promise<void> {
+  const remove = async () => {
     const removed = await action("remove_push_device", { id });
     if (!removed.ok) throw Error(removed.error);
-  }
-  await forget();
+    if (id === savedDevice()) await forget();
+  };
+  // Only this browser's own needs to wait for its other pages.
+  await (id === savedDevice() ? alone(remove) : remove());
 }
 
 /** Forgets this browser's device here, once Orbit no longer wakes it. */
-export async function forget(): Promise<void> {
+async function forget(): Promise<void> {
   kept = null;
   try {
     localStorage.removeItem(idKey);

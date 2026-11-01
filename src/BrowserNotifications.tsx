@@ -13,8 +13,8 @@ import {
   type BrowserNotices,
 } from "./notices";
 import {
-  forget,
   pushSupported,
+  removeDevice,
   turnOffPush,
   turnOnPush,
   useSavedDevice,
@@ -147,9 +147,9 @@ export function PushDevices() {
     setRemoving(id);
     setProblem(null);
     try {
-      const removed = await action("remove_push_device", { id });
-      if (!removed.ok) setProblem(removed.error);
-      else if (id === here) await forget();
+      await removeDevice(action, id);
+    } catch (e) {
+      setProblem(e instanceof Error ? e.message : String(e));
     } finally {
       setRemoving(null);
     }

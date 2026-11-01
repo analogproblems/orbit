@@ -91,8 +91,11 @@ pub struct Setup {
 impl Default for Setup {
     fn default() -> Self {
         Self {
+            // Only to the push service itself: never where it might send
+            // Orbit on.
             client: reqwest::Client::builder()
                 .timeout(TIMEOUT)
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .unwrap_or_default(),
             local: false,

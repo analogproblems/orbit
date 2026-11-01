@@ -38,7 +38,10 @@ async function woken() {
     self.registration.showNotification(title, { body, tag, data });
   let read;
   try {
-    read = await whatsNew();
+    // Not while a page signs this browser up or out (src/push.ts), so
+    // it reads with the key that page keeps.
+    const locks = self.navigator && self.navigator.locks;
+    read = await (locks ? locks.request("orbit-push", whatsNew) : whatsNew());
   } catch {
     read = { failed: true };
   }

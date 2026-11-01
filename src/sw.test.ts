@@ -16,6 +16,8 @@ let saved: string | null;
 let deleted: string[];
 const unsubscribe = vi.fn(async () => true);
 const fetch = vi.fn();
+/** The worker's Web Locks, where a browser has them. */
+let locks: { request: ReturnType<typeof vi.fn> } | undefined;
 
 beforeEach(() => {
   listeners = {};
@@ -25,7 +27,11 @@ beforeEach(() => {
   deleted = [];
   unsubscribe.mockClear();
   fetch.mockReset();
+  locks = undefined;
   const self = {
+    get navigator() {
+      return { locks };
+    },
     addEventListener: (type: string, f: Listener) => (listeners[type] = f),
     registration: {
       showNotification: async (
@@ -146,4 +152,27 @@ it("signs out of wake-ups once Orbit no longer wakes this device", async () => {
   ]);
   expect(deleted).toEqual(["orbit-push"]);
   expect(unsubscribe).toHaveBeenCalledOnce();
+});
+
+it("reads only once a page signing this browser up has kept its key", async () => {
+  let signedUp: () => void = () => {};
+  const signingUp = new Promise<void>((r) => (signedUp = r));
+  locks = {
+    request: vi.fn(async (_: string, work: () => Promise<unknown>) => {
+      await signingUp;
+      return work();
+    }),
+  };
+  answer(200, { notices: [notice("a")] });
+  const woken = wake();
+  await new Promise((r) => setTimeout(r, 10));
+  expect(fetch).not.toHaveBeenCalled();
+  // The page keeps its new key, then lets go.
+  saved = JSON.stringify({ id: "phone", key: "n".repeat(64) });
+  signedUp();
+  expect((await woken).map((n) => n.title)).toEqual(["Title a"]);
+  expect(locks.request.mock.calls[0][0]).toBe("orbit-push");
+  expect(fetch.mock.calls[0][1].headers.Authorization).toBe(
+    `Bearer ${"n".repeat(64)}`,
+  );
 });

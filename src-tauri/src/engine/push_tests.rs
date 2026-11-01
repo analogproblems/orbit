@@ -325,3 +325,91 @@ async fn keeps_its_devices_across_a_restart() {
     assert_eq!(taken(&service), 1);
     assert_eq!(e.push_notices(&added.key).await.unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn with_notifications_off_wakes_nothing_and_holds_nothing_back() {
+    let d = tempfile::tempdir().unwrap();
+    let e = engine(d.path());
+    let service = fake_service().await;
+    let added = add(&e, &service, 1).await;
+    *service.status.lock().unwrap() = StatusCode::INTERNAL_SERVER_ERROR;
+    fail_a_review_of(&e, 1).await;
+    wake(&e).await;
+    assert_eq!(taken(&service), 1);
+    // Turned off while its wake-up waits to be tried again.
+    e.update(|s| s.settings.notify = false).await;
+    *service.status.lock().unwrap() = StatusCode::CREATED;
+    wait_over(&e, &added.id);
+    wake(&e).await;
+    assert_eq!(taken(&service), 1, "not tried again");
+    // A wake-up already on its way reads nothing.
+    assert!(e.push_notices(&added.key).await.unwrap().is_empty());
+    // Turned on again: what was sent before isn't told.
+    e.update(|s| s.settings.notify = true).await;
+    wait_over(&e, &added.id);
+    wake(&e).await;
+    assert_eq!(taken(&service), 1);
+    assert!(e.push_notices(&added.key).await.unwrap().is_empty());
+    // And what's sent after is.
+    fail_a_review_of(&e, 2).await;
+    wait_over(&e, &added.id);
+    wake(&e).await;
+    assert_eq!(taken(&service), 2);
+    assert_eq!(e.push_notices(&added.key).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn read_while_off_isnt_shown_once_on_again() {
+    let d = tempfile::tempdir().unwrap();
+    let e = engine(d.path());
+    let service = fake_service().await;
+    let added = add(&e, &service, 1).await;
+    fail_a_review(&e).await;
+    wake(&e).await;
+    assert_eq!(taken(&service), 1);
+    e.update(|s| s.settings.notify = false).await;
+    assert!(e.push_notices(&added.key).await.unwrap().is_empty());
+    e.update(|s| s.settings.notify = true).await;
+    assert!(e.push_notices(&added.key).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_wake_up_on_its_way_during_a_move_in_leaves_later_alerts_to_wake() {
+    let d = tempfile::tempdir().unwrap();
+    let e = engine(d.path());
+    let service = fake_service().await;
+    let added = add(&e, &service, 1).await;
+    fail_a_review_of(&e, 1).await;
+    fail_a_review_of(&e, 2).await;
+    // Its push service holds the answer while an Orbit with fewer
+    // notifications moves in, which catches devices up to its count
+    // (`keep_here`).
+    let held = service.gate.lock().await;
+    e.wake_devices().await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while taken(&service) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    e.update(|s| {
+        s.notices.clear();
+        s.notices_sent = 0;
+        for d in &mut s.push_devices {
+            (d.read, d.told) = (0, 0);
+        }
+        s.reviews.clear();
+        s.prs.clear();
+    })
+    .await;
+    drop(held);
+    wake(&e).await;
+    assert_eq!(e.snapshot().await.push_devices[0].told, 0);
+    // The moved Orbit's next notification wakes it.
+    wait_over(&e, &added.id);
+    fail_a_review_of(&e, 3).await;
+    wake(&e).await;
+    assert_eq!(taken(&service), 2);
+    assert_eq!(e.push_notices(&added.key).await.unwrap().len(), 1);
+}

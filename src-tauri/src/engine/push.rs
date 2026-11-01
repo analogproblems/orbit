@@ -107,8 +107,9 @@ impl Engine {
         }
     }
     /// What's new for the device whose key is `key`, once woken: the
-    /// notifications it hasn't read whose item still needs you. None if no
-    /// device has that key, or it was added with an old access link.
+    /// notifications it hasn't read whose item still needs you, and none
+    /// while notifications are off. None if no device has that key, or it
+    /// was added with an old access link.
     pub async fn push_notices(&self, key: &str) -> Option<Vec<SentNotice>> {
         let hash = push::hash(key);
         let link = push::link(&self.root);
@@ -122,10 +123,12 @@ impl Engine {
             .into_iter()
             .map(|a| a.key)
             .collect();
+        // Read all the same, so turning them on again shows nothing older.
+        let on = s.settings.notify;
         let new = s
             .notices
             .iter()
-            .filter(|n| n.seq > read && open.contains(&n.item.key))
+            .filter(|n| on && n.seq > read && open.contains(&n.item.key))
             .cloned()
             .collect();
         let sent = s.notices_sent;
@@ -149,13 +152,26 @@ impl Engine {
     /// `WAKE_AGAIN` before it's woken again, unless it reads what's new
     /// first; one whose wake-up failed waits longer each time; one its push
     /// service no longer knows is forgotten. One with nothing still open to
-    /// tell is caught up.
+    /// tell is caught up. While notifications are off, none is woken, and
+    /// each is caught up, so turning them on again tells nothing older.
     pub(super) async fn wake_devices(self: &Arc<Self>) {
         if self.waking.load(Ordering::SeqCst) {
             return;
         }
         let mut s = self.state.lock().await;
         let sent = s.notices_sent;
+        if !s.settings.notify {
+            if s.push_devices
+                .iter()
+                .any(|d| d.told != sent || d.read != sent)
+            {
+                for d in &mut s.push_devices {
+                    (d.told, d.read) = (sent, sent);
+                }
+                self.dirty.store(true, Ordering::SeqCst);
+            }
+            return;
+        }
         let now = std::time::Instant::now();
         let mut retry = self.wake_retry.lock().unwrap();
         let resting: HashSet<String> = retry
@@ -227,7 +243,14 @@ impl Engine {
         };
         let setup = self.push.lock().unwrap().clone();
         for (id, endpoint) in due {
-            let sent = self.state.lock().await.notices_sent;
+            let (sent, on) = {
+                let s = self.state.lock().await;
+                (s.notices_sent, s.settings.notify)
+            };
+            // Turned off meanwhile: the next pass catches them up.
+            if !on {
+                return;
+            }
             let woken = match push::endpoint(&endpoint, setup.local) {
                 Ok(url) => push::wake(&setup, &keys, &url).await,
                 Err(error) => Woken::Failed(error),
@@ -248,6 +271,7 @@ impl Engine {
             self.dirty.store(true, Ordering::SeqCst);
             return;
         }
+        let now_sent = s.notices_sent;
         let d = &mut s.push_devices[at];
         let mut retry = self.wake_retry.lock().unwrap();
         let now = std::time::Instant::now();
@@ -260,7 +284,9 @@ impl Engine {
             });
             retry.insert(id.into(), (now + wait, wait));
         } else {
-            d.told = d.told.max(sent);
+            // Never past what's sent now: a move in may have started the
+            // count again lower while this wake-up was on its way.
+            d.told = d.told.max(sent.min(now_sent));
             d.error = None;
             retry.insert(id.into(), (now + WAKE_AGAIN, Duration::ZERO));
         }

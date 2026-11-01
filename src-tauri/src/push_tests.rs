@@ -14,11 +14,12 @@ pub(crate) struct Taken {
     pub body: usize,
 }
 /// A push service on this computer that takes wake-ups at `/wake/<device>`
-/// and answers with `status`.
+/// and answers with `status`, once `gate` is free.
 #[derive(Clone)]
 pub(crate) struct FakeService {
     pub taken: Arc<Mutex<Vec<Taken>>>,
     pub status: Arc<Mutex<StatusCode>>,
+    pub gate: Arc<tokio::sync::Mutex<()>>,
     pub url: String,
 }
 pub(crate) async fn fake_service() -> FakeService {
@@ -26,7 +27,7 @@ pub(crate) async fn fake_service() -> FakeService {
         State(f): State<FakeService>,
         headers: HeaderMap,
         body: axum::body::Bytes,
-    ) -> StatusCode {
+    ) -> axum::response::Response {
         let header = |name: &str| {
             headers
                 .get(name)
@@ -41,12 +42,24 @@ pub(crate) async fn fake_service() -> FakeService {
             topic: header("topic"),
             body: body.len(),
         });
-        *f.status.lock().unwrap()
+        let _open = f.gate.lock().await;
+        let status = *f.status.lock().unwrap();
+        if status.is_redirection() {
+            let mut moved = axum::response::Response::new(axum::body::Body::empty());
+            *moved.status_mut() = status;
+            moved.headers_mut().insert(
+                "location",
+                format!("{}/wake/elsewhere", f.url).parse().unwrap(),
+            );
+            return moved;
+        }
+        axum::response::IntoResponse::into_response(status)
     }
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let service = FakeService {
         taken: Arc::default(),
         status: Arc::new(Mutex::new(StatusCode::CREATED)),
+        gate: Arc::default(),
         url: format!("http://{}", listener.local_addr().unwrap()),
     };
     let app = Router::new()
@@ -196,6 +209,13 @@ async fn a_wake_up_is_empty_and_says_how_it_went() {
     assert_eq!(wake(&local(), &keys, &url).await, Woken::Gone);
     *service.status.lock().unwrap() = StatusCode::NOT_FOUND;
     assert_eq!(wake(&local(), &keys, &url).await, Woken::Gone);
+    // Never sent on elsewhere.
+    *service.status.lock().unwrap() = StatusCode::FOUND;
+    assert_eq!(
+        wake(&local(), &keys, &url).await,
+        Woken::Failed("Its push service answered 302.".into())
+    );
+    assert_eq!(service.taken.lock().unwrap().len(), 4);
     *service.status.lock().unwrap() = StatusCode::TOO_MANY_REQUESTS;
     assert_eq!(
         wake(&local(), &keys, &url).await,

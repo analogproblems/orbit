@@ -44,8 +44,18 @@ const pushManager = {
       (signedUp = signUp(o.applicationServerKey)),
   ),
 };
-/** Cache Storage, as the service worker reads it. */
+/** Cache Storage, as the service worker reads it, and what it refuses. */
 const cached = new Map<string, Map<string, string>>();
+let refuse: "open" | "put" | null;
+/** Web Locks: each request for a name waits for the one before it. */
+let tail: Promise<unknown>;
+const locks = {
+  request: vi.fn((_: string, work: () => Promise<unknown>) => {
+    const run = tail.then(work);
+    tail = run.catch(() => {});
+    return run;
+  }),
+};
 const action = vi.fn();
 const devices = (list: PushDevice[]) =>
   useOrbit.setState((s) => ({
@@ -55,6 +65,13 @@ const devices = (list: PushDevice[]) =>
 beforeEach(() => {
   signedUp = null;
   cached.clear();
+  refuse = null;
+  tail = Promise.resolve();
+  locks.request.mockClear();
+  Object.defineProperty(navigator, "locks", {
+    configurable: true,
+    value: locks,
+  });
   localStorage.clear();
   pushManager.subscribe.mockClear();
   Object.defineProperty(window, "isSecureContext", {
@@ -72,11 +89,14 @@ beforeEach(() => {
   );
   vi.stubGlobal("caches", {
     open: async (name: string) => {
+      if (refuse === "open") throw Error("QuotaExceededError");
       const cache = cached.get(name) ?? new Map<string, string>();
       cached.set(name, cache);
       return {
-        put: async (url: string, response: Response) =>
-          void cache.set(url, await response.text()),
+        put: async (url: string, response: Response) => {
+          if (refuse === "put") throw Error("QuotaExceededError");
+          cache.set(url, await response.text());
+        },
       };
     },
     delete: async (name: string) => cached.delete(name),
@@ -208,6 +228,84 @@ it("says why this browser couldn't be woken", async () => {
   ).toBeTruthy();
   expect(signedUp).toBeNull();
   expect(cached.has("orbit-push")).toBe(false);
+});
+
+it("undoes signing up when this browser won't keep its key", async () => {
+  for (const refused of ["open", "put"] as const) {
+    cleanup();
+    devices([]);
+    // An older key from before is there too.
+    cached.set("orbit-push", new Map([["/orbit-push-device", "old"]]));
+    refuse = refused;
+    action.mockClear();
+    render(<BrowserNotifications />);
+    await userEvent.click(closed());
+    expect(
+      await screen.findByText(
+        "This browser wouldn’t keep the key it reads Orbit’s alerts with, so Orbit won’t wake it. Check that it has room for Orbit’s page, then try again.",
+      ),
+    ).toBeTruthy();
+    expect(action).toHaveBeenCalledWith(
+      "remove_push_device",
+      { id: "phone" },
+      { quiet: true },
+    );
+    expect(signedUp, refused).toBeNull();
+    expect(cached.has("orbit-push"), refused).toBe(false);
+    expect(localStorage.getItem("orbit-push-device")).toBeNull();
+    expect((closed() as HTMLInputElement).checked).toBe(false);
+  }
+});
+
+it("keeps a sign-up Orbit already wakes when adding it again fails", async () => {
+  const kept = signUp(raw);
+  signedUp = kept;
+  action.mockImplementation(async (command: string) =>
+    command === "push_key"
+      ? { ok: true, data: key }
+      : { ok: false, error: "Orbit couldn't save this device: disk full" },
+  );
+  render(<BrowserNotifications />);
+  await userEvent.click(closed());
+  expect(
+    await screen.findByText("Orbit couldn't save this device: disk full"),
+  ).toBeTruthy();
+  expect(kept.unsubscribe).not.toHaveBeenCalled();
+  expect(signedUp).toBe(kept);
+});
+
+it("signs this browser up from one page at a time", async () => {
+  const push = await import("./push");
+  // Orbit gives each add a new key, replacing the one before; the first
+  // answer is slow to come back.
+  let adds = 0;
+  let latest = "";
+  const order: string[] = [];
+  const slow = action.getMockImplementation()!;
+  action.mockImplementation(
+    async (command: string, args: Record<string, unknown>) => {
+      if (command !== "add_push_device") return slow(command, args);
+      const n = ++adds;
+      latest = `${n}`.repeat(64);
+      order.push(`added ${n}`);
+      if (n === 1) await new Promise((r) => setTimeout(r, 50));
+      order.push(`answered ${n}`);
+      return { ok: true, data: { id: `device-${n}`, key: latest } };
+    },
+  );
+  const quiet = <T,>(c: string, a?: Record<string, unknown>) =>
+    action(c, a) as Promise<{ ok: true; data: T }>;
+  await Promise.all([push.turnOnPush(quiet), push.turnOnPush(quiet)]);
+  expect(order).toEqual(["added 1", "answered 1", "added 2", "answered 2"]);
+  // The worker reads with the key Orbit holds.
+  expect(
+    JSON.parse(cached.get("orbit-push")?.get("/orbit-push-device") ?? ""),
+  ).toEqual({ id: "device-2", key: latest });
+  expect(localStorage.getItem("orbit-push-device")).toBe("device-2");
+  expect(locks.request.mock.calls.map((c) => c[0])).toEqual([
+    "orbit-push",
+    "orbit-push",
+  ]);
 });
 
 it("says when this browser can't be woken at all", () => {
