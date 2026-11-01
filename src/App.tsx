@@ -47,6 +47,8 @@ import {
 } from "lucide-react";
 import { useOrbit, desktop, live, remote } from "./store";
 import { startBrowserNotices } from "./notices";
+import { expiredLink } from "./remote";
+import { PasteLink } from "./PasteLink";
 import { listen } from "@tauri-apps/api/event";
 import {
   activeStatuses,
@@ -622,6 +624,7 @@ export default function App() {
                     container="section"
                   />
                 )}
+                {remote && error === expiredLink && <PasteLink />}
                 {offeredApproval && (
                   <Banner
                     status="warning"

@@ -29,7 +29,12 @@ beforeEach(() => {
   Object.defineProperty(navigator, "serviceWorker", {
     configurable: true,
     value: {
-      register: vi.fn(async () => ({ showNotification: shown })),
+      // Registered, but not active until `ready` says so.
+      register: vi.fn(async () => ({
+        active: null,
+        showNotification: () => Promise.reject(TypeError("No active worker")),
+      })),
+      ready: Promise.resolve({ showNotification: shown }),
       addEventListener: (_: string, f: (e: MessageEvent) => void) =>
         tapped.push(f),
       removeEventListener: vi.fn(),
@@ -83,6 +88,31 @@ it("shows one notification for a new Needs you item, once", async () => {
   // A tap on it opens its item.
   tapped[0]({ data: { type: "orbit-open", item: item("held:2") } } as never);
   expect(open).toHaveBeenCalledWith(item("held:2"));
+});
+
+it("waits for Orbit's worker to start before showing one", async () => {
+  let start: (r: { showNotification: typeof shown }) => void = () => {};
+  Object.defineProperty(navigator.serviceWorker, "ready", {
+    configurable: true,
+    value: new Promise((r) => (start = r)),
+  });
+  const n = await import("./notices");
+  n.startBrowserNotices(() => {});
+  n.relayNotices(snapshot([], []));
+  // A notice comes while the worker is still installing.
+  n.relayNotices(snapshot([notice("a", "approval:1")], ["approval:1"]));
+  await flush();
+  expect(shown).not.toHaveBeenCalled();
+  start({ showNotification: shown });
+  await vi.waitFor(() => expect(shown).toHaveBeenCalledTimes(1));
+  expect(shown).toHaveBeenCalledWith("Title a", {
+    body: "Body a",
+    tag: "a",
+    data: { item: item("approval:1") },
+  });
+  n.relayNotices(snapshot([notice("a", "approval:1")], ["approval:1"]));
+  await flush();
+  expect(shown).toHaveBeenCalledTimes(1);
 });
 
 it("shows nothing for an item already closed, or with notifications off", async () => {

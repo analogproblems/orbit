@@ -6,6 +6,9 @@
 import type { Attention, SentNotice, Snapshot } from "./types";
 
 const seenKey = "orbit-notices-seen";
+/** How long a notification waits for Orbit's service worker to start, the
+ * first time, before showing without it. */
+const starting = 10_000;
 
 /** What this browser does with Orbit's notifications. */
 export type BrowserNotices =
@@ -54,7 +57,11 @@ export function startBrowserNotices(open: (item: Attention) => void) {
   ) {
     return () => {};
   }
-  worker = navigator.serviceWorker.register("/sw.js").catch(() => null);
+  worker = navigator.serviceWorker
+    .register("/sw.js")
+    // Showing one needs an active worker, and installing comes first.
+    .then(() => navigator.serviceWorker.ready)
+    .catch(() => null);
   const tapped = (e: MessageEvent) => {
     const data = e.data as { type?: string; item?: Attention } | null;
     if (data?.type === "orbit-open" && data.item) open(data.item);
@@ -108,7 +115,12 @@ async function show(n: SentNotice) {
     data: { item: n.item },
   };
   try {
-    const registration = worker ? await worker : null;
+    const registration = worker
+      ? await Promise.race([
+          worker,
+          new Promise<null>((r) => setTimeout(() => r(null), starting)),
+        ])
+      : null;
     if (registration) await registration.showNotification(n.title, options);
     else new Notification(n.title, options);
   } catch {
