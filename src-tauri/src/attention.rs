@@ -363,6 +363,56 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
             });
         }
     }
+    // An agent that declined a security alert only a person may leave
+    // open: a high or critical one.
+    for t in s.ops.iter().filter(|t| !t.gone && t.source.is_some()) {
+        let Some(p) = s
+            .problems
+            .iter()
+            .find(|p| p.id == t.problem_id && p.is_open())
+        else {
+            continue;
+        };
+        for i in t.items.iter().filter(|i| i.failing) {
+            let declined = i
+                .answer
+                .as_ref()
+                .filter(|a| a.kind == crate::ops::AnswerKind::Declined);
+            let urgent = p
+                .security_alerts
+                .iter()
+                .any(|a| a.number == i.alert && a.needs_you());
+            let Some(a) = declined.filter(|_| urgent) else {
+                continue;
+            };
+            let about = format!(
+                "The agent on {} declined I{} ({})",
+                crate::ops::place(t),
+                i.number,
+                i.name()
+            );
+            let said = match a.text.as_deref().map(str::trim_end) {
+                Some(reason) if reason.ends_with(['.', '!', '?']) => format!("{about}: {reason}"),
+                Some(reason) => format!("{about}: {reason}."),
+                None => format!("{about}."),
+            };
+            out.push(Attention {
+                repo: Some(t.repo.clone()),
+                ..item(
+                    format!(
+                        "problem:{}:declined:I{}:{}",
+                        t.problem_id, i.number, a.reply_id
+                    ),
+                    AttentionKind::SecurityAlert,
+                    None,
+                    None,
+                    format!(
+                        "{said} It's high or critical, so it's yours to decide: have it fixed, or dismiss its alert on GitHub."
+                    ),
+                )
+            });
+        }
+    }
     for a in &s.approvals {
         let pr_id = s
             .reviews

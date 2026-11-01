@@ -129,6 +129,10 @@ pub struct Problem {
     pub security_alerts: Vec<crate::security::Alert>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub told_alerts: Vec<u64>,
+    /// For security alerts: GitHub said the repository is private when
+    /// Orbit last read them, so its agent may hear of them in an issue.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub private: bool,
 }
 impl Problem {
     pub fn is_open(&self) -> bool {
@@ -180,6 +184,11 @@ impl Problem {
     /// Whether it closed because its commit passed.
     pub fn passed(&self) -> bool {
         !self.is_open() && !self.closed_sha.is_empty()
+    }
+    /// Whether it closed as GitHub said each of its security alerts was
+    /// fixed or dismissed, rather than as Orbit stopped watching them.
+    pub fn resolved(&self) -> bool {
+        self.kind == ProblemKind::Security && !self.is_open() && self.security_alerts.is_empty()
     }
 }
 
@@ -672,6 +681,7 @@ pub fn see_security(
                 opened_at: at.clone(),
                 source: Some(kind.source),
                 security_alerts: kind.alerts.clone(),
+                private: read.private,
                 ..Default::default()
             };
             sort(&mut p.security_alerts);
@@ -680,6 +690,7 @@ pub fn see_security(
             problems.push(p);
             continue;
         };
+        p.private = read.private;
         // Those no longer listed go only once GitHub says what became of
         // them; until then they stay as they were.
         let mut gone = vec![];

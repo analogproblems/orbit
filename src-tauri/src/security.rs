@@ -255,6 +255,11 @@ pub struct RepoSecurity {
     pub error: Option<String>,
     pub tries: u32,
     pub retry_at: Option<String>,
+    /// GitHub says only those it lets in can see the repository. Anything
+    /// else, unknown included, counts as public, so its alerts stay with
+    /// you rather than going in an issue everyone can read.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub private: bool,
 }
 impl RepoSecurity {
     pub fn kind(&self, source: Source) -> Option<&Kind> {
@@ -333,12 +338,15 @@ fn fields(source: Source, list: bool) -> Vec<(&'static str, String)> {
     fields
 }
 
-/// Reads a repository's open alerts of every kind.
+/// Reads whether a repository is private, and its open alerts of every
+/// kind.
 pub async fn read(repo: &str) -> Result<RepoSecurity, String> {
     validate_repo(repo)?;
+    let about = crate::github::api(&format!("repos/{repo}"), "GET", &[], None).await;
     let mut read = RepoSecurity {
         repo: repo.to_string(),
         read_at: stamp(Utc::now()),
+        private: private(about)?,
         ..Default::default()
     };
     for source in Source::ALL {
@@ -352,6 +360,18 @@ pub async fn read(repo: &str) -> Result<RepoSecurity, String> {
         read.kinds.push(kind(repo, source, answer)?);
     }
     Ok(read)
+}
+/// Whether GitHub's answer about a repository says it is private. One it
+/// didn't give counts as public, the cautious answer, but a rate limit is
+/// tried again.
+pub fn private(answer: Result<Value, String>) -> Result<bool, String> {
+    match answer {
+        Ok(v) => {
+            Ok(v["private"] == true && v["visibility"].as_str().is_none_or(|w| w == "private"))
+        }
+        Err(e) if logs::rate_limited(&e) => Err(e),
+        Err(_) => Ok(false),
+    }
 }
 /// What GitHub's answer for one kind says, or the error to try again
 /// after. A refusal is kept as why Orbit can't see them; a rate limit is

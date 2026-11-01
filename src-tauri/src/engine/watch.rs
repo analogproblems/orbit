@@ -40,7 +40,11 @@ impl Engine {
         // Last, so telling agents never waits for runners or storage.
         self.read_runners().await;
         self.read_storage().await;
-        self.read_security().await;
+        // Agents hear of security alerts that changed now, not a sync
+        // later.
+        if self.read_security().await {
+            self.tell_agents().await;
+        }
         // After everything else, so it sums up what Orbit just read.
         self.look_for_brief().await;
     }
@@ -348,10 +352,12 @@ impl Engine {
     /// for keeps what was read before, and its problems stay as they were,
     /// until Orbit tries again after a wait. With the switch off, Orbit
     /// forgets what it read and closes what was open.
-    async fn read_security(&self) {
+    /// Returns whether any security problem changed.
+    async fn read_security(&self) -> bool {
         if self.reading_security.swap(true, Ordering::SeqCst) {
-            return;
+            return false;
         }
+        let before = self.security_problems().await;
         let now = chrono::Utc::now();
         let (watch, stale, wanted) = {
             let s = self.state.lock().await;
@@ -427,6 +433,17 @@ impl Engine {
         if watch || stale {
             let _ = self.flush().await;
         }
+        self.security_problems().await != before
+    }
+    /// The security problems as they stand, to tell whether a read changed
+    /// them.
+    async fn security_problems(&self) -> Vec<problems::Problem> {
+        let s = self.state.lock().await;
+        s.problems
+            .iter()
+            .filter(|p| p.kind == problems::ProblemKind::Security)
+            .cloned()
+            .collect()
     }
 }
 /// Forgets what Orbit read of security alerts it no longer watches, and
