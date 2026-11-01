@@ -255,6 +255,11 @@ pub struct RepoSecurity {
     pub error: Option<String>,
     pub tries: u32,
     pub retry_at: Option<String>,
+    /// GitHub says only those it lets in can see the repository. Anything
+    /// else, unknown included, counts as public, so its alerts stay with
+    /// you rather than going in an issue everyone can read.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub private: bool,
 }
 impl RepoSecurity {
     pub fn kind(&self, source: Source) -> Option<&Kind> {
@@ -333,12 +338,14 @@ fn fields(source: Source, list: bool) -> Vec<(&'static str, String)> {
     fields
 }
 
-/// Reads a repository's open alerts of every kind.
-pub async fn read(repo: &str) -> Result<RepoSecurity, String> {
+/// Reads whether a repository is private, and its open alerts of every
+/// kind.
+pub async fn read(repo: &str, private: bool) -> Result<RepoSecurity, String> {
     validate_repo(repo)?;
     let mut read = RepoSecurity {
         repo: repo.to_string(),
         read_at: stamp(Utc::now()),
+        private,
         ..Default::default()
     };
     for source in Source::ALL {
@@ -352,6 +359,20 @@ pub async fn read(repo: &str) -> Result<RepoSecurity, String> {
         read.kinds.push(kind(repo, source, answer)?);
     }
     Ok(read)
+}
+/// Whether GitHub says now that a repository is private. Asked before
+/// each read of its alerts, and again just before each write about them,
+/// as only a private repository's agent hears of them.
+pub async fn private_now(repo: &str) -> Result<bool, String> {
+    validate_repo(repo)?;
+    private(crate::github::api(&format!("repos/{repo}"), "GET", &[], None).await)
+}
+/// Whether GitHub's answer about a repository says it is private: an
+/// internal one isn't. One it didn't give is an error, never taken as
+/// either: it fails the read, and holds back any write about alerts.
+pub fn private(answer: Result<Value, String>) -> Result<bool, String> {
+    let v = answer?;
+    Ok(v["private"] == true && v["visibility"].as_str().is_none_or(|w| w == "private"))
 }
 /// What GitHub's answer for one kind says, or the error to try again
 /// after. A refusal is kept as why Orbit can't see them; a rate limit is

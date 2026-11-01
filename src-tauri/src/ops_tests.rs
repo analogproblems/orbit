@@ -2607,3 +2607,424 @@ fn an_answer_from_before_starts_waiting_now() {
     let loaded: Ready = serde_json::from_value(saved).unwrap();
     assert_eq!(&loaded, ready_of(&threads));
 }
+
+mod security {
+    use super::*;
+    use crate::security::tests::{code_scanning, dependabot, secret};
+    use crate::security::{alert, Kind, Left, Outcome, RepoSecurity};
+
+    fn kind(source: Source, alerts: &[serde_json::Value]) -> Kind {
+        let mut alerts: Vec<_> = alerts.iter().filter_map(|v| alert(source, v)).collect();
+        crate::security::sort(&mut alerts);
+        Kind {
+            source,
+            alerts,
+            ..Default::default()
+        }
+    }
+    fn read(private: bool, kinds: Vec<Kind>) -> RepoSecurity {
+        RepoSecurity {
+            repo: "a/b".into(),
+            kinds,
+            private,
+            ..Default::default()
+        }
+    }
+    fn hidden(body: &str) -> serde_json::Value {
+        let line = body.lines().last().unwrap();
+        let json = &line[line.find('{').unwrap()..];
+        serde_json::from_str(json.strip_suffix(" -->").unwrap()).unwrap()
+    }
+
+    /// In a private repository, each kind of alert but secrets gets one
+    /// issue with an item per alert, saying what to change. A public
+    /// repository's alerts, and any secret, stay with you.
+    #[test]
+    fn a_private_repositorys_alerts_get_an_issue_but_secrets_and_public_ones_dont() {
+        let all = || {
+            vec![
+                kind(
+                    Source::Dependabot,
+                    &[
+                        dependabot(1, "lodash", "critical"),
+                        dependabot(2, "qs", "low"),
+                    ],
+                ),
+                kind(Source::CodeScanning, &[code_scanning(5, Some("high"))]),
+                kind(Source::SecretScanning, &[secret(3)]),
+            ]
+        };
+        let mut problems = vec![];
+        crate::problems::see_security(&mut problems, &read(false, all()), &[], t0());
+        let mut threads = vec![];
+        assert!(!refresh(&mut threads, &problems, t0()));
+        assert!(
+            threads.is_empty(),
+            "a public repository's alerts stay with you"
+        );
+
+        let mut problems = vec![];
+        crate::problems::see_security(&mut problems, &read(true, all()), &[], t0());
+        refresh(&mut threads, &problems, t0());
+        let sources: Vec<_> = threads.iter().map(|t| t.source).collect();
+        assert_eq!(
+            sources,
+            [Some(Source::Dependabot), Some(Source::CodeScanning)],
+            "no secret goes to an agent"
+        );
+        let deps = problems
+            .iter()
+            .find(|p| p.source == Some(Source::Dependabot))
+            .unwrap();
+        let mut journal = vec![];
+        let open = send(&mut threads, &mut journal, deps, true, t0()).unwrap();
+        assert_eq!(open.action, Action::OpenIssue);
+        assert_eq!(open.title, "Fix the open Dependabot alerts");
+        assert_eq!(
+            event_text(&threads, &problems, &Event::Posted(threads[0].key.clone()))
+                .unwrap()
+                .2,
+            "Orbit opened issue #45 to tell the agent on a/b about 2 Dependabot alerts."
+        );
+        assert!(open.body.starts_with("## Orbit · Security\n\nGitHub has 2 open Dependabot alerts here, 1 of them high or critical. Each item says what to change."));
+        assert!(open.body.contains("- **I1** · Dependabot alert 1 · `lodash` (critical) in `package-lock.json` · update `lodash` to `4.17.21` or later · [alert](https://github.com/a/b/security/dependabot/1)"));
+        assert!(open
+            .body
+            .contains("- **I2** · Dependabot alert 2 · `qs` (low)"));
+        let data = hidden(&open.body);
+        assert_eq!(data["kind"], "security");
+        assert_eq!(data["source"], "dependabot");
+        assert_eq!(
+            data["items"][0],
+            json!({"id": "I1", "kind": "alert", "alert": 1, "severity": "critical", "failing": true, "since": "2026-10-30T10:00:00Z", "at": "2026-10-30T10:00:00Z"})
+        );
+        // Code scanning names the rule and what it flags.
+        let code = problems
+            .iter()
+            .find(|p| p.source == Some(Source::CodeScanning))
+            .unwrap();
+        let body = issue_body(&threads[1], code, false);
+        assert!(body.contains("- **I1** · code scanning alert 5 · `js/sql-injection` (high) in `src/db.ts` line 12 · Database query built from user-controlled sources · [alert]"), "{body}");
+    }
+
+    fn fixed(n: u64) -> Left {
+        Left {
+            source: Source::Dependabot,
+            number: n,
+            outcome: Outcome::Closed {
+                fixed: true,
+                by: String::new(),
+                why: String::new(),
+            },
+        }
+    }
+    fn deps(private: bool, alerts: &[serde_json::Value]) -> RepoSecurity {
+        read(private, vec![kind(Source::Dependabot, alerts)])
+    }
+
+    /// Once GitHub says a repository isn't private, nothing about its
+    /// alerts goes out: the issue Bit was asking about doesn't open, even
+    /// with your tap, and one already on GitHub takes no new alert, edit,
+    /// reopening or closing, until GitHub says it is private again.
+    #[test]
+    fn nothing_new_goes_out_once_a_repository_isnt_private() {
+        let lodash = || dependabot(1, "lodash", "critical");
+        let qs = || dependabot(2, "qs", "low");
+        let minimist = || dependabot(3, "minimist", "high");
+        let mut problems = vec![];
+        crate::problems::see_security(&mut problems, &deps(true, &[lodash()]), &[], t0());
+        let mut threads = vec![];
+        let mut journal = vec![];
+        refresh(&mut threads, &problems, t0());
+        // Bit asks first, so it waits for your tap.
+        assert!(send(&mut threads, &mut journal, &problems[0], false, t0()).is_none());
+
+        // GitHub says it's public now. The same thread stays, but neither
+        // your tap nor Do it opens it, and it takes no new alert.
+        crate::problems::see_security(&mut problems, &deps(false, &[lodash(), qs()]), &[], t0());
+        refresh(&mut threads, &problems, t0());
+        assert_eq!(threads.len(), 1);
+        threads[0].allowed = true;
+        assert!(withheld(&threads[0], &problems[0]));
+        assert!(send(&mut threads, &mut journal, &problems[0], true, t0()).is_none());
+        assert!(threads[0].items.iter().all(|i| i.alert != 2));
+
+        // Private again: it opens, with what is open now.
+        crate::problems::see_security(&mut problems, &deps(true, &[lodash(), qs()]), &[], t0());
+        refresh(&mut threads, &problems, t0());
+        let open = send(&mut threads, &mut journal, &problems[0], true, t0()).unwrap();
+        assert_eq!(open.action, Action::OpenIssue);
+        assert!(open.body.contains("`qs`"));
+
+        // Public again, with a new alert: the issue on GitHub stays as it
+        // is.
+        crate::problems::see_security(
+            &mut problems,
+            &deps(false, &[lodash(), qs(), minimist()]),
+            &[],
+            t0(),
+        );
+        refresh(&mut threads, &problems, t0());
+        assert!(send(&mut threads, &mut journal, &problems[0], true, t0()).is_none());
+        assert!(threads[0].items.iter().all(|i| i.alert != 3));
+
+        // Its alerts are fixed. Closing could show what GitHub never had
+        // from Orbit, so it waits too.
+        crate::problems::see_security(
+            &mut problems,
+            &deps(false, &[]),
+            &[fixed(1), fixed(2), fixed(3)],
+            t0(),
+        );
+        assert!(problems[0].resolved());
+        assert!(withheld(&threads[0], &problems[0]));
+        refresh(&mut threads, &problems, t0());
+        assert!(send(&mut threads, &mut journal, &problems[0], true, t0()).is_none());
+
+        // GitHub says it's private again: it closes, without the new one.
+        let mut security = vec![];
+        crate::problems::see_private(&mut problems, &mut security, "a/b", true);
+        assert!(!withheld(&threads[0], &problems[0]));
+        refresh(&mut threads, &problems, t0());
+        let note = send(&mut threads, &mut journal, &problems[0], true, t0()).unwrap();
+        assert_eq!(note.action, Action::NoteOnIssue);
+        let close = send(&mut threads, &mut journal, &problems[0], true, t0()).unwrap();
+        assert_eq!(close.action, Action::CloseIssue);
+        for body in [&note.body, &close.body] {
+            assert!(!body.contains("minimist"), "{body}");
+        }
+    }
+
+    /// An alert GitHub no longer has, without saying what became of it,
+    /// isn't called fixed: once none is left open, the issue closes, not
+    /// as done, saying Orbit can't say.
+    #[test]
+    fn an_alert_github_no_longer_has_isnt_called_fixed() {
+        let mut problems = vec![];
+        crate::problems::see_security(
+            &mut problems,
+            &deps(true, &[dependabot(1, "lodash", "critical")]),
+            &[],
+            t0(),
+        );
+        let mut threads = vec![];
+        let mut journal = vec![];
+        refresh(&mut threads, &problems, t0());
+        send(&mut threads, &mut journal, &problems[0], true, t0()).unwrap();
+        let gone = Left {
+            source: Source::Dependabot,
+            number: 1,
+            outcome: Outcome::Gone,
+        };
+        crate::problems::see_security(&mut problems, &deps(true, &[]), &[gone], t0());
+        let p = &problems[0];
+        assert!(!p.is_open());
+        assert!(p.cleared() && !p.resolved());
+        assert_eq!(p.vanished, [1]);
+        refresh(&mut threads, &problems, t0());
+        let note = send(&mut threads, &mut journal, &problems[0], true, t0()).unwrap();
+        assert_eq!(note.action, Action::NoteOnIssue);
+        assert!(
+            note.body.starts_with("No Dependabot alerts are open here now, so Orbit is closing this issue. GitHub no longer has 1 of them, so Orbit can't say it was fixed or dismissed."),
+            "{}",
+            note.body
+        );
+        let close = send(&mut threads, &mut journal, &problems[0], true, t0()).unwrap();
+        assert_eq!(close.action, Action::CloseIssue);
+        assert!(!close.completed);
+        assert!(close.body.contains("No Dependabot alerts are open here now. GitHub no longer has 1 of them, so Orbit can't say it was fixed or dismissed."));
+        assert!(close.body.contains("- **I1** · Dependabot alert 1, lodash · GitHub no longer has it, so Orbit can't say it was fixed or dismissed"), "{}", close.body);
+        assert!(!close.body.contains("fixed or dismissed. Nothing is left"));
+        assert_eq!(
+            event_text(
+                &threads,
+                &problems,
+                &Event::Closed("issue:".to_string() + &problems[0].id)
+            )
+            .unwrap()
+            .2,
+            "Orbit closed issue #45 on a/b. Dependabot alert 1, lodash: GitHub no longer has it."
+        );
+    }
+
+    /// An agent's fix counts once GitHub marks the alert fixed: until then
+    /// the item stays open, saying Orbit waits for GitHub. Once every alert
+    /// is fixed, the issue closes as done, with a note.
+    #[test]
+    fn a_fix_counts_once_github_marks_the_alert_fixed() {
+        let mut problems = vec![];
+        let deps = || {
+            vec![kind(
+                Source::Dependabot,
+                &[
+                    dependabot(1, "lodash", "critical"),
+                    dependabot(2, "qs", "low"),
+                ],
+            )]
+        };
+        crate::problems::see_security(&mut problems, &read(true, deps()), &[], t0());
+        let mut threads = vec![];
+        let mut journal = vec![];
+        refresh(&mut threads, &problems, t0());
+        send(&mut threads, &mut journal, &problems[0], true, t0());
+        let t = &mut threads[0];
+        t.read_to = 10;
+        on_github(t);
+        hear(t, &[reply(11, &format!("Fixed I2 in {}", sha('9')))], None);
+        let body = issue_body(&threads[0], &problems[0], false);
+        assert!(body.contains("- **I2** · Dependabot alert 2 · `qs` (low) in `package-lock.json` · update `qs` to `4.17.21` or later · [alert](https://github.com/a/b/security/dependabot/2) · said to be fixed in `9999999`; Orbit is waiting for GitHub to mark the alert fixed ([reply]"), "{body}");
+        assert!(
+            to_verify(&threads, &problems).is_empty(),
+            "CI doesn't judge an alert"
+        );
+
+        // GitHub fixes it.
+        let still = read(
+            true,
+            vec![kind(
+                Source::Dependabot,
+                &[dependabot(1, "lodash", "critical")],
+            )],
+        );
+        crate::problems::see_security(&mut problems, &still, &[fixed(2)], t0());
+        refresh(&mut threads, &problems, t0());
+        let edit = send(&mut threads, &mut journal, &problems[0], true, t0()).unwrap();
+        assert_eq!(edit.action, Action::EditIssue);
+        assert!(
+            edit.body
+                .contains("- **I2** · Dependabot alert 2, qs · no longer open on GitHub"),
+            "{}",
+            edit.body
+        );
+        assert!(edit
+            .body
+            .contains("GitHub has 1 open Dependabot alert here, and it is high or critical."));
+
+        // And the last: the issue closes, saying so.
+        let none = read(true, vec![kind(Source::Dependabot, &[])]);
+        crate::problems::see_security(&mut problems, &none, &[fixed(1)], t0());
+        assert!(problems[0].resolved());
+        refresh(&mut threads, &problems, t0());
+        let note = send(&mut threads, &mut journal, &problems[0], true, t0()).unwrap();
+        assert_eq!(note.action, Action::NoteOnIssue);
+        assert!(note.body.starts_with("GitHub says every Dependabot alert here is fixed or dismissed, so Orbit is closing this issue."));
+        let close = send(&mut threads, &mut journal, &problems[0], true, t0()).unwrap();
+        assert_eq!(close.action, Action::CloseIssue);
+        assert!(close.completed);
+        assert!(close.body.contains("GitHub says every Dependabot alert here is fixed or dismissed. Nothing is left to do here."));
+        assert!(threads[0].items.iter().all(|i| !i.failing));
+        assert_eq!(
+            event_text(
+                &threads,
+                &problems,
+                &Event::Closed("issue:".to_string() + &problems[0].id)
+            )
+            .unwrap()
+            .2,
+            "Orbit closed issue #45: GitHub says a/b's Dependabot alerts are fixed or dismissed."
+        );
+    }
+
+    /// Turning Watch security alerts off closes the issue, not as done,
+    /// and leaves its items as Orbit last saw them; a thread is posted only
+    /// while that switch is on, whatever Watch CI says.
+    #[test]
+    fn the_security_switch_decides_what_is_watched() {
+        let mut problems = vec![];
+        let deps = read(
+            true,
+            vec![kind(Source::Dependabot, &[dependabot(1, "lodash", "low")])],
+        );
+        crate::problems::see_security(&mut problems, &deps, &[], t0());
+        let mut threads = vec![];
+        refresh(&mut threads, &problems, t0());
+        let mut s = Snapshot::default();
+        s.settings.repositories.push(crate::types::Repository {
+            name: "a/b".into(),
+            path: String::new(),
+            automatic: false,
+            setup_command: String::new(),
+            network_access: false,
+            round_limit: 4,
+            approval_minutes: 0,
+            keep_updated: false,
+            provider: Default::default(),
+            dev_container: Default::default(),
+        });
+        s.settings.watch_ci = false;
+        assert!(watching(&s, &threads[0]));
+        s.settings.watch_security = false;
+        assert!(!watching(&s, &threads[0]));
+        let mut journal = vec![];
+        send(&mut threads, &mut journal, &problems[0], true, t0());
+        crate::problems::close_security(&mut problems, t0());
+        refresh(&mut threads, &problems, t0());
+        assert!(threads[0].items[0].failing, "as Orbit last saw it");
+        let note = send(&mut threads, &mut journal, &problems[0], false, t0()).unwrap();
+        assert_eq!(
+            note.body.lines().next().unwrap(),
+            "Orbit is closing this issue. Orbit stopped watching security alerts."
+        );
+        let close = send(&mut threads, &mut journal, &problems[0], false, t0()).unwrap();
+        assert!(!close.completed);
+        assert!(close
+            .body
+            .contains("- **I1** · Dependabot alert 1, lodash · open when Orbit stopped watching"));
+    }
+
+    /// A high or critical alert the agent declines comes to you in Needs
+    /// you, and Bit doesn't tell it twice; a lower one declined is only
+    /// noted.
+    #[test]
+    fn a_declined_high_or_critical_alert_comes_to_you() {
+        let mut s = Snapshot::default();
+        let deps = read(
+            true,
+            vec![kind(
+                Source::Dependabot,
+                &[
+                    dependabot(1, "lodash", "critical"),
+                    dependabot(2, "qs", "low"),
+                ],
+            )],
+        );
+        crate::problems::see_security(&mut s.problems, &deps, &[], t0());
+        refresh(&mut s.ops, &s.problems, t0());
+        let mut journal = vec![];
+        let p = s.problems[0].clone();
+        send(&mut s.ops, &mut journal, &p, true, t0());
+        let t = &mut s.ops[0];
+        t.read_to = 10;
+        on_github(t);
+        let heard = hear(
+            t,
+            &[reply(
+                11,
+                "Declined I1: only in dev tools\nDeclined I2: not reachable",
+            )],
+            None,
+        );
+        let said: Vec<_> = heard
+            .into_iter()
+            .filter_map(|h| event_text(&s.ops, &s.problems, &Event::Heard(Box::new(h))))
+            .map(|e| e.2)
+            .collect();
+        assert_eq!(
+            said,
+            ["The agent on a/b declined I2 (Dependabot alert 2, qs): not reachable"]
+        );
+        let items = crate::attention::items(&s);
+        let declined: Vec<_> = items
+            .iter()
+            .filter(|a| a.key.contains(":declined:"))
+            .map(|a| (a.kind, a.reason.as_str()))
+            .collect();
+        assert_eq!(
+            declined,
+            [(
+                crate::types::AttentionKind::SecurityAlert,
+                "The agent on a/b declined I1 (Dependabot alert 1, lodash): only in dev tools. It's high or critical, so it's yours to decide: have it fixed, or dismiss its alert on GitHub."
+            )]
+        );
+    }
+}

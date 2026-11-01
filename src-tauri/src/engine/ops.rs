@@ -38,6 +38,18 @@ fn plan(s: &Snapshot, now: chrono::DateTime<chrono::Utc>) -> Option<Planned> {
         })
     })
 }
+/// Whether `planned` is still what its thread needs, by everything as it
+/// stands now: the rule for it, Bit, the switches, the repository and its
+/// problem, as `next` weighs them.
+fn still_next(s: &Snapshot, planned: &Planned, now: chrono::DateTime<chrono::Utc>) -> bool {
+    s.ops
+        .iter()
+        .find(|t| t.key == planned.thread)
+        .is_some_and(|t| {
+            let problem = ops::problem_of(t, &s.problems, &s.ci);
+            ops::next(t, problem, ops::may_post(s, t), now).as_ref() == Some(planned)
+        })
+}
 /// The pull request a write is on, as its id and number: a comment on it,
 /// or a rerun of one of its jobs.
 fn on_pr(s: &Snapshot, planned: &Planned) -> Option<(String, u64)> {
@@ -175,9 +187,39 @@ impl Engine {
                     continue;
                 }
             }
+            // Last, just before the write: nothing about security alerts
+            // goes to GitHub unless GitHub says now that the repository is
+            // private, whatever Orbit read before.
+            let security = ops::about_security(&*self.state.lock().await, &planned.thread);
+            if security {
+                match crate::security::private_now(&planned.repo).await {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        self.update(|s| {
+                            let repo = &planned.repo;
+                            crate::problems::see_private(
+                                &mut s.problems,
+                                &mut s.security,
+                                repo,
+                                false,
+                            );
+                        })
+                        .await;
+                        continue;
+                    }
+                    // GitHub couldn't say, so it waits for a later pass.
+                    Err(_) => break,
+                }
+            }
             let id = {
                 let mut s = self.state.lock().await;
                 let s = &mut *s;
+                // Under the lock it is recorded in, as while Orbit asked
+                // GitHub, a read may have found the repository isn't private
+                // any more, or you may have changed a rule or a switch.
+                if security && !still_next(s, &planned, chrono::Utc::now()) {
+                    continue;
+                }
                 let id = ops::record(&mut s.journal, &planned, chrono::Utc::now());
                 reruns::sending(&mut s.ops, &mut s.journal, &id, &planned);
                 id

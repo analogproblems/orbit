@@ -24,7 +24,10 @@
 // The cache usage of a/b is <dir>/cache.json, or none, and its artifacts the
 // list in <dir>/artifacts.json, or none, in pages; while <dir>/cache-error or
 // <dir>/artifacts-error exists, reading them fails with its text.
-// The security alerts of a/b of each kind are the list in
+// Repository a/b is <dir>/repo.json, or public; while <dir>/repo-error
+// exists, reading it fails with its text. While <dir>/repo-hold exists,
+// reading it writes <dir>/repo-held and waits until it is gone. The security alerts of
+// a/b of each kind are the list in
 // <dir>/alerts-dependabot.json, <dir>/alerts-code-scanning.json or
 // <dir>/alerts-secret-scanning.json, or none, in pages, those in the
 // `state` asked for when it is given; each alert is also read on its own
@@ -304,6 +307,27 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
     save(db);
   }
   answer(i);
+} else if (endpoint === "repos/a/b") {
+  const about = path.join(dir, "repo.json");
+  const failed = path.join(dir, "repo-error");
+  const hold = path.join(dir, "repo-hold");
+  if (fs.existsSync(hold)) {
+    // Says it is held, then waits until the test lets it go.
+    fs.writeFileSync(path.join(dir, "repo-held"), "");
+    const until = Date.now() + 10000;
+    const pause = new Int32Array(new SharedArrayBuffer(4));
+    while (fs.existsSync(hold) && Date.now() < until)
+      Atomics.wait(pause, 0, 0, 20);
+  }
+  if (fs.existsSync(failed)) {
+    process.stderr.write(fs.readFileSync(failed, "utf8"));
+    process.exit(1);
+  }
+  answer(
+    fs.existsSync(about)
+      ? JSON.parse(fs.readFileSync(about, "utf8"))
+      : { full_name: "a/b", private: false, visibility: "public" },
+  );
 } else if (endpoint === "users/a") {
   const org = fs.existsSync(path.join(dir, "org"));
   answer({ login: "a", type: org ? "Organization" : "User" });

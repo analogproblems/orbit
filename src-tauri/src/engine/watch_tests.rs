@@ -2372,3 +2372,343 @@ async fn alerts_beyond_the_newest_hundred_each_get_looked_up() {
     // Each of the other old ones has been asked about once or twice.
     assert!((2..=12).all(|n| (1..=2).contains(&asked(n))));
 }
+
+/// What the fake GitHub holds.
+fn fake_github(dir: &Path) -> serde_json::Value {
+    std::fs::read_to_string(dir.join("github.json"))
+        .map(|t| serde_json::from_str(&t).unwrap())
+        .unwrap_or(json!({ "issues": [], "comments": [] }))
+}
+/// A reply from `who` on issue `number`, posted when GitHub last took the
+/// issue's text, so it counts.
+fn reply_on(dir: &Path, number: u64, who: &str, body: &str) {
+    let mut db = fake_github(dir);
+    let issue = db["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["number"] == number)
+        .unwrap()
+        .clone();
+    let id = db["next"].as_u64().unwrap();
+    db["next"] = json!(id + 1);
+    db["comments"].as_array_mut().unwrap().push(json!({
+        "id": id,
+        "issue": number,
+        "user": { "login": who },
+        "body": body,
+        "created_at": issue["updated_at"],
+        "updated_at": issue["updated_at"],
+        "html_url": format!("https://github.com/a/b/issues/{number}#issuecomment-{id}"),
+    }));
+    std::fs::write(dir.join("github.json"), db.to_string()).unwrap();
+}
+
+/// In a private repository, the agent hears of its Dependabot alerts in
+/// one issue, but not of its secret; a fix counts once GitHub marks the
+/// alert fixed, a declined critical alert comes to you, and the issue
+/// closes once GitHub says every alert is fixed.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_private_repositorys_agent_hears_of_its_alerts_until_github_says_they_are_fixed() {
+    use crate::security::tests::{dependabot, secret};
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    std::fs::write(
+        d.path().join("answer.json"),
+        answer(&"1".repeat(40), "SUCCESS"),
+    )
+    .unwrap();
+    std::fs::write(
+        d.path().join("repo.json"),
+        json!({ "full_name": "a/b", "private": true, "visibility": "private" }).to_string(),
+    )
+    .unwrap();
+    let mut lodash = dependabot(1, "lodash", "critical");
+    let mut qs = dependabot(2, "qs", "low");
+    alerts(d.path(), "dependabot", &[lodash.clone(), qs.clone()]);
+    alerts(d.path(), "secret-scanning", &[secret(3)]);
+    let e = connected(d.path()).await;
+    e.update(|s| {
+        s.github_user = Some("me".into());
+        s.settings.trusted_authors = vec!["agent".into()];
+    })
+    .await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    // Told in the same pass as Orbit read them.
+    assert_eq!(writes(d.path()), ["POST repos/a/b/issues"]);
+    let g = fake_github(d.path());
+    let issue = &g["issues"][0];
+    assert_eq!(issue["title"], "Fix the open Dependabot alerts");
+    assert_eq!(issue["labels"][0]["name"], "orbit");
+    let body = issue["body"].as_str().unwrap();
+    assert!(body.contains("- **I1** · Dependabot alert 1 · `lodash` (critical)"));
+    assert!(body.contains("- **I2** · Dependabot alert 2 · `qs` (low)"));
+    assert!(!g.to_string().contains("THISISTHESECRETVALUE"));
+    assert!(
+        !g.to_string().contains("Personal Access Token"),
+        "no secret goes to the agent"
+    );
+    let number = issue["number"].as_u64().unwrap();
+
+    // The agent answers.
+    reply_on(
+        d.path(),
+        number,
+        "agent",
+        &format!(
+            "Fixed I2 in {}\nDeclined I1: only used by a dev tool",
+            "9".repeat(40)
+        ),
+    );
+    security_read_long_ago(&e).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let shown = e.shown_snapshot().await;
+    let declined: Vec<_> = shown
+        .attention
+        .iter()
+        .filter(|a| a.key.contains(":declined:"))
+        .map(|a| a.reason.as_str())
+        .collect();
+    assert_eq!(
+        declined,
+        ["The agent on a/b declined I1 (Dependabot alert 1, lodash): only used by a dev tool. It's high or critical, so it's yours to decide: have it fixed, or dismiss its alert on GitHub."]
+    );
+    let body = fake_github(d.path())["issues"][0]["body"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        body.contains(
+            "said to be fixed in `9999999`; Orbit is waiting for GitHub to mark the alert fixed"
+        ),
+        "{body}"
+    );
+    let t = &shown.ops[0];
+    assert!(
+        t.items.iter().all(|i| i.failing),
+        "nothing counts until GitHub says so"
+    );
+
+    // GitHub marks qs fixed, then lodash: the issue says so and closes.
+    qs["state"] = json!("fixed");
+    alerts(d.path(), "dependabot", &[lodash.clone(), qs.clone()]);
+    security_read_long_ago(&e).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let body = fake_github(d.path())["issues"][0]["body"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        body.contains("- **I2** · Dependabot alert 2, qs · no longer open on GitHub"),
+        "{body}"
+    );
+    lodash["state"] = json!("fixed");
+    alerts(d.path(), "dependabot", &[lodash, qs]);
+    security_read_long_ago(&e).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let g = fake_github(d.path());
+    assert_eq!(g["issues"][0]["state"], "closed");
+    assert_eq!(g["issues"][0]["state_reason"], "completed");
+    let note = g["comments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["user"]["login"] != "agent")
+        .unwrap();
+    assert!(note["body"]
+        .as_str()
+        .unwrap()
+        .starts_with("GitHub says every Dependabot alert here is fixed or dismissed, so Orbit is closing this issue."));
+    let shown = e.shown_snapshot().await;
+    assert!(shown
+        .attention
+        .iter()
+        .all(|a| !a.key.contains(":declined:")));
+    assert!(!g.to_string().contains("THISISTHESECRETVALUE"));
+}
+
+/// Nothing about security alerts reaches GitHub unless GitHub says, just
+/// before the write, that the repository is private: not after your tap
+/// while GitHub can't say, nor once it turned public before Orbit's next
+/// read of its alerts, nor once a read found it public even though a list
+/// then failed. Private again, the issue catches up.
+#[tokio::test]
+async fn nothing_about_alerts_reaches_github_unless_github_says_now_the_repository_is_private() {
+    use crate::security::tests::dependabot;
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    std::fs::write(
+        d.path().join("answer.json"),
+        answer(&"1".repeat(40), "SUCCESS"),
+    )
+    .unwrap();
+    let about = |private: bool| {
+        let visibility = if private { "private" } else { "public" };
+        std::fs::write(
+            d.path().join("repo.json"),
+            json!({ "full_name": "a/b", "private": private, "visibility": visibility }).to_string(),
+        )
+        .unwrap();
+    };
+    let lookup_fails = |fails: bool| {
+        let path = d.path().join("repo-error");
+        if fails {
+            std::fs::write(path, "gh: Bad Gateway (HTTP 502)\n").unwrap();
+        } else {
+            let _ = std::fs::remove_file(path);
+        }
+    };
+    about(true);
+    let lodash = dependabot(1, "lodash", "critical");
+    let minimist = dependabot(3, "minimist", "high");
+    alerts(d.path(), "dependabot", std::slice::from_ref(&lodash));
+    let e = connected(d.path()).await;
+    e.update(|s| {
+        s.github_user = Some("me".into());
+        s.settings.buddy.rules.open_issues = "ask_first".into();
+    })
+    .await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert!(writes(d.path()).is_empty(), "Bit asks first");
+    let key = e.snapshot().await.ops[0].key.clone();
+
+    // GitHub can't say now: your tap posts nothing, and a read of its
+    // alerts fails rather than going on what Orbit knew.
+    lookup_fails(true);
+    e.allow_telling(&key).await.unwrap();
+    security_read_long_ago(&e).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert!(writes(d.path()).is_empty());
+    let shown = e.shown_snapshot().await;
+    assert_eq!(
+        shown.security[0].error.as_deref(),
+        Some("Orbit couldn't read the security alerts yet: Bad Gateway (HTTP 502). It tries again later.")
+    );
+    assert!(shown.problems[0].private, "nothing new was read");
+
+    // It turned public before Orbit's next read of its alerts: still
+    // nothing, and Orbit knows now.
+    lookup_fails(false);
+    about(false);
+    crate::github::GH.scope(gh.clone(), e.tell_agents()).await;
+    assert!(writes(d.path()).is_empty());
+    let shown = e.shown_snapshot().await;
+    assert!(!shown.problems[0].private);
+    assert!(!shown.security[0].private);
+
+    // Private again: the issue opens.
+    about(true);
+    e.update(|s| {
+        for r in &mut s.security {
+            r.read_at = "2020-01-01T00:00:00.000Z".into();
+            r.retry_at = None;
+        }
+    })
+    .await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!(writes(d.path()), ["POST repos/a/b/issues"]);
+
+    // A read finds it public, then a list fails: what GitHub said about
+    // the repository still counts, and the new alert stays off GitHub.
+    about(false);
+    alerts(d.path(), "dependabot", &[lodash.clone(), minimist.clone()]);
+    std::fs::write(
+        d.path().join("alerts-code-scanning-error"),
+        "gh: Bad Gateway (HTTP 502)\n",
+    )
+    .unwrap();
+    security_read_long_ago(&e).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!(writes(d.path()), ["POST repos/a/b/issues"]);
+    let shown = e.shown_snapshot().await;
+    assert!(shown.security[0].error.is_some());
+    assert!(!shown.problems[0].private);
+
+    // Read again while public: the new alert is listed for you, and still
+    // nothing goes to GitHub.
+    std::fs::remove_file(d.path().join("alerts-code-scanning-error")).unwrap();
+    e.update(|s| {
+        for r in &mut s.security {
+            r.read_at = "2020-01-01T00:00:00.000Z".into();
+            r.retry_at = None;
+        }
+    })
+    .await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!(writes(d.path()), ["POST repos/a/b/issues"]);
+    assert_eq!(
+        e.shown_snapshot().await.problems[0].security_alerts.len(),
+        2
+    );
+    let body = fake_github(d.path())["issues"][0]["body"].to_string();
+    assert!(!body.contains("minimist"));
+
+    // Private again: the issue catches up.
+    about(true);
+    security_read_long_ago(&e).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!(writes(d.path())[1..], ["PATCH repos/a/b/issues/101"]);
+    let body = fake_github(d.path())["issues"][0]["body"].to_string();
+    assert!(body.contains("minimist"));
+}
+
+/// A rule or switch you change while Orbit asks GitHub whether the
+/// repository is private counts: the issue it was about to open isn't sent.
+#[tokio::test]
+async fn a_change_while_orbit_asks_github_about_a_repository_counts() {
+    use crate::security::tests::dependabot;
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    std::fs::write(
+        d.path().join("answer.json"),
+        answer(&"1".repeat(40), "SUCCESS"),
+    )
+    .unwrap();
+    std::fs::write(
+        d.path().join("repo.json"),
+        json!({ "full_name": "a/b", "private": true, "visibility": "private" }).to_string(),
+    )
+    .unwrap();
+    alerts(
+        d.path(),
+        "dependabot",
+        &[dependabot(1, "lodash", "critical")],
+    );
+    let e = connected(d.path()).await;
+    e.update(|s| {
+        s.github_user = Some("me".into());
+        s.settings.buddy.rules.open_issues = "ask_first".into();
+    })
+    .await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let key = e.snapshot().await.ops[0].key.clone();
+    let changes: [fn(&mut Snapshot); 2] = [
+        |s| s.settings.buddy.rules.open_issues = "leave_it".into(),
+        |s| s.settings.watch_security = false,
+    ];
+    for change in changes {
+        e.update(|s| {
+            s.settings.buddy.rules.open_issues = "ask_first".into();
+            s.settings.watch_security = true;
+        })
+        .await;
+        e.allow_telling(&key).await.unwrap();
+        let hold = d.path().join("repo-hold");
+        let held = d.path().join("repo-held");
+        std::fs::write(&hold, "").unwrap();
+        let _ = std::fs::remove_file(&held);
+        let telling = {
+            let (e, gh) = (e.clone(), gh.clone());
+            tokio::spawn(crate::github::GH.scope(gh, async move { e.tell_agents().await }))
+        };
+        // You change it while GitHub hasn't answered yet.
+        while !held.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        e.update(change).await;
+        std::fs::remove_file(&hold).unwrap();
+        telling.await.unwrap();
+        assert!(writes(d.path()).is_empty(), "{:?}", writes(d.path()));
+    }
+}

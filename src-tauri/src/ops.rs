@@ -5,7 +5,9 @@
 //! once in its comment or issue and never reused, so an agent can name it.
 //! So is a pull request's base branch moving on since its checks began.
 //! A repository where no CI runs on pull requests gets an issue too, with
-//! a workflow to start from, which Bit offers before it opens.
+//! a workflow to start from, which Bit offers before it opens. So does each
+//! kind of security alert in a private repository, but secrets (`tells_agent`):
+//! an item per alert, which leaves once GitHub says it is fixed.
 //!
 //! Everything here is worked out from the problems Orbit keeps
 //! (`crate::problems`). The engine sends each write (`engine::ops`) after
@@ -27,6 +29,7 @@ use crate::{
     ci::{short, RepoCi},
     problems::{stamp, time, Problem, ProblemKind, FLAP_QUIET, KEEP_CLOSED},
     readiness::{Readiness, Turn},
+    security::Source,
     types::{same_repo, trusted_source, PullRequest, Snapshot},
 };
 use chrono::{DateTime, Duration, Utc};
@@ -140,6 +143,9 @@ pub struct Thread {
     /// for one Orbit reviews automatically.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ready: Option<Ready>,
+    /// The kind of security alert its issue is about, for one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<Source>,
 }
 impl Thread {
     /// Whether it is on GitHub.
@@ -267,6 +273,9 @@ pub enum ItemKind {
     /// No CI runs on the repository's pull requests (see
     /// `ProblemKind::NoCi`).
     NoCi,
+    /// A security alert, open while GitHub has it open (see
+    /// `ProblemKind::Security`).
+    Alert,
 }
 impl ItemKind {
     fn is_check(&self) -> bool {
@@ -310,13 +319,20 @@ pub struct Item {
     /// The job you said to rerun, by its link, while Bit asks first.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub rerun_ok: String,
+    /// For a security alert: its number on GitHub.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub alert: u64,
+}
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 impl Item {
-    /// What it is about, in a few words: the check, or "main moved on".
+    /// What it is about, in a few words: the check, "main moved on", or
+    /// the alert, such as "Dependabot alert 12, lodash".
     pub fn name(&self) -> String {
         match self.kind {
-            ItemKind::Check => self.check.clone(),
+            ItemKind::Check | ItemKind::Alert => self.check.clone(),
             ItemKind::BaseMoved => format!("{} moved on", self.check),
             ItemKind::NoCi => "CI on pull requests".into(),
         }
@@ -554,11 +570,15 @@ pub fn offer(s: &mut Snapshot) -> Vec<Event> {
     }
     keys.into_iter().map(Event::Offered).collect()
 }
-/// Whether Orbit watches what a thread is about: Watch CI is on, its
-/// repository is connected, and for a comment, Orbit still follows the pull
-/// request.
+/// Whether Orbit watches what a thread is about: Watch CI is on (Watch
+/// security alerts, for alerts), its repository is connected, and for a
+/// comment, Orbit still follows the pull request.
 pub fn watching(s: &Snapshot, t: &Thread) -> bool {
-    let watched = s.settings.watch_ci
+    let switch = match t.source {
+        Some(_) => s.settings.watch_security,
+        None => s.settings.watch_ci,
+    };
+    let watched = switch
         && s.settings
             .repositories
             .iter()
@@ -576,15 +596,19 @@ pub fn watching(s: &Snapshot, t: &Thread) -> bool {
 
 /// Brings each thread up to date with its problem, and starts one for each
 /// open problem without one: an issue's thread for a default branch's
-/// problem, and the pull request's thread for a pull request's. Runs
-/// waiting for a runner get none, as only a person can add or fix one, nor
-/// do security alerts yet, which are only listed and in Needs you.
-/// Returns whether anything changed.
+/// problem or a kind of security alert, and the pull request's thread for a
+/// pull request's. Runs waiting for a runner get none, as only a person can
+/// add or fix one, and security alerts only when `tells_agent`, though a
+/// thread already on GitHub is kept true. Returns whether anything changed.
 pub fn refresh(threads: &mut Vec<Thread>, problems: &[Problem], now: DateTime<Utc>) -> bool {
     let before = threads.clone();
     let mut order: Vec<&Problem> = problems
         .iter()
-        .filter(|p| !matches!(p.kind, ProblemKind::Waiting | ProblemKind::Security))
+        .filter(|p| match p.kind {
+            ProblemKind::Waiting => false,
+            ProblemKind::Security => tells_agent(p) || threads.iter().any(|t| t.key == key_of(p)),
+            _ => true,
+        })
         .collect();
     // Older first, so a pull request's newest problem is the one it keeps.
     order.sort_by(|a, b| a.opened_at.cmp(&b.opened_at));
@@ -615,6 +639,7 @@ pub fn refresh(threads: &mut Vec<Thread>, problems: &[Problem], now: DateTime<Ut
                     pr_id: p.pr_id.clone(),
                     branch: p.branch.clone(),
                     problem_id: p.id.clone(),
+                    source: p.source,
                     ..Default::default()
                 });
                 threads.len() - 1
@@ -765,6 +790,31 @@ fn answered(t: &Thread) -> bool {
                 .is_some_and(|a| matches!(a.kind, AnswerKind::Declined | AnswerKind::Question))
         })
 }
+/// Whether a problem's agent hears of it: always but for security alerts,
+/// which it hears of only in a private repository, as an issue in a public
+/// one would show everyone where the weakness is before it is fixed, and
+/// never for a secret, as only a person can revoke one.
+pub fn tells_agent(p: &Problem) -> bool {
+    match p.kind {
+        ProblemKind::Waiting => false,
+        ProblemKind::Security => p.private && p.source != Some(Source::SecretScanning),
+        _ => true,
+    }
+}
+/// Whether a thread about security alerts takes nothing now: GitHub last
+/// said its repository isn't private, so anything Orbit writes there could
+/// show more people where a weakness is than when Orbit told the agent,
+/// even closing, whose text may hold an alert GitHub never had from
+/// Orbit. Its issue stays as it is on GitHub until GitHub says the
+/// repository is private again. Each write is also held until GitHub says
+/// so just before it (`Engine::tell_agents`).
+pub fn withheld(t: &Thread, p: &Problem) -> bool {
+    t.source.is_some() && !tells_agent(p)
+}
+/// Whether a thread is about security alerts.
+pub fn about_security(s: &Snapshot, key: &str) -> bool {
+    s.ops.iter().any(|t| t.key == key && t.source.is_some())
+}
 fn key_of(p: &Problem) -> String {
     match p.kind {
         ProblemKind::DefaultBranch
@@ -785,6 +835,9 @@ fn pr_number(id: &str) -> Option<u64> {
 /// moving on the first time, or for a repository with no CI on pull
 /// requests.
 fn items_from(t: &mut Thread, p: &Problem) {
+    if p.kind == ProblemKind::Security {
+        return alert_items(t, p);
+    }
     // Only a passing commit says a check stopped failing; when Orbit stops
     // watching for another reason, items stay as it last saw them.
     if !p.is_open() {
@@ -803,6 +856,8 @@ fn items_from(t: &mut Thread, p: &Problem) {
             ItemKind::Check => p.failing.iter().any(|c| c.name == item.check),
             ItemKind::BaseMoved => moved,
             ItemKind::NoCi => no_ci,
+            // Only a security problem has alerts (`alert_items`).
+            ItemKind::Alert => false,
         };
         // Its branch follows a rename.
         if failing && item.kind == ItemKind::BaseMoved {
@@ -850,6 +905,51 @@ fn items_from(t: &mut Thread, p: &Problem) {
     if no_ci && !t.items.iter().any(|i| i.kind == ItemKind::NoCi) {
         let item = new(t, ItemKind::NoCi, &p.branch, "");
         t.items.push(item);
+    }
+}
+/// Marks each alert's item open while its problem lists it, adding one for
+/// each new alert, the most severe first. An alert leaves its problem only
+/// once GitHub says it is no longer open, so its item stops being open
+/// then; when Orbit stopped watching instead, items stay as it last saw
+/// them.
+fn alert_items(t: &mut Thread, p: &Problem) {
+    if (!p.is_open() && !p.cleared()) || withheld(t, p) {
+        return;
+    }
+    for item in t.items.iter_mut().filter(|i| i.kind == ItemKind::Alert) {
+        let open = p.security_alerts.iter().find(|a| a.number == item.alert);
+        if let Some(a) = open {
+            if !item.failing {
+                // Open again: what was said about it before is over.
+                item.answer = None;
+                item.heard_from.clear();
+            }
+            item.check = a.label();
+            item.url = a.url.clone();
+            item.since = a.created_at.clone();
+            item.at = a.created_at.clone();
+        }
+        item.failing = open.is_some();
+    }
+    for a in &p.security_alerts {
+        let known = t
+            .items
+            .iter()
+            .any(|i| i.kind == ItemKind::Alert && i.alert == a.number);
+        if !known {
+            let number = t.items.iter().map(|i| i.number).max().unwrap_or(0) + 1;
+            t.items.push(Item {
+                number,
+                kind: ItemKind::Alert,
+                alert: a.number,
+                check: a.label(),
+                url: a.url.clone(),
+                failing: true,
+                since: a.created_at.clone(),
+                at: a.created_at.clone(),
+                ..Default::default()
+            });
+        }
     }
 }
 /// Moves an item to a commit. Reruns are of one commit's jobs, so they
@@ -1131,7 +1231,7 @@ pub fn next(
         comment_id: t.comment_id,
         title: String::new(),
         marker: t.tag(),
-        completed: problem.is_some_and(Problem::passed),
+        completed: problem.is_some_and(|p| p.passed() || p.resolved()),
         closed_at: None,
         rerun: None,
         body,
@@ -1156,6 +1256,12 @@ pub fn next(
         }
         ThreadKind::Issue => {
             let p = problem?;
+            // Nothing about security alerts where more people may read it
+            // than when Orbit told the agent: no issue opens, reopens,
+            // takes new details or closes.
+            if withheld(t, p) {
+                return None;
+            }
             if t.number.is_none() {
                 return (p.is_open() && may_post).then(|| Planned {
                     title: issue_title(t, p),
@@ -1282,6 +1388,14 @@ fn answer_text(item: &Item, t: &Thread) -> String {
                 branch(t)
             )
         }
+        // An alert is fixed once GitHub says so, whatever the commit.
+        (AnswerKind::Fixed, commit) if item.kind == ItemKind::Alert => {
+            let at = commit.as_ref().map(|c| format!(" in {}", code(short(c))));
+            format!(
+                "said to be fixed{}; Orbit is waiting for GitHub to mark the alert fixed",
+                at.unwrap_or_default()
+            )
+        }
         (AnswerKind::Taking, _) => "someone is on it".to_string(),
         (AnswerKind::Declined, _) => "declined".to_string(),
         (AnswerKind::Question, _) => "waiting for a person".to_string(),
@@ -1309,6 +1423,7 @@ fn item_line(item: &Item, t: &Thread, p: &Problem) -> String {
     match item.kind {
         ItemKind::BaseMoved => return base_line(item, t, p),
         ItemKind::NoCi => return setup_line(item, t, p),
+        ItemKind::Alert => return alert_line(item, t, p),
         ItemKind::Check => {}
     }
     let state = if item.failing && !p.is_open() {
@@ -1382,6 +1497,57 @@ fn setup_line(item: &Item, t: &Thread, p: &Problem) -> String {
         )
     };
     format!("- **I{}** · {state}", item.number)
+}
+/// The line about a security alert: what and where it is, and what to
+/// change, while it is open. What GitHub says about it, such as an
+/// advisory's summary, is plain text.
+fn alert_line(item: &Item, t: &Thread, p: &Problem) -> String {
+    let open = p
+        .security_alerts
+        .iter()
+        .find(|a| a.number == item.alert)
+        .filter(|_| item.failing && p.is_open());
+    let Some(a) = open else {
+        let state = if item.failing {
+            "open when Orbit stopped watching"
+        } else if p.vanished.contains(&item.alert) {
+            "GitHub no longer has it, so Orbit can't say it was fixed or dismissed"
+        } else {
+            "no longer open on GitHub"
+        };
+        return format!("- **I{}** · {} · {state}", item.number, plain(&item.check));
+    };
+    let mut parts = vec![format!("{} {}", a.source.one(), a.number)];
+    let at = match (a.path.is_empty(), a.line) {
+        (true, _) => String::new(),
+        (false, 0) => format!(" in {}", code(&a.path)),
+        (false, line) => format!(" in {} line {line}", code(&a.path)),
+    };
+    parts.push(format!("{} ({}){at}", code(&a.subject), a.severity.word()));
+    match a.source {
+        Source::Dependabot if a.fixed_in.is_empty() => parts.push(
+            "no version fixes it yet: replace it, or ask a person whether to dismiss the alert"
+                .into(),
+        ),
+        Source::Dependabot => parts.push(format!(
+            "update {} to {} or later",
+            code(&a.subject),
+            code(&a.fixed_in)
+        )),
+        _ if !a.title.is_empty() => parts.push(plain(&a.title)),
+        _ => {}
+    }
+    let link = safe(&a.url).map_or_else(String::new, |url| format!(" · [alert]({url})"));
+    let answer = if p.is_open() {
+        answer_text(item, t)
+    } else {
+        String::new()
+    };
+    format!(
+        "- **I{}** · {}{link}{answer}",
+        item.number,
+        parts.join(" · ")
+    )
 }
 /// Why an item's job failed, under its line: the step, and the end of its
 /// log in a code block that nothing in it can close. The log is someone
@@ -1460,10 +1626,22 @@ fn data(t: &Thread, p: Option<&Problem>) -> String {
                 "since": i.since,
                 "at": i.at,
             });
+            // An alert's number and severity, rather than a check.
+            if i.kind == ItemKind::Alert {
+                item["kind"] = json!(i.kind);
+                item["alert"] = json!(i.alert);
+                let open = p.and_then(|p| p.security_alerts.iter().find(|a| a.number == i.alert));
+                if let Some(a) = open {
+                    item["severity"] = json!(a.severity);
+                }
+                if let Some(o) = item.as_object_mut() {
+                    o.remove("check");
+                }
+            }
             // Only for a base that moved on or a repository with no CI, so
             // older bodies stay as they were: the branch, and no check.
             let branch = match i.kind {
-                ItemKind::Check => None,
+                ItemKind::Check | ItemKind::Alert => None,
                 ItemKind::BaseMoved => Some("base"),
                 ItemKind::NoCi => Some("branch"),
             };
@@ -1494,6 +1672,7 @@ fn data(t: &Thread, p: Option<&Problem>) -> String {
         "version": 1,
         "kind": match (t.kind, p.map(|p| p.kind)) {
             (_, Some(ProblemKind::NoCi)) => "no_ci",
+            (_, Some(ProblemKind::Security)) => "security",
             (ThreadKind::Comment, _) => "pull_request",
             (ThreadKind::Issue, _) => "default_branch",
         },
@@ -1505,6 +1684,9 @@ fn data(t: &Thread, p: Option<&Problem>) -> String {
     // A comment only about merging has no problem to have passed.
     if let (None, Some(o)) = (p, v.as_object_mut()) {
         o.remove("passed");
+    }
+    if let Some(source) = t.source {
+        v["source"] = json!(source);
     }
     format!("{}{} -->", t.tag(), hidden(&v))
 }
@@ -1628,6 +1810,9 @@ pub fn issue_title(t: &Thread, p: &Problem) -> String {
     if p.kind == ProblemKind::NoCi {
         return "Add CI that runs on pull requests".into();
     }
+    if let Some(source) = p.source {
+        return format!("Fix the open {}", source.many());
+    }
     let branch = if t.branch.is_empty() {
         "the default branch"
     } else {
@@ -1639,6 +1824,9 @@ pub fn issue_title(t: &Thread, p: &Problem) -> String {
 pub fn issue_body(t: &Thread, p: &Problem, closing: bool) -> String {
     if p.kind == ProblemKind::NoCi {
         return proposal_body(t, p);
+    }
+    if p.kind == ProblemKind::Security {
+        return security_body(t, p);
     }
     let on = branch(t);
     let status = if p.is_open() {
@@ -1724,6 +1912,48 @@ fn proposal_body(t: &Thread, p: &Problem) -> String {
         data(t, Some(p))
     )
 }
+/// Orbit's issue about a kind of security alert in a private repository.
+/// A secret's value is never in it, as Orbit never has one, and secrets
+/// never get an issue (`tells_agent`).
+fn security_body(t: &Thread, p: &Problem) -> String {
+    let source = p.source.unwrap_or_default();
+    let status = if p.is_open() {
+        let n = p.security_alerts.len();
+        let urgent = p.security_alerts.iter().filter(|a| a.needs_you()).count();
+        let open = if n == 1 {
+            format!("GitHub has 1 open {} here", source.one())
+        } else {
+            format!("GitHub has {n} open {} here", source.many())
+        };
+        let urgent = match (n, urgent) {
+            (_, 0) => String::new(),
+            (1, _) => ", and it is high or critical".to_string(),
+            (_, u) => format!(", {u} of them high or critical"),
+        };
+        format!("{open}{urgent}. Each item says what to change.")
+    } else if p.resolved() {
+        format!(
+            "GitHub says every {} here is fixed or dismissed. Nothing is left to do here.",
+            source.one()
+        )
+    } else if p.cleared() {
+        format!(
+            "No {} are open here now. {}",
+            source.many(),
+            vanished_text(p)
+        )
+    } else {
+        format!(
+            "Orbit has stopped watching these alerts. {}",
+            p.closed_reason.as_deref().unwrap_or_default()
+        )
+    };
+    format!(
+        "## Orbit · Security\n\n{status}\n\n{}\n\nOrbit opened this issue because GitHub found these alerts in this private repository. It edits this issue as they change, and closes it once none of them is open on GitHub. An item counts as fixed only once GitHub marks its alert fixed, which can wait until GitHub checks the default branch again. Dismissing an alert is a person's call.\n\n{}",
+        items_text(t, p),
+        data(t, Some(p))
+    )
+}
 /// "A", "A and B", "A, B and C".
 fn and(parts: &[String]) -> String {
     match parts {
@@ -1732,10 +1962,31 @@ fn and(parts: &[String]) -> String {
         [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
     }
 }
+/// How many of a problem's alerts GitHub no longer has, without saying
+/// what became of them, in a sentence.
+fn vanished_text(p: &Problem) -> String {
+    match p.vanished.len() {
+        1 => "GitHub no longer has 1 of them, so Orbit can't say it was fixed or dismissed.".into(),
+        n => format!(
+            "GitHub no longer has {n} of them, so Orbit can't say they were fixed or dismissed."
+        ),
+    }
+}
 /// The note Orbit leaves on an issue as it closes it.
 pub fn closing_note(t: &Thread, p: &Problem) -> String {
     let closed_at = p.closed_at.as_deref().unwrap_or_default();
-    let text = if p.passed() && p.kind == ProblemKind::NoCi {
+    let text = if p.resolved() {
+        format!(
+            "GitHub says every {} here is fixed or dismissed, so Orbit is closing this issue.",
+            p.source.unwrap_or_default().one()
+        )
+    } else if p.cleared() {
+        format!(
+            "No {} are open here now, so Orbit is closing this issue. {}",
+            p.source.unwrap_or_default().many(),
+            vanished_text(p)
+        )
+    } else if p.passed() && p.kind == ProblemKind::NoCi {
         format!(
             "A workflow on {} runs on pull requests at {}, so Orbit is closing this issue.",
             branch(t),
@@ -1998,6 +2249,9 @@ pub enum Event {
 /// Where a thread is, in plain words: `acme/api #12` for a pull request's
 /// comment, `main in acme/api` for a default branch's issue.
 pub fn place(t: &Thread) -> String {
+    if t.source.is_some() {
+        return t.repo.clone();
+    }
     match t.kind {
         ThreadKind::Comment => match t.number {
             Some(n) => format!("{} #{n}", t.repo),
@@ -2048,6 +2302,33 @@ pub fn event_text(
             t.repo,
             p?.closed_reason.as_deref().unwrap_or_default()
         ),
+        Event::Posted(_) if p?.kind == ProblemKind::Security => {
+            let p = p?;
+            let source = p.source.unwrap_or_default();
+            let n = p.security_alerts.len();
+            let what = if n == 1 {
+                format!("1 {}", source.one())
+            } else {
+                format!("{n} {}", source.many())
+            };
+            format!(
+                "Orbit opened {} to tell the agent on {} about {what}.",
+                issue(),
+                t.repo
+            )
+        }
+        Event::Closed(_) if p.is_some_and(|p| p.resolved()) => format!(
+            "Orbit closed {}: GitHub says {}'s {} are fixed or dismissed.",
+            issue(),
+            t.repo,
+            p?.source.unwrap_or_default().many()
+        ),
+        Event::Closed(_) if p.is_some_and(|p| p.kind == ProblemKind::Security) => format!(
+            "Orbit closed {} on {}. {}",
+            issue(),
+            t.repo,
+            p?.closed_reason.as_deref().unwrap_or_default()
+        ),
         Event::Posted(_) if p?.kind == ProblemKind::BaseMoved => format!(
             "Orbit told the agent on {} that {} moved on since its checks began.",
             place(t),
@@ -2085,6 +2366,20 @@ pub fn event_text(
         }
         Event::Heard(h) => {
             let a = &h.answer;
+            // A high or critical alert declined is in Needs you, which
+            // tells you of it.
+            let urgent = t.items.iter().any(|i| {
+                i.number == h.number
+                    && i.kind == ItemKind::Alert
+                    && p.is_some_and(|p| {
+                        p.security_alerts
+                            .iter()
+                            .any(|x| x.number == i.alert && x.needs_you())
+                    })
+            });
+            if a.kind == AnswerKind::Declined && urgent {
+                return None;
+            }
             let what = format!("I{} ({})", h.number, h.check);
             let commit = a.commit.as_deref().map(short).unwrap_or_default();
             let said = format!("The agent on {} said {what} is fixed in {commit}", place(t));

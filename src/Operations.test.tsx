@@ -772,10 +772,10 @@ describe("operations page", () => {
     ).getAllByRole("listitem");
     expect(rows.map((i) => i.textContent)).toEqual([
       expect.stringContaining(
-        "acme/orbitDependabot: no open alerts.Code scanning: 1 open alert.LowInefficient regular expression in src/search.ts line 42.Secret scanning: no secrets found.",
+        "acme/orbitDependabot: no open alerts.Code scanning: 1 open alert.LowInefficient regular expression in src/search.ts line 42.",
       ),
       expect.stringContaining(
-        "acme/apiDependabot: 2 open alerts, 1 high or critical.Criticallodash in package-lock.json: Prototype pollution in lodash. Fixed in 4.17.21.Mediumqs in package-lock.json: qs vulnerable to prototype pollution. Fixed in 6.10.3.No code scanning runs on acme/api.Secret scanning: 1 secret found.SecretGitHub Personal Access Token in scripts/deploy.sh line 8. GitHub says it still works.",
+        "acme/apiDependabot: 2 open alerts, 1 high or critical.Criticallodash in package-lock.json: Prototype pollution in lodash. Fixed in 4.17.21.Mediumqs in package-lock.json: qs vulnerable to prototype pollution. Fixed in 6.10.3.",
       ),
       expect.stringContaining(
         "GitHub doesn't show acme/dashboard's secret scanning alerts to Orbit's sign-in.",
@@ -790,6 +790,80 @@ describe("operations page", () => {
     // Security alerts aren't CI problems.
     const open = screen.getByRole("list", { name: "Open problems" });
     expect(open.textContent).not.toContain("Dependabot");
+  });
+
+  it("tells a private repository's agent in an issue, but keeps secrets and other repositories' alerts with you", () => {
+    const action = vi.fn().mockResolvedValue({ ok: true });
+    useOrbit.setState({ action });
+    const s = freshDemo();
+    show(s);
+    const rows = () =>
+      within(
+        screen.getByRole("list", { name: "Security alerts" }),
+      ).getAllByRole("listitem");
+    const [orbit, api] = rows();
+    expect(orbit.textContent).toContain(
+      "Orbit keeps these alerts with you, as the repository isn’t private and an issue would show others where the weakness is.",
+    );
+    expect(api.textContent).toContain(
+      "Orbit told the repository’s agent in issue #57.I1 · Dependabot alert 14, lodash: acme-bot says it’s fixed in 4c2e9a7. Orbit is waiting for GitHub to mark the alert fixed.",
+    );
+    expect(api.textContent).toContain(
+      "Only a person can revoke a secret, so Orbit doesn’t tell an agent.",
+    );
+    expect(
+      within(api).getByRole("button", { name: "See issue #57" }),
+    ).toBeTruthy();
+    // No issue for the public repository's alert, nor a button.
+    expect(within(orbit).queryByRole("button", { name: /issue/ })).toBeNull();
+    cleanup();
+    // Bit asks first: a tap opens the issue.
+    const issue = s.ops!.find((t) => t.key === "issue:demo-security-1")!;
+    issue.url = "";
+    issue.number = null;
+    for (const i of issue.items) i.answer = null;
+    s.settings.buddy!.rules.open_issues = "ask_first";
+    show(s);
+    expect(rows()[1].textContent).toContain(
+      "Bit asks before opening an issue for the repository’s agent.",
+    );
+    fireEvent.click(
+      within(rows()[1]).getByRole("button", { name: "Open issue" }),
+    );
+    expect(action).toHaveBeenCalledWith("tell_agent", {
+      key: "issue:demo-security-1",
+    });
+    cleanup();
+    // Not private now: no tap opens it.
+    const deps = s.problems!.find((p) => p.id === "demo-security-1")!;
+    deps.private = false;
+    show(s);
+    expect(rows()[1].textContent).toContain(
+      "Orbit keeps these alerts with you, as the repository isn’t private",
+    );
+    expect(
+      within(rows()[1]).queryByRole("button", { name: "Open issue" }),
+    ).toBeNull();
+    cleanup();
+    // Nor does one on GitHub take anything new.
+    issue.url = "https://github.com/acme/api/issues/57";
+    issue.number = 57;
+    show(s);
+    expect(rows()[1].textContent).toContain(
+      "Orbit told the repository’s agent in issue #57, but the repository isn’t private now, so Orbit leaves that issue as it is. These alerts stay with you.",
+    );
+    cleanup();
+    deps.private = true;
+    issue.url = "";
+    issue.number = null;
+    s.settings.buddy!.rules.open_issues = "leave_it";
+    show(s);
+    expect(rows()[1].textContent).toContain(
+      "Your rule is Leave it to me, so Orbit doesn’t tell the agent.",
+    );
+    expect(
+      within(rows()[1]).queryByRole("button", { name: /issue/ }),
+    ).toBeNull();
   });
 
   it("keeps showing security alerts with Watch CI off, and hides them with their own switch off", () => {
@@ -1150,6 +1224,34 @@ describe("ci sentences", () => {
     );
     expect(added(null)).toBe(
       "I1 · CI on pull requests: morgan says it’s added. Orbit is waiting to see a workflow that runs on pull requests on main.",
+    );
+    // Only GitHub says when an alert is fixed, whatever CI says.
+    const alert = (commit: string | null) =>
+      answerText({ branch: "" } as OpsThread, {
+        number: 2,
+        kind: "alert",
+        alert: 11,
+        check: "Dependabot alert 11, qs",
+        url: "",
+        failing: true,
+        since: "",
+        at: "",
+        answer: {
+          kind: "fixed",
+          author: "morgan",
+          at: "",
+          url: "",
+          replyId: 1,
+          head: "",
+          commit,
+          check: commit ? "passes" : null,
+        },
+      });
+    expect(alert("abc1234def")).toBe(
+      "I2 · Dependabot alert 11, qs: morgan says it’s fixed in abc1234. Orbit is waiting for GitHub to mark the alert fixed.",
+    );
+    expect(alert(null)).toBe(
+      "I2 · Dependabot alert 11, qs: morgan says it’s fixed. Orbit is waiting for GitHub to mark the alert fixed.",
     );
   });
   it("say what Orbit found where no CI runs on pull requests", () => {

@@ -40,7 +40,11 @@ impl Engine {
         // Last, so telling agents never waits for runners or storage.
         self.read_runners().await;
         self.read_storage().await;
-        self.read_security().await;
+        // Agents hear of security alerts that changed now, not a sync
+        // later.
+        if self.read_security().await {
+            self.tell_agents().await;
+        }
         // After everything else, so it sums up what Orbit just read.
         self.look_for_brief().await;
     }
@@ -348,10 +352,12 @@ impl Engine {
     /// for keeps what was read before, and its problems stay as they were,
     /// until Orbit tries again after a wait. With the switch off, Orbit
     /// forgets what it read and closes what was open.
-    async fn read_security(&self) {
+    /// Returns whether any security problem changed.
+    async fn read_security(&self) -> bool {
         if self.reading_security.swap(true, Ordering::SeqCst) {
-            return;
+            return false;
         }
+        let before = self.security_problems().await;
         let now = chrono::Utc::now();
         let (watch, stale, wanted) = {
             let s = self.state.lock().await;
@@ -380,7 +386,13 @@ impl Engine {
                 .await;
         }
         for repo in &wanted {
-            let result = security::read(repo).await;
+            // On its own, so what GitHub says counts even if a list then
+            // fails to read.
+            let visible = security::private_now(repo).await;
+            let result = match &visible {
+                Ok(private) => security::read(repo, *private).await,
+                Err(e) => Err(e.clone()),
+            };
             let mut limited = result.as_ref().is_err_and(|e| logs::rate_limited(e));
             // What became of the alerts that left a list, and which Orbit
             // asked about, so the others go first next time.
@@ -412,6 +424,9 @@ impl Engine {
                     return;
                 }
                 let now = chrono::Utc::now();
+                if let Ok(private) = visible {
+                    problems::see_private(&mut s.problems, &mut s.security, repo, private);
+                }
                 if let Ok(read) = &result {
                     problems::looked_up(&mut s.problems, repo, &asked, now);
                     problems::see_security(&mut s.problems, read, &left, now);
@@ -427,6 +442,17 @@ impl Engine {
         if watch || stale {
             let _ = self.flush().await;
         }
+        self.security_problems().await != before
+    }
+    /// The security problems as they stand, to tell whether a read changed
+    /// them.
+    async fn security_problems(&self) -> Vec<problems::Problem> {
+        let s = self.state.lock().await;
+        s.problems
+            .iter()
+            .filter(|p| p.kind == problems::ProblemKind::Security)
+            .cloned()
+            .collect()
     }
 }
 /// Forgets what Orbit read of security alerts it no longer watches, and

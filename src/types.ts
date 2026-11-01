@@ -1371,6 +1371,12 @@ export interface Problem {
   source?: AlertSource | null;
   securityAlerts?: SecurityAlert[];
   toldAlerts?: number[];
+  /** For `security`: GitHub says the repository is private, so Orbit can
+   * tell its agent in an issue. */
+  private?: boolean;
+  /** For `security`: the alerts that left GitHub's list without GitHub
+   * saying what became of them, as it no longer had them. */
+  vanished?: number[];
 }
 /** Where GitHub found a security alert. */
 export type AlertSource = "dependabot" | "code_scanning" | "secret_scanning";
@@ -1420,6 +1426,8 @@ export interface RepoSecurity {
   repo: string;
   readAt: string;
   kinds: AlertKind[];
+  /** GitHub says the repository is private. */
+  private?: boolean;
   /** Why the last read failed; what was read before is kept. */
   error?: string | null;
   tries: number;
@@ -1641,9 +1649,11 @@ export interface OpsItem {
   number: number;
   /** A failing check, a pull request's base moving on since its checks
    * began (then `check` is the base branch), or adding CI that runs on pull
-   * requests (then it is the default branch). */
-  kind?: "check" | "base_moved" | "no_ci";
+   * requests (then it is the default branch), or an open security alert
+   * (then `check` is its subject and `alert` its number). */
+  kind?: "check" | "base_moved" | "no_ci" | "alert";
   check: string;
+  alert?: number;
   url: string;
   /** Whether it failed at `at`, the latest commit Orbit saw. */
   failing: boolean;
@@ -1746,6 +1756,8 @@ export interface OpsThread {
   url: string;
   branch: string;
   problemId: string;
+  /** For an issue about security alerts: which kind. */
+  source?: AlertSource | null;
   items: OpsItem[];
   posted: string;
   closed: boolean;

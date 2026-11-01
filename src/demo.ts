@@ -618,6 +618,7 @@ export function freshDemo(): Snapshot {
     prs,
     ...ci,
     problems: [...ci.problems!, ...security.problems],
+    ops: [...ci.ops!, ...security.ops],
     security: security.security,
     reviews: [review, ...limited, ...waiting, ...clean],
     // The browser demo has no engine to derive these, so they are fixed.
@@ -1572,11 +1573,14 @@ export function demoCi(
 /** Security alerts in the demo: a critical Dependabot alert and a found
  * token in acme/api, which need you, a low code scanning alert in
  * acme/orbit, Dependabot off for acme/docs, and acme/dashboard's secret
- * scanning alerts hidden from Orbit's sign-in. */
+ * scanning alerts hidden from Orbit's sign-in. acme/api is private, so
+ * Orbit told its agent about its Dependabot alerts in an issue; acme/orbit
+ * isn't, so its alert stays with you. */
 function demoSecurity(): {
   security: RepoSecurity[];
   problems: Problem[];
   attention: Attention[];
+  ops: OpsThread[];
 } {
   const alert = (a: Partial<SecurityAlert>): SecurityAlert => ({
     source: "dependabot",
@@ -1645,16 +1649,19 @@ function demoSecurity(): {
       { source: "code_scanning", alerts: [regex] },
       none("secret_scanning"),
     ]),
-    read("acme/api", [
-      { source: "dependabot", alerts: [lodash, qs] },
-      {
-        source: "code_scanning",
-        alerts: [],
-        unseen: "No code scanning runs on acme/api.",
-        off: true,
-      },
-      { source: "secret_scanning", alerts: [token] },
-    ]),
+    {
+      ...read("acme/api", [
+        { source: "dependabot", alerts: [lodash, qs] },
+        {
+          source: "code_scanning",
+          alerts: [],
+          unseen: "No code scanning runs on acme/api.",
+          off: true,
+        },
+        { source: "secret_scanning", alerts: [token] },
+      ]),
+      private: true,
+    },
     read("acme/dashboard", [
       none("dependabot"),
       none("code_scanning"),
@@ -1699,6 +1706,7 @@ function demoSecurity(): {
     source,
     securityAlerts: alerts,
     toldAlerts: told,
+    private: repo === "acme/api",
   });
   const problems = [
     problem(
@@ -1735,9 +1743,53 @@ function demoSecurity(): {
     repo: p.repo,
     reason,
   });
+  const alertItem = (number: number, a: SecurityAlert) => ({
+    number,
+    kind: "alert" as const,
+    alert: a.number,
+    check: `Dependabot alert ${a.number}, ${a.subject}`,
+    url: a.url,
+    failing: true,
+    since: a.createdAt,
+    at: a.createdAt,
+  });
+  const ops: OpsThread[] = [
+    {
+      key: "issue:demo-security-1",
+      kind: "issue",
+      repo: "acme/api",
+      number: 57,
+      url: "https://github.com/acme/api/issues/57",
+      branch: "",
+      problemId: "demo-security-1",
+      source: "dependabot",
+      items: [
+        {
+          ...alertItem(1, lodash),
+          answer: {
+            kind: "fixed",
+            author: "acme-bot",
+            at: ago(40),
+            url: "https://github.com/acme/api/issues/57#issuecomment-905",
+            replyId: 905,
+            commit: sha("4c2e9a7"),
+            head: "",
+          },
+        },
+        alertItem(2, qs),
+      ],
+      posted: "",
+      closed: false,
+      allowed: false,
+      gone: false,
+      tries: 0,
+      updatedAt: ago(290),
+    },
+  ];
   return {
     security,
     problems,
+    ops,
     attention: [
       item(
         problems[0],

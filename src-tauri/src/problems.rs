@@ -129,6 +129,15 @@ pub struct Problem {
     pub security_alerts: Vec<crate::security::Alert>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub told_alerts: Vec<u64>,
+    /// For security alerts: GitHub said the repository is private when
+    /// Orbit last read them, so its agent may hear of them in an issue.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub private: bool,
+    /// For security alerts: those that left GitHub's list without GitHub
+    /// saying they were fixed, dismissed or resolved, as it no longer had
+    /// them, by number.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub vanished: Vec<u64>,
 }
 impl Problem {
     pub fn is_open(&self) -> bool {
@@ -180,6 +189,17 @@ impl Problem {
     /// Whether it closed because its commit passed.
     pub fn passed(&self) -> bool {
         !self.is_open() && !self.closed_sha.is_empty()
+    }
+    /// Whether it closed with none of its security alerts left open,
+    /// rather than as Orbit stopped watching them.
+    pub fn cleared(&self) -> bool {
+        self.kind == ProblemKind::Security && !self.is_open() && self.security_alerts.is_empty()
+    }
+    /// Whether it closed as GitHub said each of its security alerts was
+    /// fixed, dismissed or resolved: cleared, with none of them gone from
+    /// GitHub without a word.
+    pub fn resolved(&self) -> bool {
+        self.cleared() && self.vanished.is_empty()
     }
 }
 
@@ -672,6 +692,7 @@ pub fn see_security(
                 opened_at: at.clone(),
                 source: Some(kind.source),
                 security_alerts: kind.alerts.clone(),
+                private: read.private,
                 ..Default::default()
             };
             sort(&mut p.security_alerts);
@@ -680,9 +701,11 @@ pub fn see_security(
             problems.push(p);
             continue;
         };
+        p.private = read.private;
         // Those no longer listed go only once GitHub says what became of
         // them; until then they stay as they were.
         let mut gone = vec![];
+        let mut vanished = vec![];
         p.security_alerts.retain(|a| {
             if kind.alerts.iter().any(|b| b.number == a.number) {
                 return true;
@@ -693,11 +716,18 @@ pub fn see_security(
             {
                 Some(l) if l.outcome != Outcome::Open => {
                     gone.push(outcome_text(a, &l.outcome));
+                    if l.outcome == Outcome::Gone {
+                        vanished.push(a.number);
+                    }
                     false
                 }
                 _ => true,
             }
         });
+        p.vanished.extend(vanished);
+        // One listed again is open, whatever GitHub said before.
+        p.vanished
+            .retain(|n| !kind.alerts.iter().any(|a| a.number == *n));
         let mut new: Vec<Alert> = vec![];
         for a in &kind.alerts {
             match p.security_alerts.iter_mut().find(|b| b.number == a.number) {
@@ -735,6 +765,25 @@ pub fn see_security(
         }
         sort(&mut p.security_alerts);
         tell(p, &at);
+    }
+}
+/// Records what GitHub said just now about whether a repository is
+/// private, on each of its security problems, open or closed, and on what
+/// Orbit read of its alerts.
+pub fn see_private(
+    problems: &mut [Problem],
+    security: &mut [crate::security::RepoSecurity],
+    repo: &str,
+    private: bool,
+) {
+    let theirs = problems
+        .iter_mut()
+        .filter(|p| p.kind == ProblemKind::Security && same_repo(&p.repo, repo));
+    for p in theirs {
+        p.private = private;
+    }
+    for r in security.iter_mut().filter(|r| same_repo(&r.repo, repo)) {
+        r.private = private;
     }
 }
 /// Notes when Orbit asked GitHub about each of a repository's alerts in

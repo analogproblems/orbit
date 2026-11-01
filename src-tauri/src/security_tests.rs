@@ -440,3 +440,31 @@ fn alerts_that_left_their_list_are_looked_up_only_for_kinds_orbit_sees() {
     now_read.kinds[0].unseen = Some("off".into());
     assert!(to_look_up(&[problem], &now_read).is_empty());
 }
+
+/// Only a repository GitHub says is private counts as one: an internal
+/// one, or one GitHub didn't say, counts as public; a rate limit is tried
+/// again.
+#[test]
+fn only_a_repository_github_says_is_private_counts_as_one() {
+    assert_eq!(
+        private(Ok(json!({"private": true, "visibility": "private"}))),
+        Ok(true)
+    );
+    assert_eq!(private(Ok(json!({"private": true}))), Ok(true));
+    assert_eq!(
+        private(Ok(json!({"private": true, "visibility": "internal"}))),
+        Ok(false)
+    );
+    assert_eq!(
+        private(Ok(json!({"private": false, "visibility": "public"}))),
+        Ok(false)
+    );
+    assert_eq!(private(Ok(json!([]))), Ok(false));
+    // Not knowing fails the read, so it is never taken as either.
+    assert!(private(Err("gh: Not Found (HTTP 404)".into())).is_err());
+    assert!(private(Err("gh: Bad Gateway (HTTP 502)".into())).is_err());
+    assert!(private(Err(
+        "gh: API rate limit exceeded for user ID 1. (HTTP 403)".into()
+    ))
+    .is_err());
+}

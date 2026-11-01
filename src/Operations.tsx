@@ -123,7 +123,16 @@ function threadOf(s: Snapshot, p: Problem) {
 function ruleOf(s: Snapshot, p: Problem) {
   const { rules } = buddyOf(s.settings);
   if (p.kind === "no_ci") return rules.propose_ci;
-  return p.kind === "default_branch" ? rules.open_issues : rules.comment_on_prs;
+  return p.kind === "default_branch" || p.kind === "security"
+    ? rules.open_issues
+    : rules.comment_on_prs;
+}
+
+/** Whether nothing about a problem's security alerts goes to GitHub, as
+ * GitHub last said its repository isn't private, as the engine has it
+ * (`withheld`). What is already on GitHub stays as it is. */
+function withheld(p: Problem) {
+  return p.kind === "security" && !p.private;
 }
 
 /** Whether Bit waits for your tap before it posts about a problem. */
@@ -132,6 +141,7 @@ function asksFirst(s: Snapshot, p: Problem, t: OpsThread | undefined) {
   const rule = ruleOf(s, p);
   return (
     !!t &&
+    !withheld(p) &&
     !t.url &&
     !t.unsure &&
     buddy.enabled &&
@@ -173,9 +183,16 @@ export function brokeText(b: Broke | null | undefined) {
 export function toldText(s: Snapshot, p: Problem, t: OpsThread | undefined) {
   if (p.kind === "waiting")
     return "Only a person can add or fix a runner, so Orbit doesn’t tell an agent.";
+  if (p.kind === "security" && p.source === "secret_scanning")
+    return "Only a person can revoke a secret, so Orbit doesn’t tell an agent.";
+  if (withheld(p))
+    return t?.url
+      ? `Orbit told the repository’s agent in issue #${t.number}, but the repository isn’t private now, so Orbit leaves that issue as it is. These alerts stay with you.`
+      : "Orbit keeps these alerts with you, as the repository isn’t private and an issue would show others where the weakness is.";
   const buddy = buddyOf(s.settings);
   const proposal = p.kind === "no_ci";
-  const issue = p.kind === "default_branch" || proposal;
+  const issue =
+    p.kind === "default_branch" || p.kind === "security" || proposal;
   if (t?.gone) return t.error ?? "";
   if (t?.url) {
     const where = proposal
@@ -204,8 +221,8 @@ export function toldText(s: Snapshot, p: Problem, t: OpsThread | undefined) {
   return "Orbit tells the agent on GitHub after this sync.";
 }
 
-/** What an item is about: its check, "main moved on", or "CI on pull
- * requests". */
+/** What an item is about: its check, "main moved on", "CI on pull
+ * requests", or an alert, such as "Dependabot alert 14, lodash". */
 function itemName(item: OpsItem) {
   if (item.kind === "no_ci") return "CI on pull requests";
   return item.kind === "base_moved" ? `${item.check} moved on` : item.check;
@@ -326,6 +343,11 @@ export function answerText(t: OpsThread, item: OpsItem) {
       if (item.kind === "no_ci") {
         const where = a.commit ? ` in ${a.commit.slice(0, 7)}` : "";
         return `${about} ${who} says it’s added${where}. Orbit is waiting to see a workflow that runs on pull requests on ${t.branch || "the default branch"}.`;
+      }
+      // Nor for an alert: only GitHub says when one is fixed.
+      if (item.kind === "alert") {
+        const where = a.commit ? ` in ${a.commit.slice(0, 7)}` : "";
+        return `${about} ${who} says it’s fixed${where}. Orbit is waiting for GitHub to mark the alert fixed.`;
       }
       if (!a.commit)
         return `${about} ${who} says it’s fixed. Orbit is waiting to see it pass.`;
@@ -823,7 +845,7 @@ export function alertCount(source: AlertSource, alerts: SecurityAlert[]) {
 /** Each connected repository's open security alerts, kind by kind, and
  * what Orbit can't see. */
 function Security() {
-  const { snapshot: s } = useOrbit();
+  const { snapshot: s, action } = useOrbit();
   const read = (s.security ?? []).filter((r) => r.readAt || r.error);
   return (
     <VStack gap={3}>
@@ -831,8 +853,10 @@ function Security() {
       <Text color="secondary">
         Orbit reads each repository’s Dependabot, code scanning and secret
         scanning alerts every half hour. A secret GitHub found, or a high or
-        critical alert, needs you; the rest are listed here. Orbit never keeps a
-        secret’s value.
+        critical alert, needs you. In a private repository, Orbit tells the
+        agent about Dependabot and code scanning alerts in an issue; in any
+        other, an issue would show others where the weakness is, so it doesn’t.
+        Orbit never keeps a secret’s value.
       </Text>
       {!read.length ? (
         <Card padding={3}>
@@ -851,8 +875,10 @@ function Security() {
                   p.kind === "security" &&
                   sameRepo(p.repo, r.repo),
               );
+              const problemOf = (source: AlertSource) =>
+                open.find((p) => p.source === source);
               const alertsOf = (source: AlertSource) =>
-                open.find((p) => p.source === source)?.securityAlerts ?? [];
+                problemOf(source)?.securityAlerts ?? [];
               const all = sources.flatMap(alertsOf);
               const urgent = all.filter(alertNeedsYou).length;
               const unseen = r.kinds.some((k) => k.unseen && !k.off);
@@ -877,6 +903,9 @@ function Security() {
                           const kind = r.kinds.find((k) => k.source === source);
                           if (!kind) return null;
                           const alerts = alertsOf(source);
+                          const p = problemOf(source);
+                          const t = p && threadOf(s, p);
+                          const told = p && !kind.unseen && toldText(s, p, t);
                           return (
                             <VStack key={source} gap={1}>
                               <Text>
@@ -914,6 +943,39 @@ function Security() {
                                   GitHub has more open than the newest 100 Orbit
                                   reads.
                                 </Text>
+                              )}
+                              {told && <Text color="secondary">{told}</Text>}
+                              {told &&
+                                t?.items
+                                  .filter((i) => i.failing && i.answer)
+                                  .map((i) => (
+                                    <Text key={i.number} color="secondary">
+                                      {answerText(t, i)}
+                                    </Text>
+                                  ))}
+                              {told && p && t && asksFirst(s, p, t) ? (
+                                <HStack gap={2}>
+                                  <Button
+                                    label="Open issue"
+                                    size="sm"
+                                    variant="primary"
+                                    onClick={() =>
+                                      void action("tell_agent", { key: t.key })
+                                    }
+                                  />
+                                </HStack>
+                              ) : (
+                                told &&
+                                t?.url && (
+                                  <HStack gap={2}>
+                                    <Button
+                                      label={`See issue #${t.number}`}
+                                      size="sm"
+                                      variant="secondary"
+                                      onClick={() => openLink(t.url)}
+                                    />
+                                  </HStack>
+                                )
                               )}
                             </VStack>
                           );
