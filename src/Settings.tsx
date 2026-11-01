@@ -20,7 +20,7 @@ import {
   VStack,
 } from "@astryxdesign/core";
 import { Code2, Container, GitBranch, RefreshCw } from "lucide-react";
-import { useOrbit, live } from "./store";
+import { useOrbit, live, remote } from "./store";
 import {
   connectionState,
   defaultEffort,
@@ -37,6 +37,7 @@ import {
 import { SaveFeedback } from "./SaveFeedback";
 import { Storage } from "./Storage";
 import { AlwaysOnOrbit } from "./AlwaysOnOrbit";
+import { BrowserNotifications } from "./BrowserNotifications";
 import { RemoteAccess } from "./RemoteAccess";
 import {
   CliConnection,
@@ -559,9 +560,10 @@ function AutomationSettings() {
             value={draft.notify ?? true}
             isDisabled={pending("notify")}
             onChange={(notify) => void updateSettings({ notify })}
-            description="Show a desktop notification once when something new needs you, such as an approval or a held report. The Needs you list shows every item either way."
+            description="Show a notification once when something new needs you, such as an approval or a held report: on the desktop, and in a browser where you turn them on. The Needs you list shows every item either way."
           />
           <SaveFeedback saveKey="notify" />
+          {remote && <BrowserNotifications />}
         </VStack>
         <VStack gap={2}>
           <Switch

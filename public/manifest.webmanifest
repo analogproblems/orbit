@@ -1,0 +1,18 @@
+{
+  "name": "Orbit",
+  "short_name": "Orbit",
+  "description": "Your review workspace",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#141615",
+  "theme_color": "#141615",
+  "icons": [
+    {
+      "src": "/orbit.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

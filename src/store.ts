@@ -9,6 +9,7 @@ import {
   lostConnection,
   readToken,
 } from "./remote";
+import { relayNotices } from "./notices";
 import {
   buddyOf,
   defaultWriteUps,
@@ -1174,7 +1175,10 @@ export const useOrbit = create<Store>((set, get) => ({
       }
       return follow(
         remoteToken,
-        (snapshot) => set({ snapshot, loaded: true }),
+        (snapshot) => {
+          relayNotices(snapshot);
+          set({ snapshot, loaded: true });
+        },
         (problem) =>
           set((s) =>
             problem
