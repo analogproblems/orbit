@@ -271,7 +271,6 @@ impl Engine {
             self.dirty.store(true, Ordering::SeqCst);
             return;
         }
-        let now_sent = s.notices_sent;
         let d = &mut s.push_devices[at];
         let mut retry = self.wake_retry.lock().unwrap();
         let now = std::time::Instant::now();
@@ -284,9 +283,7 @@ impl Engine {
             });
             retry.insert(id.into(), (now + wait, wait));
         } else {
-            // Never past what's sent now: a move in may have started the
-            // count again lower while this wake-up was on its way.
-            d.told = d.told.max(sent.min(now_sent));
+            d.told = d.told.max(sent);
             d.error = None;
             retry.insert(id.into(), (now + WAKE_AGAIN, Duration::ZERO));
         }

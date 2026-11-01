@@ -381,9 +381,8 @@ async fn a_wake_up_on_its_way_during_a_move_in_leaves_later_alerts_to_wake() {
     let added = add(&e, &service, 1).await;
     fail_a_review_of(&e, 1).await;
     fail_a_review_of(&e, 2).await;
-    // Its push service holds the answer while an Orbit with fewer
-    // notifications moves in, which catches devices up to its count
-    // (`keep_here`).
+    // Its push service holds its answer to Orbit; the browser reads what
+    // it was woken for meanwhile.
     let held = service.gate.lock().await;
     e.wake_devices().await;
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -393,23 +392,26 @@ async fn a_wake_up_on_its_way_during_a_move_in_leaves_later_alerts_to_wake() {
     })
     .await
     .unwrap();
-    e.update(|s| {
-        s.notices.clear();
-        s.notices_sent = 0;
-        for d in &mut s.push_devices {
-            (d.read, d.told) = (0, 0);
-        }
-        s.reviews.clear();
-        s.prs.clear();
-    })
-    .await;
+    assert_eq!(e.push_notices(&added.key).await.unwrap().len(), 2);
+    // An Orbit that sent fewer notifications moves in, and sends one
+    // before the old answer comes back.
+    let here = e.snapshot().await;
+    let mut moved = Snapshot::default();
+    super::moving::keep_here(&mut moved, &here, chrono::Utc::now());
+    e.update(|s| *s = moved).await;
+    fail_a_review_of(&e, 3).await;
     drop(held);
     wake(&e).await;
-    assert_eq!(e.snapshot().await.push_devices[0].told, 0);
-    // The moved Orbit's next notification wakes it.
+    // That one still wakes it.
     wait_over(&e, &added.id);
-    fail_a_review_of(&e, 3).await;
     wake(&e).await;
     assert_eq!(taken(&service), 2);
-    assert_eq!(e.push_notices(&added.key).await.unwrap().len(), 1);
+    let notices = e.push_notices(&added.key).await.unwrap();
+    assert_eq!(
+        notices
+            .iter()
+            .map(|n| n.item.pr_id.as_deref())
+            .collect::<Vec<_>>(),
+        [Some("a/b#3")]
+    );
 }

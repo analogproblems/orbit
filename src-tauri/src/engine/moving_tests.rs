@@ -293,6 +293,7 @@ async fn what_belongs_to_each_computer_stays_there() {
         .update(|s| {
             s.api_keys.anthropic.saved = true;
             s.antigravity.ready = true;
+            s.notices_sent = 7;
             s.push_devices = vec![crate::push::PushDevice {
                 id: "woken-by-second".into(),
                 read: 1,
@@ -322,13 +323,14 @@ async fn what_belongs_to_each_computer_stays_there() {
     assert_eq!(s.api_keys, before.api_keys);
     assert_eq!(s.antigravity, before.antigravity);
     // Devices are woken by the Orbit they signed up with, for what it sends
-    // from now on.
+    // from now on, counted on from the higher count of the two.
     let devices: Vec<_> = s
         .push_devices
         .iter()
         .map(|d| (d.id.as_str(), d.read, d.told))
         .collect();
-    assert_eq!(devices, [("woken-by-second", 5, 5)]);
+    assert_eq!(devices, [("woken-by-second", 7, 7)]);
+    assert_eq!(s.notices_sent, 7);
     assert_eq!(s.github_user.as_deref(), Some("me"));
     assert!(s.reviews.iter().all(|r| r.worktree.is_none()));
     assert_eq!(s.reviews[0].status, "cancelled");

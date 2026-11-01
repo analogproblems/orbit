@@ -88,6 +88,9 @@ async function whatsNew() {
     method: "POST",
     headers: { Authorization: `Bearer ${device.key}` },
     cache: "no-store",
+    // Not so long that the browser gives up on this wake-up first, which
+    // would show nothing.
+    signal: AbortSignal.timeout(20_000),
   });
   if (response.status === 401) {
     const said = await response.json().catch(() => ({}));

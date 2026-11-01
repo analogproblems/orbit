@@ -94,6 +94,7 @@ it("reads what's new from Orbit with this device's key and shows each", async ()
     method: "POST",
     headers: { Authorization: `Bearer ${"k".repeat(64)}` },
     cache: "no-store",
+    signal: expect.any(AbortSignal),
   });
 });
 
