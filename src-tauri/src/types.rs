@@ -1339,6 +1339,11 @@ pub struct Snapshot {
     /// How Bit feels. Derived like `loop_states`.
     #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
     pub mood: Option<crate::buddy::Mood>,
+    /// The time zone of the computer this Orbit runs on
+    /// (`crate::clock::computer_zone`), so the app can say whose clock the
+    /// brief keeps when you choose no zone. Derived like `loop_states`.
+    #[serde(skip_deserializing, skip_serializing_if = "String::is_empty")]
+    pub clock_zone: String,
     /// Reading each repository's pull-request history for the Decisions
     /// page.
     pub ledger: LedgerStatus,

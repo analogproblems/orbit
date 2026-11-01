@@ -1322,6 +1322,26 @@ describe("Bit", () => {
     );
   });
 
+  it("sends the morning brief in the time zone you choose", async () => {
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Settings" }));
+    await openSettingsTab("Buddy");
+    const zone = await screen.findByRole("combobox", { name: /^Time zone/ });
+    expect(screen.getByText(/^This computer/)).toBeTruthy();
+    await user().click(zone);
+    await user().clear(zone);
+    await user().type(zone, "tokyo");
+    await user().click(
+      await screen.findByRole("option", { name: "Asia/Tokyo" }),
+    );
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("update_settings", {
+        patch: { buddy: { timeZone: "Asia/Tokyo" } },
+      }),
+    );
+    expect(buddyOf(snapshot.settings).timeZone).toBe("Asia/Tokyo");
+  });
+
   it("sets what Bit may do on its own in Settings", async () => {
     await mount();
     await user().click(screen.getByRole("button", { name: "Settings" }));

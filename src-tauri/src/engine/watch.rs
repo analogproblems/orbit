@@ -43,9 +43,11 @@ impl Engine {
     }
     /// Makes the morning brief, once its time has come today.
     async fn look_for_brief(&self) {
-        let local = chrono::Local::now().naive_local();
+        let now = chrono::Utc::now();
         let mut s = self.state.lock().await;
-        let changed = crate::brief::look(&mut s, local, chrono::Utc::now());
+        // Your time, wherever this computer is.
+        let local = crate::clock::local(&s.settings.buddy.time_zone, now);
+        let changed = crate::brief::look(&mut s, local, now);
         drop(s);
         if changed {
             self.dirty.store(true, Ordering::SeqCst);

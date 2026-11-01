@@ -158,7 +158,7 @@ impl Proposal {
 /// Trusted accounts aren't among them: they decide which pull requests are
 /// published automatically. A repository's own settings are changed with
 /// Set up repository instead.
-pub const SETTINGS: [&str; 37] = [
+pub const SETTINGS: [&str; 38] = [
     "automatic",
     "autoPost",
     "pollSeconds",
@@ -187,6 +187,7 @@ pub const SETTINGS: [&str; 37] = [
     "buddy.answerer",
     "buddy.brief",
     "buddy.briefAt",
+    "buddy.timeZone",
     "buddy.rules.continue_loop",
     "buddy.rules.review_again",
     "buddy.rules.publish",
@@ -220,7 +221,7 @@ In `proposals` you can offer up to {MAX_PROPOSALS} buttons for Orbit's own contr
 - review_again, with pr: starts a new review of a pull request.
 - publish, with pr: publishes a pull request's report that is ready to publish.
 - sync_now: syncs with GitHub now.
-- change_settings, with changes: changes settings named in the summary's `settings`, each with its new value written as text, such as \"true\" or \"120\". buddy.answerer is who answers these questions: codex, claude, antigravity, ollama, or openai, anthropic or google with the user's API key. buddy.brief is whether you send a morning brief, and buddy.briefAt its time by the person's computer clock, on a 24-hour clock, such as \"07:30\".
+- change_settings, with changes: changes settings named in the summary's `settings`, each with its new value written as text, such as \"true\" or \"120\". buddy.answerer is who answers these questions: codex, claude, antigravity, ollama, or openai, anthropic or google with the user's API key. buddy.brief is whether you send a morning brief, and buddy.briefAt its time on a 24-hour clock, such as \"07:30\", in buddy.timeZone: a time zone name such as \"Europe/London\", or empty for the clock of the computer Orbit runs on, whose zone is the summary's clockZone.
 - set_up_repository, with repository and changes: connects a repository from the summary's `connectableRepositories`, or changes the settings of one in `repositories`. Orbit downloads its own copy of a repository it connects, and starts it with autopilot off, no setup command and no network, plus your changes. Its changes use the repository settings named in the summary's repositories: setupCommand, checkCommand, networkAccess, devContainer, reviewer (codex, claude or antigravity), roundLimit ({round_limits}), approvalMinutes ({approval_minutes}, where 0 waits for the person), keepCloneUpdated and autopilot.
 - check_connections: checks the connections to GitHub, Codex and the other reviewers again, once the person has fixed one, such as by signing in.
 Use pull request ids and repository names from the summary. Leave pr and repository null, and changes empty, when an action doesn't use them. You can't change trusted accounts: say they can do that themselves in Orbit's Settings.
@@ -489,6 +490,7 @@ pub fn briefing(s: &Snapshot, lookups: &Lookups) -> Value {
     earlier.reverse();
     json!({
         "now": now(),
+        "clockZone": crate::clock::computer_zone(),
         "settings": settings,
         "github": {
             "syncing": s.polling,

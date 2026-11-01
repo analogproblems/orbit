@@ -124,6 +124,12 @@ describe("Bit", () => {
     expect(
       describePatch({ buddy: { brief: false, briefAt: "07:30" } }, []),
     ).toBe("Morning brief: Off; Brief time: 07:30");
+    expect(describePatch({ buddy: { timeZone: "America/New_York" } }, [])).toBe(
+      "Time zone: America/New York",
+    );
+    expect(describePatch({ buddy: { timeZone: "" } }, [])).toBe(
+      "Time zone: Orbit’s computer",
+    );
     expect(Object.keys(fixRuleLabels)).toEqual(options.rules);
     expect(Object.keys(fixLabels)).toEqual(options.fixes);
     expect(Object.keys(questionLabels)).toEqual(options.questions);

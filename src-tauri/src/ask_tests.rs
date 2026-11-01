@@ -265,12 +265,18 @@ fn settings_buttons_carry_a_valid_change() {
             .settings,
         Some(json!({"buddy": {"brief": false, "briefAt": "07:30"}}))
     );
+    // And in a time zone Orbit knows.
+    assert_eq!(
+        change(json!([{"setting": "buddy.timeZone", "value": "Asia/Tokyo"}]))[0].settings,
+        Some(json!({"buddy": {"timeZone": "Asia/Tokyo"}}))
+    );
     // Not a setting Bit may change, not valid, or no change at all.
     for changes in [
         json!([{"setting": "trustedAuthors", "value": "[\"mallory\"]"}]),
         json!([{"setting": "pollSeconds", "value": "often"}]),
         json!([{"setting": "buddy.tone", "value": "grumpy"}]),
         json!([{"setting": "buddy.briefAt", "value": "7.30am"}]),
+        json!([{"setting": "buddy.timeZone", "value": "Mars/Olympus"}]),
         json!([{"setting": "automatic", "value": "true"}]),
         json!([]),
     ] {

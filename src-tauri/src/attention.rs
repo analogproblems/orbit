@@ -551,6 +551,7 @@ pub fn shown(s: &Snapshot) -> Snapshot {
     shown.readiness = crate::readiness::all(s);
     shown.attention = items(s);
     shown.mood = Some(crate::buddy::mood(s, &shown.attention, &shown.loop_states));
+    shown.clock_zone = crate::clock::computer_zone();
     shown
 }
 
