@@ -25,9 +25,26 @@ const SCANS: &str = "scans";
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Moved {
+    /// This move's own id, new each time an Orbit is packed, by which the
+    /// moving Orbit asks how it went (`Status`).
+    #[serde(default)]
+    pub id: String,
     /// Its state, as `state.json` holds it.
     pub state: Value,
     pub files: Vec<MovedFile>,
+}
+/// How a move went, as the always-on Orbit says for certain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Status {
+    /// It took the moving Orbit in.
+    Moved,
+    /// It didn't, and now never will: a move it never heard of, or one
+    /// that failed, is called off when asked about, so one arriving late
+    /// is refused.
+    CalledOff,
+    /// It's still taking it in.
+    Running,
 }
 /// One of the files that go with an Orbit's state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,6 +53,11 @@ pub struct MovedFile {
     /// Where it is in the data folder, with `/` between folders.
     pub path: String,
     pub text: String,
+}
+
+/// Whether `id` could be a move's id, as `Engine::pack` makes them.
+pub fn valid_id(id: &str) -> bool {
+    id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// Where a moved file goes in the data folder `root`, if it's one an

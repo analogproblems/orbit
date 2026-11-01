@@ -517,7 +517,7 @@ mod desktop {
         // again whatever happens.
         engine.shutdown().await;
         let (title, message) =
-            match client::move_to(&engine, &root, &always_on, &before).await {
+            match client::move_to(&engine, &root, &always_on).await {
                 // Still noted as moving until both are kept, so the app
                 // finishes as it starts if it can't now.
                 Ok(()) => match client::save(&root, &link).and_then(|()| client::end_move(&root)) {
@@ -606,6 +606,26 @@ mod desktop {
             return false;
         };
         show_always_on(app, root.into(), link, false).is_ok()
+    }
+    /// The commands the window may still run while this app's Orbit moves.
+    const WHILE_MOVING: &[&str] = &["get_snapshot", "get_always_on"];
+    /// `commands`, refusing new ones while this app's Orbit moves to an
+    /// always-on Orbit (`Engine::fence`), as a browser's are refused.
+    fn while_moving(
+        commands: impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static,
+    ) -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
+        move |invoke| {
+            let moving = invoke
+                .message
+                .webview()
+                .try_state::<AppState>()
+                .is_some_and(|engine| engine.moving());
+            if moving && !WHILE_MOVING.contains(&invoke.message.command()) {
+                invoke.resolver.reject(engine::MOVING);
+                return true;
+            }
+            commands(invoke)
+        }
     }
     pub fn run() {
         tauri::Builder::default()
@@ -709,7 +729,7 @@ mod desktop {
                     }
                 }
             })
-            .invoke_handler(tauri::generate_handler![
+            .invoke_handler(while_moving(tauri::generate_handler![
                 get_snapshot,
                 update_settings,
                 save_repository,
@@ -760,7 +780,7 @@ mod desktop {
                 use_always_on,
                 move_to_always_on,
                 stop_always_on
-            ])
+            ]))
             .build(tauri::generate_context!())
             .expect("Unable to start Orbit")
             .run(|app, event| {

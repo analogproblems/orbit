@@ -114,7 +114,7 @@ export function AlwaysOnOrbit() {
               <Banner
                 status="warning"
                 title="Orbit can’t tell yet whether it moved"
-                description="The always-on Orbit didn’t answer after the move. Until it does, this app runs no Orbit of its own, so nothing is done twice, and it asks again each time it starts."
+                description="The always-on Orbit hasn’t said yet whether it took this app’s Orbit in. Until it does, this app runs no Orbit of its own, so nothing is done twice, and it asks again each time it starts."
               />
             )}
             {linkField(

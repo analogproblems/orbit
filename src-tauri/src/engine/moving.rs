@@ -11,6 +11,8 @@ use crate::moving::{self, Moved};
 /// the background to finish.
 const QUIET: Duration = Duration::from_secs(60);
 const BUSY: &str = "This Orbit is still busy with GitHub. Try again in a minute.";
+/// How many moves into it an Orbit remembers the outcome of.
+const MOVES: usize = 20;
 /// How long after a move the moved Orbit's posts still count as the
 /// always-on Orbit's own, as the two computers' clocks may differ. The
 /// moved Orbit has stopped by then.
@@ -36,17 +38,27 @@ impl Engine {
     pub async fn cannot_move(&self) -> Option<String> {
         cannot_move(&*self.state.lock().await)
     }
-    /// Waits for what this Orbit is doing in the background to finish, then
-    /// holds off anything new until it starts again: syncing, publishing,
+    /// Whether this Orbit is moving, so it takes no new commands.
+    pub fn moving(&self) -> bool {
+        self.moving.load(Ordering::SeqCst)
+    }
+    /// Takes no new command from now on (`moving`), waits for what this
+    /// Orbit is doing to finish, then holds off anything new until it
+    /// starts again: syncing, publishing, a repository being connected,
     /// telling agents about CI, reading CI, the history and write-ups, and
-    /// commit statuses on their way. For an Orbit that has shut down to
-    /// move, so nothing it does lands after it's packed.
+    /// commit statuses on their way. A settings change after that is
+    /// refused. For an Orbit that has shut down to move, so nothing it does
+    /// lands after it's packed.
     pub async fn fence(&self) -> Result<(), String> {
+        self.moving.store(true, Ordering::SeqCst);
         let until = tokio::time::Instant::now() + QUIET;
         let poll = tokio::time::timeout_at(until, self.poll_lock.lock())
             .await
             .map_err(|_| BUSY.to_string())?;
         let publish = tokio::time::timeout_at(until, self.publish_lock.lock())
+            .await
+            .map_err(|_| BUSY.to_string())?;
+        let cloning = tokio::time::timeout_at(until, self.cloning.lock())
             .await
             .map_err(|_| BUSY.to_string())?;
         let quiet = self.quiet(until).await?;
@@ -56,17 +68,17 @@ impl Engine {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+        self.fenced.store(true, Ordering::SeqCst);
         // Held for good: the app starts again once it has moved, or not.
-        std::mem::forget((poll, publish, quiet));
+        std::mem::forget((poll, publish, cloning, quiet));
         Ok(())
     }
-    /// Turns autopilot on or off, as moving does.
+    /// Turns autopilot on or off, as moving does, even once fenced.
     pub async fn set_autopilot(&self, on: bool) -> Result<(), String> {
-        let patch = SettingsPatch {
-            automatic: Some(on),
-            ..Default::default()
-        };
-        self.update_settings(patch).await.map(drop)
+        let mut s = self.state.lock().await;
+        let mut settings = s.settings.clone();
+        settings.automatic = on;
+        self.apply_settings(&mut s, settings)
     }
     /// This Orbit, packed to move: its state as it saves it, and the files
     /// that go with it. Called once it has shut down and is fenced, so
@@ -80,7 +92,11 @@ impl Engine {
         let scans: Vec<String> = s.scans.iter().map(|x| x.id.clone()).collect();
         let root = self.root.clone();
         let files = blocking(move || moving::collect(&root, &scans)).await?;
-        Ok(Moved { state, files })
+        Ok(Moved {
+            id: uuid::Uuid::new_v4().simple().to_string(),
+            state,
+            files,
+        })
     }
     /// Takes in an Orbit that moved here, if this one has nothing of its
     /// own yet. What was running there ends as it would if that Orbit
@@ -106,9 +122,26 @@ impl Engine {
         if let Some(why) = cannot_move(&state) {
             return Err(why);
         }
-        if let Some(why) = cannot_take_in(&*self.state.lock().await) {
-            return Err(why);
+        let id = moved.id;
+        if !moving::valid_id(&id) {
+            return Err(
+                "The moving Orbit is too old to move here. Update it, then try again.".into(),
+            );
         }
+        {
+            let s = self.state.lock().await;
+            if let Some(m) = s.moves.iter().find(|m| m.id == id) {
+                return Err(if m.moved { TAKEN_IN } else { CALLED_OFF }.into());
+            }
+            if let Some(why) = cannot_take_in(&s) {
+                return Err(why);
+            }
+            // Under the state lock, as `move_status` reads it.
+            if !self.taking_in.lock().unwrap().insert(id.clone()) {
+                return Err("This move is already on its way in.".into());
+            }
+        }
+        let _taking = Taking(&self.taking_in, &id);
         // Nothing that reads into the state runs meanwhile, so nothing
         // read before the move lands after it, and one move at a time.
         let poll = self.poll_lock.lock().await;
@@ -143,6 +176,7 @@ impl Engine {
                 &mut s,
                 |next| {
                     keep_here(&mut state, next, until);
+                    remember(&mut state.moves, &id, true);
                     *next = state;
                     Ok(())
                 },
@@ -165,6 +199,34 @@ impl Engine {
             let _ = self.apply_model_discovery(models, Ok(Value::Null)).await;
         }
         Ok(())
+    }
+    /// How the move `id` went, for certain. A move this Orbit isn't taking
+    /// in and didn't take in is called off for good here, so if it's still
+    /// on its way it's refused when it arrives.
+    pub async fn move_status(&self, id: &str) -> Result<moving::Status, String> {
+        let mut s = self.state.lock().await;
+        if let Some(m) = s.moves.iter().find(|m| m.id == id) {
+            return Ok(if m.moved {
+                moving::Status::Moved
+            } else {
+                moving::Status::CalledOff
+            });
+        }
+        if self.taking_in.lock().unwrap().contains(id) {
+            return Ok(moving::Status::Running);
+        }
+        if !moving::valid_id(id) {
+            return Err("That isn't a move's id.".into());
+        }
+        self.save(
+            &mut s,
+            |next| {
+                remember(&mut next.moves, id, false);
+                Ok(())
+            },
+            |e| format!("Orbit couldn't note how the move went: {e}"),
+        )?;
+        Ok(moving::Status::CalledOff)
     }
     /// Reads, in the background, what an Orbit just taken in needs from
     /// here: who answers Bit, then GitHub and CI.
@@ -203,6 +265,28 @@ impl Engine {
     }
 }
 
+/// Why a move is refused: it was called off when its Orbit asked how it
+/// went, as it hadn't arrived yet.
+const CALLED_OFF: &str = "This move was called off. Try moving again.";
+const TAKEN_IN: &str = "This Orbit already took this move in.";
+/// A move being taken in, until the guard drops.
+struct Taking<'a>(&'a std::sync::Mutex<HashSet<String>>, &'a str);
+impl Drop for Taking<'_> {
+    fn drop(&mut self) {
+        self.0.lock().unwrap().remove(self.1);
+    }
+}
+/// Notes how the move `id` went in `moves`, keeping the newest `MOVES`.
+fn remember(moves: &mut Vec<MoveRecord>, id: &str, moved: bool) {
+    moves.retain(|m| m.id != id);
+    moves.push(MoveRecord {
+        id: id.into(),
+        moved,
+    });
+    let extra = moves.len().saturating_sub(MOVES);
+    moves.drain(..extra);
+}
+
 /// Keeps what belongs to this computer in the moved state `moved`, from
 /// this Orbit's own state `here`: who it is, with the moved Orbit's names
 /// as its own until `until`, its sign-ins and reviewers as last checked,
@@ -232,6 +316,7 @@ fn keep_here(moved: &mut Snapshot, here: &Snapshot, until: chrono::DateTime<chro
     moved.ollama_models = here.ollama_models.clone();
     moved.api_keys = here.api_keys.clone();
     moved.usage = here.usage.clone();
+    moved.moves = here.moves.clone();
     // Read again here.
     moved.clone_updates.clear();
     moved.sync_failures.clear();

@@ -449,22 +449,40 @@ async fn moves_into_an_always_on_orbit_with_nothing_of_its_own() {
         }];
     })
     .await;
-    let name = here.snapshot().await.instance.name;
     let moved = here.pack().await.unwrap();
     // A link that no longer works says so, and moves nothing.
     assert_eq!(
         client(r.port, OTHER).move_in(&moved).await,
         Err(EXPIRED.into())
     );
+    assert_eq!(
+        client(r.port, OTHER).move_status(&moved.id).await,
+        Err(EXPIRED.into())
+    );
+    // A move asked about before it arrives is called off, and refused
+    // when it does.
+    let late = here.pack().await.unwrap();
+    assert_ne!(late.id, moved.id);
+    let called_off = Ok(crate::moving::Status::CalledOff);
+    assert_eq!(c.move_status(&late.id).await, called_off);
+    let error = c.move_in(&late).await.unwrap_err();
+    assert!(error.contains("called off"), "{error}");
+    assert_eq!(c.move_status(&late.id).await, called_off);
+
     c.move_in(&moved).await.unwrap();
     let after = c.snapshot().await.unwrap();
     assert_eq!(after["settings"]["concurrency"], 3);
-    assert!(took_in(&before, &after, &name));
-    assert!(!took_in(&after, &after, &name));
-    assert!(!took_in(&before, &before, &name));
+    assert_eq!(
+        c.move_status(&moved.id).await,
+        Ok(crate::moving::Status::Moved)
+    );
     assert_eq!(can_take_in(&after, Some("me")), Err(NOT_EMPTY.into()));
     let error = c.move_in(&moved).await.unwrap_err();
-    assert!(error.contains("already has repositories"), "{error}");
+    assert!(error.contains("already took this move in"), "{error}");
+    assert_eq!(
+        c.move_status(&moved.id).await,
+        Ok(crate::moving::Status::Moved)
+    );
 }
 
 /// An Orbit, empty and signed in, to move into, served at `port` by a
@@ -519,15 +537,13 @@ async fn a_move_the_app_cannot_confirm_leaves_its_orbit_paused_until_it_can() {
         s.settings.concurrency = 3;
     })
     .await;
-    let name = here.snapshot().await.instance.name;
     let port = lost_on_the_way(target.clone()).await;
-    let before = json!({ "instance": { "former": [] } });
     here.shutdown().await;
     let root = d.path().join("here");
-    let error = move_to(&here, &root, &impatient(port), &before).await;
+    let error = move_to(&here, &root, &impatient(port)).await;
     assert!(matches!(error, Err(Failed::Unsure(_))), "{error:?}");
     let pending = pending_move(&root).unwrap();
-    assert_eq!(pending.name, name);
+    assert!(crate::moving::valid_id(&pending.id));
     assert!(pending.automatic);
     assert_eq!(pending.link.base, format!("http://127.0.0.1:{port}/"));
     // Autopilot is off, and stays off after a restart.
@@ -552,7 +568,6 @@ async fn a_move_the_always_on_orbit_refuses_leaves_this_orbit_as_it_was() {
     let r = remote_orbit().await;
     r.engine.update(|s| s.github_user = Some("me".into())).await;
     let c = client(r.port, TOKEN);
-    let before = c.snapshot().await.unwrap();
     // Another Orbit moved in first.
     let d = tempfile::tempdir().unwrap();
     let other = Engine::new(d.path().join("other"), |_| {}).unwrap();
@@ -569,14 +584,9 @@ async fn a_move_the_always_on_orbit_refuses_leaves_this_orbit_as_it_was() {
 
     let here = Engine::new(d.path().join("here"), |_| {}).unwrap();
     here.update(|s| s.settings.automatic = true).await;
-    let pending = Moving {
-        link: c.link().clone(),
-        name: here.snapshot().await.instance.name,
-        automatic: true,
-    };
     here.shutdown().await;
     let root = d.path().join("here");
-    match move_to(&here, &root, &c, &before).await {
+    match move_to(&here, &root, &c).await {
         Err(Failed::Stayed(error)) => {
             assert!(error.contains("already has repositories"), "{error}")
         }
@@ -584,7 +594,12 @@ async fn a_move_the_always_on_orbit_refuses_leaves_this_orbit_as_it_was() {
     }
     assert!(here.snapshot().await.settings.automatic);
     assert_eq!(pending_move(&root), None);
-    // As the app starts, a move noted then counts as not made.
+    // As the app starts, a move noted but never sent counts as not made.
+    let pending = Moving {
+        link: c.link().clone(),
+        id: here.pack().await.unwrap().id,
+        automatic: true,
+    };
     assert_eq!(settle(&pending).await, Outcome::Stayed);
 }
 

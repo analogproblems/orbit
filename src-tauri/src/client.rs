@@ -167,9 +167,9 @@ pub fn forget(root: &Path) -> Result<(), String> {
 #[serde(rename_all = "camelCase")]
 pub struct Moving {
     pub link: Link,
-    /// The name of this app's Orbit, which the always-on Orbit counts as
-    /// one of its own once it took it in.
-    pub name: String,
+    /// The move's id (`Moved.id`), by which the always-on Orbit says how
+    /// it went.
+    pub id: String,
     /// Whether autopilot was on, to turn it back on if it didn't move.
     pub automatic: bool,
 }
@@ -190,28 +190,32 @@ pub fn end_move(root: &Path) -> Result<(), String> {
         _ => Ok(()),
     }
 }
-/// What became of a move.
+/// What became of a move, as far as the app can tell.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outcome {
     /// The always-on Orbit took this app's Orbit in.
     Moved,
-    /// It answers, and didn't.
+    /// It says it didn't, and now never will.
     Stayed,
-    /// It doesn't answer, so the app can't tell.
+    /// It's still taking it in, or doesn't answer, so the app can't tell.
     Unsure,
 }
-/// Asks the always-on Orbit what became of `moving`.
+/// Asks the always-on Orbit what became of `moving`, as the app starts.
 pub async fn settle(moving: &Moving) -> Outcome {
     let Ok(client) = Client::new(moving.link.clone()) else {
         return Outcome::Unsure;
     };
-    match tokio::time::timeout(SETTLE, client.snapshot()).await {
-        Ok(Ok(there)) if counts(&there, &moving.name) => Outcome::Moved,
-        Ok(Ok(_)) => Outcome::Stayed,
-        _ => Outcome::Unsure,
+    tokio::time::timeout(SETTLE, outcome(&client, &moving.id))
+        .await
+        .unwrap_or(Outcome::Unsure)
+}
+async fn outcome(always_on: &Client, id: &str) -> Outcome {
+    match always_on.move_status(id).await {
+        Ok(crate::moving::Status::Moved) => Outcome::Moved,
+        Ok(crate::moving::Status::CalledOff) => Outcome::Stayed,
+        Ok(crate::moving::Status::Running) | Err(_) => Outcome::Unsure,
     }
 }
-
 /// Why a move didn't finish: it didn't happen, or the app can't tell.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Failed {
@@ -219,25 +223,23 @@ pub enum Failed {
     Unsure(String),
 }
 /// Moves `engine`, this app's Orbit with the data folder `root`, once it
-/// has shut down, to the always-on Orbit at `always_on`, whose snapshot
-/// was `before`. Autopilot goes off here before the move is sent, noted
-/// with the move, and comes back on only once it's known that it didn't
-/// move: an answer lost on the way, with the always-on Orbit then out of
-/// reach, leaves it off and the move noted (`pending_move`).
+/// has shut down, to the always-on Orbit at `always_on`. Autopilot goes
+/// off here before the move is sent, noted with the move, and comes back
+/// on only once the always-on Orbit says for certain that it didn't take
+/// it in: while it's still taking it in or doesn't answer, autopilot
+/// stays off and the move stays noted (`pending_move`).
 pub async fn move_to(
     engine: &crate::engine::Engine,
     root: &Path,
     always_on: &Client,
-    before: &Value,
 ) -> Result<(), Failed> {
     engine.fence().await.map_err(Failed::Stayed)?;
     let moved = engine.pack().await.map_err(Failed::Stayed)?;
-    let here = engine.snapshot().await;
-    let automatic = here.settings.automatic;
+    let automatic = engine.snapshot().await.settings.automatic;
     engine.set_autopilot(false).await.map_err(Failed::Stayed)?;
     let moving = Moving {
         link: always_on.link().clone(),
-        name: here.instance.name.clone(),
+        id: moved.id.clone(),
         automatic,
     };
     if let Err(e) = begin_move(root, &moving) {
@@ -248,10 +250,17 @@ pub async fn move_to(
         Ok(()) => return Ok(()),
         Err(error) => error,
     };
-    // The answer may be lost when the move went through anyway.
-    match always_on.snapshot().await {
-        Ok(after) if took_in(before, &after, &moving.name) => Ok(()),
-        Ok(_) => {
+    // The answer may be lost, or cut off by a proxy, while the move goes
+    // through anyway; only the always-on Orbit can say. One too old to
+    // take moves never took this one in.
+    let outcome = if error == TOO_OLD {
+        Outcome::Stayed
+    } else {
+        outcome(always_on, &moving.id).await
+    };
+    match outcome {
+        Outcome::Moved => Ok(()),
+        Outcome::Stayed => {
             // Still noted if autopilot can't come back on now, so it does
             // when the app starts.
             if engine.set_autopilot(automatic).await.is_ok() {
@@ -259,7 +268,7 @@ pub async fn move_to(
             }
             Err(Failed::Stayed(error))
         }
-        Err(_) => Err(Failed::Unsure(error)),
+        Outcome::Unsure => Err(Failed::Unsure(error)),
     }
 }
 
@@ -321,21 +330,6 @@ pub fn can_take_in(there: &Value, login: Option<&str>) -> Result<(), String> {
         _ => Ok(()),
     }
 }
-/// Whether the always-on Orbit took in the Orbit named `name`: its
-/// snapshot `after` counts that name as one of its own, and `before`
-/// didn't. Used when a move's answer was lost.
-pub fn took_in(before: &Value, after: &Value, name: &str) -> bool {
-    !counts(before, name) && counts(after, name)
-}
-/// Whether the Orbit whose snapshot is `there` counts the Orbit named
-/// `name` as one of its own.
-fn counts(there: &Value, name: &str) -> bool {
-    !name.is_empty()
-        && there["instance"]["former"]
-            .as_array()
-            .is_some_and(|f| f.iter().any(|f| f["name"] == name))
-}
-
 /// Talks to an always-on Orbit.
 pub struct Client {
     link: Link,
@@ -433,6 +427,22 @@ impl Client {
             return Err(TOO_OLD.into());
         }
         self.answer(response).await.map(drop)
+    }
+    /// How the move `id` went, as the always-on Orbit says for certain. It
+    /// calls off one it never heard of (see `Engine::move_status`).
+    pub async fn move_status(&self, id: &str) -> Result<crate::moving::Status, String> {
+        let response = self
+            .http
+            .post(format!("{}api/move-in/status", self.link.base))
+            .bearer_auth(&self.link.token)
+            .json(&json!({ "id": id }))
+            .timeout(self.limits.action)
+            .send()
+            .await
+            .map_err(|e| self.unreachable(e))?;
+        let answer = self.answer(response).await?;
+        serde_json::from_value(answer["status"].clone())
+            .map_err(|e| format!("The always-on Orbit answered oddly: {e}"))
     }
     /// Follows the always-on Orbit's snapshots, giving each to `show`, and
     /// the notifications to show here to `notify`. `problem` hears what's

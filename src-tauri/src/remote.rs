@@ -194,6 +194,7 @@ pub fn router(
     Router::new()
         .route("/api/events", get(events))
         .route("/api/move-in", post(move_in))
+        .route("/api/move-in/status", post(move_status))
         .route("/api/{command}", post(command))
         .fallback(get(asset))
         .with_state(Remote {
@@ -251,6 +252,9 @@ async fn command(
     if !COMMANDS.contains(&name.as_str()) {
         return failure(StatusCode::NOT_FOUND, "This action is not available here.");
     }
+    if remote.engine.moving() && name != "get_snapshot" {
+        return failure(StatusCode::CONFLICT, crate::engine::MOVING);
+    }
     let args: Value = if body.is_empty() {
         json!({})
     } else {
@@ -275,9 +279,9 @@ async fn command(
 
 /// Takes in an Orbit moving here (see `crate::moving`), as the desktop
 /// app's Move to it sends it. Its body is read only once the token checks
-/// out, and may be far larger than a command's. It isn't carried on: if
-/// the Orbit moving here goes away, the move stops, and it carries on
-/// where it was.
+/// out, and may be far larger than a command's. Once read, the move runs
+/// to its end even if the Orbit moving here goes away, which then asks
+/// how it went (`move_status`).
 async fn move_in(State(remote): State<Remote>, headers: HeaderMap, body: Body) -> Response {
     if let Some(denied) = denied(&remote, &headers) {
         return denied;
@@ -297,10 +301,35 @@ async fn move_in(State(remote): State<Remote>, headers: HeaderMap, body: Body) -
             )
         }
     };
-    match remote.engine.take_in(moved).await {
+    let engine = remote.engine.clone();
+    let taken = crate::engine::carry_on(async move {
+        engine.take_in(moved).await?;
+        engine.settle_in();
+        Ok::<_, String>(())
+    });
+    match taken.await {
         Ok(()) => {
-            remote.engine.settle_in();
             let mut response = Json(json!({})).into_response();
+            no_store(&mut response);
+            response
+        }
+        Err(error) => failure(StatusCode::UNPROCESSABLE_ENTITY, error),
+    }
+}
+/// Says how a move went (`Engine::move_status`), for an Orbit moving here
+/// that lost the answer to its move.
+async fn move_status(State(remote): State<Remote>, headers: HeaderMap, body: Bytes) -> Response {
+    if let Some(denied) = denied(&remote, &headers) {
+        return denied;
+    }
+    let Ok(id) = serde_json::from_slice::<Value>(&body)
+        .map(|v| v["id"].as_str().unwrap_or_default().to_string())
+    else {
+        return failure(StatusCode::BAD_REQUEST, "Arguments must be a JSON object.");
+    };
+    match remote.engine.move_status(&id).await {
+        Ok(status) => {
+            let mut response = Json(json!({ "status": status })).into_response();
             no_store(&mut response);
             response
         }

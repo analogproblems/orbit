@@ -6,6 +6,7 @@ use super::{
     Engine,
 };
 use crate::{moving::Moved, types::*};
+use serde_json::json;
 use std::{path::Path, sync::Arc, time::Duration};
 
 /// A clone of `repo` at `folder`: a Git working tree whose origin is it.
@@ -39,6 +40,47 @@ fn restarted(e: Arc<Engine>) -> Arc<Engine> {
     assert_eq!(Arc::strong_count(&e), 1);
     drop(e);
     Engine::new(root, |_| {}).unwrap()
+}
+/// Serves `e` as an always-on Orbit does, returning its link.
+async fn serve(e: &Arc<Engine>) -> crate::client::Link {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let token = "ab".repeat(32);
+    let (_, stop) = tokio::sync::watch::channel(false);
+    let app = crate::remote::router(
+        e.clone(),
+        crate::remote::Hub::default(),
+        token.clone(),
+        Arc::new(|_: &str| None),
+        stop,
+        crate::remote::SERVER_MARK,
+    );
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    crate::client::Link::parse(&format!("http://127.0.0.1:{port}/#token={token}")).unwrap()
+}
+/// A client for `link` that waits a fraction of a second for anything, as
+/// one behind a proxy that gives up early would.
+fn impatient(link: crate::client::Link) -> crate::client::Client {
+    let short = Duration::from_millis(300);
+    let limits = crate::client::Limits {
+        silence: short,
+        snapshot: short,
+        action: short * 2,
+        moving: short * 2,
+    };
+    crate::client::Client::with_limits(link, limits).unwrap()
+}
+/// Waits until `done` holds for `e`'s state.
+async fn until(e: &Engine, done: impl Fn(&Snapshot) -> bool) {
+    for _ in 0..250 {
+        if done(&*e.state.lock().await) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("it never happened");
 }
 /// Waits until the fake GitHub holds a request, as `hold` asks.
 async fn held(dir: &Path) {
@@ -348,4 +390,97 @@ async fn an_orbit_running_a_scan_does_not_move() {
     let why = first.cannot_move().await.unwrap();
     assert!(why.contains("scan is running"), "{why}");
     assert_eq!(first.pack().await.unwrap_err(), why);
+}
+
+/// A move still on its way in when the app stops waiting for the answer,
+/// as when a proxy gives up on a long download, isn't taken for one that
+/// failed, though the always-on Orbit still looks as it did: the app's
+/// Orbit stays paused, and the move shows as made once it is.
+#[tokio::test]
+async fn a_move_still_on_its_way_in_is_never_taken_for_one_that_failed() {
+    use crate::client::{move_to, pending_move, settle, Failed, Outcome};
+    let d = tempfile::tempdir().unwrap();
+    let there = always_on(&d.path().join("there")).await;
+    let link = serve(&there).await;
+    let here = Engine::new(d.path().join("here"), |_| {}).unwrap();
+    here.update(|s| {
+        s.settings.automatic = true;
+        s.settings.concurrency = 3;
+    })
+    .await;
+    // The always-on Orbit is busy with a download, so the move waits.
+    let downloading = there.cloning.lock().await;
+    here.shutdown().await;
+    let root = d.path().join("here");
+    let always_on = impatient(link);
+    let error = move_to(&here, &root, &always_on).await;
+    assert!(matches!(error, Err(Failed::Unsure(_))), "{error:?}");
+    let seen = always_on.snapshot().await.unwrap();
+    assert_eq!(seen["settings"]["concurrency"], 2, "looks as it did");
+    let pending = pending_move(&root).unwrap();
+    assert!(pending.automatic);
+    assert!(!here.snapshot().await.settings.automatic);
+    assert_eq!(settle(&pending).await, Outcome::Unsure);
+
+    drop(downloading);
+    until(&there, |s| s.settings.concurrency == 3).await;
+    assert_eq!(settle(&pending).await, Outcome::Moved);
+}
+
+/// A repository being connected as the Orbit moves is connected first and
+/// moves with it. Once moving, the Orbit takes no new command from a
+/// browser, and once packed, no settings change at all.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_repository_being_connected_as_the_orbit_moves_goes_with_it() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = super::setup_tests::fake_gh(d.path());
+    std::fs::write(d.path().join("gate"), "").unwrap();
+    let first = Engine::new(d.path().join("first"), |_| {}).unwrap();
+    let link = serve(&first).await;
+    let connecting = tokio::spawn(crate::github::GH.scope(gh, {
+        let e = first.clone();
+        async move {
+            e.save_repository(Repository::new("acme/api", ""), None)
+                .await
+        }
+    }));
+    for _ in 0..500 {
+        if d.path().join("cloning").exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(d.path().join("cloning").exists(), "downloads acme/api");
+    first.shutdown().await;
+    let fencing = tokio::spawn({
+        let e = first.clone();
+        async move { e.fence().await }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!fencing.is_finished(), "waits for the download");
+    let browser = crate::client::Client::new(link).unwrap();
+    let patch = json!({ "patch": { "concurrency": 3 } });
+    let refused = browser.call("update_settings", &patch).await;
+    assert_eq!(refused, Err(super::MOVING.into()));
+    assert!(browser.snapshot().await.is_ok(), "still shows itself");
+
+    std::fs::write(d.path().join("release"), "").unwrap();
+    let saved = connecting.await.unwrap().unwrap();
+    assert_eq!(saved.repositories[0].name, "acme/api");
+    fencing.await.unwrap().unwrap();
+    let moved = first.pack().await.unwrap();
+    assert_eq!(
+        moved.state["settings"]["repositories"][0]["name"],
+        "acme/api"
+    );
+    let patch = SettingsPatch {
+        concurrency: Some(3),
+        ..Default::default()
+    };
+    assert_eq!(
+        first.update_settings(patch).await.unwrap_err(),
+        super::MOVING
+    );
+    assert_ne!(first.snapshot().await.settings.concurrency, 3);
 }

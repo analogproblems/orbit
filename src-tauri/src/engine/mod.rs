@@ -112,6 +112,9 @@ mod writeup_tests;
 
 /// Why an Orbit can't start: another one uses its data folder.
 pub const ALREADY_RUNNING: &str = "Orbit is already running for this workspace.";
+/// Why an Orbit takes no command now: it's moving to an always-on Orbit.
+pub const MOVING: &str =
+    "Orbit is moving to the always-on Orbit, so it takes no changes here now. Try again once it has moved.";
 
 type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// Orbit's review engine. Its methods are split by area: `connection` (Codex),
@@ -154,7 +157,7 @@ type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// `containers` → `git_lock`; `cleanup_lock` → `git_lock` → `state`; `cloning` → `state`
 /// (`set_up_repository`); `poll_lock` → `cloning` → `state` (`take_in`); `poll_lock` →
 /// `publish_lock` → `state`, held for good once the Orbit moves (`fence`); `state` → `synced_repos`
-/// (`schedule`); `state` → `fixing` (`flush`); `state` → `asking`
+/// (`schedule`); `state` → `taking_in` (`take_in`, `move_status`); `state` → `fixing` (`flush`); `state` → `asking`
 /// (`ask_buddy_anything`); `state` → `using` (`use_proposal`). `preparing`,
 /// `recovered_publications`, `status_sender`, `sending_statuses`,
 /// `boxes` and `stopping_scans` (`std` mutexes, like `preparing` and `fixing`) are
@@ -181,6 +184,13 @@ pub struct Engine {
     /// State only needs to be shown, e.g. streamed text not yet worth persisting.
     changed: AtomicBool,
     stopping: AtomicBool,
+    /// This Orbit is moving to an always-on Orbit (`fence`): it takes no
+    /// new commands. Then `fenced` once what was running has finished: it
+    /// takes no settings change either.
+    moving: AtomicBool,
+    fenced: AtomicBool,
+    /// The moves into this Orbit it's taking in now, by id.
+    taking_in: std::sync::Mutex<HashSet<String>>,
     /// An `update_clones` pass is running; another one skips rather than waits.
     updating_clones: AtomicBool,
     /// CI is being read; another read skips rather than waits.
@@ -313,6 +323,9 @@ impl Engine {
             dirty: AtomicBool::new(true),
             changed: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
+            moving: AtomicBool::new(false),
+            fenced: AtomicBool::new(false),
+            taking_in: std::sync::Mutex::new(HashSet::new()),
             updating_clones: AtomicBool::new(false),
             watching_ci: AtomicBool::new(false),
             telling: AtomicBool::new(false),

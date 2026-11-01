@@ -1,4 +1,4 @@
-use super::{setup::carry_on, Engine};
+use super::{setup::carry_on, Engine, MOVING};
 use crate::{github, types::*};
 use std::{
     path::Path,
@@ -8,6 +8,19 @@ use std::{
 
 impl Engine {
     pub(super) fn commit_settings(
+        &self,
+        s: &mut Snapshot,
+        settings: Settings,
+    ) -> Result<(), String> {
+        // It was packed as it was (`fence`), so a change now would be lost.
+        if self.fenced.load(Ordering::SeqCst) {
+            return Err(MOVING.into());
+        }
+        self.apply_settings(s, settings)
+    }
+    /// Validates and saves `settings`, as `commit_settings` does, even while
+    /// moving.
+    pub(super) fn apply_settings(
         &self,
         s: &mut Snapshot,
         settings: Settings,
