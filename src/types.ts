@@ -1162,6 +1162,22 @@ export interface Snapshot {
   /** The latest notifications Orbit sent, newest last, so a desktop app
    * showing this Orbit from another computer shows them too. */
   notices?: SentNotice[];
+  /** How many notifications Orbit has sent. */
+  noticesSent?: number;
+  /** Browsers Orbit wakes when it sends a notification, even with Orbit's
+   * page closed (src/push.ts). */
+  pushDevices?: PushDevice[];
+}
+/** A browser Orbit wakes when it sends a notification. Where it's woken
+ * and its key stay with Orbit. */
+export interface PushDevice {
+  id: string;
+  /** What it says it is, such as "iPhone". */
+  name: string;
+  /** When it was added (RFC 3339). */
+  added: string;
+  /** Why the last wake-up failed, if it did. */
+  error?: string | null;
 }
 /** A move into an Orbit, and whether it took the moving Orbit in. */
 export interface MoveRecord {
@@ -1171,6 +1187,8 @@ export interface MoveRecord {
 /** A notification an Orbit sent. */
 export interface SentNotice {
   id: string;
+  /** Its place among every notification this Orbit sent. */
+  seq?: number;
   title: string;
   body: string;
   item: Attention;

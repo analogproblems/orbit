@@ -1328,6 +1328,11 @@ pub struct Snapshot {
     /// The latest notifications Orbit sent, newest last, so an app showing
     /// this Orbit from another computer shows them too.
     pub notices: Vec<crate::attention::SentNotice>,
+    /// How many notifications Orbit has sent: the newest one's `seq`.
+    pub notices_sent: u64,
+    /// Browsers that get a wake-up when Orbit sends a notification, even
+    /// with Orbit's page closed (`crate::push`).
+    pub push_devices: Vec<crate::push::PushDevice>,
     /// Everything waiting on the developer. Derived like `loop_states`.
     #[serde(skip_deserializing, skip_serializing_if = "Vec::is_empty")]
     pub attention: Vec<Attention>,

@@ -459,6 +459,28 @@ async function demoAction(
     commit();
     return;
   }
+  if (command === "push_key") {
+    // The demo wakes nothing, so any key will do.
+    return "BDemo";
+  }
+  if (command === "add_push_device") {
+    const added = { id: crypto.randomUUID(), key: crypto.randomUUID() };
+    demo.pushDevices = [
+      ...(demo.pushDevices ?? []),
+      {
+        id: added.id,
+        name: String(args.name),
+        added: new Date().toISOString(),
+      },
+    ];
+    commit();
+    return added;
+  }
+  if (command === "remove_push_device") {
+    demo.pushDevices = demo.pushDevices?.filter((d) => d.id !== args.id);
+    commit();
+    return;
+  }
   if (command === "clear_memory") {
     if (demo.buddyFeed)
       demo.buddyFeed.memory = { general: [], repositories: {} };

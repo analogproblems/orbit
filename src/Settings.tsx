@@ -37,7 +37,7 @@ import {
 import { SaveFeedback } from "./SaveFeedback";
 import { Storage } from "./Storage";
 import { AlwaysOnOrbit } from "./AlwaysOnOrbit";
-import { BrowserNotifications } from "./BrowserNotifications";
+import { BrowserNotifications, PushDevices } from "./BrowserNotifications";
 import { RemoteAccess } from "./RemoteAccess";
 import {
   CliConnection,
@@ -564,6 +564,7 @@ function AutomationSettings() {
           />
           <SaveFeedback saveKey="notify" />
           {remote && <BrowserNotifications />}
+          <PushDevices />
         </VStack>
         <VStack gap={2}>
           <Switch

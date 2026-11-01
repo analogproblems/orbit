@@ -2,7 +2,9 @@
 // Orbit sends (`Snapshot.notices`) shows here once, as it does in a desktop
 // app showing an always-on Orbit (`client::Relay` in client.rs), once you
 // turn them on in this browser. They show through Orbit's service worker
-// (public/sw.js), as phones need, and a tap opens the item.
+// (public/sw.js), as phones need, and a tap opens the item. A browser Orbit
+// wakes with its page closed (push.ts) gets them from the worker instead.
+import { wokenHere } from "./push";
 import type { Attention, SentNotice, Snapshot } from "./types";
 
 const seenKey = "orbit-notices-seen";
@@ -93,15 +95,16 @@ export function pick(
   return { fresh, seen: ids };
 }
 
-/** Shows the notifications new in `snapshot`, if this browser shows them.
- * What's seen is remembered either way, so turning them on later shows
- * nothing old. */
+/** Shows the notifications new in `snapshot`, if this browser shows them
+ * and Orbit doesn't wake it for them. What's seen is remembered either
+ * way, so turning them on later shows nothing old. */
 export function relayNotices(snapshot: Snapshot) {
   try {
     const seen = load();
     const picked = pick(seen, snapshot);
     if (seen === null || picked.seen.join() !== seen.join()) save(picked.seen);
     if (picked.fresh.length === 0 || browserNotices() !== "on") return;
+    if (wokenHere(snapshot)) return;
     for (const n of picked.fresh) void show(n);
   } catch {
     // Never holds up the page: Needs you still lists every item.

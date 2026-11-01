@@ -161,3 +161,24 @@ it("says what this browser does with them", async () => {
   Object.defineProperty(window, "isSecureContext", { value: false });
   expect(browserNotices()).toBe("needsHttps");
 });
+
+it("leaves them to Orbit's worker in a browser Orbit wakes", async () => {
+  localStorage.setItem("orbit-push-device", "phone");
+  const n = await import("./notices");
+  n.startBrowserNotices(() => {});
+  const woken = (notices: SentNotice[], devices: string[]) => ({
+    ...snapshot(notices, ["approval:1", "held:2"]),
+    pushDevices: devices.map((id) => ({ id, name: "iPhone", added: "" })),
+  });
+  n.relayNotices(woken([], ["phone"]));
+  n.relayNotices(woken([notice("a", "approval:1")], ["phone"]));
+  await flush();
+  expect(shown).not.toHaveBeenCalled();
+  // Once Orbit no longer wakes it, the page shows them again.
+  n.relayNotices(
+    woken([notice("a", "approval:1"), notice("b", "held:2")], ["laptop"]),
+  );
+  await flush();
+  expect(shown).toHaveBeenCalledTimes(1);
+  expect(shown.mock.calls[0][0]).toBe("Title b");
+});

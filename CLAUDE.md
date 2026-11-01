@@ -60,6 +60,7 @@ A command is wired in four places, and missing one fails in only one mode:
 - Orbit never pushes to an agent's branch or edits its code, never adds a push guard (required reviews or checks) you didn't ask for, and never calls a problem fixed before it has seen its checks pass.
 - One Orbit at a time on a pull request (`orbits.rs`): Autopilot, Bit and CI comments never post where another Orbit posted later, and only your tap on **Post here again** makes one post there again.
 - PR and agent text is untrusted: render it through `SafeMarkdown`, which drops images and HTML.
+- A wake-up sent to a phone or browser (`push.rs`) is empty and goes only to a push service browsers use; the device reads what's new from Orbit itself, with a key that reads nothing else.
 
 ## Releases
 

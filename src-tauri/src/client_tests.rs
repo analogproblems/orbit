@@ -630,7 +630,7 @@ async fn an_always_on_orbit_too_old_to_take_one_in_says_so() {
 #[derive(Debug)]
 enum Heard {
     Shown(Value),
-    Notified(SentNotice),
+    Notified(Box<SentNotice>),
     Problem(Option<String>),
 }
 /// Follows the Orbit at `port` in the background, passing on what it hears.
@@ -647,7 +647,7 @@ fn follow_with(c: Client, root: PathBuf) -> mpsc::UnboundedReceiver<Heard> {
                 let _ = shown.send(Heard::Shown(s.clone()));
             },
             |n| {
-                let _ = notified.send(Heard::Notified(n.clone()));
+                let _ = notified.send(Heard::Notified(Box::new(n.clone())));
             },
             |p| {
                 let _ = problem.send(Heard::Problem(p.map(String::from)));

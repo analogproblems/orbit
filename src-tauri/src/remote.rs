@@ -8,6 +8,8 @@
 //! - `GET /api/events` streams snapshots as JSON lines: the current one first,
 //!   then each change. Empty lines keep the connection alive.
 //! - `POST /api/move-in` takes in an Orbit moving here (`crate::moving`).
+//! - `POST /push/notices` gives a device woken with its page closed what's
+//!   new for it (`crate::push`), with that device's own key, not the token.
 //! - Any other `GET` serves the built frontend.
 //!
 //! [`Access`] runs the server as Settings ask: on or off, which port, and a
@@ -68,6 +70,9 @@ pub const COMMANDS: &[&str] = &[
     "forget_memory",
     "clear_memory",
     "close_brief",
+    "push_key",
+    "add_push_device",
+    "remove_push_device",
     "set_api_key",
     "publish_review",
     "publish_plan",
@@ -196,6 +201,7 @@ pub fn router(
         .route("/api/move-in", post(move_in))
         .route("/api/move-in/status", post(move_status))
         .route("/api/{command}", post(command))
+        .route("/push/notices", post(push_notices))
         .fallback(get(asset))
         .with_state(Remote {
             engine,
@@ -337,6 +343,28 @@ async fn move_status(State(remote): State<Remote>, headers: HeaderMap, body: Byt
     }
 }
 
+/// What's new for a device woken with its page closed (`crate::push`), read
+/// by Orbit's service worker with the device's own key, which reads only
+/// this. It needs no access token: the worker has none.
+async fn push_notices(State(remote): State<Remote>, headers: HeaderMap) -> Response {
+    let key = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or_default();
+    if !valid_token(key) {
+        return failure(StatusCode::UNAUTHORIZED, crate::engine::NO_DEVICE);
+    }
+    match remote.engine.push_notices(key).await {
+        Some(notices) => {
+            let mut response = Json(json!({ "notices": notices })).into_response();
+            no_store(&mut response);
+            response
+        }
+        None => failure(StatusCode::UNAUTHORIZED, crate::engine::NO_DEVICE),
+    }
+}
+
 fn arg<T: DeserializeOwned>(args: &Value, key: &str) -> Result<T, String> {
     serde_json::from_value(args.get(key).cloned().unwrap_or(Value::Null))
         .map_err(|e| format!("Invalid {key}: {e}"))
@@ -406,6 +434,11 @@ async fn dispatch(e: &Arc<Engine>, name: &str, a: &Value) -> Result<Value, Strin
             .await?),
         "clear_memory" => out(e.clear_memory().await?),
         "close_brief" => out(e.close_brief(&arg::<String>(a, "day")?).await?),
+        "push_key" => out(e.push_key().await?),
+        "add_push_device" => out(e
+            .add_push_device(&arg::<String>(a, "endpoint")?, &arg::<String>(a, "name")?)
+            .await?),
+        "remove_push_device" => out(e.remove_push_device(&arg::<String>(a, "id")?).await?),
         "set_api_key" => out(e
             .set_api_key(
                 &arg::<String>(a, "provider")?,
@@ -678,6 +711,8 @@ impl Access {
         {
             let mut inner = self.inner.lock().await;
             new_token(&self.root)?;
+            // Devices added with the old link aren't woken any more.
+            self.engine.forget_old_push_devices().await;
             self.restart(&mut inner).await;
         }
         Ok(self.status().await)

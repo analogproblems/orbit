@@ -455,14 +455,20 @@ pub const SENT_KEPT: usize = 20;
 pub struct SentNotice {
     /// Tells it apart from every other, whatever else changes.
     pub id: String,
+    /// Its place among every notification this Orbit sent, counting from 1,
+    /// so a device woken for it reads only what's new (`crate::push`).
+    #[serde(default)]
+    pub seq: u64,
     pub title: String,
     pub body: String,
     pub item: Attention,
 }
 /// Keeps a notification about to be sent, with the newest `SENT_KEPT`.
 pub fn record(s: &mut Snapshot, n: &Notice) {
+    s.notices_sent += 1;
     s.notices.push(SentNotice {
         id: uuid::Uuid::new_v4().simple().to_string(),
+        seq: s.notices_sent,
         title: n.title.clone(),
         body: n.body.clone(),
         item: n.item.clone(),
@@ -552,6 +558,12 @@ pub fn shown(s: &Snapshot) -> Snapshot {
     shown.attention = items(s);
     shown.mood = Some(crate::buddy::mood(s, &shown.attention, &shown.loop_states));
     shown.clock_zone = crate::clock::computer_zone();
+    // Where each device is woken, and how it reads, stay with Orbit.
+    for d in &mut shown.push_devices {
+        d.endpoint.clear();
+        d.key_hash.clear();
+        d.link.clear();
+    }
     shown
 }
 

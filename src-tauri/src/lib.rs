@@ -26,6 +26,7 @@ pub mod ollama;
 pub mod ops;
 pub mod orbits;
 pub mod problems;
+pub mod push;
 pub mod readiness;
 pub mod remote;
 pub mod reruns;
@@ -274,6 +275,22 @@ mod desktop {
     #[tauri::command]
     async fn close_brief(engine: State<'_, AppState>, day: String) -> Result<(), String> {
         engine.close_brief(&day).await
+    }
+    #[tauri::command]
+    async fn push_key(engine: State<'_, AppState>) -> Result<String, String> {
+        engine.push_key().await
+    }
+    #[tauri::command]
+    async fn add_push_device(
+        engine: State<'_, AppState>,
+        endpoint: String,
+        name: String,
+    ) -> Result<push::Added, String> {
+        engine.add_push_device(&endpoint, &name).await
+    }
+    #[tauri::command]
+    async fn remove_push_device(engine: State<'_, AppState>, id: String) -> Result<(), String> {
+        engine.remove_push_device(&id).await
     }
     #[tauri::command]
     async fn forget_memory(
@@ -757,6 +774,9 @@ mod desktop {
                 use_proposal,
                 forget_memory,
                 close_brief,
+                push_key,
+                add_push_device,
+                remove_push_device,
                 clear_memory,
                 set_api_key,
                 publish_review,
