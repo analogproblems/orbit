@@ -39,6 +39,8 @@ pub const MAX_PROPOSALS: usize = 3;
 const MAX_PRS: usize = 40;
 /// Finding titles the summary gives per review.
 const MAX_FINDINGS: usize = 8;
+/// Security alerts the summary names for each kind in a repository.
+const MAX_ALERTS: usize = 5;
 /// Earlier questions and answers the summary repeats.
 const EARLIER: usize = 4;
 /// Repositories you could connect that the summary lists.
@@ -158,7 +160,7 @@ impl Proposal {
 /// Trusted accounts aren't among them: they decide which pull requests are
 /// published automatically. A repository's own settings are changed with
 /// Set up repository instead.
-pub const SETTINGS: [&str; 38] = [
+pub const SETTINGS: [&str; 39] = [
     "automatic",
     "autoPost",
     "pollSeconds",
@@ -176,6 +178,7 @@ pub const SETTINGS: [&str; 38] = [
     "notify",
     "keepScanArtifacts",
     "watchCi",
+    "watchSecurity",
     "writeUps.enabled",
     "writeUps.writer",
     "buddy.enabled",
@@ -402,6 +405,44 @@ fn key<T: Serialize>(value: &T) -> String {
         .unwrap_or_default()
 }
 
+/// What Orbit read of a repository's security alerts, for Bit: for each
+/// kind, how many are open, how many need you, the first few, and why
+/// Orbit can't see them when it can't. Null until read, or while Watch
+/// security alerts is off.
+fn security_of(s: &Snapshot, repo: &str) -> Value {
+    use crate::security::Source;
+    let read = s
+        .security
+        .iter()
+        .find(|r| same_repo(&r.repo, repo))
+        .filter(|_| s.settings.watch_security);
+    let Some(read) = read else {
+        return Value::Null;
+    };
+    let kinds: Vec<Value> = Source::ALL
+        .iter()
+        .map(|&source| {
+            let key = crate::problems::security_key(repo, source);
+            let alerts = s
+                .problems
+                .iter()
+                .find(|p| p.is_open() && p.key == key)
+                .map_or(&[][..], |p| &p.security_alerts[..]);
+            json!({
+                "kind": source.key(),
+                "unseen": read.kind(source).and_then(|k| k.unseen.clone()),
+                "open": alerts.len(),
+                "needYou": alerts.iter().filter(|a| a.needs_you()).count(),
+                "first": alerts.iter().take(MAX_ALERTS).map(|a| shorten(&a.name(), 200)).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    json!({
+        "readAt": read.read_at,
+        "error": read.error.as_deref().map(|e| shorten(e, 300)),
+        "kinds": kinds,
+    })
+}
 /// What Codex is told about Orbit right now.
 pub fn briefing(s: &Snapshot, lookups: &Lookups) -> Value {
     let saved = serde_json::to_value(&s.settings).unwrap_or_default();
@@ -514,6 +555,7 @@ pub fn briefing(s: &Snapshot, lookups: &Lookups) -> Value {
             "devContainer": r.dev_container.enabled,
             "reviewerRunsCommandsInDevContainer": r.dev_container.enabled && r.dev_container.reviewer_tool,
             "approvalMinutes": r.approval_minutes,
+            "securityAlerts": security_of(s, &r.name),
             "copy": match lookups.clones.get(&r.name) {
                 Some(Ok(facts)) => json!(facts),
                 Some(Err(e)) => json!({"error": shorten(e, 300)}),

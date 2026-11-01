@@ -93,7 +93,8 @@ export function mainAction(
   if (
     a.kind === "ci_failing" ||
     a.kind === "ci_question" ||
-    a.kind === "runs_waiting"
+    a.kind === "runs_waiting" ||
+    a.kind === "security_alert"
   )
     return { label: "Open operations", onClick: go.onOperations };
   // You've read it.

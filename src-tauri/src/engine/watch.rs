@@ -4,11 +4,13 @@
 //! repository's pull requests (`crate::workflows`), the self-hosted
 //! runners its runs wait for (`crate::runners`), its Actions storage
 //! (`crate::actions_storage`), and whether GitHub says each pull request
-//! Orbit reviews can merge (`crate::readiness`), then Bit's morning brief
-//! once a day (`crate::brief`).
+//! Orbit reviews can merge (`crate::readiness`); each repository's security
+//! alerts, with a switch of their own (`crate::security`); then Bit's
+//! morning brief once a day (`crate::brief`).
 use super::Engine;
 use crate::{
-    actions_storage as storage, broke, ci, logs, problems, readiness, runners, types::*, workflows,
+    actions_storage as storage, broke, ci, logs, problems, readiness, runners, security, types::*,
+    workflows,
 };
 use std::sync::atomic::Ordering;
 
@@ -38,6 +40,7 @@ impl Engine {
         // Last, so telling agents never waits for runners or storage.
         self.read_runners().await;
         self.read_storage().await;
+        self.read_security().await;
         // After everything else, so it sums up what Orbit just read.
         self.look_for_brief().await;
     }
@@ -335,6 +338,113 @@ impl Engine {
         }
         self.reading_storage.store(false, Ordering::SeqCst);
         let _ = self.flush().await;
+    }
+}
+impl Engine {
+    /// Reads each connected repository's security alerts, a few
+    /// repositories a pass, while Watch security alerts is on, looks up
+    /// those that left a list, then opens, updates or closes the
+    /// repository's problems about them. A repository GitHub didn't answer
+    /// for keeps what was read before, and its problems stay as they were,
+    /// until Orbit tries again after a wait. With the switch off, Orbit
+    /// forgets what it read and closes what was open.
+    async fn read_security(&self) {
+        if self.reading_security.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let now = chrono::Utc::now();
+        let (watch, stale, wanted) = {
+            let s = self.state.lock().await;
+            let connected = repos_of(&s);
+            let watch = s.settings.watch_security;
+            // What a switch turned off, or a disconnected repository,
+            // leaves behind.
+            let stale = s
+                .security
+                .iter()
+                .any(|r| !watch || !connected.iter().any(|c| same_repo(c, &r.repo)))
+                || s.problems.iter().any(|p| {
+                    p.is_open()
+                        && p.kind == problems::ProblemKind::Security
+                        && (!watch || !connected.iter().any(|c| same_repo(c, &p.repo)))
+                });
+            let wanted = if watch {
+                security::wanted(&connected, &s.security, now)
+            } else {
+                vec![]
+            };
+            (watch, stale, wanted)
+        };
+        if stale {
+            self.update(|s| forget_security(s, chrono::Utc::now()))
+                .await;
+        }
+        for repo in &wanted {
+            let result = security::read(repo).await;
+            let mut limited = result.as_ref().is_err_and(|e| logs::rate_limited(e));
+            // What became of the alerts that left a list.
+            let mut left = vec![];
+            if let Ok(read) = &result {
+                let asks = security::to_look_up(&self.state.lock().await.problems, read);
+                for (source, number) in asks {
+                    match security::look_up(repo, source, number).await {
+                        Ok(outcome) => left.push(security::Left {
+                            source,
+                            number,
+                            outcome,
+                        }),
+                        Err(e) if logs::rate_limited(&e) => {
+                            limited = true;
+                            break;
+                        }
+                        // Looked up again next time; it stays meanwhile.
+                        Err(_) => {}
+                    }
+                }
+            }
+            self.update(|s| {
+                // The switch went off, or the repository went, meanwhile.
+                let watched = repos_of(s).iter().any(|r| same_repo(r, repo));
+                if !s.settings.watch_security || !watched {
+                    return;
+                }
+                let now = chrono::Utc::now();
+                if let Ok(read) = &result {
+                    problems::see_security(&mut s.problems, read, &left, now);
+                }
+                security::record(&mut s.security, repo, result, now);
+            })
+            .await;
+            if limited {
+                break;
+            }
+        }
+        self.reading_security.store(false, Ordering::SeqCst);
+        if watch || stale {
+            let _ = self.flush().await;
+        }
+    }
+}
+/// Forgets what Orbit read of security alerts it no longer watches, and
+/// closes their problems: every repository's once the switch is off, and a
+/// disconnected one's.
+fn forget_security(s: &mut Snapshot, now: chrono::DateTime<chrono::Utc>) {
+    let connected = repos_of(s);
+    if s.settings.watch_security {
+        security::prune(&mut s.security, &connected);
+        let gone: Vec<String> = s
+            .problems
+            .iter()
+            .filter(|p| p.is_open() && p.kind == problems::ProblemKind::Security)
+            .map(|p| p.repo.clone())
+            .filter(|r| !connected.iter().any(|c| same_repo(c, r)))
+            .collect();
+        if !gone.is_empty() {
+            problems::close_unwatched(&mut s.problems, &connected, false, now);
+        }
+    } else {
+        s.security.clear();
+        problems::close_security(&mut s.problems, now);
     }
 }
 /// The pull requests of a repository whose CI Orbit follows: open, not

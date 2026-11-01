@@ -10,6 +10,8 @@ import {
 } from "@testing-library/react";
 import {
   Operations,
+  alertCount,
+  alertText,
   answerText,
   asksToRerun,
   branchSummary,
@@ -38,6 +40,7 @@ import {
   type RepoCi,
   type RunnerPlace,
   type ActionsStorage,
+  type SecurityAlert,
   type Snapshot,
   type WaitingRun,
 } from "./types";
@@ -761,12 +764,138 @@ describe("operations page", () => {
     ).toBeNull();
   });
 
+  it("lists each repository's security alerts kind by kind, and what Orbit can't see", () => {
+    const s = freshDemo();
+    show(s);
+    const rows = within(
+      screen.getByRole("list", { name: "Security alerts" }),
+    ).getAllByRole("listitem");
+    expect(rows.map((i) => i.textContent)).toEqual([
+      expect.stringContaining(
+        "acme/orbitDependabot: no open alerts.Code scanning: 1 open alert.LowInefficient regular expression in src/search.ts line 42.Secret scanning: no secrets found.",
+      ),
+      expect.stringContaining(
+        "acme/apiDependabot: 2 open alerts, 1 high or critical.Criticallodash in package-lock.json: Prototype pollution in lodash. Fixed in 4.17.21.Mediumqs in package-lock.json: qs vulnerable to prototype pollution. Fixed in 6.10.3.No code scanning runs on acme/api.Secret scanning: 1 secret found.SecretGitHub Personal Access Token in scripts/deploy.sh line 8. GitHub says it still works.",
+      ),
+      expect.stringContaining(
+        "GitHub doesn't show acme/dashboard's secret scanning alerts to Orbit's sign-in.",
+      ),
+      expect.stringContaining("Dependabot alerts are off for acme/docs."),
+    ]);
+    expect(within(rows[0]).getByLabelText("Open alerts")).toBeTruthy();
+    expect(within(rows[1]).getByLabelText("Needs you")).toBeTruthy();
+    expect(within(rows[2]).getByLabelText("Not all seen")).toBeTruthy();
+    // Off isn't hidden: nothing open is all clear.
+    expect(within(rows[3]).getByLabelText("None open")).toBeTruthy();
+    // Security alerts aren't CI problems.
+    const open = screen.getByRole("list", { name: "Open problems" });
+    expect(open.textContent).not.toContain("Dependabot");
+  });
+
+  it("keeps showing security alerts with Watch CI off, and hides them with their own switch off", () => {
+    const s = freshDemo();
+    s.settings.watchCi = false;
+    show(s);
+    expect(screen.getByRole("list", { name: "Security alerts" })).toBeTruthy();
+    cleanup();
+    s.settings.watchCi = true;
+    s.settings.watchSecurity = false;
+    show(s);
+    expect(screen.queryByRole("list", { name: "Security alerts" })).toBeNull();
+    cleanup();
+    // Not read yet.
+    s.settings.watchSecurity = true;
+    s.security = [];
+    show(s);
+    expect(
+      screen.getByText("Orbit hasn’t read any security alerts yet."),
+    ).toBeTruthy();
+  });
+
+  it("says when a read failed or GitHub has more alerts than Orbit reads", () => {
+    const s = freshDemo();
+    const api = s.security!.find((r) => r.repo === "acme/api")!;
+    api.error =
+      "Orbit couldn't read the security alerts yet: Bad Gateway (HTTP 502). It tries again later.";
+    api.kinds[0].more = true;
+    show(s);
+    const row = within(
+      screen.getByRole("list", { name: "Security alerts" }),
+    ).getAllByRole("listitem")[1];
+    expect(row.textContent).toContain(
+      "GitHub has more open than the newest 100 Orbit reads.",
+    );
+    expect(row.textContent).toContain("Bad Gateway (HTTP 502)");
+  });
+
   it("asks you to connect a repository first", () => {
     const s = freshDemo();
     s.settings.repositories = [];
     const go = show(s);
     fireEvent.click(screen.getByRole("button", { name: "Open repositories" }));
     expect(go.onRepositories).toHaveBeenCalled();
+  });
+});
+
+describe("security sentences", () => {
+  const alert = (a: Partial<SecurityAlert>): SecurityAlert => ({
+    source: "dependabot",
+    number: 1,
+    severity: "low",
+    title: "",
+    subject: "",
+    path: "",
+    line: 0,
+    fixedIn: "",
+    url: "",
+    createdAt: "",
+    validity: "",
+    bypassed: false,
+    ...a,
+  });
+  it("say what each alert is and where", () => {
+    expect(alertText(alert({ subject: "lodash" }))).toBe("lodash.");
+    expect(
+      alertText(
+        alert({
+          source: "code_scanning",
+          subject: "js/redos",
+          title: "Inefficient regular expression",
+          path: "src/a.ts",
+          line: 3,
+        }),
+      ),
+    ).toBe("Inefficient regular expression in src/a.ts line 3.");
+    expect(
+      alertText(
+        alert({
+          source: "secret_scanning",
+          title: "AWS Access Key ID",
+          path: "x.env",
+          validity: "inactive",
+          bypassed: true,
+        }),
+      ),
+    ).toBe(
+      "AWS Access Key ID in x.env. GitHub says it no longer works. It was pushed past push protection.",
+    );
+  });
+  it("count what's open and what needs you", () => {
+    const high = alert({ severity: "high" });
+    const low = alert({ severity: "low" });
+    expect(alertCount("dependabot", [])).toBe("no open alerts.");
+    expect(alertCount("dependabot", [low])).toBe("1 open alert.");
+    expect(alertCount("dependabot", [high])).toBe(
+      "1 open alert, high or critical.",
+    );
+    expect(alertCount("code_scanning", [high, high])).toBe(
+      "2 open alerts, all high or critical.",
+    );
+    expect(alertCount("dependabot", [high, low])).toBe(
+      "2 open alerts, 1 high or critical.",
+    );
+    expect(alertCount("secret_scanning", [])).toBe("no secrets found.");
+    expect(alertCount("secret_scanning", [low, low])).toBe("2 secrets found.");
   });
 });
 

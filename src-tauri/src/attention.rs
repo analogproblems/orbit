@@ -270,6 +270,24 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
         });
     }
     for p in s.problems.iter().filter(|p| p.is_open() && p.needs_you()) {
+        if p.kind == crate::problems::ProblemKind::Security {
+            let source = p.source.unwrap_or_default();
+            if let Some(reason) =
+                crate::security::needs_you_text(&p.repo, source, &p.security_alerts)
+            {
+                out.push(Attention {
+                    repo: Some(p.repo.clone()),
+                    ..item(
+                        p.item_key(),
+                        AttentionKind::SecurityAlert,
+                        None,
+                        None,
+                        reason,
+                    )
+                });
+            }
+            continue;
+        }
         if p.kind == crate::problems::ProblemKind::Waiting {
             let mut reason = crate::problems::waiting_text(&p.repo, &p.waiting);
             if let Some(seen) = crate::runners::seen_text(&s.runners, &p.repo) {
@@ -491,6 +509,7 @@ pub fn notice(s: &Snapshot, a: Attention) -> Notice {
         AttentionKind::Stuck => "A pull request is stuck",
         AttentionKind::Brief => "Your morning brief",
         AttentionKind::AnotherOrbit => "Another Orbit posts here",
+        AttentionKind::SecurityAlert => "A security alert needs you",
     };
     let pr = s.prs.iter().find(|p| Some(&p.id) == a.pr_id.as_ref());
     let body = match pr {

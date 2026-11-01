@@ -553,6 +553,19 @@ function AutomationSettings() {
         </VStack>
         <VStack gap={2}>
           <Switch
+            label="Watch security alerts"
+            labelPosition="start"
+            labelSpacing="spread"
+            width="100%"
+            value={draft.watchSecurity ?? true}
+            isDisabled={pending("watchSecurity")}
+            onChange={(watchSecurity) => void updateSettings({ watchSecurity })}
+            description="Every half hour, read each repository’s Dependabot, code scanning and secret scanning alerts, and list those open on the Operations page. A secret GitHub found, or a high or critical alert, needs you. Orbit never keeps a secret’s value."
+          />
+          <SaveFeedback saveKey="watchSecurity" />
+        </VStack>
+        <VStack gap={2}>
+          <Switch
             label="Notify me when a review needs attention"
             labelPosition="start"
             labelSpacing="spread"

@@ -2005,3 +2005,296 @@ async fn a_day_with_changes_gives_one_brief_and_a_quiet_day_none() {
     assert!(!s.attention.iter().any(|a| a.kind == AttentionKind::Brief));
     assert_eq!(s.brief.looked, today);
 }
+
+/// The security alerts of `a/b` of one kind, as the fake GitHub lists
+/// them.
+fn alerts(dir: &Path, kind: &str, list: &[serde_json::Value]) {
+    std::fs::write(
+        dir.join(format!("alerts-{kind}.json")),
+        json!(list).to_string(),
+    )
+    .unwrap();
+}
+/// Makes every repository's security alerts due to be read again.
+async fn security_read_long_ago(e: &Engine) {
+    e.update(|s| {
+        for r in &mut s.security {
+            r.read_at = "2020-01-01T00:00:00.000Z".into();
+        }
+    })
+    .await;
+}
+/// How many heads-ups Bit gave about security alerts.
+async fn security_told(e: &Engine) -> usize {
+    e.snapshot()
+        .await
+        .buddy_feed
+        .notes
+        .iter()
+        .filter(|n| {
+            n.kind == NoteKind::NeedsYou
+                && (n.text.contains("high or critical") || n.text.contains("found a secret"))
+        })
+        .count()
+}
+/// Every file Orbit keeps, as one text.
+fn kept(dir: &Path) -> String {
+    let mut all = String::new();
+    let mut folders = vec![dir.join("state")];
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(folder).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                folders.push(path);
+            } else {
+                all.push_str(&String::from_utf8_lossy(&std::fs::read(path).unwrap()));
+            }
+        }
+    }
+    all
+}
+
+/// A critical Dependabot alert and a found secret each need you once,
+/// a low alert is only listed, and a kind that's off is said so. An alert
+/// leaves only once GitHub says what became of it, the secret's value is
+/// never kept, nothing is posted, and turning the switch off forgets it
+/// all.
+#[cfg(unix)]
+#[tokio::test]
+async fn security_alerts_need_you_once_and_leave_when_github_says_so() {
+    use crate::problems::ProblemKind;
+    use crate::security::tests::{dependabot, secret};
+    use crate::security::Source;
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    std::fs::write(
+        d.path().join("answer.json"),
+        answer(&"1".repeat(40), "SUCCESS"),
+    )
+    .unwrap();
+    let mut lodash = dependabot(1, "lodash", "critical");
+    alerts(
+        d.path(),
+        "dependabot",
+        &[lodash.clone(), dependabot(2, "qs", "low")],
+    );
+    std::fs::write(
+        d.path().join("alerts-code-scanning-error"),
+        "gh: no analysis found (HTTP 404)\n",
+    )
+    .unwrap();
+    let mut token = secret(3);
+    alerts(d.path(), "secret-scanning", &[token.clone()]);
+    let e = connected(d.path()).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let shown = e.shown_snapshot().await;
+    let read = &shown.security[0];
+    assert_eq!(read.repo, "a/b");
+    assert_eq!(read.kind(Source::Dependabot).unwrap().alerts.len(), 2);
+    let code = read.kind(Source::CodeScanning).unwrap();
+    assert_eq!(
+        code.unseen.as_deref(),
+        Some("No code scanning runs on a/b.")
+    );
+    assert!(code.off);
+    let open: Vec<_> = shown.problems.iter().filter(|p| p.is_open()).collect();
+    assert_eq!(open.len(), 2);
+    assert!(open.iter().all(|p| p.kind == ProblemKind::Security));
+    let reasons: Vec<_> = shown
+        .attention
+        .iter()
+        .map(|a| (a.kind, a.reason.as_str()))
+        .collect();
+    assert_eq!(
+        reasons,
+        [
+            (
+                AttentionKind::SecurityAlert,
+                "a/b has a high or critical Dependabot alert: lodash (critical)."
+            ),
+            (
+                AttentionKind::SecurityAlert,
+                "GitHub found a secret in a/b: a GitHub Personal Access Token in src/config.ts line 4. Revoke it, then close its alert on GitHub."
+            ),
+        ]
+    );
+    assert_eq!(security_told(&e).await, 2);
+    assert!(shown.ops.is_empty(), "no agent hears of them yet");
+    assert!(writes(d.path()).is_empty());
+    assert!(!kept(d.path()).contains("THISISTHESECRETVALUE"));
+    // A moment later, nothing is due.
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!(sent(d.path(), "GET repos/a/b/dependabot/alerts"), 1);
+
+    // GitHub fixes the critical one: it leaves once looked up, and what
+    // is left doesn't need you.
+    lodash["state"] = json!("fixed");
+    alerts(
+        d.path(),
+        "dependabot",
+        &[lodash.clone(), dependabot(2, "qs", "low")],
+    );
+    security_read_long_ago(&e).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!(sent(d.path(), "GET repos/a/b/dependabot/alerts/1"), 1);
+    let shown = e.shown_snapshot().await;
+    let deps = shown
+        .problems
+        .iter()
+        .find(|p| p.source == Some(Source::Dependabot))
+        .unwrap();
+    assert!(deps.is_open());
+    assert_eq!(deps.security_alerts.len(), 1);
+    assert_eq!(
+        deps.timeline.last().unwrap().text,
+        "Dependabot alert 1, lodash: fixed, GitHub says."
+    );
+    assert_eq!(shown.attention.len(), 1);
+
+    // The secret is revoked: its problem closes, saying so.
+    token["state"] = json!("resolved");
+    token["resolution"] = json!("revoked");
+    token["resolved_by"] = json!({ "login": "sam" });
+    alerts(d.path(), "secret-scanning", &[token]);
+    security_read_long_ago(&e).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let shown = e.shown_snapshot().await;
+    let secrets = shown
+        .problems
+        .iter()
+        .find(|p| p.source == Some(Source::SecretScanning))
+        .unwrap();
+    assert_eq!(
+        secrets.closed_reason.as_deref(),
+        Some("Secret scanning alert 3, GitHub Personal Access Token: closed as revoked by @sam.")
+    );
+    assert!(shown.attention.is_empty());
+    assert_eq!(security_told(&e).await, 2);
+    assert!(writes(d.path()).is_empty());
+    assert!(!kept(d.path()).contains("THISISTHESECRETVALUE"));
+
+    // Watch CI off leaves them be; the switch off forgets them.
+    e.update(|s| s.settings.watch_ci = false).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert!(e
+        .shown_snapshot()
+        .await
+        .problems
+        .iter()
+        .any(|p| p.is_open()));
+    e.update(|s| s.settings.watch_security = false).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let shown = e.shown_snapshot().await;
+    assert!(shown.security.is_empty());
+    assert!(shown.problems.iter().all(|p| !p.is_open()));
+    assert_eq!(
+        shown
+            .problems
+            .iter()
+            .find(|p| p.source == Some(Source::Dependabot))
+            .unwrap()
+            .closed_reason
+            .as_deref(),
+        Some("Orbit stopped watching security alerts.")
+    );
+    security_read_long_ago(&e).await;
+    crate::github::GH.scope(gh, e.watch_ci()).await;
+    assert_eq!(sent(d.path(), "GET repos/a/b/dependabot/alerts"), 3);
+}
+
+/// A read GitHub fails keeps what Orbit saw and its problems, alerts GitHub
+/// hides are said so, a rate limit stops the pass, and a disconnected
+/// repository's alerts are forgotten.
+#[cfg(unix)]
+#[tokio::test]
+async fn security_alerts_orbit_cant_read_keep_what_it_saw() {
+    use crate::security::tests::dependabot;
+    use crate::security::Source;
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    std::fs::write(
+        d.path().join("answer.json"),
+        answer(&"1".repeat(40), "SUCCESS"),
+    )
+    .unwrap();
+    alerts(d.path(), "dependabot", &[dependabot(1, "lodash", "high")]);
+    std::fs::write(
+        d.path().join("alerts-secret-scanning-error"),
+        "gh: Resource not accessible by integration (HTTP 403)\n",
+    )
+    .unwrap();
+    let e = connected(d.path()).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let read = e.shown_snapshot().await.security[0].clone();
+    assert_eq!(
+        read.kind(Source::SecretScanning).unwrap().unseen.as_deref(),
+        Some("GitHub doesn't show a/b's secret scanning alerts to Orbit's sign-in. It shows them to admins and security managers.")
+    );
+    assert!(!read.kind(Source::SecretScanning).unwrap().off);
+
+    // GitHub fails: what was read, and the problem, stay.
+    std::fs::write(
+        d.path().join("alerts-dependabot-error"),
+        "gh: Bad Gateway (HTTP 502)\n",
+    )
+    .unwrap();
+    security_read_long_ago(&e).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let shown = e.shown_snapshot().await;
+    let read = &shown.security[0];
+    assert_eq!(read.kind(Source::Dependabot).unwrap().alerts.len(), 1);
+    assert_eq!(read.tries, 1);
+    assert_eq!(
+        read.error.as_deref(),
+        Some("Orbit couldn't read the security alerts yet: Bad Gateway (HTTP 502). It tries again later.")
+    );
+    assert_eq!(shown.attention.len(), 1);
+
+    // A rate limit stops the pass before the next repository.
+    std::fs::write(
+        d.path().join("alerts-dependabot-error"),
+        "gh: API rate limit exceeded for user ID 1. (HTTP 403)\n",
+    )
+    .unwrap();
+    e.update(|s| {
+        let mut other = s.settings.repositories[0].clone();
+        other.name = "a/c".into();
+        s.settings.repositories.push(other);
+    })
+    .await;
+    // Never read, a/c comes first.
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!(sent(d.path(), "GET repos/a/c/dependabot/alerts"), 1);
+    // Both due, a/b read longest ago.
+    e.update(|s| {
+        for r in &mut s.security {
+            r.read_at = if r.repo == "a/b" {
+                "2020-01-01"
+            } else {
+                "2021-01-01"
+            }
+            .to_string()
+                + "T00:00:00.000Z";
+            r.retry_at = Some("2020-01-01T00:00:00.000Z".into());
+        }
+    })
+    .await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!(sent(d.path(), "GET repos/a/c/dependabot/alerts"), 1);
+    let read = e.shown_snapshot().await.security[0].clone();
+    assert!(read.error.is_some());
+    assert!(
+        read.kind(Source::Dependabot).unwrap().unseen.is_none(),
+        "a rate limit hides nothing"
+    );
+
+    // Disconnected, its alerts are forgotten and the problem closes.
+    e.update(|s| s.settings.repositories.clear()).await;
+    crate::github::GH.scope(gh, e.watch_ci()).await;
+    let shown = e.shown_snapshot().await;
+    assert!(shown.security.is_empty());
+    assert_eq!(
+        shown.problems[0].closed_reason.as_deref(),
+        Some("The repository was disconnected.")
+    );
+}

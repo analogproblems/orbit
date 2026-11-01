@@ -24,6 +24,13 @@
 // The cache usage of a/b is <dir>/cache.json, or none, and its artifacts the
 // list in <dir>/artifacts.json, or none, in pages; while <dir>/cache-error or
 // <dir>/artifacts-error exists, reading them fails with its text.
+// The security alerts of a/b of each kind are the list in
+// <dir>/alerts-dependabot.json, <dir>/alerts-code-scanning.json or
+// <dir>/alerts-secret-scanning.json, or none, in pages, those in the
+// `state` asked for when it is given; each alert is also read on its own
+// by number, or 404. A secret's value is sent unless `hide_secret` is
+// true. While <dir>/alerts-<kind>-error exists, listing them fails with
+// its text.
 // Pull request <n> of a/b is <dir>/pull-<n>.json, or 404; while
 // <dir>/pull-error exists, reading one fails with its text. Its reviews
 // are <dir>/reviews-<n>.json, or none, in pages, and while
@@ -334,6 +341,30 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
     const list = saved || [];
     answer({ total_count: list.length, artifacts: page(list) });
   }
+} else if (
+  (m = endpoint.match(
+    /^repos\/a\/b\/(dependabot|code-scanning|secret-scanning)\/alerts(?:\/(\d+))?$/,
+  ))
+) {
+  const refused = path.join(dir, `alerts-${m[1]}-error`);
+  if (!m[2] && fs.existsSync(refused)) {
+    process.stderr.write(fs.readFileSync(refused, "utf8"));
+    process.exit(1);
+  }
+  const kept = path.join(dir, `alerts-${m[1]}.json`);
+  const all = (
+    fs.existsSync(kept) ? JSON.parse(fs.readFileSync(kept, "utf8")) : []
+  ).map((a) => {
+    if (fields.hide_secret !== "true") return a;
+    const { secret: _, ...hidden } = a;
+    return hidden;
+  });
+  if (m[2]) {
+    const one = all.find((a) => a.number === Number(m[2]));
+    if (!one) missing();
+    answer(one);
+  } else
+    answer(page(all.filter((a) => !fields.state || a.state === fields.state)));
 } else if ((m = endpoint.match(/^repos\/a\/b\/pulls\/(\d+)\/reviews$/))) {
   const refused = path.join(dir, "reviews-error");
   if (fs.existsSync(refused)) {

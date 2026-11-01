@@ -964,6 +964,9 @@ pub struct Settings {
     /// Read the checks on each repository's default branch and open pull
     /// requests after each sync, and keep track of what fails.
     pub watch_ci: bool,
+    /// Read each repository's Dependabot, code scanning and secret scanning
+    /// alerts, and keep track of those still open (see `crate::security`).
+    pub watch_security: bool,
 }
 /// Who writes up each pull request's decisions for the Decisions page.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1014,6 +1017,7 @@ pub struct SettingsPatch {
     pub buddy: Option<crate::buddy::BuddyPatch>,
     pub write_ups: Option<WriteUps>,
     pub watch_ci: Option<bool>,
+    pub watch_security: Option<bool>,
 }
 impl SettingsPatch {
     pub fn apply(self, settings: &mut Settings) {
@@ -1077,6 +1081,9 @@ impl SettingsPatch {
         if let Some(v) = self.watch_ci {
             settings.watch_ci = v;
         }
+        if let Some(v) = self.watch_security {
+            settings.watch_security = v;
+        }
     }
 }
 impl Default for Settings {
@@ -1103,6 +1110,7 @@ impl Default for Settings {
             buddy: crate::buddy::Buddy::default(),
             write_ups: WriteUps::default(),
             watch_ci: true,
+            watch_security: true,
         }
     }
 }
@@ -1381,6 +1389,9 @@ pub struct Snapshot {
     /// Each connected repository's GitHub Actions caches and artifacts, as
     /// Orbit last read them (see `crate::actions_storage`).
     pub actions_storage: Vec<crate::actions_storage::Storage>,
+    /// Each connected repository's open security alerts, as Orbit last read
+    /// them (see `crate::security`).
+    pub security: Vec<crate::security::RepoSecurity>,
     /// What GitHub last said about whether each pull request Orbit reviews
     /// can merge (see `crate::readiness`).
     pub merges: Vec<crate::readiness::Merge>,
@@ -1563,6 +1574,9 @@ pub enum AttentionKind {
     /// Another Orbit posted on a pull request after this one, so this one
     /// stepped back from it (`crate::orbits`).
     AnotherOrbit,
+    /// A repository has a secret GitHub found, or a high or critical
+    /// security alert (`crate::security`).
+    SecurityAlert,
 }
 /// Something only the developer can resolve.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

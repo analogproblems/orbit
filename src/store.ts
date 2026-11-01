@@ -613,6 +613,7 @@ async function demoAction(
     next.buddy = buddyOf(next);
     next.writeUps ??= { ...defaultWriteUps };
     next.watchCi ??= true;
+    next.watchSecurity ??= true;
     if (command === "update_settings") {
       const patch = args.patch as SettingsPatch;
       if (
@@ -729,7 +730,7 @@ async function demoAction(
         ],
       }));
       demo.problems = demo.problems?.map((p) =>
-        p.closedAt
+        p.closedAt || p.kind === "security"
           ? p
           : {
               ...p,
@@ -740,6 +741,25 @@ async function demoAction(
       );
       demo.attention = demo.attention?.filter(
         (a) => a.kind !== "ci_failing" && a.kind !== "runs_waiting",
+      );
+    }
+    // Watching security alerts off forgets them and closes what was open.
+    if (next.watchSecurity === false) {
+      const at = new Date().toISOString();
+      const text = "Orbit stopped watching security alerts.";
+      demo.security = [];
+      demo.problems = demo.problems?.map((p) =>
+        p.closedAt || p.kind !== "security"
+          ? p
+          : {
+              ...p,
+              closedAt: at,
+              closedReason: text,
+              timeline: [...p.timeline, { at, text }],
+            },
+      );
+      demo.attention = demo.attention?.filter(
+        (a) => a.kind !== "security_alert",
       );
     }
     // As in Orbit, turning Bit or the brief off takes the brief out of

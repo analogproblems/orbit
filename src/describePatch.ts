@@ -36,6 +36,7 @@ const labels: Record<keyof SettingsPatch, string> = {
   notify: "Notifications",
   keepScanArtifacts: "Keep scan working files",
   watchCi: "Watch CI",
+  watchSecurity: "Watch security alerts",
   buddy: "Buddy",
   writeUps: "Write-ups",
 };

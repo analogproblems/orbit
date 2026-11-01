@@ -1215,6 +1215,63 @@ fn runs_waiting_for_a_runner_are_one_heads_up_linked_from_how_are_my_repositorie
     assert_eq!(keys, [Some(s.problems[0].item_key())]);
 }
 #[test]
+fn a_security_alert_is_one_heads_up_and_counts_in_how_are_my_repositories() {
+    use crate::security::tests::{dependabot, secret};
+    use crate::security::{alert, Kind, RepoSecurity, Source};
+    let (mut s, _) = seeded();
+    let kind = |source, alerts: &[serde_json::Value]| Kind {
+        source,
+        alerts: alerts.iter().filter_map(|v| alert(source, v)).collect(),
+        ..Default::default()
+    };
+    let read = RepoSecurity {
+        repo: "a/b".into(),
+        read_at: "2026-11-01T09:00:00.000Z".into(),
+        kinds: vec![
+            kind(
+                Source::Dependabot,
+                &[
+                    dependabot(1, "lodash", "low"),
+                    dependabot(2, "qs", "medium"),
+                ],
+            ),
+            kind(Source::SecretScanning, &[secret(3)]),
+        ],
+        ..Default::default()
+    };
+    crate::problems::see_security(&mut s.problems, &read, &[], chrono::Utc::now());
+    s.security.push(read);
+    assert_eq!(
+        step(&mut s),
+        [(
+            NoteKind::NeedsYou,
+            "Heads up! GitHub found a secret in a/b: a GitHub Personal Access Token in src/config.ts line 4. Revoke it, then close its alert on GitHub."
+                .to_string()
+        )]
+    );
+    assert!(step(&mut s).is_empty(), "told once");
+    let (_, lines, keys) = ask_and_read(&mut s, Question::Repositories);
+    assert!(
+        lines[0].ends_with("autopilot on. 1 security alert needs you, and 2 more are open."),
+        "{lines:?}"
+    );
+    let secrets = s
+        .problems
+        .iter()
+        .find(|p| p.source == Some(Source::SecretScanning))
+        .unwrap();
+    assert_eq!(keys, [Some(secrets.item_key())]);
+    // Once the secret is gone, the rest are only counted.
+    s.problems
+        .retain(|p| p.source != Some(Source::SecretScanning));
+    let (_, lines, keys) = ask_and_read(&mut s, Question::Repositories);
+    assert!(
+        lines[0].ends_with("autopilot on. 2 security alerts are open, none high or critical."),
+        "{lines:?}"
+    );
+    assert_eq!(keys, [None]);
+}
+#[test]
 fn a_failing_default_branch_is_one_heads_up_and_shows_in_how_are_my_repositories() {
     let (mut s, _) = seeded();
     let ci = crate::ci::RepoCi {

@@ -454,7 +454,7 @@ describe("editedOver", () => {
 });
 
 describe("what needs you", () => {
-  it("opens Operations for failing CI and runs waiting for a runner", () => {
+  it("opens Operations for failing CI, runs waiting for a runner and security alerts", () => {
     const s = freshDemo();
     const go = {
       onChoose: () => {},
@@ -464,7 +464,9 @@ describe("what needs you", () => {
       onPublish: () => {},
       onOperations: () => {},
     };
-    const open = (kind: "ci_failing" | "ci_question" | "runs_waiting") =>
+    const open = (
+      kind: "ci_failing" | "ci_question" | "runs_waiting" | "security_alert",
+    ) =>
       attentionAction(
         s,
         {
@@ -481,6 +483,7 @@ describe("what needs you", () => {
     expect(open("ci_failing")).toBe(go.onOperations);
     expect(open("ci_question")).toBe(go.onOperations);
     expect(open("runs_waiting")).toBe(go.onOperations);
+    expect(open("security_alert")).toBe(go.onOperations);
   });
 });
 describe("readiness line", () => {

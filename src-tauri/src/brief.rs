@@ -1,7 +1,8 @@
 //! Bit's morning brief: once a day, at the time you choose in Bit's
 //! settings, in the time zone chosen there (`crate::clock`), Bit sums up
 //! the pull requests clear to merge, the stuck ones and whose move it is,
-//! the open CI problems, and what it notes about runners and storage. It marks each line that is new since the last brief
+//! the open CI problems, the security alerts that need you, and what it
+//! notes about runners and storage. It marks each line that is new since the last brief
 //! and counts what settled since then. On a day with nothing new and
 //! nothing settled, nothing is sent. A brief shows in Bit's conversation
 //! and in Needs you until you mark it read or the next brief's time comes.
@@ -111,6 +112,7 @@ pub fn lines(s: &Snapshot) -> Vec<Line> {
         }
     }
     let mut failing = vec![];
+    let mut security = vec![];
     let mut notes = vec![];
     for p in s.problems.iter().filter(|p| p.is_open()) {
         let key = format!("problem:{}", p.id);
@@ -121,6 +123,16 @@ pub fn lines(s: &Snapshot) -> Vec<Line> {
             )
         };
         let text = match p.kind {
+            // Those that need you, new again with each one that does.
+            ProblemKind::Security => {
+                let source = p.source.unwrap_or_default();
+                if let Some(text) =
+                    crate::security::needs_you_text(&p.repo, source, &p.security_alerts)
+                {
+                    security.push(line(format!("security:{}:{}", p.id, p.alerts), text, None));
+                }
+                continue;
+            }
             ProblemKind::Waiting => {
                 notes.push(line(
                     format!("runs:{}", p.id),
@@ -184,7 +196,15 @@ pub fn lines(s: &Snapshot) -> Vec<Line> {
             }
         }
     }
-    [clear, stuck, failing, notes].concat()
+    [clear, stuck, failing, security, notes].concat()
+}
+/// What a line is about: its key, but a security line's without the count
+/// of alerts told that makes it new again.
+fn thing(key: &str) -> &str {
+    match key.strip_prefix("security:") {
+        Some(rest) => rest.rsplit_once(':').map_or(key, |(id, _)| id),
+        None => key,
+    }
 }
 fn line(key: String, text: String, pr_id: Option<&str>) -> Line {
     Line {
@@ -320,9 +340,11 @@ pub fn look(s: &mut Snapshot, local: NaiveDateTime, now: DateTime<Utc>) -> bool 
     for l in &mut current {
         l.new = !before.contains(&l.key);
     }
+    // A line that changed, as a security problem's does with each alert it
+    // tells, is new but hasn't settled.
     let settled = before
         .iter()
-        .filter(|k| !current.iter().any(|l| &&l.key == k))
+        .filter(|k| !current.iter().any(|l| thing(&l.key) == thing(k)))
         .count() as u32;
     s.brief.looked = day.clone();
     if let Some(b) = s.brief.latest.as_mut() {
@@ -380,7 +402,8 @@ fn and(parts: &[String]) -> String {
 fn say(tone: &str, lines: &[Line], settled: u32, first: bool) -> String {
     let count = |prefix: &str| lines.iter().filter(|l| l.key.starts_with(prefix)).count();
     let (clear, stuck, failing) = (count("clear:"), count("stuck:"), count("problem:"));
-    let notes = lines.len() - clear - stuck - failing;
+    let security = count("security:");
+    let notes = lines.len() - clear - stuck - failing - security;
     let parts: Vec<String> = [
         (
             clear,
@@ -389,6 +412,11 @@ fn say(tone: &str, lines: &[Line], settled: u32, first: bool) -> String {
         ),
         (stuck, "pull request is stuck", "pull requests are stuck"),
         (failing, "CI problem is open", "CI problems are open"),
+        (
+            security,
+            "security problem needs you",
+            "security problems need you",
+        ),
         (
             notes,
             "note is about runners or storage",
