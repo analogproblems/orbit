@@ -315,7 +315,7 @@ fn each_browser_command_takes_its_desktop_arguments() {
         keys.dedup();
         served.insert(name.clone(), keys);
     }
-    assert_eq!(desktop.len(), 50, "every desktop command was read");
+    assert_eq!(desktop.len(), 53, "every desktop command was read");
     for name in COMMANDS {
         assert_eq!(
             served.get(*name),
@@ -590,4 +590,45 @@ async fn a_request_still_in_flight_does_not_hold_up_settings() {
         started.elapsed()
     );
     drop(stream);
+}
+
+#[tokio::test]
+async fn a_woken_device_reads_its_alerts_with_its_own_key_only() {
+    let (_d, engine, _hub, app, _stop) = server();
+    engine.wake_locally();
+    let added = engine
+        .add_push_device("http://127.0.0.1:9/wake/1", "iPhone")
+        .await
+        .unwrap();
+    let read = |key: Option<&str>| {
+        let mut request = Request::post("/push/notices");
+        if let Some(key) = key {
+            request = request.header("authorization", format!("Bearer {key}"));
+        }
+        request.body(Body::empty()).unwrap()
+    };
+    let response = app.clone().oneshot(read(Some(&added.key))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CACHE_CONTROL],
+        "no-store",
+        "never kept by the browser"
+    );
+    assert_eq!(json(response).await, json!({"notices": []}));
+    // Not the access token, another key, or none.
+    for key in [Some(TOKEN), Some("not a key"), None] {
+        let response = app.clone().oneshot(read(key)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{key:?}");
+        assert_eq!(
+            json(response).await["error"],
+            crate::engine::NO_DEVICE,
+            "{key:?}"
+        );
+    }
+    // And the device's key runs no commands.
+    let response = app
+        .oneshot(call("get_snapshot", Some(&added.key), ""))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }

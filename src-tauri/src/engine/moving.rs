@@ -84,10 +84,13 @@ impl Engine {
     /// that go with it. Called once it has shut down and is fenced, so
     /// nothing changes meanwhile.
     pub async fn pack(&self) -> Result<Moved, String> {
-        let s = self.snapshot().await;
+        let mut s = self.snapshot().await;
         if let Some(why) = cannot_move(&s) {
             return Err(why);
         }
+        // Devices are woken by the Orbit they signed up with, and where
+        // they're woken never leaves it.
+        s.push_devices.clear();
         let state = saved(&s)?;
         let scans: Vec<String> = s.scans.iter().map(|x| x.id.clone()).collect();
         let root = self.root.clone();
@@ -291,7 +294,11 @@ fn remember(moves: &mut Vec<MoveRecord>, id: &str, moved: bool) {
 /// this Orbit's own state `here`: who it is, with the moved Orbit's names
 /// as its own until `until`, its sign-ins and reviewers as last checked,
 /// and nothing of what the moved Orbit's computer held, such as worktrees.
-fn keep_here(moved: &mut Snapshot, here: &Snapshot, until: chrono::DateTime<chrono::Utc>) {
+pub(super) fn keep_here(
+    moved: &mut Snapshot,
+    here: &Snapshot,
+    until: chrono::DateTime<chrono::Utc>,
+) {
     let mut instance = here.instance.clone();
     instance.take_over(std::mem::take(&mut moved.instance), until);
     moved.instance = instance;
@@ -317,6 +324,16 @@ fn keep_here(moved: &mut Snapshot, here: &Snapshot, until: chrono::DateTime<chro
     moved.api_keys = here.api_keys.clone();
     moved.usage = here.usage.clone();
     moved.moves = here.moves.clone();
+    // Devices are woken with this Orbit's own key, from where they were
+    // added, and told of nothing the moved Orbit sent. The count of what's
+    // sent only goes up, so a wake-up still on its way, counted before the
+    // move, can never cover a notification sent after it.
+    moved.notices_sent = moved.notices_sent.max(here.notices_sent);
+    moved.push_devices = here.push_devices.clone();
+    for d in &mut moved.push_devices {
+        d.read = moved.notices_sent;
+        d.told = moved.notices_sent;
+    }
     // Read again here.
     moved.clone_updates.clear();
     moved.sync_failures.clear();

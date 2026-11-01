@@ -29,6 +29,7 @@ mod ops;
 mod orbits;
 mod prune;
 mod publish;
+mod push;
 mod queue;
 mod rounds;
 mod run;
@@ -41,6 +42,7 @@ mod watch;
 mod worktrees;
 mod writeup;
 
+pub use push::NO_DEVICE;
 pub use settings::validate_checkout;
 pub(crate) use setup::carry_on;
 
@@ -85,6 +87,8 @@ mod ops_tests;
 mod prune_tests;
 #[cfg(test)]
 mod publish_tests;
+#[cfg(test)]
+mod push_tests;
 #[cfg(test)]
 mod queue_tests;
 #[cfg(test)]
@@ -157,7 +161,7 @@ type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// `containers` → `git_lock`; `cleanup_lock` → `git_lock` → `state`; `cloning` → `state`
 /// (`set_up_repository`); `poll_lock` → `cloning` → `state` (`take_in`); `poll_lock` →
 /// `publish_lock` → `state`, held for good once the Orbit moves (`fence`); `state` → `synced_repos`
-/// (`schedule`); `state` → `taking_in` (`take_in`, `move_status`); `state` → `fixing` (`flush`); `state` → `asking`
+/// (`schedule`); `state` → `taking_in` (`take_in`, `move_status`); `state` → `fixing` (`flush`); `state` → `wake_retry` (`wake_devices`, `woken`, `push_notices`, `remove_push_device`); `state` → `asking`
 /// (`ask_buddy_anything`); `state` → `using` (`use_proposal`). `preparing`,
 /// `recovered_publications`, `status_sender`, `sending_statuses`,
 /// `boxes` and `stopping_scans` (`std` mutexes, like `preparing` and `fixing`) are
@@ -251,6 +255,17 @@ pub struct Engine {
     apis: std::sync::Mutex<crate::api::Setup>,
     /// Held while an API key is saved or checked.
     api_lock: Mutex<()>,
+    /// Where wake-ups for devices go (`crate::push`); tests take them on
+    /// their own computer.
+    push: std::sync::Mutex<crate::push::Setup>,
+    /// This Orbit's key for signing wake-ups, once a device needs it.
+    push_keys: std::sync::Mutex<Option<Arc<crate::push::Keys>>>,
+    /// Devices are being woken; another pass skips rather than waits.
+    waking: AtomicBool,
+    /// When each device may be woken again, and how long it waited: after a
+    /// wake-up failed, longer each time; after one went, `WAKE_AGAIN`
+    /// (kept as zero), unless it reads what's new first.
+    wake_retry: std::sync::Mutex<HashMap<String, (std::time::Instant, Duration)>>,
     /// How Docker and the Dev Container CLI are started; tests use fakes.
     dev_tools: std::sync::Mutex<crate::devcontainer::Tools>,
     /// Dev containers kept for reviewers' own commands, by review; removed
@@ -349,6 +364,10 @@ impl Engine {
             claude_launcher: std::sync::Mutex::new(crate::claude::launcher()),
             apis: std::sync::Mutex::new(crate::api::Setup::default()),
             api_lock: Mutex::new(()),
+            push: std::sync::Mutex::new(Default::default()),
+            push_keys: std::sync::Mutex::new(None),
+            waking: AtomicBool::new(false),
+            wake_retry: std::sync::Mutex::new(HashMap::new()),
             antigravity: std::sync::Mutex::new(crate::antigravity::Setup::default()),
             dev_tools: std::sync::Mutex::new(Default::default()),
             boxes: Default::default(),
@@ -512,6 +531,12 @@ impl Engine {
         });
         let e = self.clone();
         tokio::spawn(async move {
+            // A new access link made while Orbit was off forgets the
+            // devices added with the old one.
+            e.forget_old_push_devices().await;
+        });
+        let e = self.clone();
+        tokio::spawn(async move {
             e.resume_scans().await;
         });
         let e = self.clone();
@@ -581,6 +606,7 @@ impl Engine {
     /// disconnect still closes the checks it failed.
     async fn tick(self: &Arc<Self>, reviewer_ready: bool) {
         self.do_fixes();
+        self.wake_devices().await;
         if reviewer_ready {
             self.schedule().await;
         }

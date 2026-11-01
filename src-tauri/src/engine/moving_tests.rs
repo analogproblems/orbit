@@ -249,6 +249,11 @@ async fn what_belongs_to_each_computer_stays_there() {
         .update(|s| {
             s.github_user = Some("me".into());
             s.api_keys.openai.saved = true;
+            s.notices_sent = 5;
+            s.push_devices = vec![crate::push::PushDevice {
+                id: "woken-by-first".into(),
+                ..Default::default()
+            }];
             s.settings.repositories = vec![
                 Repository::new("a/b", &here),
                 Repository::new("acme/api", "/nowhere/api"),
@@ -288,11 +293,19 @@ async fn what_belongs_to_each_computer_stays_there() {
         .update(|s| {
             s.api_keys.anthropic.saved = true;
             s.antigravity.ready = true;
+            s.notices_sent = 7;
+            s.push_devices = vec![crate::push::PushDevice {
+                id: "woken-by-second".into(),
+                read: 1,
+                told: 1,
+                ..Default::default()
+            }];
         })
         .await;
     let before = second.snapshot().await;
     // One folder from a Windows computer, which isn't a path here.
     let mut moved = packed(&first).await;
+    assert_eq!(moved.state["pushDevices"].as_array().map(Vec::len), Some(0));
     moved.state["settings"]["repositories"][2]["path"] = r"C:\Users\me\web".into();
     crate::github::GH
         .scope(gh, second.take_in(moved))
@@ -309,6 +322,15 @@ async fn what_belongs_to_each_computer_stays_there() {
     assert_eq!(Path::new(&repos[2].path), copy);
     assert_eq!(s.api_keys, before.api_keys);
     assert_eq!(s.antigravity, before.antigravity);
+    // Devices are woken by the Orbit they signed up with, for what it sends
+    // from now on, counted on from the higher count of the two.
+    let devices: Vec<_> = s
+        .push_devices
+        .iter()
+        .map(|d| (d.id.as_str(), d.read, d.told))
+        .collect();
+    assert_eq!(devices, [("woken-by-second", 7, 7)]);
+    assert_eq!(s.notices_sent, 7);
     assert_eq!(s.github_user.as_deref(), Some("me"));
     assert!(s.reviews.iter().all(|r| r.worktree.is_none()));
     assert_eq!(s.reviews[0].status, "cancelled");
