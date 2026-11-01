@@ -318,6 +318,7 @@ fn impatient(port: u16) -> Client {
         silence: short,
         snapshot: short,
         action: short * 2,
+        moving: short * 2,
     };
     Client::with_limits(link, limits).unwrap()
 }
@@ -419,6 +420,211 @@ async fn gives_up_on_an_orbit_that_takes_the_connection_but_never_answers() {
     let checked = tokio::time::timeout(soon, c.check()).await;
     assert!(matches!(checked, Ok(Err(_))), "{checked:?}");
     assert!(started.elapsed() < soon);
+}
+
+/// This app's Orbit moves through the link to an always-on Orbit with
+/// nothing of its own yet, signed in as the same account, and only once.
+#[tokio::test]
+async fn moves_into_an_always_on_orbit_with_nothing_of_its_own() {
+    let r = remote_orbit().await;
+    r.engine.update(|s| s.github_user = Some("me".into())).await;
+    let c = client(r.port, TOKEN);
+    let before = c.snapshot().await.unwrap();
+    assert_eq!(can_take_in(&before, Some("Me")), Ok(()));
+    assert_eq!(can_take_in(&before, None), Ok(()));
+    let error = can_take_in(&before, Some("you")).unwrap_err();
+    assert!(error.contains("signed in to GitHub as me"), "{error}");
+    let signed_out = json!({ "settings": { "repositories": [] }, "githubUser": null });
+    assert_eq!(can_take_in(&signed_out, None), Err(NOT_SIGNED_IN.into()));
+
+    let d = tempfile::tempdir().unwrap();
+    let here = Engine::new(d.path().into(), |_| {}).unwrap();
+    here.update(|s| {
+        s.settings.concurrency = 3;
+        s.scans = vec![crate::types::SecurityScan {
+            id: "scan-1".into(),
+            repo: "a/b".into(),
+            status: "completed".into(),
+            ..Default::default()
+        }];
+    })
+    .await;
+    let moved = here.pack().await.unwrap();
+    // A link that no longer works says so, and moves nothing.
+    assert_eq!(
+        client(r.port, OTHER).move_in(&moved).await,
+        Err(EXPIRED.into())
+    );
+    assert_eq!(
+        client(r.port, OTHER).move_status(&moved.id).await,
+        Err(EXPIRED.into())
+    );
+    // A move asked about before it arrives is called off, and refused
+    // when it does.
+    let late = here.pack().await.unwrap();
+    assert_ne!(late.id, moved.id);
+    let called_off = Ok(crate::moving::Status::CalledOff);
+    assert_eq!(c.move_status(&late.id).await, called_off);
+    let error = c.move_in(&late).await.unwrap_err();
+    assert!(error.contains("called off"), "{error}");
+    assert_eq!(c.move_status(&late.id).await, called_off);
+
+    c.move_in(&moved).await.unwrap();
+    let after = c.snapshot().await.unwrap();
+    assert_eq!(after["settings"]["concurrency"], 3);
+    assert_eq!(
+        c.move_status(&moved.id).await,
+        Ok(crate::moving::Status::Moved)
+    );
+    assert_eq!(can_take_in(&after, Some("me")), Err(NOT_EMPTY.into()));
+    let error = c.move_in(&moved).await.unwrap_err();
+    assert!(error.contains("already took this move in"), "{error}");
+    assert_eq!(
+        c.move_status(&moved.id).await,
+        Ok(crate::moving::Status::Moved)
+    );
+}
+
+/// An Orbit, empty and signed in, to move into, served at `port` by a
+/// stand-in that takes the move in and then goes away without answering,
+/// as when the connection drops just as the move went through.
+async fn lost_on_the_way(target: Arc<Engine>) -> u16 {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        drop(listener);
+        let mut request = vec![];
+        let mut chunk = [0; 64 * 1024];
+        let (head, length) = loop {
+            let n = stream.read(&mut chunk).await.unwrap();
+            request.extend_from_slice(&chunk[..n]);
+            if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&request[..end]).to_lowercase();
+                let length = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:"))
+                    .map(|n| n.trim().parse::<usize>().unwrap())
+                    .unwrap();
+                break (end + 4, length);
+            }
+        };
+        while request.len() < head + length {
+            let n = stream.read(&mut chunk).await.unwrap();
+            request.extend_from_slice(&chunk[..n]);
+        }
+        let moved = serde_json::from_slice(&request[head..head + length]).unwrap();
+        target.take_in(moved).await.unwrap();
+        let _ = stream.shutdown().await;
+    });
+    port
+}
+
+/// A move whose answer is lost, with the always-on Orbit then out of
+/// reach, leaves this app's Orbit paused and the move noted, until the
+/// always-on Orbit answers again and shows it moved.
+#[tokio::test]
+async fn a_move_the_app_cannot_confirm_leaves_its_orbit_paused_until_it_can() {
+    let d = tempfile::tempdir().unwrap();
+    let target = Engine::new(d.path().join("there"), |_| {}).unwrap();
+    target.update(|s| s.github_user = Some("me".into())).await;
+    let here = Engine::new(d.path().join("here"), |_| {}).unwrap();
+    here.update(|s| {
+        s.settings.automatic = true;
+        s.settings.concurrency = 3;
+    })
+    .await;
+    let port = lost_on_the_way(target.clone()).await;
+    here.shutdown().await;
+    let root = d.path().join("here");
+    let error = move_to(&here, &root, &impatient(port)).await;
+    assert!(matches!(error, Err(Failed::Unsure(_))), "{error:?}");
+    let pending = pending_move(&root).unwrap();
+    assert!(crate::moving::valid_id(&pending.id));
+    assert!(pending.automatic);
+    assert_eq!(pending.link.base, format!("http://127.0.0.1:{port}/"));
+    // Autopilot is off, and stays off after a restart.
+    let saved: crate::types::Snapshot =
+        serde_json::from_slice(&std::fs::read(root.join("state.json")).unwrap()).unwrap();
+    assert!(!saved.settings.automatic);
+    assert_eq!(target.snapshot().await.settings.concurrency, 3);
+    // Still out of reach as the app starts again: it still can't tell.
+    assert_eq!(settle(&pending).await, Outcome::Unsure);
+    // Back, it says the move went through.
+    let stop = serve(rebind(port).await, &target, &Hub::default());
+    assert_eq!(settle(&pending).await, Outcome::Moved);
+    let _ = stop.send(true);
+    end_move(&root).unwrap();
+    assert_eq!(pending_move(&root), None);
+}
+
+/// A move the always-on Orbit refuses starts this app's Orbit again as it
+/// was, autopilot and all, with nothing noted.
+#[tokio::test]
+async fn a_move_the_always_on_orbit_refuses_leaves_this_orbit_as_it_was() {
+    let r = remote_orbit().await;
+    r.engine.update(|s| s.github_user = Some("me".into())).await;
+    let c = client(r.port, TOKEN);
+    // Another Orbit moved in first.
+    let d = tempfile::tempdir().unwrap();
+    let other = Engine::new(d.path().join("other"), |_| {}).unwrap();
+    other
+        .update(|s| {
+            s.scans = vec![crate::types::SecurityScan {
+                id: "scan-1".into(),
+                status: "completed".into(),
+                ..Default::default()
+            }]
+        })
+        .await;
+    c.move_in(&other.pack().await.unwrap()).await.unwrap();
+
+    let here = Engine::new(d.path().join("here"), |_| {}).unwrap();
+    here.update(|s| s.settings.automatic = true).await;
+    here.shutdown().await;
+    let root = d.path().join("here");
+    match move_to(&here, &root, &c).await {
+        Err(Failed::Stayed(error)) => {
+            assert!(error.contains("already has repositories"), "{error}")
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(here.snapshot().await.settings.automatic);
+    assert_eq!(pending_move(&root), None);
+    // As the app starts, a move noted but never sent counts as not made.
+    let pending = Moving {
+        link: c.link().clone(),
+        id: here.pack().await.unwrap().id,
+        automatic: true,
+    };
+    assert_eq!(settle(&pending).await, Outcome::Stayed);
+}
+
+/// An always-on Orbit from before moving was possible says it needs
+/// updating.
+#[tokio::test]
+async fn an_always_on_orbit_too_old_to_take_one_in_says_so() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    // As one did, it knows no move-in and answers as for a command it
+    // doesn't run.
+    let old = axum::Router::new().fallback(|| async {
+        (
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(json!({ "error": "This action is not available here." })),
+        )
+    });
+    tokio::spawn(async move { axum::serve(listener, old).await });
+    let moved = crate::moving::Moved::default();
+    assert_eq!(
+        client(port, TOKEN).move_in(&moved).await,
+        Err(TOO_OLD.into())
+    );
 }
 
 #[derive(Debug)]

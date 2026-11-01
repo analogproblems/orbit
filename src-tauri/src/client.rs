@@ -17,6 +17,9 @@ use std::{collections::HashSet, path::Path, time::Duration};
 
 const FILE: &str = "always-on.json";
 const SEEN_FILE: &str = "always-on-seen.json";
+const MOVING_FILE: &str = "moving.json";
+/// How long the app waits as it starts to learn whether a move finished.
+const SETTLE: Duration = Duration::from_secs(10);
 /// How long reaching the always-on Orbit may take.
 const CONNECT: Duration = Duration::from_secs(15);
 /// How long Orbit without a window on this computer may take to answer
@@ -33,6 +36,9 @@ pub struct Limits {
     pub snapshot: Duration,
     /// For anything else, which may run as long as a sync or a publish.
     pub action: Duration,
+    /// For moving this app's Orbit there, which may download each of its
+    /// repositories.
+    pub moving: Duration,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -40,6 +46,7 @@ impl Default for Limits {
             silence: Duration::from_secs(45),
             snapshot: Duration::from_secs(20),
             action: Duration::from_secs(10 * 60),
+            moving: Duration::from_secs(30 * 60),
         }
     }
 }
@@ -50,6 +57,11 @@ pub const NOT_PRIVATE: &str = "That link isn't private: use the https link throu
 pub const EXPIRED: &str = "The always-on Orbit's link no longer works. Paste its current link in Settings, Other devices.";
 pub const LOST: &str = "Lost connection to the always-on Orbit. Reconnecting…";
 pub const OWN_LINK: &str = "That's this app's own link. Paste the always-on Orbit's link: `orbit-server link` shows it on that computer.";
+pub const NOT_EMPTY: &str = "The always-on Orbit already has repositories or reviews of its own, so this one can't move there. Use it as it is with Use it instead.";
+pub const NOT_SIGNED_IN: &str = "The always-on Orbit isn't signed in to GitHub yet. On that computer, run gh auth login, then try again.";
+pub const TOO_OLD: &str =
+    "The always-on Orbit is too old to take this one in. Update it, then try again.";
+pub const UNSURE: &str = "Until it can, this app runs no Orbit of its own, so nothing is done twice: it shows the always-on Orbit, and asks it again each time the app starts. If you know this app's Orbit didn't move, Stop using it starts it again, with autopilot off.";
 
 /// An always-on Orbit's access link.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,6 +159,119 @@ pub fn forget(root: &Path) -> Result<(), String> {
     }
 }
 
+/// A move of this app's Orbit to an always-on Orbit whose outcome the app
+/// doesn't know yet, kept in `moving.json` from just before it's sent until
+/// the app knows. Meanwhile the app runs no Orbit of its own, so nothing is
+/// done twice.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Moving {
+    pub link: Link,
+    /// The move's id (`Moved.id`), by which the always-on Orbit says how
+    /// it went.
+    pub id: String,
+    /// Whether autopilot was on, to turn it back on if it didn't move.
+    pub automatic: bool,
+}
+/// Notes a move about to be sent.
+pub fn begin_move(root: &Path, moving: &Moving) -> Result<(), String> {
+    write_file(root, MOVING_FILE, moving)
+}
+/// The move whose outcome the app doesn't know yet, if there is one.
+pub fn pending_move(root: &Path) -> Option<Moving> {
+    read_file::<Option<Moving>>(root, MOVING_FILE)
+}
+/// Forgets the move, once the app knows how it went.
+pub fn end_move(root: &Path) -> Result<(), String> {
+    match std::fs::remove_file(root.join(MOVING_FILE)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(format!("Orbit couldn't note how the move went: {e}"))
+        }
+        _ => Ok(()),
+    }
+}
+/// What became of a move, as far as the app can tell.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// The always-on Orbit took this app's Orbit in.
+    Moved,
+    /// It says it didn't, and now never will.
+    Stayed,
+    /// It's still taking it in, or doesn't answer, so the app can't tell.
+    Unsure,
+}
+/// Asks the always-on Orbit what became of `moving`, as the app starts.
+pub async fn settle(moving: &Moving) -> Outcome {
+    let Ok(client) = Client::new(moving.link.clone()) else {
+        return Outcome::Unsure;
+    };
+    tokio::time::timeout(SETTLE, outcome(&client, &moving.id))
+        .await
+        .unwrap_or(Outcome::Unsure)
+}
+async fn outcome(always_on: &Client, id: &str) -> Outcome {
+    match always_on.move_status(id).await {
+        Ok(crate::moving::Status::Moved) => Outcome::Moved,
+        Ok(crate::moving::Status::CalledOff) => Outcome::Stayed,
+        Ok(crate::moving::Status::Running) | Err(_) => Outcome::Unsure,
+    }
+}
+/// Why a move didn't finish: it didn't happen, or the app can't tell.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Failed {
+    Stayed(String),
+    Unsure(String),
+}
+/// Moves `engine`, this app's Orbit with the data folder `root`, once it
+/// has shut down, to the always-on Orbit at `always_on`. Autopilot goes
+/// off here before the move is sent, noted with the move, and comes back
+/// on only once the always-on Orbit says for certain that it didn't take
+/// it in: while it's still taking it in or doesn't answer, autopilot
+/// stays off and the move stays noted (`pending_move`).
+pub async fn move_to(
+    engine: &crate::engine::Engine,
+    root: &Path,
+    always_on: &Client,
+) -> Result<(), Failed> {
+    engine.fence().await.map_err(Failed::Stayed)?;
+    let moved = engine.pack().await.map_err(Failed::Stayed)?;
+    let automatic = engine.snapshot().await.settings.automatic;
+    engine.set_autopilot(false).await.map_err(Failed::Stayed)?;
+    let moving = Moving {
+        link: always_on.link().clone(),
+        id: moved.id.clone(),
+        automatic,
+    };
+    if let Err(e) = begin_move(root, &moving) {
+        let _ = engine.set_autopilot(automatic).await;
+        return Err(Failed::Stayed(e));
+    }
+    let error = match always_on.move_in(&moved).await {
+        Ok(()) => return Ok(()),
+        Err(error) => error,
+    };
+    // The answer may be lost, or cut off by a proxy, while the move goes
+    // through anyway; only the always-on Orbit can say. One too old to
+    // take moves never took this one in.
+    let outcome = if error == TOO_OLD {
+        Outcome::Stayed
+    } else {
+        outcome(always_on, &moving.id).await
+    };
+    match outcome {
+        Outcome::Moved => Ok(()),
+        Outcome::Stayed => {
+            // Still noted if autopilot can't come back on now, so it does
+            // when the app starts.
+            if engine.set_autopilot(automatic).await.is_ok() {
+                let _ = end_move(root);
+            }
+            Err(Failed::Stayed(error))
+        }
+        Outcome::Unsure => Err(Failed::Unsure(error)),
+    }
+}
+
 /// What `always-on-seen.json` holds: the notifications shown here from
 /// the Orbit at one link, named by a hash of it, so what a follower writes
 /// late, after the link changed, counts for nothing.
@@ -189,6 +314,22 @@ pub async fn running_here(root: &Path) -> Option<Link> {
     matches!(answer, Ok(Ok(_))).then_some(link)
 }
 
+/// Whether the always-on Orbit whose snapshot is `there` can take in this
+/// app's Orbit, signed in to GitHub as `login` when known: only when it has
+/// nothing of its own yet, and is signed in as the same account.
+pub fn can_take_in(there: &Value, login: Option<&str>) -> Result<(), String> {
+    let has = |list: &Value| list.as_array().is_some_and(|l| !l.is_empty());
+    if has(&there["settings"]["repositories"]) || has(&there["reviews"]) || has(&there["scans"]) {
+        return Err(NOT_EMPTY.into());
+    }
+    match (there["githubUser"].as_str(), login) {
+        (None, _) => Err(NOT_SIGNED_IN.into()),
+        (Some(there), Some(here)) if !there.eq_ignore_ascii_case(here) => Err(format!(
+            "The always-on Orbit is signed in to GitHub as {there}, and this one as {here}. Sign it in as {here} on that computer, then try again."
+        )),
+        _ => Ok(()),
+    }
+}
 /// Talks to an always-on Orbit.
 pub struct Client {
     link: Link,
@@ -231,6 +372,10 @@ impl Client {
             .send()
             .await
             .map_err(|e| self.unreachable(e))?;
+        self.answer(response).await
+    }
+    /// What the always-on Orbit answered, or what went wrong.
+    async fn answer(&self, response: reqwest::Response) -> Result<Value, String> {
         let status = response.status();
         let body: Value = match response.json().await {
             Ok(body) => body,
@@ -260,7 +405,44 @@ impl Client {
     }
     /// Checks that the always-on Orbit answers, before the app uses it.
     pub async fn check(&self) -> Result<(), String> {
-        self.call("get_snapshot", &json!({})).await.map(drop)
+        self.snapshot().await.map(drop)
+    }
+    /// The always-on Orbit's snapshot, as it shows it.
+    pub async fn snapshot(&self) -> Result<Value, String> {
+        self.call("get_snapshot", &json!({})).await
+    }
+    /// Moves this app's Orbit there (see `crate::moving`). An always-on
+    /// Orbit from before moving was possible doesn't know the request.
+    pub async fn move_in(&self, moved: &crate::moving::Moved) -> Result<(), String> {
+        let response = self
+            .http
+            .post(format!("{}api/move-in", self.link.base))
+            .bearer_auth(&self.link.token)
+            .json(moved)
+            .timeout(self.limits.moving)
+            .send()
+            .await
+            .map_err(|e| self.unreachable(e))?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(TOO_OLD.into());
+        }
+        self.answer(response).await.map(drop)
+    }
+    /// How the move `id` went, as the always-on Orbit says for certain. It
+    /// calls off one it never heard of (see `Engine::move_status`).
+    pub async fn move_status(&self, id: &str) -> Result<crate::moving::Status, String> {
+        let response = self
+            .http
+            .post(format!("{}api/move-in/status", self.link.base))
+            .bearer_auth(&self.link.token)
+            .json(&json!({ "id": id }))
+            .timeout(self.limits.action)
+            .send()
+            .await
+            .map_err(|e| self.unreachable(e))?;
+        let answer = self.answer(response).await?;
+        serde_json::from_value(answer["status"].clone())
+            .map_err(|e| format!("The always-on Orbit answered oddly: {e}"))
     }
     /// Follows the always-on Orbit's snapshots, giving each to `show`, and
     /// the notifications to show here to `notify`. `problem` hears what's

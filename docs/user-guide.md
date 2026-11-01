@@ -790,6 +790,20 @@ From then on the app runs no Orbit of its own. Everything you do in the window h
 
 When the connection drops, the window says so and reconnects on its own. It does the same when the always-on Orbit takes the connection but doesn't answer, rather than waiting for ever. Something you ask it to do gets 10 minutes; if it takes longer, the window says so, and the always-on Orbit may still finish it. If the link stops working, such as after `orbit-server link --new`, the window says so; paste the new link under **Use an always-on Orbit**, and the app starts again showing it. **Stop using it** switches back: the app starts again with its own Orbit, as you left it.
 
+#### Move to it
+
+To carry on with what you have rather than start again, tap **Move to it** instead of **Use it**. The app's Orbit moves to the always-on Orbit, then the app starts again showing it, as with **Use it**. Its repositories, settings, reviews, history, Bit's notes and memory, write-ups, CI notes and scan reports all go there. So does what it knows of what it posted on pull requests, so the always-on Orbit keeps its comments up to date rather than step back from them or post again.
+
+The always-on Orbit must have nothing of its own yet: no repositories, reviews or scans. It must also be signed in to GitHub, as the same account when the app knows which. A security scan running in the app has to finish, or be cancelled, before it moves, as a scan can only finish where it started. Reviews running in the app stop, as they would if it restarted, and start over on the always-on Orbit.
+
+What belongs to a computer stays with it. The always-on Orbit keeps its own sign-ins, API keys, reviewers and link. A repository uses its clone at the same path on the always-on computer when there is one, and otherwise Orbit downloads its own copy there and keeps it up to date, which can take a few minutes. Review worktrees and the follow-up chats that need them stay behind, so start a new review to chat about a pull request again.
+
+Before it moves, the app's Orbit finishes what it was doing, such as a comment or an issue on its way to GitHub or a repository being connected, and starts nothing new, so the always-on Orbit never does it a second time. Meanwhile it takes no changes, from the app or a browser, as they would be lost. If that takes more than a minute, Orbit says it's still busy and you can try again.
+
+The app keeps its own copy as it was, with autopilot off. If you **Stop using it** later, nothing reviews on its own until you turn autopilot back on. If the move can't finish, Orbit says why and the app starts again with its own Orbit as it was.
+
+Sometimes the app can't tell yet whether it moved: the connection drops, or the always-on Orbit is still downloading repositories when the app stops waiting. The app then asks the always-on Orbit how the move went, and only counts it as not made when that one says so for certain. While it's still moving in, or doesn't answer, the app's Orbit may be running there already, so the app runs none of its own, which would do everything twice. It shows the always-on Orbit instead, **Settings → Other devices** says the app can't tell yet, and it asks again each time it starts. Once the always-on Orbit says, the app shows it if the move went through, or starts its own Orbit again as it was if not. If you know it didn't move, **Stop using it** starts the app's own Orbit straight away, with autopilot off.
+
 If Orbit without a window runs on the same computer with the desktop app's data folder, the app can't run its own, since only one Orbit can use a data folder at a time. Opening the app then shows that one instead, and **Settings → Other devices** says so. To run the app's own, stop Orbit without a window, then open the app again.
 
 ### One Orbit at a time
@@ -802,7 +816,7 @@ If you've stopped the other Orbit, or want this one to take over, tap **Post her
 
 While GitHub can't say what was posted, Orbit posts nothing new on that pull request. It still keeps its own comment up to date, so a **Clear to merge** can always be taken back. But it holds even that once what it could read shows another Orbit wrote that comment last or posted after this one, so it never writes over another Orbit's. Orbit reads both the comments and the reviews before it steps back, since a newer review can outweigh an older comment. Posts from before Orbit signed its own belong to no Orbit, and Orbit's issues about a failing default branch aren't signed.
 
-An Orbit's name goes with its data folder on one computer. A copy of the folder, or the folder moved to another computer, is a new Orbit that counts what the old one posted until then as its own. So it carries on where the old one left off, and the old one steps back from a pull request once the copy posts there. What the old one posts after the copy was made is another Orbit's, so you can still hand a pull request back to it with **Post here again**.
+An Orbit's name goes with its data folder on one computer. A copy of the folder, or the folder moved to another computer, is a new Orbit that counts what the old one posted until then as its own. An Orbit you [move to an always-on Orbit](#move-to-it) works the same way: the always-on Orbit keeps its own name and counts what the moved one posted until the move, give or take a few minutes for clocks that differ, as its own. So it carries on where the old one left off, and the old one steps back from a pull request once the copy posts there. What the old one posts after the copy was made is another Orbit's, so you can still hand a pull request back to it with **Post here again**.
 
 ## Restart, retained data, and cleanup
 

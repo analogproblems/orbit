@@ -39,6 +39,31 @@ it("uses the always-on Orbit at the link you paste", async () => {
   ).toBeTruthy();
 });
 
+it("moves this app's Orbit to the always-on Orbit at the link", async () => {
+  useOrbit.setState({ alwaysOn: null });
+  invokeMock.mockRejectedValueOnce(
+    "The always-on Orbit already has repositories or reviews of its own, so this one can't move there. Use it as it is with Use it instead.",
+  );
+  render(<AlwaysOnOrbit />);
+  const move = screen.getByRole("button", { name: "Move to it" });
+  expect((move as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.change(screen.getByLabelText(/Its link/), {
+    target: { value: link },
+  });
+  fireEvent.click(move);
+  expect(invokeMock).toHaveBeenCalledWith("move_to_always_on", { link });
+  expect(
+    await screen.findByText(/already has repositories or reviews/),
+  ).toBeTruthy();
+  // Nothing is moved while you use an always-on Orbit.
+  cleanup();
+  useOrbit.setState({
+    alwaysOn: { host: "box.example.ts.net", chosen: true },
+  });
+  render(<AlwaysOnOrbit />);
+  expect(screen.queryByRole("button", { name: "Move to it" })).toBeNull();
+});
+
 it("shows the always-on Orbit in use, and stops using it", () => {
   useOrbit.setState({
     alwaysOn: { host: "box.example.ts.net", chosen: true },
@@ -53,6 +78,27 @@ it("shows the always-on Orbit in use, and stops using it", () => {
   expect(screen.queryByLabelText(/Its link/)).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Stop using it" }));
   expect(invokeMock).toHaveBeenCalledWith("stop_always_on", {});
+});
+
+it("says when the app can't tell yet whether its Orbit moved", () => {
+  useOrbit.setState({
+    alwaysOn: { host: "box.example.ts.net", chosen: true, pending: true },
+  });
+  render(<AlwaysOnOrbit />);
+  expect(
+    screen.getByText("Orbit can’t tell yet whether it moved"),
+  ).toBeTruthy();
+  expect(
+    screen.getByText(/Only if you know it didn’t move.*with autopilot off/),
+  ).toBeTruthy();
+  cleanup();
+  useOrbit.setState({
+    alwaysOn: { host: "box.example.ts.net", chosen: true },
+  });
+  render(<AlwaysOnOrbit />);
+  expect(
+    screen.queryByText("Orbit can’t tell yet whether it moved"),
+  ).toBeNull();
 });
 
 it("takes a new link while using the always-on Orbit", () => {

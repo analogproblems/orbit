@@ -1147,9 +1147,17 @@ export interface Snapshot {
   instance?: OrbitInstance;
   /** Each pull request where Orbit read whether another Orbit posts. */
   posting?: Posting[];
+  /** The latest moves into this Orbit that it took in or called off,
+   * newest last. */
+  moves?: MoveRecord[];
   /** The latest notifications Orbit sent, newest last, so a desktop app
    * showing this Orbit from another computer shows them too. */
   notices?: SentNotice[];
+}
+/** A move into an Orbit, and whether it took the moving Orbit in. */
+export interface MoveRecord {
+  id: string;
+  moved: boolean;
 }
 /** A notification an Orbit sent. */
 export interface SentNotice {
@@ -1164,6 +1172,9 @@ export interface SentNotice {
 export interface AlwaysOn {
   host: string;
   chosen: boolean;
+  /** This app's Orbit moved there, unless the always-on Orbit says it
+   * didn't: the app can't tell yet. */
+  pending?: boolean;
 }
 /** Who an Orbit is. Its name goes with its data folder on one computer. */
 export interface OrbitInstance {

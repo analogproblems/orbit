@@ -354,6 +354,51 @@ fn a_copy_hands_back_to_the_orbit_it_was_copied_from() {
     );
 }
 
+/// An Orbit moved into another keeps that one's name, and counts what the
+/// moved one posted, under its name now and its old names, as its own.
+#[test]
+fn an_orbit_moved_into_another_keeps_its_posts() {
+    let mut moved = Instance::default();
+    moved.settle("laptop", at("2026-10-01T08:00:00Z"));
+    let older = moved.name.clone();
+    moved.settle("laptop, new folder", at("2026-10-20T08:00:00Z"));
+    let mut always_on = Instance::default();
+    always_on.settle("server", at("2026-10-31T08:00:00Z"));
+    let (name, home) = (always_on.name.clone(), always_on.home.clone());
+    always_on.take_over(moved.clone(), at("2026-11-01T09:05:00Z"));
+    assert_eq!((&always_on.name, &always_on.home), (&name, &home));
+    assert_eq!(
+        always_on.former,
+        [
+            Former {
+                name: older.clone(),
+                until: "2026-10-20T08:00:00Z".into()
+            },
+            Former {
+                name: moved.name.clone(),
+                until: "2026-11-01T09:05:00Z".into()
+            },
+        ]
+    );
+    assert!(always_on.is(&moved.name, "2026-11-01T09:00:00Z"));
+    assert!(always_on.is(&older, "2026-10-19T00:00:00Z"));
+    assert!(!always_on.is(&older, "2026-10-21T00:00:00Z"));
+    // What the moved Orbit posts after it moved is another Orbit's.
+    assert!(!always_on.is(&moved.name, "2026-11-01T09:06:00Z"));
+    // Moved again later: each name once, at its latest, the newest kept.
+    always_on.take_over(moved.clone(), at("2026-11-02T09:00:00Z"));
+    assert_eq!(always_on.former.len(), 2);
+    assert_eq!(always_on.former[1].until, "2026-11-02T09:00:00Z");
+    for n in 0..FORMER {
+        always_on.take_over(named(&format!("{n:032x}")), at("2026-11-03T09:00:00Z"));
+    }
+    assert_eq!(always_on.former.len(), FORMER);
+    assert!(!always_on.is(&older, "2026-10-19T00:00:00Z"));
+    // Its own name is never one of its old ones.
+    always_on.take_over(named(&name), at("2026-11-04T09:00:00Z"));
+    assert!(always_on.former.iter().all(|f| f.name != name));
+}
+
 #[test]
 fn where_orbit_runs_is_its_computer_and_data_folder() {
     let a = tempfile::tempdir().unwrap();

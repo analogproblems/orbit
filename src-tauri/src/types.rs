@@ -1380,6 +1380,16 @@ pub struct Snapshot {
     pub instance: crate::orbits::Instance,
     /// Each pull request where Orbit read whether another Orbit posts.
     pub posting: Vec<crate::orbits::Posting>,
+    /// The latest moves into this Orbit that it took in or called off, by
+    /// id, newest last (see `crate::moving`).
+    pub moves: Vec<MoveRecord>,
+}
+/// A move into this Orbit, and whether it took the moving Orbit in.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MoveRecord {
+    pub id: String,
+    pub moved: bool,
 }
 /// How reading the pull-request history is going.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

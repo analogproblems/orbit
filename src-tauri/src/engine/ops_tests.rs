@@ -30,7 +30,12 @@ fn rollup(checks: &[(&str, &str)]) -> Value {
 }
 /// GitHub's CI for `a/b`: its default branch at `head` with these checks,
 /// and pull request 12 at `pull` with these, if any.
-fn answer(dir: &Path, head: char, checks: &[(&str, &str)], pull: Option<(char, &[(&str, &str)])>) {
+pub(super) fn answer(
+    dir: &Path,
+    head: char,
+    checks: &[(&str, &str)],
+    pull: Option<(char, &[(&str, &str)])>,
+) {
     let pulls: Vec<Value> = pull
         .into_iter()
         .map(|(at, checks)| {
@@ -56,7 +61,7 @@ fn answer(dir: &Path, head: char, checks: &[(&str, &str)], pull: Option<(char, &
     std::fs::write(dir.join("answer.json"), v.to_string()).unwrap();
 }
 #[cfg(unix)]
-fn fake_gh(dir: &Path) -> PathBuf {
+pub(super) fn fake_gh(dir: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let gh = dir.join("gh");
     let script = format!(
@@ -69,13 +74,13 @@ fn fake_gh(dir: &Path) -> PathBuf {
     gh
 }
 /// What the fake GitHub holds.
-fn github(dir: &Path) -> Value {
+pub(super) fn github(dir: &Path) -> Value {
     std::fs::read_to_string(dir.join("github.json"))
         .map(|t| serde_json::from_str(&t).unwrap())
         .unwrap_or(json!({ "issues": [], "comments": [] }))
 }
 /// The writes the fake GitHub was sent.
-fn writes(dir: &Path) -> Vec<String> {
+pub(super) fn writes(dir: &Path) -> Vec<String> {
     std::fs::read_to_string(dir.join("calls"))
         .unwrap_or_default()
         .lines()
@@ -83,7 +88,7 @@ fn writes(dir: &Path) -> Vec<String> {
         .map(str::to_string)
         .collect()
 }
-async fn connected(dir: &Path) -> Arc<Engine> {
+pub(super) async fn connected(dir: &Path) -> Arc<Engine> {
     let e = Engine::new(dir.join("state"), |_| {}).unwrap();
     e.update(|s| {
         s.github_user = Some("me".into());
@@ -108,7 +113,7 @@ async fn connected(dir: &Path) -> Arc<Engine> {
     .await;
     e
 }
-fn pr(head: char) -> PullRequest {
+pub(super) fn pr(head: char) -> PullRequest {
     PullRequest {
         id: "a/b#12".into(),
         repo: "a/b".into(),
@@ -135,7 +140,7 @@ fn pr(head: char) -> PullRequest {
     }
 }
 #[cfg(unix)]
-async fn watch(e: &Engine, gh: &Path) {
+pub(super) async fn watch(e: &Engine, gh: &Path) {
     crate::github::GH
         .scope(gh.to_path_buf(), e.watch_ci())
         .await;
@@ -590,7 +595,7 @@ async fn a_failing_pull_request_gets_one_comment_kept_up_to_date() {
 }
 
 /// Who signed the comment on pull request 12.
-fn signed_by(dir: &Path) -> String {
+pub(super) fn signed_by(dir: &Path) -> String {
     let body = github(dir)["comments"][0]["body"]
         .as_str()
         .unwrap()

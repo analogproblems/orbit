@@ -24,6 +24,7 @@ mod findings;
 mod fixes;
 mod inline;
 mod ledger;
+mod moving;
 mod ops;
 mod orbits;
 mod prune;
@@ -75,6 +76,8 @@ mod ledger_tests;
 #[cfg(test)]
 mod model_tests;
 #[cfg(test)]
+mod moving_tests;
+#[cfg(test)]
 mod notice_tests;
 #[cfg(test)]
 mod ops_tests;
@@ -109,6 +112,9 @@ mod writeup_tests;
 
 /// Why an Orbit can't start: another one uses its data folder.
 pub const ALREADY_RUNNING: &str = "Orbit is already running for this workspace.";
+/// Why an Orbit takes no command now: it's moving to an always-on Orbit.
+pub const MOVING: &str =
+    "Orbit is moving to the always-on Orbit, so it takes no changes here now. Try again once it has moved.";
 
 type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// Orbit's review engine. Its methods are split by area: `connection` (Codex),
@@ -120,8 +126,9 @@ type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// `fixes` (Bit's fixes and answers), `ask` (questions you type to Bit),
 /// `setup` (repositories Bit sets up), `ledger` (each repository's
 /// pull-request history, for the Decisions page), `writeup` (its
-/// plain-language write-ups), `watch` (reading CI) and `ops` (Orbit's
-/// comments and issues about failing CI).
+/// plain-language write-ups), `watch` (reading CI), `ops` (Orbit's
+/// comments and issues about failing CI) and `moving` (moving into an
+/// always-on Orbit).
 ///
 /// # Locks
 ///
@@ -148,8 +155,9 @@ type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// `items` via `retire_dead_connection` → `disconnected`); `poll_lock` →
 /// `state` and `synced_repos` (one at a time); `publish_lock` → `state`;
 /// `containers` → `git_lock`; `cleanup_lock` → `git_lock` → `state`; `cloning` → `state`
-/// (`set_up_repository`); `state` → `synced_repos`
-/// (`schedule`); `state` → `fixing` (`flush`); `state` → `asking`
+/// (`set_up_repository`); `poll_lock` → `cloning` → `state` (`take_in`); `poll_lock` →
+/// `publish_lock` → `state`, held for good once the Orbit moves (`fence`); `state` → `synced_repos`
+/// (`schedule`); `state` → `taking_in` (`take_in`, `move_status`); `state` → `fixing` (`flush`); `state` → `asking`
 /// (`ask_buddy_anything`); `state` → `using` (`use_proposal`). `preparing`,
 /// `recovered_publications`, `status_sender`, `sending_statuses`,
 /// `boxes` and `stopping_scans` (`std` mutexes, like `preparing` and `fixing`) are
@@ -176,6 +184,13 @@ pub struct Engine {
     /// State only needs to be shown, e.g. streamed text not yet worth persisting.
     changed: AtomicBool,
     stopping: AtomicBool,
+    /// This Orbit is moving to an always-on Orbit (`fence`): it takes no
+    /// new commands. Then `fenced` once what was running has finished: it
+    /// takes no settings change either.
+    moving: AtomicBool,
+    fenced: AtomicBool,
+    /// The moves into this Orbit it's taking in now, by id.
+    taking_in: std::sync::Mutex<HashSet<String>>,
     /// An `update_clones` pass is running; another one skips rather than waits.
     updating_clones: AtomicBool,
     /// CI is being read; another read skips rather than waits.
@@ -287,98 +302,11 @@ impl Engine {
         } else {
             Snapshot::default()
         };
-        // Repository names and PR ids became case-insensitive. Older versions could
-        // save `a/b` and `A/B` as separate repositories, so merge those before
-        // validating: keep the first entry, automatic if either was.
-        let mut repositories: Vec<Repository> = vec![];
-        for repo in std::mem::take(&mut state.settings.repositories) {
-            match repositories
-                .iter_mut()
-                .find(|r| same_repo(&r.name, &repo.name))
-            {
-                Some(kept) => kept.automatic |= repo.automatic,
-                None => repositories.push(repo),
-            }
-        }
-        state.settings.repositories = repositories;
-        state.settings.buddy.normalize();
-        crate::buddy::recover(&mut state.buddy_feed);
+        let recovered = recover(&mut state)?;
         // Saved at the first flush, before anything is signed with it.
         state
             .instance
             .settle(&crate::orbits::home(&root), chrono::Utc::now());
-        for p in state.prs.iter_mut().chain(state.history_prs.iter_mut()) {
-            p.id = p.id.to_ascii_lowercase();
-        }
-        let mut seen = HashSet::new();
-        state.prs.retain(|p| seen.insert(p.id.clone()));
-        state.history_prs.retain(|p| seen.insert(p.id.clone()));
-        state.settings.validate()?;
-        let mut recovered = vec![];
-        for r in &mut state.reviews {
-            r.pr_id = r.pr_id.to_ascii_lowercase();
-            r.sensitive = r.credential_scan();
-            if active(&r.status)
-                && !r.end_follow_up(Some(
-                    "Orbit restarted during the follow-up, so its answer may be incomplete.".into(),
-                ))
-            {
-                if r.end_extraction(Some("Orbit restarted during extraction.".into())) {
-                    if r.automatic {
-                        recovered.push(r.id.clone());
-                    }
-                } else {
-                    r.status = "cancelled".into();
-                    r.error = Some(
-                        "Orbit restarted while this review was active. Start a new review to retry."
-                            .into(),
-                    );
-                }
-            } else if r.status == "publishing" {
-                r.status = "ready".into();
-                r.error = Some(
-                    "Publication was interrupted. Retry publishing to reconcile the existing GitHub comment."
-                        .into(),
-                );
-            }
-        }
-        for scan in &mut state.scans {
-            const CLOSED: &str =
-                "Orbit closed while this scan was running. Run a new scan to start over.";
-            match scan.status.as_str() {
-                // Nothing was started in Codex yet.
-                "preparing" => {
-                    scan.status = "interrupted".into();
-                    scan.finished_at = Some(now());
-                    scan.error = Some(CLOSED.into());
-                }
-                // The plugin's work may outlive Orbit, so it is stopped once
-                // Codex connects before the scan ends.
-                "running" | "cancelling" => {
-                    scans::begin_stop(scan, Some("interrupted"), Some(CLOSED.into()))
-                }
-                _ => {}
-            }
-        }
-        state.approvals.clear();
-        state.polling = false;
-        state.codex_ready = false;
-        state.model_catalog_ready = false;
-        state.model_configuration_error = None;
-        state.models.clear();
-        state.claude = CliStatus::default();
-        state.claude_models = crate::claude::catalog();
-        state.antigravity = CliStatus::default();
-        state.ollama = CliStatus::default();
-        for api in crate::api::Api::ALL {
-            let key = state.api_keys.get_mut(api);
-            key.status = CliStatus::default();
-            key.models.clear();
-        }
-        state.dev_containers = CliStatus::default();
-        state.ledger.refreshing = false;
-        state.ledger.progress = None;
-        state.ledger.writing = None;
         Ok(Arc::new(Self {
             state: Mutex::new(state),
             rpc: Mutex::new(None),
@@ -395,6 +323,9 @@ impl Engine {
             dirty: AtomicBool::new(true),
             changed: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
+            moving: AtomicBool::new(false),
+            fenced: AtomicBool::new(false),
+            taking_in: std::sync::Mutex::new(HashSet::new()),
             updating_clones: AtomicBool::new(false),
             watching_ci: AtomicBool::new(false),
             telling: AtomicBool::new(false),
@@ -527,13 +458,7 @@ impl Engine {
         Ok(out)
     }
     fn persist(&self, s: &Snapshot) -> Result<(), String> {
-        let mut saved = serde_json::to_value(s).map_err(|e| e.to_string())?;
-        // Usage describes the signed-in account right now, so it is shown but
-        // never saved.
-        if let Some(saved) = saved.as_object_mut() {
-            saved.remove("usage");
-        }
-        let data = serde_json::to_vec(&saved).map_err(|e| e.to_string())?;
+        let data = serde_json::to_vec(&saved(s)?).map_err(|e| e.to_string())?;
         let temp = self.root.join("state.json.tmp");
         use std::io::Write;
         let mut options = std::fs::OpenOptions::new();
@@ -704,6 +629,111 @@ impl Engine {
         }
         let _ = self.flush().await;
     }
+}
+/// The state as `state.json` holds it.
+pub(crate) fn saved(s: &Snapshot) -> Result<Value, String> {
+    let mut saved = serde_json::to_value(s).map_err(|e| e.to_string())?;
+    // Usage describes the signed-in account right now, so it is shown but
+    // never saved.
+    if let Some(saved) = saved.as_object_mut() {
+        saved.remove("usage");
+    }
+    Ok(saved)
+}
+/// Brings saved state up to date and ends what a stop cut short, as when
+/// Orbit starts with it: reviews and scans that were running, approvals and
+/// what was last seen of the reviewers. Returns the automatic reviews whose
+/// report survived extraction, to publish.
+pub(crate) fn recover(state: &mut Snapshot) -> Result<Vec<String>, String> {
+    // Repository names and PR ids became case-insensitive. Older versions could
+    // save `a/b` and `A/B` as separate repositories, so merge those before
+    // validating: keep the first entry, automatic if either was.
+    let mut repositories: Vec<Repository> = vec![];
+    for repo in std::mem::take(&mut state.settings.repositories) {
+        match repositories
+            .iter_mut()
+            .find(|r| same_repo(&r.name, &repo.name))
+        {
+            Some(kept) => kept.automatic |= repo.automatic,
+            None => repositories.push(repo),
+        }
+    }
+    state.settings.repositories = repositories;
+    state.settings.buddy.normalize();
+    crate::buddy::recover(&mut state.buddy_feed);
+    for p in state.prs.iter_mut().chain(state.history_prs.iter_mut()) {
+        p.id = p.id.to_ascii_lowercase();
+    }
+    let mut seen = HashSet::new();
+    state.prs.retain(|p| seen.insert(p.id.clone()));
+    state.history_prs.retain(|p| seen.insert(p.id.clone()));
+    state.settings.validate()?;
+    let mut recovered = vec![];
+    for r in &mut state.reviews {
+        r.pr_id = r.pr_id.to_ascii_lowercase();
+        r.sensitive = r.credential_scan();
+        if active(&r.status)
+            && !r.end_follow_up(Some(
+                "Orbit restarted during the follow-up, so its answer may be incomplete.".into(),
+            ))
+        {
+            if r.end_extraction(Some("Orbit restarted during extraction.".into())) {
+                if r.automatic {
+                    recovered.push(r.id.clone());
+                }
+            } else {
+                r.status = "cancelled".into();
+                r.error = Some(
+                    "Orbit restarted while this review was active. Start a new review to retry."
+                        .into(),
+                );
+            }
+        } else if r.status == "publishing" {
+            r.status = "ready".into();
+            r.error = Some(
+                "Publication was interrupted. Retry publishing to reconcile the existing GitHub comment."
+                    .into(),
+            );
+        }
+    }
+    for scan in &mut state.scans {
+        const CLOSED: &str =
+            "Orbit closed while this scan was running. Run a new scan to start over.";
+        match scan.status.as_str() {
+            // Nothing was started in Codex yet.
+            "preparing" => {
+                scan.status = "interrupted".into();
+                scan.finished_at = Some(now());
+                scan.error = Some(CLOSED.into());
+            }
+            // The plugin's work may outlive Orbit, so it is stopped once
+            // Codex connects before the scan ends.
+            "running" | "cancelling" => {
+                scans::begin_stop(scan, Some("interrupted"), Some(CLOSED.into()))
+            }
+            _ => {}
+        }
+    }
+    state.approvals.clear();
+    state.polling = false;
+    state.codex_ready = false;
+    state.model_catalog_ready = false;
+    state.model_configuration_error = None;
+    state.models.clear();
+    state.claude = CliStatus::default();
+    state.claude_models = crate::claude::catalog();
+    state.antigravity = CliStatus::default();
+    state.ollama = CliStatus::default();
+    for api in crate::api::Api::ALL {
+        let key = state.api_keys.get_mut(api);
+        key.status = CliStatus::default();
+        key.models.clear();
+    }
+    state.dev_containers = CliStatus::default();
+    state.ledger.refreshing = false;
+    state.ledger.progress = None;
+    state.ledger.writing = None;
+    Ok(recovered)
 }
 impl Drop for Engine {
     fn drop(&mut self) {
