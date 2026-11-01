@@ -367,6 +367,39 @@ async fn sends_each_commit_status_once_and_records_refusals() {
         Some("Resource not accessible by integration")
     );
 }
+
+/// An Orbit moving waits for a commit status on its way, and sends no new
+/// one once it has stopped, so none lands after it's packed.
+#[tokio::test]
+async fn a_moving_orbit_sends_the_status_on_its_way_and_no_more() {
+    let (_d, e) = autopilot_engine(trusted_pr()).await;
+    e.update(|s| s.settings.auto_post = true).await;
+    let gate: Arc<tokio::sync::RwLock<()>> = Default::default();
+    let held = gate.clone().write_owned().await;
+    let sent = recording_sender(&e, Default::default(), gate);
+    let id = automatic(&e, &trusted_pr().head_sha, "reviewing").await;
+    sync(&e).await;
+    assert_eq!(states(&sent), ["pending"]);
+    e.shutdown().await;
+    let fencing = tokio::spawn({
+        let e = e.clone();
+        async move { e.fence().await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(!fencing.is_finished(), "waits for the status on its way");
+    drop(held);
+    fencing.await.unwrap().unwrap();
+    e.update(|s| {
+        let r = s.reviews.iter_mut().find(|r| r.id == id).unwrap();
+        r.status = "posted".into();
+        r.report = "Report".into();
+        r.findings = Some(vec![]);
+        crate::review_loop::decide(r, Some(1));
+    })
+    .await;
+    sync(&e).await;
+    assert_eq!(states(&sent), ["pending"]);
+}
 #[tokio::test]
 async fn a_refused_update_still_lets_a_pending_check_close() {
     let (_d, e) = autopilot_engine(trusted_pr()).await;

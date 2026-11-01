@@ -68,8 +68,13 @@ impl Engine {
         };
         for w in wanted {
             let key = format!("{}@{}", w.repo.to_ascii_lowercase(), w.sha);
-            if !self.sending_statuses.lock().unwrap().insert(key.clone()) {
-                continue;
+            {
+                // Nothing new once Orbit stops, decided with the others on
+                // their way, so a move waits for those alone (`fence`).
+                let mut sending = self.sending_statuses.lock().unwrap();
+                if self.stopping.load(Ordering::SeqCst) || !sending.insert(key.clone()) {
+                    continue;
+                }
             }
             let send = self.status_sender.lock().unwrap().clone();
             let e = self.clone();

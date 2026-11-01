@@ -1164,6 +1164,9 @@ export interface SentNotice {
 export interface AlwaysOn {
   host: string;
   chosen: boolean;
+  /** This app's Orbit moved there, unless the always-on Orbit says it
+   * didn't: the app can't tell yet. */
+  pending?: boolean;
 }
 /** Who an Orbit is. Its name goes with its data folder on one computer. */
 export interface OrbitInstance {

@@ -110,6 +110,13 @@ export function AlwaysOnOrbit() {
               This app shows the always-on Orbit at {alwaysOn.host}. Everything
               you do here happens there.
             </Text>
+            {alwaysOn.pending && (
+              <Banner
+                status="warning"
+                title="Orbit can’t tell yet whether it moved"
+                description="The always-on Orbit didn’t answer after the move. Until it does, this app runs no Orbit of its own, so nothing is done twice, and it asks again each time it starts."
+              />
+            )}
             {linkField(
               "Its new link",
               "If its link stops working, such as after orbit-server link --new, paste the new one here.",
@@ -123,8 +130,9 @@ export function AlwaysOnOrbit() {
                 onClick={() => void run("stop_always_on")}
               />
               <Text color="secondary" type="supporting">
-                Orbit starts again with this app’s own repositories, settings
-                and history, as you left them.
+                {alwaysOn.pending
+                  ? "Only if you know it didn’t move: Orbit starts again with this app’s own repositories, settings and history, with autopilot off."
+                  : "Orbit starts again with this app’s own repositories, settings and history, as you left them."}
               </Text>
             </VStack>
           </>

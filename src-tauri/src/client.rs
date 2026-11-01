@@ -17,6 +17,9 @@ use std::{collections::HashSet, path::Path, time::Duration};
 
 const FILE: &str = "always-on.json";
 const SEEN_FILE: &str = "always-on-seen.json";
+const MOVING_FILE: &str = "moving.json";
+/// How long the app waits as it starts to learn whether a move finished.
+const SETTLE: Duration = Duration::from_secs(10);
 /// How long reaching the always-on Orbit may take.
 const CONNECT: Duration = Duration::from_secs(15);
 /// How long Orbit without a window on this computer may take to answer
@@ -58,6 +61,7 @@ pub const NOT_EMPTY: &str = "The always-on Orbit already has repositories or rev
 pub const NOT_SIGNED_IN: &str = "The always-on Orbit isn't signed in to GitHub yet. On that computer, run gh auth login, then try again.";
 pub const TOO_OLD: &str =
     "The always-on Orbit is too old to take this one in. Update it, then try again.";
+pub const UNSURE: &str = "Until it can, this app runs no Orbit of its own, so nothing is done twice: it shows the always-on Orbit, and asks it again each time the app starts. If you know this app's Orbit didn't move, Stop using it starts it again, with autopilot off.";
 
 /// An always-on Orbit's access link.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,6 +159,110 @@ pub fn forget(root: &Path) -> Result<(), String> {
     }
 }
 
+/// A move of this app's Orbit to an always-on Orbit whose outcome the app
+/// doesn't know yet, kept in `moving.json` from just before it's sent until
+/// the app knows. Meanwhile the app runs no Orbit of its own, so nothing is
+/// done twice.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Moving {
+    pub link: Link,
+    /// The name of this app's Orbit, which the always-on Orbit counts as
+    /// one of its own once it took it in.
+    pub name: String,
+    /// Whether autopilot was on, to turn it back on if it didn't move.
+    pub automatic: bool,
+}
+/// Notes a move about to be sent.
+pub fn begin_move(root: &Path, moving: &Moving) -> Result<(), String> {
+    write_file(root, MOVING_FILE, moving)
+}
+/// The move whose outcome the app doesn't know yet, if there is one.
+pub fn pending_move(root: &Path) -> Option<Moving> {
+    read_file::<Option<Moving>>(root, MOVING_FILE)
+}
+/// Forgets the move, once the app knows how it went.
+pub fn end_move(root: &Path) -> Result<(), String> {
+    match std::fs::remove_file(root.join(MOVING_FILE)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(format!("Orbit couldn't note how the move went: {e}"))
+        }
+        _ => Ok(()),
+    }
+}
+/// What became of a move.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// The always-on Orbit took this app's Orbit in.
+    Moved,
+    /// It answers, and didn't.
+    Stayed,
+    /// It doesn't answer, so the app can't tell.
+    Unsure,
+}
+/// Asks the always-on Orbit what became of `moving`.
+pub async fn settle(moving: &Moving) -> Outcome {
+    let Ok(client) = Client::new(moving.link.clone()) else {
+        return Outcome::Unsure;
+    };
+    match tokio::time::timeout(SETTLE, client.snapshot()).await {
+        Ok(Ok(there)) if counts(&there, &moving.name) => Outcome::Moved,
+        Ok(Ok(_)) => Outcome::Stayed,
+        _ => Outcome::Unsure,
+    }
+}
+
+/// Why a move didn't finish: it didn't happen, or the app can't tell.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Failed {
+    Stayed(String),
+    Unsure(String),
+}
+/// Moves `engine`, this app's Orbit with the data folder `root`, once it
+/// has shut down, to the always-on Orbit at `always_on`, whose snapshot
+/// was `before`. Autopilot goes off here before the move is sent, noted
+/// with the move, and comes back on only once it's known that it didn't
+/// move: an answer lost on the way, with the always-on Orbit then out of
+/// reach, leaves it off and the move noted (`pending_move`).
+pub async fn move_to(
+    engine: &crate::engine::Engine,
+    root: &Path,
+    always_on: &Client,
+    before: &Value,
+) -> Result<(), Failed> {
+    engine.fence().await.map_err(Failed::Stayed)?;
+    let moved = engine.pack().await.map_err(Failed::Stayed)?;
+    let here = engine.snapshot().await;
+    let automatic = here.settings.automatic;
+    engine.set_autopilot(false).await.map_err(Failed::Stayed)?;
+    let moving = Moving {
+        link: always_on.link().clone(),
+        name: here.instance.name.clone(),
+        automatic,
+    };
+    if let Err(e) = begin_move(root, &moving) {
+        let _ = engine.set_autopilot(automatic).await;
+        return Err(Failed::Stayed(e));
+    }
+    let error = match always_on.move_in(&moved).await {
+        Ok(()) => return Ok(()),
+        Err(error) => error,
+    };
+    // The answer may be lost when the move went through anyway.
+    match always_on.snapshot().await {
+        Ok(after) if took_in(before, &after, &moving.name) => Ok(()),
+        Ok(_) => {
+            // Still noted if autopilot can't come back on now, so it does
+            // when the app starts.
+            if engine.set_autopilot(automatic).await.is_ok() {
+                let _ = end_move(root);
+            }
+            Err(Failed::Stayed(error))
+        }
+        Err(_) => Err(Failed::Unsure(error)),
+    }
+}
+
 /// What `always-on-seen.json` holds: the notifications shown here from
 /// the Orbit at one link, named by a hash of it, so what a follower writes
 /// late, after the link changed, counts for nothing.
@@ -217,12 +325,15 @@ pub fn can_take_in(there: &Value, login: Option<&str>) -> Result<(), String> {
 /// snapshot `after` counts that name as one of its own, and `before`
 /// didn't. Used when a move's answer was lost.
 pub fn took_in(before: &Value, after: &Value, name: &str) -> bool {
-    let counts = |s: &Value| {
-        s["instance"]["former"]
+    !counts(before, name) && counts(after, name)
+}
+/// Whether the Orbit whose snapshot is `there` counts the Orbit named
+/// `name` as one of its own.
+fn counts(there: &Value, name: &str) -> bool {
+    !name.is_empty()
+        && there["instance"]["former"]
             .as_array()
             .is_some_and(|f| f.iter().any(|f| f["name"] == name))
-    };
-    !name.is_empty() && !counts(before) && counts(after)
 }
 
 /// Talks to an always-on Orbit.

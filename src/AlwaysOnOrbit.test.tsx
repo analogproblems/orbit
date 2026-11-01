@@ -80,6 +80,27 @@ it("shows the always-on Orbit in use, and stops using it", () => {
   expect(invokeMock).toHaveBeenCalledWith("stop_always_on", {});
 });
 
+it("says when the app can't tell yet whether its Orbit moved", () => {
+  useOrbit.setState({
+    alwaysOn: { host: "box.example.ts.net", chosen: true, pending: true },
+  });
+  render(<AlwaysOnOrbit />);
+  expect(
+    screen.getByText("Orbit can’t tell yet whether it moved"),
+  ).toBeTruthy();
+  expect(
+    screen.getByText(/Only if you know it didn’t move.*with autopilot off/),
+  ).toBeTruthy();
+  cleanup();
+  useOrbit.setState({
+    alwaysOn: { host: "box.example.ts.net", chosen: true },
+  });
+  render(<AlwaysOnOrbit />);
+  expect(
+    screen.queryByText("Orbit can’t tell yet whether it moved"),
+  ).toBeNull();
+});
+
 it("takes a new link while using the always-on Orbit", () => {
   useOrbit.setState({
     alwaysOn: { host: "box.example.ts.net", chosen: true },

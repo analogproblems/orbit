@@ -6,7 +6,7 @@ use super::{
     Engine,
 };
 use crate::{moving::Moved, types::*};
-use std::{path::Path, sync::Arc};
+use std::{path::Path, sync::Arc, time::Duration};
 
 /// A clone of `repo` at `folder`: a Git working tree whose origin is it.
 async fn clone_of(folder: &Path, repo: &str) -> String {
@@ -30,7 +30,25 @@ async fn always_on(dir: &Path) -> Arc<Engine> {
 /// `e` packed to move, as the desktop app does once it stopped.
 async fn packed(e: &Engine) -> Moved {
     e.shutdown().await;
+    e.fence().await.unwrap();
     e.pack().await.unwrap()
+}
+/// The Orbit `e` started again, as the app does after it moved.
+fn restarted(e: Arc<Engine>) -> Arc<Engine> {
+    let root = e.root.clone();
+    assert_eq!(Arc::strong_count(&e), 1);
+    drop(e);
+    Engine::new(root, |_| {}).unwrap()
+}
+/// Waits until the fake GitHub holds a request, as `hold` asks.
+async fn held(dir: &Path) {
+    for _ in 0..500 {
+        if dir.join("held").exists() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("GitHub was never asked");
 }
 fn another_orbit(s: &Snapshot) -> bool {
     s.attention
@@ -68,7 +86,6 @@ async fn a_moved_orbit_picks_up_where_the_first_left_off() {
     let second = always_on(&d.path().join("second")).await;
     let second_name = second.snapshot().await.instance.name;
     second.take_in(packed(&first).await).await.unwrap();
-    first.moved_out().await.unwrap();
     let (s, was) = (second.snapshot().await, first.snapshot().await);
     assert_eq!(s.settings.repositories[0].path, path);
     assert!(s.settings.repositories[0].automatic);
@@ -80,9 +97,6 @@ async fn a_moved_orbit_picks_up_where_the_first_left_off() {
     assert_eq!(s.instance.name, second_name);
     assert!(s.instance.is(&first_name, &now()));
     assert!(s.posting.is_empty());
-    // The first keeps its state, with autopilot off.
-    assert!(!was.settings.automatic);
-    assert_eq!(was.settings.repositories.len(), 1);
 
     failing(&[("Rust", "FAILURE"), ("Lint", "FAILURE")]);
     watch(&second, &gh).await;
@@ -94,9 +108,86 @@ async fn a_moved_orbit_picks_up_where_the_first_left_off() {
     assert!(!another_orbit(&second.shown_snapshot().await));
 
     failing(&[("Rust", "SUCCESS"), ("Lint", "FAILURE")]);
+    let first = restarted(first);
     watch(&first, &gh).await;
     assert_eq!(writes(d.path()).len(), 2);
     assert!(another_orbit(&first.shown_snapshot().await));
+}
+
+/// What an Orbit is doing on GitHub as it moves finishes before it's
+/// packed, and nothing new starts after: here, opening an issue for a
+/// failing main branch, while GitHub takes its time to say whether there
+/// is one. The always-on Orbit then doesn't open another.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_orbit_finishes_what_it_was_doing_on_github_before_it_moves() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    answer(d.path(), '1', &[("Rust", "FAILURE")], None);
+    let first = connected(&d.path().join("first")).await;
+    let path = clone_of(&d.path().join("clone"), "a/b").await;
+    first
+        .update(|s| s.settings.repositories[0].path = path.clone())
+        .await;
+    std::fs::write(d.path().join("hold"), "repos/a/b/issues").unwrap();
+    let watching = tokio::spawn(crate::github::GH.scope(gh.clone(), {
+        let e = first.clone();
+        async move { e.watch_ci().await }
+    }));
+    held(d.path()).await;
+    first.shutdown().await;
+    let fencing = tokio::spawn({
+        let e = first.clone();
+        async move { e.fence().await }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!fencing.is_finished(), "waits for GitHub");
+    std::fs::remove_file(d.path().join("hold")).unwrap();
+    watching.await.unwrap();
+    fencing.await.unwrap().unwrap();
+    assert_eq!(writes(d.path()), ["POST repos/a/b/issues"]);
+    let moved = first.pack().await.unwrap();
+    let calls = || std::fs::read_to_string(d.path().join("calls")).unwrap();
+    let asked = calls();
+    watch(&first, &gh).await;
+    assert_eq!(calls(), asked, "nothing new starts");
+
+    let second = always_on(&d.path().join("second")).await;
+    second.take_in(moved).await.unwrap();
+    watch(&second, &gh).await;
+    assert_eq!(writes(d.path()), ["POST repos/a/b/issues"]);
+    assert_eq!(github(d.path())["issues"].as_array().unwrap().len(), 1);
+}
+
+/// Two Orbits moving into one always-on Orbit at once: one moves, and the
+/// other is refused before any of its files are written.
+#[cfg(unix)]
+#[tokio::test]
+async fn one_orbit_moves_in_when_two_try_at_once() {
+    let d = tempfile::tempdir().unwrap();
+    let path = clone_of(&d.path().join("clone"), "a/b").await;
+    let first = Engine::new(d.path().join("first"), |_| {}).unwrap();
+    first
+        .update(|s| s.settings.repositories = vec![Repository::new("a/b", &path)])
+        .await;
+    let stored = "ledger/a/b/12.json";
+    let with = |mut moved: Moved, text: &str| {
+        moved.files = vec![crate::moving::MovedFile {
+            path: stored.into(),
+            text: text.into(),
+        }];
+        moved
+    };
+    let one = with(packed(&first).await, "one");
+    let other = with(first.pack().await.unwrap(), "other");
+
+    let second = always_on(&d.path().join("second")).await;
+    let (a, b) = tokio::join!(second.take_in(one), second.take_in(other));
+    assert_eq!(a, Ok(()));
+    let error = b.unwrap_err();
+    assert!(error.contains("already has repositories"), "{error}");
+    let text = std::fs::read_to_string(d.path().join("second/state").join(stored)).unwrap();
+    assert_eq!(text, "one");
 }
 
 /// What belongs to a computer stays with it: the always-on Orbit keeps its

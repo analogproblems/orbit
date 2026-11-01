@@ -7,8 +7,10 @@ use super::{
 };
 use crate::moving::{self, Moved};
 
-/// How long taking an Orbit in waits for reads already running to finish.
+/// How long moving, and taking an Orbit in, wait for what's running in
+/// the background to finish.
 const QUIET: Duration = Duration::from_secs(60);
+const BUSY: &str = "This Orbit is still busy with GitHub. Try again in a minute.";
 /// How long after a move the moved Orbit's posts still count as the
 /// always-on Orbit's own, as the two computers' clocks may differ. The
 /// moved Orbit has stopped by then.
@@ -34,9 +36,41 @@ impl Engine {
     pub async fn cannot_move(&self) -> Option<String> {
         cannot_move(&*self.state.lock().await)
     }
+    /// Waits for what this Orbit is doing in the background to finish, then
+    /// holds off anything new until it starts again: syncing, publishing,
+    /// telling agents about CI, reading CI, the history and write-ups, and
+    /// commit statuses on their way. For an Orbit that has shut down to
+    /// move, so nothing it does lands after it's packed.
+    pub async fn fence(&self) -> Result<(), String> {
+        let until = tokio::time::Instant::now() + QUIET;
+        let poll = tokio::time::timeout_at(until, self.poll_lock.lock())
+            .await
+            .map_err(|_| BUSY.to_string())?;
+        let publish = tokio::time::timeout_at(until, self.publish_lock.lock())
+            .await
+            .map_err(|_| BUSY.to_string())?;
+        let quiet = self.quiet(until).await?;
+        while !self.sending_statuses.lock().unwrap().is_empty() {
+            if tokio::time::Instant::now() >= until {
+                return Err(BUSY.into());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        // Held for good: the app starts again once it has moved, or not.
+        std::mem::forget((poll, publish, quiet));
+        Ok(())
+    }
+    /// Turns autopilot on or off, as moving does.
+    pub async fn set_autopilot(&self, on: bool) -> Result<(), String> {
+        let patch = SettingsPatch {
+            automatic: Some(on),
+            ..Default::default()
+        };
+        self.update_settings(patch).await.map(drop)
+    }
     /// This Orbit, packed to move: its state as it saves it, and the files
-    /// that go with it. Called once it has shut down, so nothing changes
-    /// meanwhile.
+    /// that go with it. Called once it has shut down and is fenced, so
+    /// nothing changes meanwhile.
     pub async fn pack(&self) -> Result<Moved, String> {
         let s = self.snapshot().await;
         if let Some(why) = cannot_move(&s) {
@@ -47,12 +81,6 @@ impl Engine {
         let root = self.root.clone();
         let files = blocking(move || moving::collect(&root, &scans)).await?;
         Ok(Moved { state, files })
-    }
-    /// Turns autopilot off once this Orbit has moved, so it reviews nothing
-    /// on its own if you use it again.
-    pub async fn moved_out(&self) -> Result<(), String> {
-        self.update(|s| s.settings.automatic = false).await;
-        self.flush().await
     }
     /// Takes in an Orbit that moved here, if this one has nothing of its
     /// own yet. What was running there ends as it would if that Orbit
@@ -82,10 +110,15 @@ impl Engine {
             return Err(why);
         }
         // Nothing that reads into the state runs meanwhile, so nothing
-        // read before the move lands after it.
+        // read before the move lands after it, and one move at a time.
         let poll = self.poll_lock.lock().await;
-        let quiet = self.quiet().await?;
+        let quiet = self.quiet(tokio::time::Instant::now() + QUIET).await?;
         let cloning = self.cloning.lock().await;
+        // Again, as another move may have come in first, and nothing of
+        // this one is written before.
+        if let Some(why) = cannot_take_in(&*self.state.lock().await) {
+            return Err(why);
+        }
         for repo in &mut state.settings.repositories {
             if let Ok(path) = validate_checkout(&repo.name, &repo.path).await {
                 repo.path = path;
@@ -145,10 +178,9 @@ impl Engine {
             e.update_clones().await;
         });
     }
-    /// Waits for the background reads running to finish, and holds off new
-    /// ones until the guards drop.
-    async fn quiet(&self) -> Result<Vec<Reading<'_>>, String> {
-        let until = std::time::Instant::now() + QUIET;
+    /// Waits for the background reads and writes running to finish, until
+    /// `until` at most, and holds off new ones until the guards drop.
+    async fn quiet(&self, until: tokio::time::Instant) -> Result<Vec<Reading<'_>>, String> {
         let mut held = vec![];
         for flag in [
             &self.refreshing_ledger,
@@ -160,8 +192,8 @@ impl Engine {
             &self.updating_clones,
         ] {
             while flag.swap(true, Ordering::SeqCst) {
-                if std::time::Instant::now() >= until {
-                    return Err("This Orbit is busy reading GitHub. Try again in a minute.".into());
+                if tokio::time::Instant::now() >= until {
+                    return Err(BUSY.into());
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }

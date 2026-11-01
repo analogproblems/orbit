@@ -65,6 +65,8 @@ mod desktop {
     struct AlwaysOnStatus {
         host: String,
         chosen: bool,
+        /// Shown while the app can't tell whether its Orbit moved there.
+        pending: bool,
     }
     /// The item of the latest notification sent while Orbit was in the
     /// background. Desktop notifications report no clicks, so the item opens
@@ -427,9 +429,11 @@ mod desktop {
     // are left out of `remote::COMMANDS` too.
     #[tauri::command]
     async fn get_always_on(app: AppHandle) -> Result<Option<AlwaysOnStatus>, String> {
+        let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
         Ok(app.try_state::<AlwaysOn>().map(|a| AlwaysOnStatus {
             host: a.client.link().host().into(),
             chosen: a.chosen,
+            pending: client::pending_move(&root).is_some(),
         }))
     }
     /// Runs one of `remote::COMMANDS` on the always-on Orbit this app shows,
@@ -472,6 +476,11 @@ mod desktop {
             return Err(client::OWN_LINK.into());
         }
         client::Client::new(link.clone())?.check().await?;
+        // A move the app can't tell the outcome of yet is asked about there.
+        if let Some(mut moving) = client::pending_move(&root) {
+            moving.link = link.clone();
+            client::begin_move(&root, &moving)?;
+        }
         client::save(&root, &link)?;
         app.request_restart();
         Ok(())
@@ -480,10 +489,12 @@ mod desktop {
     /// it as `use_always_on` does: its repositories, settings, reviews,
     /// Bit's notes and memory, CI notes and history (see `crate::moving`).
     /// That Orbit must have nothing of its own yet and be signed in to
-    /// GitHub as this one is. This app's Orbit stops first, so nothing
-    /// changes while it moves, and keeps its state with autopilot off. If
-    /// the move doesn't finish, a message says why and this app's Orbit
-    /// starts again as it was.
+    /// GitHub as this one is. This app's Orbit stops first, and does
+    /// nothing more once what it was doing is done, so nothing it does
+    /// lands after it's packed. It keeps its state with autopilot off. If
+    /// the move doesn't happen, a message says why and this app's Orbit
+    /// starts again as it was; if the app can't tell, it runs no Orbit of
+    /// its own until it can (`client::Moving`).
     #[tauri::command]
     async fn move_to_always_on(
         app: AppHandle,
@@ -505,50 +516,43 @@ mod desktop {
         // From here on this app's Orbit has stopped, so the app starts
         // again whatever happens.
         engine.shutdown().await;
-        let moved = async {
-            let error = match always_on.move_in(&engine.pack().await?).await {
-                Ok(()) => return Ok(()),
-                Err(error) => error,
-            };
-            // The answer may be lost when the move finished anyway.
-            match always_on.snapshot().await {
-                Ok(after) if client::took_in(&before, &after, &here.instance.name) => Ok(()),
-                _ => Err(error),
-            }
-        }
-        .await;
-        let problem = match moved {
-            Ok(()) => {
-                // It runs again only if you stop using the always-on Orbit.
-                let _ = engine.moved_out().await;
-                match client::save(&root, &link) {
+        let (title, message) =
+            match client::move_to(&engine, &root, &always_on, &before).await {
+                // Still noted as moving until both are kept, so the app
+                // finishes as it starts if it can't now.
+                Ok(()) => match client::save(&root, &link).and_then(|()| client::end_move(&root)) {
                     Ok(()) => {
                         app.request_restart();
                         return Ok(());
                     }
                     Err(e) => (
                         "Orbit moved",
-                        format!("Orbit moved, but the app couldn't keep the always-on Orbit's link: {e}. Paste it in Settings, Other devices, then tap Use it."),
+                        format!("Orbit moved, but couldn't note it yet: {e}. It tries again when it starts."),
                     ),
-                }
-            }
-            Err(error) => (
-                "Orbit didn't move",
-                format!("{error}\n\nThis app's own Orbit starts again as it was."),
-            ),
-        };
+                },
+                Err(client::Failed::Stayed(error)) => (
+                    "Orbit didn't move",
+                    format!("{error}\n\nThis app's own Orbit starts again as it was."),
+                ),
+                Err(client::Failed::Unsure(error)) => (
+                    "Orbit can't tell yet whether it moved",
+                    format!("{error}\n\n{}", client::UNSURE),
+                ),
+            };
         let restart = app.clone();
         app.dialog()
-            .message(problem.1.clone())
-            .title(problem.0)
+            .message(message.clone())
+            .title(title)
             .kind(tauri_plugin_dialog::MessageDialogKind::Error)
             .show(move |_| restart.request_restart());
-        Err(problem.1)
+        Err(message)
     }
     /// Stops using the always-on Orbit: the app starts again with its own.
     #[tauri::command]
     async fn stop_always_on(app: AppHandle) -> Result<(), String> {
         let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        // Also while a move is unsure: you say this app's Orbit runs.
+        client::end_move(&root)?;
         client::forget(&root)?;
         app.request_restart();
         Ok(())
@@ -611,7 +615,30 @@ mod desktop {
                 let handle = app.handle().clone();
                 let root = app.path().app_data_dir()?;
                 app.manage(Unseen::default());
+                // A move the app couldn't tell the outcome of: asked again.
+                let mut stayed = None;
+                if let Some(moving) = client::pending_move(&root) {
+                    match tauri::async_runtime::block_on(client::settle(&moving)) {
+                        client::Outcome::Stayed => stayed = Some(moving.automatic),
+                        // It moved, or the app still can't tell: either way
+                        // it runs no Orbit of its own.
+                        outcome => {
+                            if outcome == client::Outcome::Moved
+                                && client::save(&root, &moving.link).is_ok()
+                            {
+                                let _ = client::end_move(&root);
+                            }
+                            show_always_on(app.handle(), root, moving.link, true)?;
+                            return Ok(());
+                        }
+                    }
+                }
                 if let Some(link) = client::load(&root) {
+                    // It didn't move, and you chose an always-on Orbit
+                    // since: this app's Orbit keeps autopilot off.
+                    if stayed.is_some() {
+                        let _ = client::end_move(&root);
+                    }
                     show_always_on(app.handle(), root, link, true)?;
                     return Ok(());
                 }
@@ -655,6 +682,12 @@ mod desktop {
                             mime_type: a.mime_type,
                         })
                 });
+                // It didn't move: autopilot as it was before the move.
+                if let Some(automatic) = stayed {
+                    if tauri::async_runtime::block_on(engine.set_autopilot(automatic)).is_ok() {
+                        let _ = client::end_move(&root);
+                    }
+                }
                 let access = remote::Access::new(engine.clone(), hub, root, assets);
                 app.manage(access.clone());
                 tauri::async_runtime::spawn(async move { access.start().await });
