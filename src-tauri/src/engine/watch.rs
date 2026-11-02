@@ -396,15 +396,9 @@ impl Engine {
             let mut limited = result.as_ref().is_err_and(|e| logs::rate_limited(e));
             if let Ok(read) = &mut result {
                 releases::carry(before.as_ref(), read);
-                for tag in releases::due(before.as_ref(), read) {
-                    let check = releases::check(repo, &tag, chrono::Utc::now()).await;
-                    let stop = check.error.as_deref().is_some_and(logs::rate_limited);
-                    releases::add(read, check);
-                    if stop {
-                        limited = true;
-                        break;
-                    }
-                }
+                let check =
+                    |tag| async move { releases::check(repo, &tag, chrono::Utc::now()).await };
+                limited |= releases::check_due(before.as_ref(), read, check).await;
             }
             let fresh = result.is_ok();
             self.update(|s| {

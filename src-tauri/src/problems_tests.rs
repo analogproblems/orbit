@@ -2079,6 +2079,40 @@ mod tags {
         );
     }
 
+    /// A Python project's default branch says its version as PEP 440
+    /// writes it, `1.1` for `v1.1.0` and `1.2rc2` for `v1.2.0-rc.2`.
+    #[test]
+    fn a_python_projects_version_keeps_its_tags_as_pep_440_orders_them() {
+        let python = |version: &str| Setup {
+            versions: vec![VersionFile {
+                path: "pyproject.toml".into(),
+                kind: Kind::Pyproject,
+                version: version.into(),
+                of: String::new(),
+            }],
+            ..head("")
+        };
+        let mut problems = vec![];
+        let wrong = read(&[("v1.1.0", A, &["1.0"])], 0);
+        see_tags(&mut problems, &wrong, Some(&python("1.1")), at(0));
+        assert_eq!(open(&problems).len(), 1);
+        let both = read(
+            &[("v1.2.0-rc.2", B, &["1.2rc1"]), ("v1.1.0", A, &["1.0"])],
+            1,
+        );
+        see_tags(&mut problems, &both, Some(&python("1.2rc2")), at(1));
+        assert_eq!(open(&problems).len(), 2);
+        let rc = read(&[("v1.2.0-rc.2", B, &["1.2rc1"])], 1);
+        // An older pre-release on the branch doesn't keep it.
+        let mut fresh = vec![];
+        see_tags(&mut fresh, &rc, Some(&python("1.2rc1")), at(1));
+        see_tags(&mut fresh, &rc, Some(&python("1.2.dev3")), at(1));
+        assert!(fresh.is_empty());
+        // Nor does the same spelling in a file that isn't Python's.
+        see_tags(&mut fresh, &wrong, Some(&head("1.1")), at(0));
+        assert!(fresh.is_empty());
+    }
+
     #[test]
     fn files_that_dont_keep_the_version_open_nothing() {
         let mut problems = vec![];

@@ -650,9 +650,10 @@ pub fn shown(s: &Snapshot) -> Snapshot {
         d.key_hash.clear();
         d.link.clear();
     }
-    // The list of version tags is only for telling new ones next time.
+    // The lists of version tags are only for telling new ones next time.
     for r in &mut shown.releases {
         r.tags.clear();
+        r.pending.clear();
     }
     shown
 }

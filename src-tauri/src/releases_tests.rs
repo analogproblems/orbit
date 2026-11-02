@@ -533,9 +533,9 @@ fn version_tags_are_kept_highest_first_for_the_next_read() {
     );
 }
 
-/// The newest version tag is checked, then each that is new or moved,
-/// and each GitHub didn't answer for, a few a read; with no list from
-/// before, only the newest.
+/// The newest version tag is due, then each that is new or moved, and
+/// each GitHub didn't answer for; with no list from before, only the
+/// newest.
 #[test]
 fn the_newest_and_new_version_tags_are_checked_once() {
     let mut now = read("a/b", 0);
@@ -600,8 +600,9 @@ fn the_newest_and_new_version_tags_are_checked_once() {
         .collect();
     let mut none = read("a/b", 30);
     none.version_tags = 0;
+    // Every one is due, the highest first; `check_due` takes a few a read.
     let first = due(Some(&none), &many);
-    assert_eq!(first.len(), CHECKS_PER_READ);
+    assert_eq!(first.len(), 30);
     assert_eq!(first[0].name, "v1.29.0");
     for i in 0..30 {
         add(&mut many, checked(&format!("v1.{i}.0"), 'f', &[]));
@@ -609,6 +610,73 @@ fn the_newest_and_new_version_tags_are_checked_once() {
     assert_eq!(many.checks.len(), CHECKS_KEPT);
     assert_eq!(many.checks[0].name, "v1.29.0");
     assert_eq!(many.checks[CHECKS_KEPT - 1].name, "v1.10.0");
+}
+
+/// Tags due beyond the few a read checks, and those a rate limit stopped
+/// it before, are left for the next read and checked then, each once.
+#[tokio::test]
+async fn tags_left_over_are_checked_at_the_next_read() {
+    let asked = std::sync::Mutex::new(Vec::<String>::new());
+    let limit = std::sync::atomic::AtomicBool::new(false);
+    let check = |t: Tag| {
+        asked.lock().unwrap().push(t.name.clone());
+        let mut c = TagCheck {
+            says: vec![t.name[1..].to_string()],
+            name: t.name,
+            sha: t.sha,
+            at: ago(0),
+            ..Default::default()
+        };
+        if limit.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            c.error = Some("gh: API rate limit exceeded for user ID 1. (HTTP 403)".into());
+        }
+        async move { c }
+    };
+    let taken = || std::mem::take(&mut *asked.lock().unwrap());
+    // With no version tags before, all 7 are new: 5 now, 2 left.
+    let mut before = read("a/b", 30);
+    before.version_tags = 0;
+    let mut now = read("a/b", 0);
+    now.tags = (0..7)
+        .rev()
+        .map(|i| tag(&format!("v1.{i}.0"), 'f'))
+        .collect();
+    assert!(!check_due(Some(&before), &mut now, check).await);
+    assert_eq!(taken(), ["v1.6.0", "v1.5.0", "v1.4.0", "v1.3.0", "v1.2.0"]);
+    assert_eq!(names(&now.pending), ["v1.1.0", "v1.0.0"]);
+    // The next read checks those, though they aren't new any more.
+    let next = |before: &RepoReleases| {
+        let mut now = read("a/b", 0);
+        now.tags = before.tags.clone();
+        carry(Some(before), &mut now);
+        now
+    };
+    let mut second = next(&now);
+    assert!(!check_due(Some(&now), &mut second, check).await);
+    assert_eq!(taken(), ["v1.1.0", "v1.0.0"]);
+    assert!(second.pending.is_empty());
+    let mut third = next(&second);
+    assert!(!check_due(Some(&second), &mut third, check).await);
+    assert!(taken().is_empty());
+
+    // Two new tags, and a rate limit on the first: the second waits too.
+    let mut fourth = next(&third);
+    fourth
+        .tags
+        .splice(0..0, [tag("v2.1.0", 'a'), tag("v2.0.0", 'b')]);
+    limit.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(check_due(Some(&third), &mut fourth, check).await);
+    assert_eq!(taken(), ["v2.1.0"]);
+    assert_eq!(names(&fourth.pending), ["v2.0.0"]);
+    let mut fifth = next(&fourth);
+    assert!(!check_due(Some(&fourth), &mut fifth, check).await);
+    assert_eq!(taken(), ["v2.1.0", "v2.0.0"]);
+    assert!(fifth.pending.is_empty());
+    assert!(fifth
+        .checks
+        .iter()
+        .filter(|c| c.name.starts_with("v2."))
+        .all(|c| c.right() == Some(true)));
 }
 
 #[test]
@@ -627,13 +695,27 @@ fn a_tag_is_on_the_right_commit_when_a_manifest_there_says_its_version() {
         checked("v1.0.0+build.5", 'a', &["1.0.0"]).right(),
         Some(true)
     );
-    // A Python project's, as PEP 440 compares them.
-    assert_eq!(checked("v1.0.0", 'a', &["1.0"]).right(), Some(true));
+    // A Python project's own file, as PEP 440 compares them.
+    let python = |name: &str, says: &[&str]| TagCheck {
+        python: says.iter().map(|s| s.to_string()).collect(),
+        ..checked(name, 'a', says)
+    };
+    assert_eq!(python("v1.0.0", &["1.0"]).right(), Some(true));
+    assert_eq!(python("v1.0.0-alpha.1", &["1.0a1"]).right(), Some(true));
+    assert_eq!(python("v1.0.0-alpha.1", &["1.0.0-a1"]).right(), Some(true));
+    assert_eq!(python("v1.0.0", &["1.1"]).right(), Some(false));
+    // Anywhere else they are different versions.
     assert_eq!(
-        checked("v1.0.0-alpha.1", 'a', &["1.0a1"]).right(),
-        Some(true)
+        checked("v1.0.0-alpha.1", 'a', &["1.0.0-a1"]).right(),
+        Some(false)
     );
-    assert_eq!(checked("v1.0.0", 'a', &["1.1"]).right(), Some(false));
+    assert_eq!(checked("v1.0.0", 'a', &["1.0"]).right(), Some(false));
+    // Cargo.toml says one, pyproject.toml the other.
+    let both = TagCheck {
+        python: vec!["1.0a1".into()],
+        ..checked("v1.0.0-alpha.1", 'a', &["1.0.0-a1", "1.0a1"])
+    };
+    assert_eq!(both.right(), Some(true));
     assert_eq!(checked("v0.3.0", 'a', &["0.2.0"]).right(), Some(false));
     assert_eq!(
         checked("v0.3.0", 'a', &["0.3.0-beta.1"]).right(),

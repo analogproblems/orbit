@@ -927,12 +927,13 @@ pub fn see_tags(
             && s.checks >= crate::workflows::VERSIONS
             && same_repo(&s.repo, &read.repo)
     });
-    let keeps = |tag: &crate::releases::Version| {
+    // A Python project's own file is read as PEP 440 orders versions.
+    let keeps = |tag: &str| {
         setup.is_some_and(|s| {
             s.versions
                 .iter()
                 .filter(|f| !f.kind.is_lock())
-                .any(|f| version(&f.version).is_some_and(|v| v >= *tag))
+                .any(|f| crate::versions::says_at_least(f, tag))
         })
     };
     // A higher version on the right commit, checked after `since`.
@@ -964,7 +965,7 @@ pub fn see_tags(
             }
             continue;
         }
-        if !keeps(&v) || newer_right(&v, "").is_some() {
+        if !keeps(&c.name) || newer_right(&v, "").is_some() {
             continue;
         }
         let mut p = Problem {

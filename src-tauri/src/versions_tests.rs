@@ -663,3 +663,52 @@ fn files_that_disagree_in_a_sentence() {
     assert_eq!(count(1), "1 version file");
     assert_eq!(count(3), "3 version files");
 }
+
+/// Python versions come in PEP 440's order, so a `pyproject.toml` keeps a
+/// tag when it says its version or a newer one, as Python writes it.
+#[test]
+fn python_versions_are_ordered_as_pep_440_orders_them() {
+    let order = |v: &str| Pep440Order::of(v).unwrap();
+    let list = [
+        "1.0.dev1",
+        "1.0a1.dev1",
+        "1.0a1",
+        "1.0a1.post1",
+        "1.0b2",
+        "1.0rc1",
+        "1.0",
+        "1.0.post1.dev1",
+        "1.0.post1",
+        "1.0.1",
+        "1.1",
+        "1!0.1",
+    ];
+    for w in list.windows(2) {
+        assert!(order(w[0]) < order(w[1]), "{} < {}", w[0], w[1]);
+    }
+    assert_eq!(order("1.0"), order("v1.0.0"));
+    assert_eq!(order("1.0-alpha.1"), order("v1.0.0-a1"));
+    assert_eq!(order("1.0+build.7"), order("1.0"));
+    assert!(Pep440Order::of("banana").is_none());
+
+    let file = |kind, version: &str| VersionFile {
+        path: "x".into(),
+        kind,
+        version: version.into(),
+        of: String::new(),
+    };
+    assert!(says_at_least(&file(Kind::Pyproject, "1.1"), "v1.1.0"));
+    assert!(says_at_least(&file(Kind::Pyproject, "1.2"), "v1.1.0"));
+    assert!(says_at_least(
+        &file(Kind::Pyproject, "1.2rc2"),
+        "v1.2.0-rc.2"
+    ));
+    assert!(!says_at_least(
+        &file(Kind::Pyproject, "1.2rc1"),
+        "v1.2.0-rc.2"
+    ));
+    // Elsewhere, only a whole version counts.
+    assert!(!says_at_least(&file(Kind::Package, "1.1"), "v1.1.0"));
+    assert!(says_at_least(&file(Kind::Cargo, "1.2.0"), "v1.1.0"));
+    assert!(!says_at_least(&file(Kind::Cargo, "1.1.0-rc.1"), "v1.1.0"));
+}

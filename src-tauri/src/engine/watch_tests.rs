@@ -1026,6 +1026,21 @@ fn files_say(dir: &Path, c: char, version: &str) {
     )
     .unwrap();
 }
+/// As `files_say`, for a Python project: its `pyproject.toml` alone.
+fn python_files_say(dir: &Path, c: char, version: &str) {
+    let pyproject = format!("[project]\nname = \"app\"\nversion = \"{version}\"\n");
+    let v = json!({ "data": { "repository": {
+        "workflows": { "entries": [{ "name": "ci.yml", "type": "blob",
+            "object": { "text": "on: pull_request\n", "isTruncated": false } }] },
+        "root": { "entries": [{ "name": ".github", "type": "tree" }] },
+        "pyproject": { "text": pyproject, "isTruncated": false },
+    } } });
+    std::fs::write(
+        dir.join(format!("setup-{}.json", c.to_string().repeat(40))),
+        v.to_string(),
+    )
+    .unwrap();
+}
 /// `a/b`'s version tags on GitHub, as `(tag, commit)`.
 fn tags_on_github(dir: &Path, tags: &[(&str, char)]) {
     let nodes: Vec<_> = tags
@@ -1150,6 +1165,64 @@ async fn a_tag_on_the_wrong_commit_needs_you_once() {
         .find(|c| c.name == "v0.3.1")
         .unwrap();
     assert_eq!(check.right(), Some(true));
+}
+
+/// A Python project's tags, through the fake GitHub: its files say its
+/// version as PEP 440 writes it, `1.1` for `v1.1.0` and `1.2rc1` for
+/// `v1.2.0-rc.1`, and a tag pushed before the bump needs you as anywhere.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_python_projects_tag_on_the_wrong_commit_needs_you_too() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    std::fs::write(
+        d.path().join("answer.json"),
+        answer(&"1".repeat(40), "SUCCESS"),
+    )
+    .unwrap();
+    python_files_say(d.path(), '1', "1.1");
+    python_files_say(d.path(), 'c', "1.0");
+    tags_on_github(d.path(), &[("v1.1.0", 'c')]);
+    let e = connected(d.path()).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let reasons = |s: &Snapshot| -> Vec<String> {
+        s.attention
+            .iter()
+            .filter(|a| a.kind == AttentionKind::Release)
+            .map(|a| a.reason.clone())
+            .collect()
+    };
+    let shown = reasons(&e.shown_snapshot().await);
+    assert_eq!(shown.len(), 1);
+    assert!(shown[0]
+        .starts_with("The tag v1.1.0 in a/b points at ccccccc, whose version files say 1.0."));
+
+    // A release candidate: v1.2.0-rc.1 where the files say 1.2rc1 is
+    // right, and v1.2.0-rc.2, pushed before the bump to 1.2rc2, isn't.
+    std::fs::write(
+        d.path().join("answer.json"),
+        answer(&"2".repeat(40), "SUCCESS"),
+    )
+    .unwrap();
+    python_files_say(d.path(), '2', "1.2rc2");
+    python_files_say(d.path(), 'd', "1.2rc1");
+    python_files_say(d.path(), 'e', "1.2rc1");
+    tags_on_github(
+        d.path(),
+        &[("v1.2.0-rc.2", 'e'), ("v1.2.0-rc.1", 'd'), ("v1.1.0", 'c')],
+    );
+    releases_read_long_ago(&e).await;
+    crate::github::GH.scope(gh, e.watch_ci()).await;
+    let shown = reasons(&e.shown_snapshot().await);
+    assert_eq!(shown.len(), 1);
+    assert!(shown[0].starts_with(
+        "The tag v1.2.0-rc.2 in a/b points at eeeeeee, whose version files say 1.2rc1."
+    ));
+    // v1.1.0 closed once a higher version came out on the right commit.
+    let s = e.snapshot().await;
+    let old = s.problems.iter().find(|p| p.tag == "v1.1.0").unwrap();
+    assert!(!old.is_open());
+    assert!(writes(d.path()).is_empty());
 }
 
 /// Releases GitHub won't show are said so, with nothing more asked. After

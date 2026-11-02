@@ -280,6 +280,98 @@ pub fn manifests_say(files: &[VersionFile]) -> Vec<String> {
     }
     says
 }
+/// The versions a Python project's `pyproject.toml` among `files` says,
+/// each once, which PEP 440 compares its own way (`pep440`).
+pub fn python_says(files: &[VersionFile]) -> Vec<String> {
+    let mut says: Vec<String> = vec![];
+    for f in files.iter().filter(|f| f.kind == Kind::Pyproject) {
+        if !says.contains(&f.version) {
+            says.push(f.version.clone());
+        }
+    }
+    says
+}
+/// Whether a manifest says a version tag's version or a newer one: as
+/// `crate::releases::version` orders them, but a Python project's as PEP
+/// 440 does (`Pep440Order`), so its `1.1` is `v1.1.0`. False when either
+/// isn't a version.
+pub fn says_at_least(f: &VersionFile, tag: &str) -> bool {
+    use crate::releases::version;
+    match f.kind {
+        Kind::Pyproject => {
+            matches!((Pep440Order::of(&f.version), Pep440Order::of(tag)), (Some(a), Some(b)) if a >= b)
+        }
+        _ => matches!((version(&f.version), version(tag)), (Some(a), Some(b)) if a >= b),
+    }
+}
+/// Where a Python version comes in PEP 440's order, its local label left
+/// out: by epoch, then release, then a dev release before the
+/// pre-releases, the pre-releases (`a`, `b`, `rc`), the release itself and
+/// its post-releases, each after its own dev releases.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Pep440Order {
+    epoch: u64,
+    /// With no zeros at the end, so `1.0` and `1` are the same.
+    release: Vec<u64>,
+    /// 0 for a dev release of the release itself, 1 to 3 for `a`, `b` and
+    /// `rc` with their number, and 4 for none.
+    pre: (u8, u64),
+    post: Option<u64>,
+    /// 0 with its number for a dev release, and 1 for none.
+    dev: (u8, u64),
+}
+impl Pep440Order {
+    /// Where `v` comes, or None when it isn't a Python version.
+    pub fn of(v: &str) -> Option<Self> {
+        let canonical = pep440(v)?;
+        let v = canonical
+            .split_once('+')
+            .map_or(canonical.as_str(), |(v, _)| v);
+        let (epoch, v) = match v.split_once('!') {
+            Some((e, v)) => (e.parse().ok()?, v),
+            None => (0, v),
+        };
+        let (v, dev) = match v.split_once(".dev") {
+            Some((v, n)) => (v, Some(n.parse().ok()?)),
+            None => (v, None),
+        };
+        let (v, post) = match v.split_once(".post") {
+            Some((v, n)) => (v, Some(n.parse().ok()?)),
+            None => (v, None),
+        };
+        let at = v.find(|c: char| c.is_ascii_alphabetic()).unwrap_or(v.len());
+        let (release, pre) = v.split_at(at);
+        let release = release
+            .split('.')
+            .map(|n| n.parse().ok())
+            .collect::<Option<Vec<u64>>>()?;
+        let pre = match pre {
+            "" => None,
+            pre => {
+                let n = pre.trim_start_matches(|c: char| c.is_ascii_alphabetic());
+                let phase = match &pre[..pre.len() - n.len()] {
+                    "a" => 1,
+                    "b" => 2,
+                    "rc" => 3,
+                    _ => return None,
+                };
+                Some((phase, n.parse().ok()?))
+            }
+        };
+        let pre = match (pre, post, dev) {
+            (Some(pre), _, _) => pre,
+            (None, None, Some(_)) => (0, 0),
+            _ => (4, 0),
+        };
+        Some(Pep440Order {
+            epoch,
+            release,
+            pre,
+            post,
+            dev: dev.map_or((1, 0), |n| (0, n)),
+        })
+    }
+}
 /// Files that disagree in a sentence: "A says 1.0.0, B says 0.9.0 and 2
 /// more".
 pub fn names(mismatches: &[Mismatch]) -> String {
