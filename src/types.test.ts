@@ -307,6 +307,7 @@ describe("security settings baseline", () => {
     const wanted = wantedFor(undefined, "acme");
     expect(settingsDrift(read, wanted)).toEqual({
       drift: ["dependabot_alerts", "private_reporting"],
+      matched: ["read_only_token"],
       unknown: [
         "secret_scanning",
         "dependabot_updates",
@@ -319,7 +320,7 @@ describe("security settings baseline", () => {
     ]);
     expect(
       settingsDrift({ ...read, unseen: "Can't see them." }, wanted),
-    ).toEqual({ drift: [], unknown: [] });
+    ).toEqual({ drift: [], matched: [], unknown: [] });
   });
 });
 

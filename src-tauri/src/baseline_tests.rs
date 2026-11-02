@@ -303,6 +303,23 @@ async fn reads_each_setting_as_github_has_it() {
         .iter()
         .any(|c| c.contains("private-vulnerability-reporting") || c.contains("fork-pr")));
 
+    // Internal, which only its enterprise sees: not public either.
+    let mut about: Value =
+        serde_json::from_str(&std::fs::read_to_string(d.path().join("repo.json")).unwrap())
+            .unwrap();
+    about["private"] = json!(false);
+    about["visibility"] = json!("internal");
+    std::fs::write(d.path().join("repo.json"), about.to_string()).unwrap();
+    let _ = std::fs::remove_file(d.path().join("calls"));
+    let r = crate::github::GH
+        .scope(gh.clone(), read("a/b"))
+        .await
+        .unwrap();
+    assert!(r.private);
+    assert!(!calls(d.path())
+        .iter()
+        .any(|c| c.contains("private-vulnerability-reporting") || c.contains("fork-pr")));
+
     // Not an admin: nothing more is asked.
     repo(false, false);
     let r = crate::github::GH
@@ -328,6 +345,20 @@ async fn reads_each_setting_as_github_has_it() {
         .await
         .unwrap_err();
     assert!(e.contains("HTTP 502"), "{e}");
+}
+
+#[test]
+fn only_a_repository_everyone_sees_is_public() {
+    for (about, is) in [
+        (json!({"private": false, "visibility": "public"}), true),
+        (json!({"private": true, "visibility": "private"}), false),
+        (json!({"private": false, "visibility": "internal"}), false),
+        (json!({"private": false}), true),
+        (json!({"private": true}), false),
+        (json!({}), false),
+    ] {
+        assert_eq!(public(&about), is, "{about}");
+    }
 }
 
 #[test]

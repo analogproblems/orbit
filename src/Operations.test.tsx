@@ -1008,6 +1008,30 @@ describe("operations page", () => {
       within(rows[1]).getByText("The Actions token can write by default."),
     ).toBeTruthy();
     cleanup();
+    // Not Matches while Orbit can't tell about one it asks for, whether
+    // it knows the others or none.
+    const orbit = s.repoSettings!.find((r) => r.repo === "acme/orbit")!;
+    const found = orbit.found;
+    orbit.found = found.map((f) =>
+      f.setting === "secret_scanning" ? { ...f, on: null } : f,
+    );
+    show(s);
+    const first = () =>
+      within(
+        screen.getByRole("list", { name: "Security settings" }),
+      ).getAllByRole("listitem")[0];
+    expect(within(first()).getByLabelText("Can’t tell")).toBeTruthy();
+    expect(within(first()).queryByLabelText("Matches")).toBeNull();
+    expect(first().textContent).toContain(
+      "Everything else matches its baseline.",
+    );
+    cleanup();
+    orbit.found = found.map((f) => ({ ...f, on: null }));
+    show(s);
+    expect(within(first()).getByLabelText("Can’t tell")).toBeTruthy();
+    expect(first().textContent).not.toContain("matches");
+    cleanup();
+    orbit.found = found;
     // With Watch CI off too, and gone with Watch security alerts off.
     s.settings.watchCi = false;
     show(s);
@@ -1253,6 +1277,11 @@ describe("security settings sentences", () => {
     expect(lines("acme/orbit")).toEqual([
       "Everything else matches its baseline.",
       "Orbit can’t tell whether this is on: Push protection for secrets.",
+    ]);
+    // Nothing else matches when Orbit can't tell about any of them.
+    orbit.found = orbit.found.map((f) => ({ ...f, on: null }));
+    expect(lines("acme/orbit")).toEqual([
+      "Orbit can’t tell whether these are on: Secret scanning, Push protection for secrets, Private vulnerability reporting.",
     ]);
     // A private repository has no private reporting; acme/api matches.
     expect(lines("acme/api")).toEqual(["It matches its baseline."]);

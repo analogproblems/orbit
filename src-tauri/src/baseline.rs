@@ -175,8 +175,9 @@ pub struct RepoSettings {
     pub repo: String,
     /// When Orbit last read them, by Orbit's clock.
     pub read_at: String,
-    /// GitHub says only those it lets in can see the repository, so the
-    /// settings only a public repository has aren't read.
+    /// GitHub says only those it lets in can see the repository, as it's
+    /// private or internal (`public`), so the settings only a public
+    /// repository has aren't read.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub private: bool,
     /// Each setting Orbit read, in `Setting::ALL`'s order.
@@ -298,7 +299,7 @@ pub async fn read(repo: &str) -> Result<RepoSettings, String> {
     let mut read = RepoSettings {
         repo: repo.to_string(),
         read_at: stamp(Utc::now()),
-        private: crate::security::private(Ok(about.clone()))?,
+        private: !public(&about),
         ..Default::default()
     };
     if about["permissions"]["admin"] != true {
@@ -376,6 +377,15 @@ pub async fn read(repo: &str) -> Result<RepoSettings, String> {
         .collect();
     read.found.sort_by_key(|f| f.setting);
     Ok(read)
+}
+/// Whether GitHub shows the repository to everyone. An internal one, which
+/// only its enterprise sees, isn't public, so it has no settings only
+/// public repositories have.
+pub fn public(about: &Value) -> bool {
+    match about["visibility"].as_str() {
+        Some(visibility) => visibility == "public",
+        None => about["private"] == false,
+    }
 }
 /// What GitHub's answer about one setting says: what `seen` reads in it,
 /// `missing` for a 404 when that says it's off, and unknown when GitHub

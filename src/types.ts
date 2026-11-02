@@ -1604,8 +1604,9 @@ export function wantedFor(
     .filter((s) => (chosen ? chosen.includes(s.key) : s.orbit))
     .map((s) => s.key);
 }
-/** The settings of `wanted` a repository has off (`drift`), or can't tell
- * (`unknown`), as the engine has it. Nothing while Orbit can't see them. */
+/** The settings of `wanted` a repository has off (`drift`), on
+ * (`matched`), or can't tell (`unknown`), as the engine has it. Nothing
+ * while Orbit can't see them. */
 export function settingsDrift(r: RepoSettings, wanted: SecuritySetting[]) {
   const seen = !r.unseen && !!r.readAt;
   const has = (key: SecuritySetting) =>
@@ -1614,7 +1615,7 @@ export function settingsDrift(r: RepoSettings, wanted: SecuritySetting[]) {
     r.found.find((f) => f.setting === key)?.on ?? null;
   const of = (state: boolean | null) =>
     seen ? wanted.filter((k) => has(k) && on(k) === state) : [];
-  return { drift: of(false), unknown: of(null) };
+  return { drift: of(false), matched: of(true), unknown: of(null) };
 }
 /** Whether only you should see to an alert now: every secret, and every
  * high or critical alert, as the engine has it (`security.rs`). */

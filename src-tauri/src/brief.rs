@@ -202,9 +202,19 @@ pub fn lines(s: &Snapshot) -> Vec<Line> {
     for (repo, drift) in crate::baseline::drifting(&s.repo_settings, &s.settings.security_baselines)
     {
         let keys: Vec<&str> = drift.iter().map(|d| d.key()).collect();
+        let mut text = crate::baseline::drift_text(&repo, &drift);
+        let failed = s
+            .repo_settings
+            .iter()
+            .any(|r| r.repo == repo && r.error.is_some());
+        if failed {
+            text.push_str(
+                " Orbit's latest read of its settings failed, so this may be out of date.",
+            );
+        }
         notes.push(line(
             format!("settings:{}:{}", repo.to_ascii_lowercase(), keys.join(",")),
-            crate::baseline::drift_text(&repo, &drift),
+            text,
             None,
         ));
     }

@@ -1157,18 +1157,15 @@ export function settingsLines(s: Snapshot, r: RepoSettings) {
   if (r.unseen) return [r.unseen];
   if (!r.readAt) return [];
   const wanted = wantedFor(s.settings.securityBaselines, ownerOf(r.repo));
-  const { drift, unknown } = settingsDrift(r, wanted);
+  const { drift, matched, unknown } = settingsDrift(r, wanted);
   const about = (k: string) => securitySettings.find((x) => x.key === k)!;
   const lines = drift.map((k) => about(k).offText);
+  if (!drift.length && !unknown.length) lines.push("It matches its baseline.");
+  else if (!drift.length && matched.length)
+    lines.push("Everything else matches its baseline.");
   if (unknown.length)
     lines.push(
       `Orbit can’t tell whether ${unknown.length === 1 ? "this is" : "these are"} on: ${unknown.map((k) => about(k).name).join(", ")}.`,
-    );
-  if (!drift.length)
-    lines.unshift(
-      unknown.length
-        ? "Everything else matches its baseline."
-        : "It matches its baseline.",
     );
   return lines;
 }
@@ -1200,14 +1197,17 @@ function SecuritySettings() {
                 s.settings.securityBaselines,
                 ownerOf(r.repo),
               );
-              const { drift } = settingsDrift(r, wanted);
+              const { drift, unknown } = settingsDrift(r, wanted);
+              // Matches only once Orbit knows each one it asks for is on.
               const dot = r.unseen
                 ? { variant: "neutral" as const, label: "Can’t see" }
                 : !r.readAt
                   ? { variant: "neutral" as const, label: "Not read yet" }
                   : drift.length
                     ? { variant: "warning" as const, label: "Drifts" }
-                    : { variant: "success" as const, label: "Matches" };
+                    : unknown.length
+                      ? { variant: "neutral" as const, label: "Can’t tell" }
+                      : { variant: "success" as const, label: "Matches" };
               return (
                 <ListItem
                   key={r.repo}
