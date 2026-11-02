@@ -2143,6 +2143,42 @@ describe("initial loading and repository errors", () => {
       screen.getByRole("combobox", { name: /^Blocking priorities/ }),
     ).toHaveProperty("disabled", true);
   });
+  it("changes an owner's security settings baseline, starting from Orbit's", async () => {
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Settings" }));
+    await openSettingsTab("Automation");
+    const all = [
+      "secret_scanning",
+      "push_protection",
+      "dependabot_alerts",
+      "dependabot_updates",
+      "private_reporting",
+      "read_only_token",
+      "no_actions_approval",
+      "fork_approval",
+    ];
+    const push = screen.getByRole("switch", {
+      name: /^Push protection for secrets/,
+    }) as HTMLInputElement;
+    expect(push.checked).toBe(false);
+    await user().click(push);
+    expect(invoke).toHaveBeenCalledWith("update_settings", {
+      patch: { securityBaselines: [{ owner: "acme", settings: all }] },
+    });
+    await user().click(
+      screen.getByRole("switch", { name: /^Dependabot alerts/ }),
+    );
+    expect(invoke).toHaveBeenLastCalledWith("update_settings", {
+      patch: {
+        securityBaselines: [
+          {
+            owner: "acme",
+            settings: all.filter((k) => k !== "dependabot_alerts"),
+          },
+        ],
+      },
+    });
+  });
   it("chooses Antigravity as a repository's reviewer and its model in Settings", async () => {
     await mount();
     await user().click(screen.getByRole("button", { name: "Repositories" }));

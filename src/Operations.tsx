@@ -20,10 +20,14 @@ import {
   alertNeedsYou,
   buddyOf,
   checkNames,
+  ownerOf,
   readinessLine,
   sameRepo,
+  securitySettings,
+  settingsDrift,
   shortSha,
   trustedSource,
+  wantedFor,
   type ActionsStorage,
   type AlertSeverity,
   type AlertSource,
@@ -37,6 +41,7 @@ import {
   type OpsWrite,
   type Problem,
   type RepoCi,
+  type RepoSettings,
   type Runner,
   type RunnerPlace,
   type SecurityAlert,
@@ -1145,6 +1150,94 @@ function Security() {
 /** The self-hosted runners Orbit sees for each repository, and for each
  * organization that owns one, and where it can't see them. Places with
  * none aren't listed. */
+/** What a repository's security settings say against its owner's
+ * baseline: a line per setting it has off, then those Orbit can't tell
+ * about, or that it matches. Nothing while Orbit can't see them. */
+export function settingsLines(s: Snapshot, r: RepoSettings) {
+  if (r.unseen) return [r.unseen];
+  if (!r.readAt) return [];
+  const wanted = wantedFor(s.settings.securityBaselines, ownerOf(r.repo));
+  const { drift, unknown } = settingsDrift(r, wanted);
+  const about = (k: string) => securitySettings.find((x) => x.key === k)!;
+  const lines = drift.map((k) => about(k).offText);
+  if (unknown.length)
+    lines.push(
+      `Orbit can’t tell whether ${unknown.length === 1 ? "this is" : "these are"} on: ${unknown.map((k) => about(k).name).join(", ")}.`,
+    );
+  if (!drift.length)
+    lines.unshift(
+      unknown.length
+        ? "Everything else matches its baseline."
+        : "It matches its baseline.",
+    );
+  return lines;
+}
+/** Each repository's security settings, against its owner's baseline. */
+function SecuritySettings() {
+  const { snapshot: s } = useOrbit();
+  const read = (s.repoSettings ?? []).filter((r) => r.readAt || r.error);
+  return (
+    <VStack gap={3}>
+      <Heading level={3}>Security settings</Heading>
+      <Text color="secondary">
+        Every hour, Orbit reads each repository’s security settings and compares
+        them with its owner’s baseline, which you choose in Settings under
+        Automation. GitHub shows them only to a repository’s admins. Orbit only
+        reads them here; it changes nothing.
+      </Text>
+      {!read.length ? (
+        <Card padding={3}>
+          <HStack gap={3} vAlign="center">
+            <StatusDot variant="neutral" label="Not read yet" />
+            <Text>Orbit hasn’t read any security settings yet.</Text>
+          </HStack>
+        </Card>
+      ) : (
+        <Card padding={0}>
+          <List hasDividers aria-label="Security settings">
+            {read.map((r) => {
+              const wanted = wantedFor(
+                s.settings.securityBaselines,
+                ownerOf(r.repo),
+              );
+              const { drift } = settingsDrift(r, wanted);
+              const dot = r.unseen
+                ? { variant: "neutral" as const, label: "Can’t see" }
+                : !r.readAt
+                  ? { variant: "neutral" as const, label: "Not read yet" }
+                  : drift.length
+                    ? { variant: "warning" as const, label: "Drifts" }
+                    : { variant: "success" as const, label: "Matches" };
+              return (
+                <ListItem
+                  key={r.repo}
+                  startContent={
+                    <StatusDot variant={dot.variant} label={dot.label} />
+                  }
+                  label={<Text weight="medium">{r.repo}</Text>}
+                  description={
+                    <VStack gap={1}>
+                      {settingsLines(s, r).map((line) => (
+                        <Text key={line}>{line}</Text>
+                      ))}
+                      {r.error && <Text color="secondary">{r.error}</Text>}
+                    </VStack>
+                  }
+                  endContent={
+                    r.readAt ? (
+                      <Timestamp value={r.readAt} format="relative_short" />
+                    ) : undefined
+                  }
+                />
+              );
+            })}
+          </List>
+        </Card>
+      )}
+    </VStack>
+  );
+}
+
 function Runners() {
   const { snapshot: s } = useOrbit();
   const read = (s.runners ?? []).filter(
@@ -1493,6 +1586,7 @@ export function Operations(go: AttentionHandlers) {
           />
           <SaveFeedback saveKey="watchCi" />
           {security && <Security />}
+          {security && <SecuritySettings />}
         </>
       ) : (
         <>
@@ -1506,6 +1600,7 @@ export function Operations(go: AttentionHandlers) {
             <Repositories go={go} />
           </VStack>
           {security && <Security />}
+          {security && <SecuritySettings />}
           <Runners />
           <StorageUse />
           <RecentlyFixed />

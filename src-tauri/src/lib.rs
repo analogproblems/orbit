@@ -4,6 +4,7 @@ pub mod antigravity;
 pub mod api;
 pub mod ask;
 pub mod attention;
+pub mod baseline;
 pub mod boxtool;
 pub mod brief;
 pub mod broke;

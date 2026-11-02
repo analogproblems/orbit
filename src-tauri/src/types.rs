@@ -965,8 +965,12 @@ pub struct Settings {
     /// requests after each sync, and keep track of what fails.
     pub watch_ci: bool,
     /// Read each repository's Dependabot, code scanning and secret scanning
-    /// alerts, and keep track of those still open (see `crate::security`).
+    /// alerts, and keep track of those still open (see `crate::security`),
+    /// and its security settings (see `crate::baseline`).
     pub watch_security: bool,
+    /// The security settings each owner's repositories should have. An
+    /// owner without one has Orbit's (`crate::baseline::Setting::ORBIT`).
+    pub security_baselines: Vec<crate::baseline::Baseline>,
 }
 /// Who writes up each pull request's decisions for the Decisions page.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1018,6 +1022,7 @@ pub struct SettingsPatch {
     pub write_ups: Option<WriteUps>,
     pub watch_ci: Option<bool>,
     pub watch_security: Option<bool>,
+    pub security_baselines: Option<Vec<crate::baseline::Baseline>>,
 }
 impl SettingsPatch {
     pub fn apply(self, settings: &mut Settings) {
@@ -1084,6 +1089,9 @@ impl SettingsPatch {
         if let Some(v) = self.watch_security {
             settings.watch_security = v;
         }
+        if let Some(v) = self.security_baselines {
+            settings.security_baselines = v;
+        }
     }
 }
 impl Default for Settings {
@@ -1111,6 +1119,7 @@ impl Default for Settings {
             write_ups: WriteUps::default(),
             watch_ci: true,
             watch_security: true,
+            security_baselines: vec![],
         }
     }
 }
@@ -1158,6 +1167,7 @@ impl Settings {
                 return Err(format!("{login} is already trusted."));
             }
         }
+        crate::baseline::validate(&self.security_baselines)?;
         let mut names = std::collections::HashSet::new();
         for repo in &self.repositories {
             validate_repo(&repo.name)?;
@@ -1392,6 +1402,9 @@ pub struct Snapshot {
     /// Each connected repository's open security alerts, as Orbit last read
     /// them (see `crate::security`).
     pub security: Vec<crate::security::RepoSecurity>,
+    /// Each connected repository's security settings, as Orbit last read
+    /// them (see `crate::baseline`).
+    pub repo_settings: Vec<crate::baseline::RepoSettings>,
     /// What GitHub last said about whether each pull request Orbit reviews
     /// can merge (see `crate::readiness`).
     pub merges: Vec<crate::readiness::Merge>,

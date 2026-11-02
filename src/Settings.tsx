@@ -25,9 +25,13 @@ import {
   connectionState,
   defaultEffort,
   defaultWriteUps,
+  ownerOf,
   reviewerSelectionUnavailable,
+  securitySettings,
+  wantedFor,
   withPatch,
   writerLabels,
+  type SecuritySetting,
   type Settings,
   type SettingsPatch,
   type SettingsTab,
@@ -564,6 +568,7 @@ function AutomationSettings() {
           />
           <SaveFeedback saveKey="watchSecurity" />
         </VStack>
+        {(draft.watchSecurity ?? true) && <SecurityBaselines />}
         <VStack gap={2}>
           <Switch
             label="Notify me when a review needs attention"
@@ -627,6 +632,74 @@ function AutomationSettings() {
         </FormLayout>
       </VStack>
     </Card>
+  );
+}
+
+/** Each owner's security settings baseline, which the Operations page
+ * compares its repositories' settings with. */
+function SecurityBaselines() {
+  const { updateSettings, saves } = useOrbit();
+  const draft = useDraft();
+  const pending = saves.securityBaselines?.state === "saving";
+  const baselines = draft.securityBaselines ?? [];
+  const owners: string[] = [];
+  for (const owner of [
+    ...draft.repositories.map((r) => ownerOf(r.name)),
+    ...baselines.map((b) => b.owner),
+  ])
+    if (!owners.some((o) => o.toLowerCase() === owner.toLowerCase()))
+      owners.push(owner);
+  if (!owners.length) return null;
+  const choose = (owner: string, key: SecuritySetting, on: boolean) => {
+    const wanted = wantedFor(baselines, owner).filter((k) => k !== key);
+    if (on) wanted.push(key);
+    const settings = securitySettings
+      .map((x) => x.key)
+      .filter((k) => wanted.includes(k));
+    void updateSettings({
+      securityBaselines: [
+        ...baselines.filter(
+          (b) => b.owner.toLowerCase() !== owner.toLowerCase(),
+        ),
+        { owner, settings },
+      ],
+    });
+  };
+  return (
+    <VStack gap={4}>
+      <VStack gap={1}>
+        <Text weight="medium">Security settings baseline</Text>
+        <Text color="secondary">
+          The security settings each owner’s repositories should have. Every
+          hour, Orbit reads each repository’s settings and shows on the
+          Operations page where they drift from its owner’s baseline. Each owner
+          starts from Orbit’s baseline: all of these but push protection, which
+          blocks pushes. Orbit only reads these settings; it changes none.
+        </Text>
+      </VStack>
+      {owners.map((owner) => {
+        const wanted = wantedFor(baselines, owner);
+        return (
+          <VStack key={owner} gap={2}>
+            <Text weight="medium">{owner}</Text>
+            {securitySettings.map((x) => (
+              <Switch
+                key={x.key}
+                label={x.name}
+                labelPosition="start"
+                labelSpacing="spread"
+                width="100%"
+                value={wanted.includes(x.key)}
+                isDisabled={pending}
+                onChange={(on) => choose(owner, x.key, on)}
+                description={x.about}
+              />
+            ))}
+          </VStack>
+        );
+      })}
+      <SaveFeedback saveKey="securityBaselines" />
+    </VStack>
   );
 }
 

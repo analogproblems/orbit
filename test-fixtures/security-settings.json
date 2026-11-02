@@ -1,0 +1,50 @@
+[
+  {
+    "key": "secret_scanning",
+    "name": "Secret scanning",
+    "publicOnly": false,
+    "orbit": true
+  },
+  {
+    "key": "push_protection",
+    "name": "Push protection for secrets",
+    "publicOnly": false,
+    "orbit": false
+  },
+  {
+    "key": "dependabot_alerts",
+    "name": "Dependabot alerts",
+    "publicOnly": false,
+    "orbit": true
+  },
+  {
+    "key": "dependabot_updates",
+    "name": "Dependabot security updates",
+    "publicOnly": false,
+    "orbit": true
+  },
+  {
+    "key": "private_reporting",
+    "name": "Private vulnerability reporting",
+    "publicOnly": true,
+    "orbit": true
+  },
+  {
+    "key": "read_only_token",
+    "name": "Read-only Actions token",
+    "publicOnly": false,
+    "orbit": true
+  },
+  {
+    "key": "no_actions_approval",
+    "name": "Actions can't approve pull requests",
+    "publicOnly": false,
+    "orbit": true
+  },
+  {
+    "key": "fork_approval",
+    "name": "Approval for first-time contributors",
+    "publicOnly": true,
+    "orbit": true
+  }
+]

@@ -2712,3 +2712,152 @@ async fn a_change_while_orbit_asks_github_about_a_repository_counts() {
         assert!(writes(d.path()).is_empty(), "{:?}", writes(d.path()));
     }
 }
+
+/// Makes `a/b` a repository Orbit's sign-in is an admin of, or not.
+fn admin_of(dir: &Path, admin: bool) {
+    std::fs::write(
+        dir.join("repo.json"),
+        json!({
+            "full_name": "a/b",
+            "private": false,
+            "visibility": "public",
+            "permissions": {"admin": admin},
+            "security_and_analysis": {
+                "secret_scanning": {"status": "enabled"},
+                "secret_scanning_push_protection": {"status": "disabled"},
+            },
+        })
+        .to_string(),
+    )
+    .unwrap();
+}
+/// The calls the fake GitHub got for `a/b`'s security settings.
+fn settings_calls(dir: &Path) -> Vec<String> {
+    std::fs::read_to_string(dir.join("calls"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|c| {
+            [
+                "vulnerability-alerts",
+                "automated-security-fixes",
+                "private-vulnerability-reporting",
+                "actions/permissions",
+            ]
+            .iter()
+            .any(|e| c.contains(e))
+        })
+        .map(String::from)
+        .collect()
+}
+
+/// A repository missing Dependabot alerts drifts from its owner's
+/// baseline, and Bit's brief says so; Orbit only reads, and an owner whose
+/// baseline asks for nothing, a sign-in that isn't an admin, or Watch
+/// security alerts turned off changes what it reads.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_repository_that_drifts_from_its_baseline_shows_it() {
+    use crate::baseline::{drifting, Baseline, Setting};
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    std::fs::write(
+        d.path().join("answer.json"),
+        answer(&"1".repeat(40), "SUCCESS"),
+    )
+    .unwrap();
+    admin_of(d.path(), true);
+    std::fs::write(
+        d.path().join("settings.json"),
+        json!({"vulnerability-alerts": false}).to_string(),
+    )
+    .unwrap();
+    let e = connected(d.path()).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let shown = e.shown_snapshot().await;
+    assert_eq!(shown.repo_settings.len(), 1);
+    let read = &shown.repo_settings[0];
+    assert_eq!(read.on(Setting::DependabotAlerts), Some(false));
+    assert_eq!(read.on(Setting::PushProtection), Some(false));
+    assert_eq!(
+        drifting(&shown.repo_settings, &shown.settings.security_baselines),
+        [("a/b".to_string(), vec![Setting::DependabotAlerts])]
+    );
+    // Only read: every call was a GET.
+    let calls = settings_calls(d.path());
+    assert_eq!(calls.len(), 5);
+    assert!(calls.iter().all(|c| c.starts_with("GET ")), "{calls:?}");
+    // Not again until it's due.
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!(settings_calls(d.path()).len(), 5);
+
+    // Bit's brief says so.
+    let line = crate::brief::lines(&e.shown_snapshot().await)
+        .into_iter()
+        .find(|l| l.key.starts_with("settings:"))
+        .unwrap();
+    assert_eq!(
+        (line.key.as_str(), line.text.as_str()),
+        (
+            "settings:a/b:dependabot_alerts",
+            "a/b drifts from your security settings: Dependabot alerts are off."
+        )
+    );
+
+    // A baseline that asks for push protection too drifts at once.
+    e.update_settings(crate::types::SettingsPatch {
+        security_baselines: Some(vec![Baseline {
+            owner: "A".into(),
+            settings: vec![Setting::DependabotAlerts, Setting::PushProtection],
+        }]),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let shown = e.shown_snapshot().await;
+    assert_eq!(
+        drifting(&shown.repo_settings, &shown.settings.security_baselines)[0].1,
+        [Setting::PushProtection, Setting::DependabotAlerts]
+    );
+
+    // One that asks for nothing isn't read, and what was read goes.
+    e.update_settings(crate::types::SettingsPatch {
+        security_baselines: Some(vec![Baseline {
+            owner: "a".into(),
+            settings: vec![],
+        }]),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert!(e.shown_snapshot().await.repo_settings.is_empty());
+    assert_eq!(settings_calls(d.path()).len(), 5);
+
+    // Orbit's baseline again, with a sign-in that isn't an admin: Orbit
+    // says it can't see them, and asks nothing more.
+    e.update_settings(crate::types::SettingsPatch {
+        security_baselines: Some(vec![]),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    admin_of(d.path(), false);
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let shown = e.shown_snapshot().await;
+    assert_eq!(
+        shown.repo_settings[0].unseen.as_deref(),
+        Some("GitHub shows a/b's security settings only to its admins, and Orbit's sign-in isn't one.")
+    );
+    assert!(drifting(&shown.repo_settings, &[]).is_empty());
+    assert_eq!(settings_calls(d.path()).len(), 5);
+
+    // Watch security alerts off forgets them.
+    e.update_settings(crate::types::SettingsPatch {
+        watch_security: Some(false),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert!(e.shown_snapshot().await.repo_settings.is_empty());
+}

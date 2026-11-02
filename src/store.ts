@@ -614,6 +614,7 @@ async function demoAction(
     next.writeUps ??= { ...defaultWriteUps };
     next.watchCi ??= true;
     next.watchSecurity ??= true;
+    next.securityBaselines ??= [];
     if (command === "update_settings") {
       const patch = args.patch as SettingsPatch;
       if (
@@ -748,6 +749,7 @@ async function demoAction(
       const at = new Date().toISOString();
       const text = "Orbit stopped watching security alerts.";
       demo.security = [];
+      demo.repoSettings = [];
       demo.problems = demo.problems?.map((p) =>
         p.closedAt || p.kind !== "security"
           ? p

@@ -2,7 +2,8 @@
 //! settings, in the time zone chosen there (`crate::clock`), Bit sums up
 //! the pull requests clear to merge, the stuck ones and whose move it is,
 //! the open CI problems, the security alerts that need you, and what it
-//! notes about runners and storage. It marks each line that is new since the last brief
+//! notes about runners, storage and security settings that drift from their
+//! baseline (`crate::baseline`). It marks each line that is new since the last brief
 //! and counts what settled since then. On a day with nothing new and
 //! nothing settled, nothing is sent. A brief shows in Bit's conversation
 //! and in Needs you until you mark it read or the next brief's time comes.
@@ -196,6 +197,16 @@ pub fn lines(s: &Snapshot) -> Vec<Line> {
                 ));
             }
         }
+    }
+    // Read only while Watch security alerts is on, and forgotten once off.
+    for (repo, drift) in crate::baseline::drifting(&s.repo_settings, &s.settings.security_baselines)
+    {
+        let keys: Vec<&str> = drift.iter().map(|d| d.key()).collect();
+        notes.push(line(
+            format!("settings:{}:{}", repo.to_ascii_lowercase(), keys.join(",")),
+            crate::baseline::drift_text(&repo, &drift),
+            None,
+        ));
     }
     [clear, stuck, failing, security, notes].concat()
 }
