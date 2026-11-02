@@ -461,6 +461,9 @@ pub enum Action {
     /// Turns on a repository's security setting, on your tap (see
     /// `crate::baseline`). It belongs to no thread.
     ChangeSetting,
+    /// Asks Dependabot to rebase one of its pull requests, on your tap (see
+    /// `crate::dependabot`). It belongs to no thread.
+    AskRebase,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -495,6 +498,9 @@ pub struct Write {
     /// For a change to a setting, which one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setting: Option<crate::baseline::Setting>,
+    /// For an ask to rebase, the commit the pull request was at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<String>,
 }
 
 /// A write a thread needs, ready to send.
@@ -2232,14 +2238,15 @@ pub fn closing_note(t: &Thread, p: &Problem) -> String {
 
 /// Writes left on their way to GitHub when Orbit stopped: GitHub may or may
 /// not have them. Run before a pass sends anything. Returns whether any
-/// were left. A change to a setting is sent apart from these, so
-/// `crate::baseline::interrupted` looks after its own.
+/// were left. A change to a setting and an ask to rebase are sent apart
+/// from these, so `crate::baseline::interrupted` and
+/// `crate::dependabot::interrupted` look after their own.
 pub fn interrupted(journal: &mut [Write], threads: &mut [Thread], now: DateTime<Utc>) -> bool {
     let mut any = false;
-    for w in journal
-        .iter_mut()
-        .filter(|w| w.state == WriteState::Sending && w.action != Action::ChangeSetting)
-    {
+    for w in journal.iter_mut().filter(|w| {
+        w.state == WriteState::Sending
+            && !matches!(w.action, Action::ChangeSetting | Action::AskRebase)
+    }) {
         w.state = WriteState::Failed;
         w.done_at = Some(stamp(now));
         w.error = Some(
@@ -2350,6 +2357,7 @@ pub fn record(journal: &mut Vec<Write>, planned: &Planned, now: DateTime<Utc>) -
         url: String::new(),
         error: None,
         setting: None,
+        head: None,
     });
     id
 }
@@ -2416,8 +2424,9 @@ pub fn settle(
                 Action::NoteOnIssue => t.noted = planned.closed_at.clone(),
                 // Settled by `crate::reruns::settle`.
                 Action::RerunJob => {}
-                // Settled by `crate::baseline::settle`.
-                Action::ChangeSetting => {}
+                // Settled by `crate::baseline::settle` and
+                // `crate::dependabot::settle_rebase`.
+                Action::ChangeSetting | Action::AskRebase => {}
             }
         }
         Err(error) => {

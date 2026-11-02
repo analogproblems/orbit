@@ -272,6 +272,10 @@ mod desktop {
         engine.fix_setting(&repo, setting).await
     }
     #[tauri::command]
+    async fn ask_rebase(engine: State<'_, AppState>, pr_id: String) -> Result<(), String> {
+        engine.ask_rebase(&pr_id).await
+    }
+    #[tauri::command]
     async fn ask_buddy(
         engine: State<'_, AppState>,
         question: buddy::Question,
@@ -783,6 +787,7 @@ mod desktop {
                 tell_agent,
                 rerun_job,
                 fix_setting,
+                ask_rebase,
                 ask_buddy,
                 ask_buddy_anything,
                 use_proposal,

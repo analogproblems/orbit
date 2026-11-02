@@ -360,6 +360,7 @@ fn change_entry(state: WriteState, action: Action, setting: Option<Setting>) -> 
         url: String::new(),
         error: None,
         setting,
+        head: None,
     }
 }
 

@@ -13,13 +13,22 @@
 //! fixes an alert when it changes the alert's package, in the alert's
 //! folder, to a version outside the alert's vulnerable range. All of it
 //! only while Watch CI and Watch security alerts are both on.
+//!
+//! The one thing Orbit writes is on your tap: a comment asking Dependabot
+//! to rebase one that conflicts (`REBASE`), once for each commit it is at.
+//! It goes through the journal (`crate::ops::Write`), recorded and saved
+//! before it is sent, and one cut off by Orbit stopping is never sent
+//! again: Orbit looks on GitHub for it instead (`interrupted`).
 use crate::{
     ci::{short, CiState},
+    logs,
+    ops::{Action, Write, WriteState},
+    problems::{stamp, time},
     readiness::{self, Merge},
     security::{Alert, Severity, Source},
     types::*,
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::{cmp::Ordering, sync::LazyLock};
@@ -33,6 +42,15 @@ const NAMED: usize = 3;
 const MAX_BUMPS: usize = 50;
 /// The longest package name or version Orbit shows.
 const MAX_WORD: usize = 80;
+/// What Orbit posts to ask Dependabot to rebase a pull request: the
+/// command alone, as Dependabot reads commands, so it carries no hidden
+/// marker or signature. It is your ask, made with your sign-in, rather
+/// than Orbit's own post (`crate::orbits`).
+pub const REBASE: &str = "@dependabot rebase";
+/// How far back Orbit looks for an ask to rebase cut off by Orbit
+/// stopping, before the time it was recorded: this computer's clock and
+/// GitHub's may differ a little.
+const SKEW_MINUTES: i64 = 5;
 
 /// One package an update changes, as its title or description says.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -295,7 +313,6 @@ pub fn wanted(s: &Snapshot, now: DateTime<Utc>) -> Vec<(String, u64, String, Str
             let Some(m) = asked(s, pr, &base) else {
                 return Some((String::new(), ask));
             };
-            let time = crate::problems::time;
             let ready = match m.retry_at.as_deref().and_then(time) {
                 Some(retry) => now >= retry,
                 None => time(&m.read_at).is_none_or(|at| now - at >= readiness::EVERY),
@@ -337,6 +354,191 @@ pub fn prune(s: &mut Snapshot) -> bool {
     let before = s.dependabot.len();
     s.dependabot.retain(|m| kept.contains(&m.pr_id));
     s.dependabot.len() != before
+}
+
+/// Orbit's latest ask for Dependabot to rebase a pull request at the
+/// commit it is at now, in the journal.
+fn rebase_of<'a>(journal: &'a [Write], pr: &PullRequest) -> Option<&'a Write> {
+    journal.iter().rev().find(|w| {
+        w.action == Action::AskRebase
+            && same_repo(&w.repo, &pr.repo)
+            && w.number == Some(pr.number)
+            && w.head.as_deref() == Some(pr.head_sha.as_str())
+    })
+}
+/// Whether you may ask Dependabot to rebase a pull request now: Orbit
+/// shows it, GitHub says it conflicts at the commit it is at, and Orbit
+/// hasn't asked, or is asking, at that commit. Returns its repository,
+/// number, head and base, or why not in a sentence.
+pub fn may_rebase(s: &Snapshot, pr_id: &str) -> Result<(String, u64, String, String), String> {
+    let Some(pr) = pulls(s).find(|pr| pr.id == pr_id) else {
+        return Err("Orbit doesn't show this Dependabot pull request now, so it won't ask about it. Watch CI or Watch security alerts is off, or it closed.".into());
+    };
+    match rebase_of(&s.journal, pr).map(|w| w.state) {
+        Some(WriteState::Sending) => {
+            return Err("Orbit is already asking Dependabot to rebase it.".into())
+        }
+        Some(WriteState::Done) => {
+            return Err("Orbit already asked Dependabot to rebase it at this commit.".into())
+        }
+        Some(WriteState::Failed) | None => {}
+    }
+    let base = base_of(s, pr);
+    if !merge_of(asked(s, pr, &base), pr).1 {
+        return Err(
+            "GitHub doesn't say it conflicts now, so Orbit won't ask Dependabot to rebase it."
+                .into(),
+        );
+    }
+    Ok((pr.repo.clone(), pr.number, pr.head_sha.clone(), base))
+}
+/// Records an ask to rebase before it is sent.
+pub fn record_rebase(
+    journal: &mut Vec<Write>,
+    repo: &str,
+    number: u64,
+    head: &str,
+    now: DateTime<Utc>,
+) -> String {
+    let id = crate::types::id();
+    journal.push(Write {
+        id: id.clone(),
+        thread: format!("dependabot:{}", pr_id(repo, number).to_lowercase()),
+        action: Action::AskRebase,
+        repo: repo.to_string(),
+        number: Some(number),
+        state: WriteState::Sending,
+        at: stamp(now),
+        done_at: None,
+        url: String::new(),
+        error: None,
+        setting: None,
+        head: Some(head.to_string()),
+    });
+    id
+}
+/// Records what GitHub said to an ask to rebase: where its comment is, or
+/// why it didn't go, in a sentence (`rebase_error`).
+pub fn settle_rebase(
+    journal: &mut [Write],
+    id: &str,
+    result: Result<String, String>,
+    now: DateTime<Utc>,
+) {
+    let Some(w) = journal.iter_mut().find(|w| w.id == id) else {
+        return;
+    };
+    w.done_at = Some(stamp(now));
+    match result {
+        Ok(url) => {
+            w.state = WriteState::Done;
+            w.url = url;
+            w.error = None;
+        }
+        Err(error) => {
+            w.state = WriteState::Failed;
+            w.error = Some(error);
+        }
+    }
+}
+/// Why GitHub didn't take Orbit's ask to rebase, in a sentence.
+pub fn rebase_error(error: &str) -> String {
+    if logs::rate_limited(error) {
+        "GitHub's rate limit held this back. Tap Ask to rebase again later.".into()
+    } else if error.contains("HTTP 404") || error.contains("HTTP 410") {
+        "GitHub can't find this pull request now.".into()
+    } else if logs::refused(error) {
+        "GitHub didn't let Orbit's sign-in comment on this pull request.".into()
+    } else {
+        format!(
+            "GitHub didn't take Orbit's comment: {}.",
+            logs::short(error)
+        )
+    }
+}
+/// Asks to rebase left on their way to GitHub when Orbit stopped, which
+/// GitHub may or may not have. None is sent again: each is marked as not
+/// gone through until Orbit finds it on GitHub (`found_rebase`). Run while
+/// no ask is being sent. Returns each one's id, repository, number and the
+/// time to look for its comment from.
+pub fn interrupted(
+    journal: &mut [Write],
+    now: DateTime<Utc>,
+) -> Vec<(String, String, u64, String)> {
+    let mut cut = vec![];
+    for w in journal
+        .iter_mut()
+        .filter(|w| w.action == Action::AskRebase && w.state == WriteState::Sending)
+    {
+        w.state = WriteState::Failed;
+        w.done_at = Some(stamp(now));
+        w.error = Some(CUT_OFF.into());
+        let since = time(&w.at)
+            .map(|at| stamp(at - Duration::minutes(SKEW_MINUTES)))
+            .unwrap_or_default();
+        if let Some(number) = w.number {
+            cut.push((w.id.clone(), w.repo.clone(), number, since));
+        }
+    }
+    cut
+}
+const CUT_OFF: &str = "Orbit stopped before GitHub answered, so it didn't ask again. It looks on GitHub for its comment.";
+/// The comment that asks Dependabot to rebase, from Orbit's sign-in
+/// (`login`), among a pull request's comments.
+pub fn find_rebase(comments: &[serde_json::Value], login: &str) -> Option<String> {
+    comments
+        .iter()
+        .find(|c| {
+            c["user"]["login"]
+                .as_str()
+                .is_some_and(|by| !by.is_empty() && by.eq_ignore_ascii_case(login))
+                && c["body"].as_str().is_some_and(|b| b.trim() == REBASE)
+        })
+        .map(|c| c["html_url"].as_str().unwrap_or_default().to_string())
+}
+/// Records what Orbit found on GitHub for an ask to rebase it was cut off
+/// from: its comment, which makes it done, or nothing there, or a look
+/// that failed, either of which leaves it not gone through, to tap again.
+pub fn found_rebase(
+    journal: &mut [Write],
+    id: &str,
+    found: Result<Option<String>, String>,
+    now: DateTime<Utc>,
+) {
+    let Some(w) = journal.iter_mut().find(|w| w.id == id) else {
+        return;
+    };
+    w.done_at = Some(stamp(now));
+    match found {
+        Ok(Some(url)) => {
+            w.state = WriteState::Done;
+            w.url = url;
+            w.error = None;
+        }
+        Ok(None) => {
+            w.error = Some("Orbit stopped before GitHub answered, and didn't find its comment there. Tap Ask to rebase again if it still conflicts.".into());
+        }
+        Err(e) => {
+            w.error = Some(format!(
+                "Orbit stopped before GitHub answered, and couldn't look for its comment there: {}. Tap Ask to rebase again if it still conflicts.",
+                logs::short(&e)
+            ));
+        }
+    }
+}
+/// Where Orbit's ask to rebase a pull request at its commit stands, in a
+/// sentence, if it asked.
+fn rebase_text(w: &Write) -> String {
+    match w.state {
+        WriteState::Sending => "Orbit is asking Dependabot to rebase it.".into(),
+        WriteState::Done => "Orbit asked Dependabot to rebase it. Dependabot answers on GitHub, and may take a few minutes.".into(),
+        WriteState::Failed => format!(
+            "Orbit couldn't ask Dependabot to rebase it. {}",
+            w.error.as_deref().unwrap_or_default()
+        )
+        .trim_end()
+        .to_string(),
+    }
 }
 
 /// An open Dependabot alert an update fixes.
@@ -384,6 +586,12 @@ pub struct Update {
     /// but after a failed read of CI it isn't ready.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// It conflicts, and Orbit hasn't asked Dependabot to rebase it at
+    /// this commit, or its ask didn't go through, so a tap may ask.
+    pub can_rebase: bool,
+    /// Where Orbit's ask to rebase it at this commit stands, if it asked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rebase_text: Option<String>,
 }
 impl Update {
     /// The most severe alert it fixes, if any.
@@ -547,6 +755,7 @@ pub fn of(s: &Snapshot, pr: &PullRequest) -> Update {
                 .to_string()
         })
     });
+    let rebase = rebase_of(&s.journal, pr);
     Update {
         pr_id: pr.id.clone(),
         repo: pr.repo.clone(),
@@ -567,6 +776,8 @@ pub fn of(s: &Snapshot, pr: &PullRequest) -> Update {
         merge_text,
         ready: checks == CiState::Passing && merges && !ci_failed,
         error,
+        can_rebase: conflicts && rebase.is_none_or(|w| w.state == WriteState::Failed),
+        rebase_text: rebase.map(rebase_text),
     }
 }
 /// Every one of Dependabot's open pull requests Orbit shows: fixes for the

@@ -583,6 +583,7 @@ pub fn record_change(
         url: String::new(),
         error: None,
         setting: Some(setting),
+        head: None,
     });
     id
 }
