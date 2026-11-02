@@ -3,6 +3,8 @@ import {
   buddyAnswerers,
   fixRuleLabels,
   providerLabels,
+  securitySettings,
+  type Baseline,
   type Buddy,
   type BuddyAnswerer,
   type BuddyHat,
@@ -37,6 +39,7 @@ const labels: Record<keyof SettingsPatch, string> = {
   keepScanArtifacts: "Keep scan working files",
   watchCi: "Watch CI",
   watchSecurity: "Watch security alerts",
+  securityBaselines: "Security settings baseline",
   buddy: "Buddy",
   writeUps: "Write-ups",
 };
@@ -95,6 +98,18 @@ function buddyEntries(
   );
 }
 
+const baselinesLabel = (all: Baseline[]) =>
+  all
+    .map(
+      (b) =>
+        `${b.owner}: ${
+          securitySettings
+            .filter((x) => b.settings.includes(x.key))
+            .map((x) => x.name)
+            .join(", ") || "none"
+        }`,
+    )
+    .join(", ") || "Orbit’s";
 const writeUpsLabel = (w: WriteUps) =>
   w.enabled ? `On, by ${writerLabels[w.writer]}` : "Off";
 
@@ -126,9 +141,11 @@ export function describePatch(patch: SettingsPatch, models: Model[]): string {
                     : `P0 to P${value}`
                   : key === "writeUps"
                     ? writeUpsLabel(value as WriteUps)
-                    : Array.isArray(value)
-                      ? value.join(", ") || "None"
-                      : value;
+                    : key === "securityBaselines"
+                      ? baselinesLabel(value as Baseline[])
+                      : Array.isArray(value)
+                        ? value.join(", ") || "None"
+                        : value;
       return `${label}: ${display}`;
     })
     .join("; ");

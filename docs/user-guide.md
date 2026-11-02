@@ -314,6 +314,7 @@ The sidebar's **Live** item shows a pulsing dot while reviews are running. Anima
 - **Ready to merge**: each pull request Orbit reviews automatically, and whether it is clear to merge, or else the first thing in the way (see [Clear to merge](#clear-to-merge)). Select one to open the pull request;
 - **CI by repository**: where each default branch stands (passing, failing, running, or no checks), how many followed pull requests fail, whether CI runs on its pull requests (see [Repositories with no CI](#repositories-with-no-ci)), and when Orbit last read it. When GitHub doesn't answer, the row says why and keeps what Orbit read before; a problem never closes because a read failed;
 - **Security alerts**: each repository's open Dependabot, code scanning and secret scanning alerts, and what Orbit can't see (see [Security alerts](#security-alerts)). This shows while **Watch CI** is off too;
+- **Security settings**: whether each repository's security settings match its owner's baseline, and what Orbit can't see (see [Security settings](#security-settings)). This shows while **Watch CI** is off too;
 - **Self-hosted runners**: the runners Orbit sees for each repository and for each organization that owns one, and where it can't see them (see [Runners](#runners));
 - **Actions storage**: each repository's caches and the artifacts it keeps (see [Actions storage](#actions-storage));
 - **Recently closed**: problems from the last two weeks, with why each closed. A problem stays longer while Orbit's issue about it is still open, or while its pull request is, so the comment keeps its item numbers;
@@ -461,6 +462,25 @@ Each risk is listed once per file, where Orbit first finds it, up to the 50 most
 
 Orbit never edits a workflow itself.
 
+#### Security settings
+
+Each owner of a connected repository, an organization or a person's account, has a **security settings baseline**: the settings its repositories should have. Every hour, a few repositories at a time, while **Watch security alerts** is on, Orbit reads each repository's security settings and shows on **Operations**, under **Security settings**, where they drift from the baseline. Orbit only reads them: it changes nothing.
+
+You choose each owner's baseline in **Settings → Automation**, under **Security settings baseline**, with a switch for each setting. Each owner starts from Orbit's baseline, which asks for all of them but push protection:
+
+- **Secret scanning**: GitHub looks for secrets, such as tokens, pushed to the repository.
+- **Push protection for secrets**: GitHub blocks a push that holds a secret it knows. It blocks pushes, so Orbit's baseline leaves it out; turn it on for an owner if you want it.
+- **Dependabot alerts**: GitHub says when a dependency has a known weakness.
+- **Dependabot security updates**: Dependabot opens pull requests that fix those weaknesses.
+- **Private vulnerability reporting**: anyone can report a weakness privately rather than in an issue. Only public repositories have it.
+- **Read-only Actions token**: the token each workflow gets can only read, unless the workflow asks for more.
+- **Actions can't approve pull requests**: a workflow can't approve a pull request.
+- **Approval for first-time contributors**: workflows from a first-time contributor's fork wait for a maintainer's approval, not only those of someone new to GitHub. Only public repositories have it.
+
+Each repository's row says whether it **Matches**, **Drifts**, or, when none is off but Orbit couldn't tell whether one the baseline asks for is on, **Can't tell**, with a line for each setting it has off, such as "Dependabot alerts are off." or "The Actions token can write by default.", and which ones Orbit couldn't tell are on, such as secret scanning in a private repository where GitHub doesn't offer it. GitHub shows these settings only to a repository's admins, so for one where Orbit's sign-in isn't an admin, the row says "GitHub shows acme/dashboard's security settings only to its admins, and Orbit's sign-in isn't one." and Orbit asks nothing more. When a read fails, the row keeps what Orbit read before and says so, and Orbit tries again later. Bit's [morning brief](#morning-brief) lists each repository that drifts, such as "acme/api drifts from your security settings: Dependabot security updates are off.", and says it may be out of date while Orbit's latest read of that repository failed. An internal repository, which only its enterprise sees, isn't public, so like a private one it has no private vulnerability reporting or approval for first-time contributors.
+
+An owner whose baseline has every switch off isn't read at all. Turning off **Watch security alerts**, or disconnecting a repository, forgets what Orbit read. Branch protection, rulesets and required checks are never part of a baseline, as they guard pushes, and Orbit never adds any.
+
 #### Clear to merge
 
 Orbit reviews a pull request automatically when it is open, not a draft, from a source Autopilot trusts, in a repository with **Automatic reviews** on. For each one, Orbit works out whether it is clear to merge at its latest commit. It is clear only when all of these hold:
@@ -605,7 +625,8 @@ Once a day, at the time you choose under **Settings**, **Buddy**, **Brief time**
 - the stuck ones, and whose move it is: those Orbit already reminded the author about, after 2 hours, or put on **Needs you** for a person, after a day (see [Clear to merge](#clear-to-merge));
 - the open CI problems: a failing default branch or pull request, checks that ran without the base's latest commit, a repository with no CI on its pull requests, and risky settings in a repository's workflow files;
 - the security alerts that need you: secrets GitHub found, and high or critical Dependabot and code scanning alerts. These need **Watch security alerts** on;
-- notes on runners and storage: runs waiting for a runner, a repository's or organization's self-hosted runners that are all offline, and caches near GitHub's usual limit. These need **Watch CI** on, as Orbit only reads runners and storage then.
+- notes on runners and storage: runs waiting for a runner, a repository's or organization's self-hosted runners that are all offline, and caches near GitHub's usual limit. These need **Watch CI** on, as Orbit only reads runners and storage then;
+- the repositories whose [security settings](#security-settings) drift from their owner's baseline. These need **Watch security alerts** on.
 
 The note starts with how many of each, then how many lines are new since the last brief, each marked **New**, and how many things from the last brief have settled, such as a check that passes again or a pull request that merged. A day when nothing is new and nothing settled gets no brief. Nor does a first day with nothing to say. The brief also goes on **Needs you**, with a desktop notification, until you tap **Got it** there or under the note, or the next day's brief time comes. If Orbit isn't running at the brief time, the brief comes when it next is, that day. It waits while Orbit's latest sync of your pull requests or read of a repository's CI failed, for any repository, or its latest question to GitHub about whether a pull request merges failed while nothing else is in that pull request's way, so it never sums up what Orbit couldn't read. It comes on the next pass that reads them all, that day; while a repository keeps failing, **Needs you** says so instead. Runners and storage are read less often, so their notes don't wait: they say when Orbit's latest read of them failed and may be out of date, and when GitHub has more runners than Orbit read, they speak only of those Orbit read. Turn **Morning brief** off to stop it; turning Bit or the brief off also takes an open brief off **Needs you**. Bit works it all out from what Orbit already knows, without any AI.
 
@@ -730,7 +751,8 @@ Settings has seven pages: **Connections**, **Reviewers** (Codex, Claude and Anti
 | Wait for pushes to settle              | On                                 | On/off.                                                                                                                    |
 | GitHub status check                    | On                                 | On/off; applies while automatic publication is on.                                                                         |
 | Watch CI                               | On                                 | On/off; off stops reading CI and closes the CI problems open on Operations.                                                |
-| Watch security alerts                  | On                                 | On/off; off stops reading security alerts and closes the problems about them.                                              |
+| Watch security alerts                  | On                                 | On/off; off stops reading security alerts and settings, and closes the problems about alerts.                              |
+| Security settings baseline             | Orbit's, for each owner            | Each setting on or off, for each owner of a connected repository.                                                          |
 | Keep security scan working files       | Off                                | On/off; when off, a scan's `artifacts/` folder is deleted once its findings are imported.                                  |
 | Allow access from a browser            | Off                                | On/off and a port from 1024 to 65535; changed from the desktop app only.                                                   |
 | Write up each pull request             | Off                                | On/off; writes up merged and closed pull requests for the Decisions page.                                                  |

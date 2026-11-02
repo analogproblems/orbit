@@ -25,6 +25,7 @@ import {
   quotaText,
   riskText,
   risksText,
+  settingsLines,
   toolsText,
   waitingText,
   whyText,
@@ -989,6 +990,69 @@ describe("operations page", () => {
     ).toBeTruthy();
   });
 
+  it("shows each repository's security settings against its baseline", () => {
+    const s = freshDemo();
+    show(s);
+    const list = screen.getByRole("list", { name: "Security settings" });
+    const rows = within(list).getAllByRole("listitem");
+    expect(rows.map((r) => r.textContent?.split(".")[0])).toEqual([
+      expect.stringContaining("acme/orbit"),
+      expect.stringContaining("acme/api"),
+      expect.stringContaining("acme/dashboard"),
+      expect.stringContaining("acme/docs"),
+    ]);
+    expect(within(rows[0]).getByLabelText("Matches")).toBeTruthy();
+    expect(within(rows[1]).getByLabelText("Drifts")).toBeTruthy();
+    expect(within(rows[2]).getByLabelText("Can’t see")).toBeTruthy();
+    expect(
+      within(rows[1]).getByText("The Actions token can write by default."),
+    ).toBeTruthy();
+    cleanup();
+    // Not Matches while Orbit can't tell about one it asks for, whether
+    // it knows the others or none.
+    const orbit = s.repoSettings!.find((r) => r.repo === "acme/orbit")!;
+    const found = orbit.found;
+    orbit.found = found.map((f) =>
+      f.setting === "secret_scanning" ? { ...f, on: null } : f,
+    );
+    show(s);
+    const first = () =>
+      within(
+        screen.getByRole("list", { name: "Security settings" }),
+      ).getAllByRole("listitem")[0];
+    expect(within(first()).getByLabelText("Can’t tell")).toBeTruthy();
+    expect(within(first()).queryByLabelText("Matches")).toBeNull();
+    expect(first().textContent).toContain(
+      "Everything else matches its baseline.",
+    );
+    cleanup();
+    orbit.found = found.map((f) => ({ ...f, on: null }));
+    show(s);
+    expect(within(first()).getByLabelText("Can’t tell")).toBeTruthy();
+    expect(first().textContent).not.toContain("matches");
+    cleanup();
+    orbit.found = found;
+    // With Watch CI off too, and gone with Watch security alerts off.
+    s.settings.watchCi = false;
+    show(s);
+    expect(
+      screen.getByRole("list", { name: "Security settings" }),
+    ).toBeTruthy();
+    cleanup();
+    s.settings.watchSecurity = false;
+    show(s);
+    expect(
+      screen.queryByRole("list", { name: "Security settings" }),
+    ).toBeNull();
+    cleanup();
+    s.settings.watchSecurity = true;
+    s.repoSettings = [];
+    show(s);
+    expect(
+      screen.getByText("Orbit hasn’t read any security settings yet."),
+    ).toBeTruthy();
+  });
+
   it("says when a read failed or GitHub has more alerts than Orbit reads", () => {
     const s = freshDemo();
     const api = s.security!.find((r) => r.repo === "acme/api")!;
@@ -1172,6 +1236,55 @@ describe("security sentences", () => {
     );
     expect(alertCount("secret_scanning", [])).toBe("no secrets found.");
     expect(alertCount("secret_scanning", [low, low])).toBe("2 secrets found.");
+  });
+});
+
+describe("security settings sentences", () => {
+  it("say where each repository drifts from its owner's baseline", () => {
+    const s = freshDemo();
+    const lines = (repo: string) =>
+      settingsLines(
+        s,
+        s.repoSettings!.find((r) => r.repo === repo)!,
+      );
+    expect(lines("acme/orbit")).toEqual(["It matches its baseline."]);
+    expect(lines("acme/api")).toEqual([
+      "Dependabot security updates are off.",
+      "The Actions token can write by default.",
+    ]);
+    expect(lines("acme/dashboard")).toEqual([
+      "GitHub shows acme/dashboard's security settings only to its admins, and Orbit's sign-in isn't one.",
+    ]);
+    expect(lines("acme/docs")).toEqual([
+      "Dependabot alerts are off.",
+      "Dependabot security updates are off.",
+    ]);
+    // A baseline that asks for push protection, and one setting GitHub
+    // didn't say about.
+    s.settings.securityBaselines = [
+      {
+        owner: "ACME",
+        settings: ["push_protection", "secret_scanning", "private_reporting"],
+      },
+    ];
+    const orbit = s.repoSettings!.find((r) => r.repo === "acme/orbit")!;
+    expect(lines("acme/orbit")).toEqual([
+      "Push protection for secrets is off.",
+    ]);
+    orbit.found = orbit.found.map((f) =>
+      f.setting === "push_protection" ? { ...f, on: null } : f,
+    );
+    expect(lines("acme/orbit")).toEqual([
+      "Everything else matches its baseline.",
+      "Orbit can’t tell whether this is on: Push protection for secrets.",
+    ]);
+    // Nothing else matches when Orbit can't tell about any of them.
+    orbit.found = orbit.found.map((f) => ({ ...f, on: null }));
+    expect(lines("acme/orbit")).toEqual([
+      "Orbit can’t tell whether these are on: Secret scanning, Push protection for secrets, Private vulnerability reporting.",
+    ]);
+    // A private repository has no private reporting; acme/api matches.
+    expect(lines("acme/api")).toEqual(["It matches its baseline."]);
   });
 });
 

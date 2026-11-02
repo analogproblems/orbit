@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { freshDemo } from "./demo";
 import reportLabelCases from "../test-fixtures/report-selection-labels.json";
 import findingCategories from "../test-fixtures/finding-categories.json";
+import securitySettingsFixture from "../test-fixtures/security-settings.json";
 import { describeRepositoryPatch } from "./describePatch";
 import {
   editedOver,
@@ -10,6 +11,9 @@ import {
   type RepositoryPatch,
 } from "./types";
 import {
+  securitySettings,
+  settingsDrift,
+  wantedFor,
   attentionAction,
   categoryLabels,
   claimSummary,
@@ -264,6 +268,59 @@ describe("Claude reviewer", () => {
     expect(followUpUnavailable(s, r)).toBeNull();
     r.model = "demo-review-model";
     expect(followUpUnavailable(s, r)).toMatch(/Claude model/);
+  });
+});
+
+describe("security settings baseline", () => {
+  it("knows the engine's settings, and Orbit's baseline", () => {
+    expect(
+      securitySettings.map((x) => ({
+        key: x.key,
+        name: x.name.replace("’", "'"),
+        publicOnly: x.publicOnly,
+        orbit: x.orbit,
+      })),
+    ).toEqual(securitySettingsFixture);
+    expect(wantedFor(undefined, "acme")).toEqual(
+      securitySettingsFixture.filter((x) => x.orbit).map((x) => x.key),
+    );
+    // An owner's own, in the usual order, whatever the case of its name.
+    expect(
+      wantedFor(
+        [{ owner: "Acme", settings: ["read_only_token", "secret_scanning"] }],
+        "acme",
+      ),
+    ).toEqual(["secret_scanning", "read_only_token"]);
+  });
+  it("drifts as the engine does", () => {
+    const read = {
+      repo: "acme/api",
+      readAt: "2026-11-02T00:00:00.000Z",
+      tries: 0,
+      found: [
+        { setting: "dependabot_alerts" as const, on: false },
+        { setting: "private_reporting" as const, on: false },
+        { setting: "secret_scanning" as const, on: null },
+        { setting: "read_only_token" as const, on: true },
+      ],
+    };
+    const wanted = wantedFor(undefined, "acme");
+    expect(settingsDrift(read, wanted)).toEqual({
+      drift: ["dependabot_alerts", "private_reporting"],
+      matched: ["read_only_token"],
+      unknown: [
+        "secret_scanning",
+        "dependabot_updates",
+        "no_actions_approval",
+        "fork_approval",
+      ],
+    });
+    expect(settingsDrift({ ...read, private: true }, wanted).drift).toEqual([
+      "dependabot_alerts",
+    ]);
+    expect(
+      settingsDrift({ ...read, unseen: "Can't see them." }, wanted),
+    ).toEqual({ drift: [], matched: [], unknown: [] });
   });
 });
 

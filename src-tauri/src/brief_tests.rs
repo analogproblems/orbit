@@ -521,6 +521,45 @@ fn runners_and_storage_are_in_it_only_while_watch_ci_is_on() {
     assert!(!lines(&s).iter().any(|l| l.key.starts_with("problem:")));
 }
 
+/// A repository that drifts from its security settings baseline is in the
+/// brief, keyed by how it drifts, and may be out of date once a read of
+/// it failed.
+#[test]
+fn a_repository_that_drifts_is_in_the_brief() {
+    use crate::baseline::{Found, RepoSettings, Setting};
+    let mut s = Snapshot {
+        repo_settings: vec![RepoSettings {
+            repo: "a/b".into(),
+            read_at: "2026-10-31T08:00:00.000Z".into(),
+            found: vec![Found {
+                setting: Setting::DependabotAlerts,
+                on: Some(false),
+            }],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let note = |s: &Snapshot| {
+        lines(s)
+            .into_iter()
+            .find(|l| l.key.starts_with("settings:"))
+            .map(|l| (l.key, l.text))
+            .unwrap()
+    };
+    assert_eq!(
+        note(&s),
+        (
+            "settings:a/b:dependabot_alerts".to_string(),
+            "a/b drifts from your security settings: Dependabot alerts are off.".to_string()
+        )
+    );
+    s.repo_settings[0].error = Some("Orbit couldn't read the security settings yet.".into());
+    assert_eq!(
+        note(&s).1,
+        "a/b drifts from your security settings: Dependabot alerts are off. Orbit's latest read of its settings failed, so this may be out of date."
+    );
+}
+
 /// A pull request Orbit nudged someone about, while the first thing in the
 /// way is still theirs at the same head.
 #[test]

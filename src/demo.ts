@@ -32,6 +32,8 @@ import {
   type ActionsStorage,
   type Attention,
   type RepoSecurity,
+  type RepoSettings,
+  type SecuritySetting,
   type SecurityAlert,
   type SecurityScan,
   type WorkflowRisk,
@@ -621,6 +623,7 @@ export function freshDemo(): Snapshot {
     problems: [...ci.problems!, ...security.problems],
     ops: [...ci.ops!, ...security.ops],
     security: security.security,
+    repoSettings: demoRepoSettings(),
     reviews: [review, ...limited, ...waiting, ...clean],
     // The browser demo has no engine to derive these, so they are fixed.
     attention: [
@@ -1596,6 +1599,51 @@ export function demoCi(
  * scanning alerts hidden from Orbit's sign-in. acme/api is private, so
  * Orbit told its agent about its Dependabot alerts in an issue; acme/orbit
  * isn't, so its alert stays with you. */
+/** Each demo repository's security settings: acme/orbit matches Orbit's
+ * baseline, acme/api and acme/docs drift from it, and acme/dashboard's
+ * Orbit's sign-in can't see. */
+function demoRepoSettings(): RepoSettings[] {
+  const read = (
+    repo: string,
+    off: SecuritySetting[],
+    isPrivate = false,
+  ): RepoSettings => ({
+    repo,
+    readAt: ago(20),
+    private: isPrivate,
+    found: (
+      [
+        "secret_scanning",
+        "push_protection",
+        "dependabot_alerts",
+        "dependabot_updates",
+        "private_reporting",
+        "read_only_token",
+        "no_actions_approval",
+        "fork_approval",
+      ] as SecuritySetting[]
+    )
+      .filter(
+        (k) =>
+          !isPrivate || (k !== "private_reporting" && k !== "fork_approval"),
+      )
+      .map((setting) => ({ setting, on: !off.includes(setting) })),
+    tries: 0,
+  });
+  return [
+    read("acme/orbit", ["push_protection"]),
+    read("acme/api", ["dependabot_updates", "read_only_token"], true),
+    {
+      repo: "acme/dashboard",
+      readAt: ago(20),
+      found: [],
+      unseen:
+        "GitHub shows acme/dashboard's security settings only to its admins, and Orbit's sign-in isn't one.",
+      tries: 0,
+    },
+    read("acme/docs", ["dependabot_alerts", "dependabot_updates"]),
+  ];
+}
 function demoSecurity(): {
   security: RepoSecurity[];
   problems: Problem[];

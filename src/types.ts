@@ -371,6 +371,9 @@ export interface Settings {
   /** Read each repository's Dependabot, code scanning and secret scanning
    * alerts and keep track of those open; missing means on. */
   watchSecurity?: boolean;
+  /** The security settings each owner's repositories should have; an
+   * owner without one has Orbit's (`securitySettings`' `orbit`). */
+  securityBaselines?: Baseline[];
   /** Bit, Orbit's buddy. Older saved state has none. */
   buddy?: Buddy;
   /** Plain-language write-ups on the Decisions page. Older saved state has
@@ -1152,6 +1155,9 @@ export interface Snapshot {
   /** Each connected repository's open security alerts, as Orbit last read
    * them. */
   security?: RepoSecurity[];
+  /** Each connected repository's security settings, as Orbit last read
+   * them. */
+  repoSettings?: RepoSettings[];
   /** What GitHub last said about whether each pull request Orbit reviews
    * can merge. */
   merges?: Merge[];
@@ -1468,6 +1474,148 @@ export interface RepoSecurity {
   error?: string | null;
   tries: number;
   retryAt?: string | null;
+}
+/** A security setting a baseline can ask for (`baseline.rs`). */
+export type SecuritySetting =
+  | "secret_scanning"
+  | "push_protection"
+  | "dependabot_alerts"
+  | "dependabot_updates"
+  | "private_reporting"
+  | "read_only_token"
+  | "no_actions_approval"
+  | "fork_approval";
+/** Each security setting, in the engine's order: its name, whether only
+ * a public repository has it, whether Orbit's baseline asks for it, what
+ * it does, and what a repository that drifts from it has. */
+export const securitySettings: {
+  key: SecuritySetting;
+  name: string;
+  publicOnly: boolean;
+  orbit: boolean;
+  about: string;
+  offText: string;
+}[] = [
+  {
+    key: "secret_scanning",
+    name: "Secret scanning",
+    publicOnly: false,
+    orbit: true,
+    about: "GitHub looks for secrets, such as tokens, pushed to it.",
+    offText: "Secret scanning is off.",
+  },
+  {
+    key: "push_protection",
+    name: "Push protection for secrets",
+    publicOnly: false,
+    orbit: false,
+    about:
+      "GitHub blocks a push that holds a secret it knows. It blocks pushes, so Orbit’s baseline leaves it out.",
+    offText: "Push protection for secrets is off.",
+  },
+  {
+    key: "dependabot_alerts",
+    name: "Dependabot alerts",
+    publicOnly: false,
+    orbit: true,
+    about: "GitHub says when a dependency has a known weakness.",
+    offText: "Dependabot alerts are off.",
+  },
+  {
+    key: "dependabot_updates",
+    name: "Dependabot security updates",
+    publicOnly: false,
+    orbit: true,
+    about: "Dependabot opens pull requests that fix those weaknesses.",
+    offText: "Dependabot security updates are off.",
+  },
+  {
+    key: "private_reporting",
+    name: "Private vulnerability reporting",
+    publicOnly: true,
+    orbit: true,
+    about:
+      "Anyone can report a weakness privately rather than in an issue. Only public repositories have it.",
+    offText: "Private vulnerability reporting is off.",
+  },
+  {
+    key: "read_only_token",
+    name: "Read-only Actions token",
+    publicOnly: false,
+    orbit: true,
+    about:
+      "The token each workflow gets can only read, unless the workflow asks for more.",
+    offText: "The Actions token can write by default.",
+  },
+  {
+    key: "no_actions_approval",
+    name: "Actions can’t approve pull requests",
+    publicOnly: false,
+    orbit: true,
+    about: "A workflow can’t approve a pull request.",
+    offText: "GitHub Actions can approve pull requests.",
+  },
+  {
+    key: "fork_approval",
+    name: "Approval for first-time contributors",
+    publicOnly: true,
+    orbit: true,
+    about:
+      "Workflows from a first-time contributor’s fork wait for a maintainer’s approval, not only those of someone new to GitHub. Only public repositories have it.",
+    offText:
+      "Workflows from first-time contributors run without approval, unless they’re new to GitHub.",
+  },
+];
+/** The security settings one owner's repositories should have. */
+export interface Baseline {
+  owner: string;
+  settings: SecuritySetting[];
+}
+/** What Orbit read of one repository's security settings. */
+export interface RepoSettings {
+  repo: string;
+  readAt: string;
+  /** GitHub says the repository is private, so the settings only public
+   * ones have weren't read. */
+  private?: boolean;
+  /** Each setting read: on, off, or unknown (`null`). */
+  found: { setting: SecuritySetting; on?: boolean | null }[];
+  /** Why Orbit can't see them. */
+  unseen?: string | null;
+  /** Why the last read failed; what was read before is kept. */
+  error?: string | null;
+  tries: number;
+  retryAt?: string | null;
+}
+/** The owner of a repository, such as `acme` for `acme/api`. */
+export function ownerOf(repo: string) {
+  return repo.split("/")[0];
+}
+/** The settings an owner's repositories should have, in the usual order,
+ * as the engine has it (`wanted_for`). */
+export function wantedFor(
+  baselines: Baseline[] | undefined,
+  owner: string,
+): SecuritySetting[] {
+  const chosen = baselines?.find(
+    (b) => b.owner.toLowerCase() === owner.toLowerCase(),
+  )?.settings;
+  return securitySettings
+    .filter((s) => (chosen ? chosen.includes(s.key) : s.orbit))
+    .map((s) => s.key);
+}
+/** The settings of `wanted` a repository has off (`drift`), on
+ * (`matched`), or can't tell (`unknown`), as the engine has it. Nothing
+ * while Orbit can't see them. */
+export function settingsDrift(r: RepoSettings, wanted: SecuritySetting[]) {
+  const seen = !r.unseen && !!r.readAt;
+  const has = (key: SecuritySetting) =>
+    !(r.private && securitySettings.find((s) => s.key === key)?.publicOnly);
+  const on = (key: SecuritySetting) =>
+    r.found.find((f) => f.setting === key)?.on ?? null;
+  const of = (state: boolean | null) =>
+    seen ? wanted.filter((k) => has(k) && on(k) === state) : [];
+  return { drift: of(false), matched: of(true), unknown: of(null) };
 }
 /** Whether only you should see to an alert now: every secret, and every
  * high or critical alert, as the engine has it (`security.rs`). */
@@ -2053,6 +2201,7 @@ export const defaults: Settings = {
   keepScanArtifacts: false,
   watchCi: true,
   watchSecurity: true,
+  securityBaselines: [],
   buddy: defaultBuddy,
   writeUps: defaultWriteUps,
 };

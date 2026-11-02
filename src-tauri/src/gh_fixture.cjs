@@ -35,6 +35,13 @@
 // true. While <dir>/alerts-<kind>-error exists, listing them fails with
 // its text, and while <dir>/alerts-<kind>-<n>-error exists, reading
 // alert <n> on its own does.
+// The security settings of a/b are in <dir>/settings.json, by endpoint
+// under repos/a/b, or as Orbit's baseline has them: Dependabot alerts
+// (`vulnerability-alerts`, answered with no body, or 404 when false),
+// Dependabot security updates (`automated-security-fixes`, 404 when
+// false), private vulnerability reporting, the Actions token's default
+// and fork approval; while <dir>/settings-error exists, reading one fails
+// with its text.
 // Pull request <n> of a/b is <dir>/pull-<n>.json, or 404; while
 // <dir>/pull-error exists, reading one fails with its text. Its reviews
 // are <dir>/reviews-<n>.json, or none, in pages, and while
@@ -328,6 +335,33 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
       ? JSON.parse(fs.readFileSync(about, "utf8"))
       : { full_name: "a/b", private: false, visibility: "public" },
   );
+} else if (
+  (m = endpoint.match(
+    /^repos\/a\/b\/(vulnerability-alerts|automated-security-fixes|private-vulnerability-reporting|actions\/permissions\/workflow|actions\/permissions\/fork-pr-contributor-approval)$/,
+  ))
+) {
+  const failed = path.join(dir, "settings-error");
+  if (fs.existsSync(failed)) {
+    process.stderr.write(fs.readFileSync(failed, "utf8"));
+    process.exit(1);
+  }
+  const kept = path.join(dir, "settings.json");
+  const settings = {
+    "vulnerability-alerts": true,
+    "automated-security-fixes": { enabled: true, paused: false },
+    "private-vulnerability-reporting": { enabled: true },
+    "actions/permissions/workflow": {
+      default_workflow_permissions: "read",
+      can_approve_pull_request_reviews: false,
+    },
+    "actions/permissions/fork-pr-contributor-approval": {
+      approval_policy: "first_time_contributors",
+    },
+    ...(fs.existsSync(kept) ? JSON.parse(fs.readFileSync(kept, "utf8")) : {}),
+  };
+  const v = settings[m[1]];
+  if (v === false) missing();
+  else if (v !== true) answer(v);
 } else if (endpoint === "users/a") {
   const org = fs.existsSync(path.join(dir, "org"));
   answer({ login: "a", type: org ? "Organization" : "User" });
