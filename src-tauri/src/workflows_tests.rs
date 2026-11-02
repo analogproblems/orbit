@@ -152,6 +152,12 @@ fn a_tag_matches_a_filter_pattern_as_github_reads_it() {
         ("[CB]at", "Hat", false),
         ("v\\*", "v*", true),
         ("v\\*", "v1", false),
+        ("**/*", "release/v1/a", true),
+        ("*/*", "release/v1/a", false),
+        ("*a+b", "xaaab", true),
+        ("*a+b", "xb", false),
+        ("v[0-9]?", "v", true),
+        ("v[0-9]?", "v12", false),
         // A pattern Orbit can't read matches nothing.
         ("[", "[", false),
         ("+v", "v", false),
@@ -175,6 +181,24 @@ fn a_tag_matches_a_filter_pattern_as_github_reads_it() {
     assert!(w.on_tags() && w.runs_on_tag("v1.0.0") && !w.runs_on_tag("v1.0.0-rc.1"));
     let w = workflow(&[], &[]);
     assert!(!w.on_tags() && !w.runs_on_tag("v1.0.0"));
+}
+
+/// A pattern with many wildcards is matched in a time that grows with its
+/// length times the name's, not with the ways its wildcards could split
+/// the name: tried that way, the first pattern here has over a hundred
+/// billion.
+#[test]
+fn a_pattern_with_many_wildcards_is_matched_quickly() {
+    let started = std::time::Instant::now();
+    for stars in [20, 200] {
+        let pattern = format!("v1.0.0-{}b", "*a".repeat(stars));
+        let name = format!("v1.0.0-{}", "a".repeat(stars * 2));
+        assert!(!filter_match(&pattern, &name));
+        assert!(filter_match(&pattern, &format!("{name}b")));
+        let pattern = format!("{}b", "**a+".repeat(stars));
+        assert!(!filter_match(&pattern, &"a".repeat(stars * 4)));
+    }
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
 }
 
 fn names(list: &[&str]) -> Vec<String> {

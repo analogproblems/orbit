@@ -213,44 +213,38 @@ fn filter_atoms(pattern: &str) -> Option<Vec<(Atom, Times)>> {
     }
     Some(out)
 }
+/// Whether the atoms match all of `name`. It walks the atoms once, keeping
+/// which lengths of `name` the atoms so far can match, so its work grows
+/// with the pattern's length times the name's, however many wildcards a
+/// pattern from a workflow has.
 fn atoms_match(atoms: &[(Atom, Times)], name: &[char]) -> bool {
-    let Some(((atom, times), rest)) = atoms.split_first() else {
-        return name.is_empty();
-    };
-    let one = |c: char| match atom {
-        Atom::Char(a) => *a == c,
-        Atom::Set(set) => set.iter().any(|(a, b)| (*a..=*b).contains(&c)),
-        Atom::Star => c != '/',
-        Atom::Stars => true,
-    };
-    let first = |n: &[char]| n.first().is_some_and(|c| one(*c));
-    match (atom, times) {
-        (Atom::Star | Atom::Stars, _) => {
-            for at in 0..=name.len() {
-                if atoms_match(rest, &name[at..]) {
-                    return true;
-                }
-                if at < name.len() && !one(name[at]) {
-                    return false;
-                }
-            }
-            false
+    let n = name.len();
+    let mut reached = vec![false; n + 1];
+    reached[0] = true;
+    for (atom, times) in atoms {
+        let one = |c: char| match atom {
+            Atom::Char(a) => *a == c,
+            Atom::Set(set) => set.iter().any(|(a, b)| (*a..=*b).contains(&c)),
+            Atom::Star => c != '/',
+            Atom::Stars => true,
+        };
+        let mut next = vec![false; n + 1];
+        for j in 0..=n {
+            // Whether the atom can take the character before `j`.
+            let takes = j > 0 && one(name[j - 1]);
+            next[j] = match (atom, times) {
+                (Atom::Star | Atom::Stars, _) => reached[j] || takes && next[j - 1],
+                (_, Times::One) => takes && reached[j - 1],
+                (_, Times::Maybe) => reached[j] || takes && reached[j - 1],
+                (_, Times::Many) => takes && (reached[j - 1] || next[j - 1]),
+            };
         }
-        (_, Times::One) => first(name) && atoms_match(rest, &name[1..]),
-        (_, Times::Maybe) => {
-            atoms_match(rest, name) || first(name) && atoms_match(rest, &name[1..])
+        if !next.contains(&true) {
+            return false;
         }
-        (_, Times::Many) => {
-            let mut at = 0;
-            while at < name.len() && one(name[at]) {
-                at += 1;
-                if atoms_match(rest, &name[at..]) {
-                    return true;
-                }
-            }
-            false
-        }
+        reached = next;
     }
+    reached[n]
 }
 /// What Orbit read about a repository's CI at its default branch's latest
 /// commit.
