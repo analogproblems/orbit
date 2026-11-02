@@ -28,7 +28,13 @@
 // list that is neither a draft nor a pre-release, or none (HTTP 404); while
 // <dir>/latest-error exists, reading it fails with its text. A query about
 // its tags answers with <dir>/tags.json, or no tags on
-// a default branch `main` that Orbit's sign-in can push to.
+// a default branch `main` that Orbit's sign-in can push to. Its tag <t> is
+// at the commit in <dir>/tag-<t>.txt, and its branch <b> at the one in
+// <dir>/head-<b>.txt, or 404; while <dir>/ref-error exists, reading either
+// fails with its text. Making a tag writes <dir>/tag-<t>.txt, or fails with
+// <dir>/refs-error's text while that exists, or with HTTP 422 when the tag
+// is there; while <dir>/refs-lost exists, it makes the tag but its answer
+// is lost (HTTP 502).
 // The cache usage of a/b is <dir>/cache.json, or none, and its artifacts the
 // list in <dir>/artifacts.json, or none, in pages; while <dir>/cache-error or
 // <dir>/artifacts-error exists, reading them fails with its text.
@@ -457,6 +463,40 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
   const list = path.join(dir, `runners-${which}.json`);
   if (fs.existsSync(list)) process.stdout.write(fs.readFileSync(list, "utf8"));
   else answer({ total_count: 0, runners: [] });
+} else if (
+  (m = endpoint.match(/^repos\/a\/b\/git\/ref\/(tags|heads)\/(.+)$/))
+) {
+  const refused = path.join(dir, "ref-error");
+  if (fs.existsSync(refused)) {
+    process.stderr.write(fs.readFileSync(refused, "utf8"));
+    process.exit(1);
+  }
+  const which = m[1] === "tags" ? "tag" : "head";
+  const kept = path.join(dir, `${which}-${m[2].replace(/\//g, "_")}.txt`);
+  if (!fs.existsSync(kept)) {
+    process.stderr.write("gh: Not Found (HTTP 404)\n");
+    process.exit(1);
+  }
+  const sha = fs.readFileSync(kept, "utf8").trim();
+  answer({ ref: `refs/${m[1]}/${m[2]}`, object: { type: "commit", sha } });
+} else if (endpoint === "repos/a/b/git/refs" && method === "POST") {
+  const name = input.ref.replace(/^refs\/tags\//, "");
+  const kept = path.join(dir, `tag-${name}.txt`);
+  const refused = path.join(dir, "refs-error");
+  if (fs.existsSync(refused)) {
+    process.stderr.write(fs.readFileSync(refused, "utf8"));
+    process.exit(1);
+  }
+  if (fs.existsSync(kept)) {
+    process.stderr.write("gh: Reference already exists (HTTP 422)\n");
+    process.exit(1);
+  }
+  fs.writeFileSync(kept, input.sha);
+  if (fs.existsSync(path.join(dir, "refs-lost"))) {
+    process.stderr.write("gh: Bad Gateway (HTTP 502)\n");
+    process.exit(1);
+  }
+  answer({ ref: input.ref, object: { type: "commit", sha: input.sha } });
 } else if (endpoint === "repos/a/b/releases/latest") {
   const refused = path.join(dir, "latest-error");
   if (fs.existsSync(refused)) {

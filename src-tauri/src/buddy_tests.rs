@@ -224,6 +224,7 @@ fn bit_never_does_a_settings_change_on_its_own() {
             rerun_flaky: rule.into(),
             rerun_again: rule.into(),
             propose_ci: rule.into(),
+            push_tag: rule.into(),
         };
         assert_eq!(will_fix(&s, &item), None, "{rule}");
     }

@@ -518,7 +518,7 @@ async function demoAction(
     demo.attention = demo.attention?.filter((a) => a.key !== item.key);
     demoNote({
       kind: "fixed",
-      text: D.demoFixed(demo, item.fix, item.prId),
+      text: D.demoFixed(demo, item.fix, item.prId, item.key),
       prId: item.prId,
       reviewId: item.reviewId,
       repo: item.repo,

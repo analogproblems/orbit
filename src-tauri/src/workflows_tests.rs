@@ -87,6 +87,120 @@ fn a_workflow_orbit_cant_read_for_sure_is_unknown() {
     assert_eq!(on_pulls(mixed), OnPulls::Yes);
 }
 
+#[test]
+fn the_tags_a_workflow_runs_on_are_what_its_push_filter_names() {
+    let none: Vec<&str> = vec![];
+    for (text, tags, ignore) in [
+        (
+            "on:\n  push:\n    tags:\n      - 'v*'\n",
+            vec!["v*"],
+            none.clone(),
+        ),
+        (
+            "on:\n  push:\n    branches: [main]\n    tags: [v*, '1.*']\n",
+            vec!["v*", "1.*"],
+            none.clone(),
+        ),
+        (
+            "on:\n  push:\n    tags:\n      - '[0-9]*'\n      - '!*-*'\n",
+            vec!["[0-9]*", "!*-*"],
+            none.clone(),
+        ),
+        ("on:\n  push:\n    tags:\n", vec!["**"], none.clone()),
+        (
+            "on:\n  push:\n    tags-ignore: ['v*']\n",
+            none.clone(),
+            vec!["v*"],
+        ),
+        // Every push runs it, but Orbit only counts a workflow made for tags.
+        ("on: [push, pull_request]\n", none.clone(), none.clone()),
+        (
+            "on:\n  push:\n    branches: [main]\n",
+            none.clone(),
+            none.clone(),
+        ),
+        (
+            "on:\n  release:\n    types: [published]\n",
+            none.clone(),
+            none.clone(),
+        ),
+        ("not a workflow", none.clone(), none.clone()),
+    ] {
+        let (t, i) = on_tags(text);
+        assert_eq!((t, i), (names(&tags), names(&ignore)), "{text}");
+    }
+}
+
+/// Filter patterns read as GitHub reads them.
+#[test]
+fn a_tag_matches_a_filter_pattern_as_github_reads_it() {
+    for (pattern, name, matches) in [
+        ("v*", "v1.2.0", true),
+        ("v*", "1.2.0", false),
+        ("*", "v1.2.0", true),
+        ("*", "release/v1", false),
+        ("**", "release/v1", true),
+        ("v1.*", "v0.3.0", false),
+        ("v[0-9]+.[0-9]+.[0-9]+", "v1.20.3", true),
+        ("v[0-9]+.[0-9]+.[0-9]+", "v1.20.3-rc.1", false),
+        ("[0-9]*", "0.3.0", true),
+        ("[0-9]*", "v0.3.0", false),
+        ("v?1.0.0", "1.0.0", true),
+        ("v?1.0.0", "v1.0.0", true),
+        ("release-*", "v0.3.0", false),
+        ("[CB]at", "Cat", true),
+        ("[CB]at", "Hat", false),
+        ("v\\*", "v*", true),
+        ("v\\*", "v1", false),
+        ("**/*", "release/v1/a", true),
+        ("*/*", "release/v1/a", false),
+        ("*a+b", "xaaab", true),
+        ("*a+b", "xb", false),
+        ("v[0-9]?", "v", true),
+        ("v[0-9]?", "v12", false),
+        // A pattern Orbit can't read matches nothing.
+        ("[", "[", false),
+        ("+v", "v", false),
+        ("[9-0]", "5", false),
+    ] {
+        assert_eq!(filter_match(pattern, name), matches, "{pattern} {name}");
+    }
+    let workflow = |tags: &[&str], ignore: &[&str]| Workflow {
+        tags: names(tags),
+        tags_ignore: names(ignore),
+        ..Default::default()
+    };
+    // The last pattern that matches decides.
+    let w = workflow(&["v*", "!v*-*"], &[]);
+    assert!(w.on_tags() && w.runs_on_tag("v1.0.0"));
+    assert!(!w.runs_on_tag("v1.0.0-rc.1") && !w.runs_on_tag("1.0.0"));
+    let w = workflow(&["!v*-*", "v*"], &[]);
+    assert!(w.runs_on_tag("v1.0.0-rc.1"));
+    // With tags-ignore, every tag it doesn't name.
+    let w = workflow(&[], &["*-*"]);
+    assert!(w.on_tags() && w.runs_on_tag("v1.0.0") && !w.runs_on_tag("v1.0.0-rc.1"));
+    let w = workflow(&[], &[]);
+    assert!(!w.on_tags() && !w.runs_on_tag("v1.0.0"));
+}
+
+/// A pattern with many wildcards is matched in a time that grows with its
+/// length times the name's, not with the ways its wildcards could split
+/// the name: tried that way, the first pattern here has over a hundred
+/// billion.
+#[test]
+fn a_pattern_with_many_wildcards_is_matched_quickly() {
+    let started = std::time::Instant::now();
+    for stars in [20, 200] {
+        let pattern = format!("v1.0.0-{}b", "*a".repeat(stars));
+        let name = format!("v1.0.0-{}", "a".repeat(stars * 2));
+        assert!(!filter_match(&pattern, &name));
+        assert!(filter_match(&pattern, &format!("{name}b")));
+        let pattern = format!("{}b", "**a+".repeat(stars));
+        assert!(!filter_match(&pattern, &"a".repeat(stars * 4)));
+    }
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+}
+
 fn names(list: &[&str]) -> Vec<String> {
     list.iter().map(|n| n.to_string()).collect()
 }

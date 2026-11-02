@@ -178,6 +178,13 @@ impl Engine {
                 self.tell_agents().await;
                 Ok(())
             }
+            // The tag on the button, checked with GitHub just before, and
+            // recorded in the journal before it is sent.
+            Fix::PushTag => {
+                let (repo, tag) =
+                    crate::tagging::from_key(&item.key).ok_or("This isn't about a release tag.")?;
+                self.push_tag(repo, tag, &still).await
+            }
             // Done once the item closes, whatever else is still off.
             Fix::CheckConnections => {
                 let _ = self.check_connections().await;

@@ -479,7 +479,8 @@ export type Fix =
   | "sync_now"
   | "turn_on_autopilot"
   | "check_connections"
-  | "post_here_again";
+  | "post_here_again"
+  | "push_tag";
 /** The fixes that always ask first: changing settings, checking
  * connections, and posting again where another Orbit posts. */
 export type AskingFix =
@@ -505,6 +506,7 @@ export const fixLabels: Record<Fix, string> = {
   turn_on_autopilot: "Turn autopilot back on",
   check_connections: "Check again",
   post_here_again: "Post here again",
+  push_tag: "Push a release tag",
 };
 export const fixDescriptions: Record<RuledFix, string> = {
   continue_loop: "When a loop reaches its round limit, allow two more rounds.",
@@ -513,6 +515,8 @@ export const fixDescriptions: Record<RuledFix, string> = {
   publish:
     "When a report is waiting for you, publish it. Never a report with text that looks like credentials, or one from a pull request automatic publication wouldn't trust.",
   sync_now: "When syncing keeps failing, sync again.",
+  push_tag:
+    "When a repository’s version files agree on a version with no tag yet, and CI passed at that commit, push the tag there, named as the repository names its tags. Only where version tags or a workflow that runs on tags are already used. Orbit never moves or deletes a tag.",
 };
 export const postLabels: Record<RuledPost, string> = {
   comment_on_prs: "Comment on pull requests",
@@ -556,6 +560,7 @@ export const defaultBuddy: Buddy = {
     review_again: "ask_first",
     publish: "ask_first",
     sync_now: "ask_first",
+    push_tag: "ask_first",
     comment_on_prs: "do_it",
     open_issues: "do_it",
     rerun_flaky: "do_it",
@@ -801,6 +806,17 @@ export function buddyOf(settings: Settings): Buddy {
     ...settings.buddy,
     rules: { ...defaultBuddy.rules, ...settings.buddy?.rules },
   };
+}
+/** The tag a Needs you item offers to push, from its key
+ * (`push:<repo>:<tag>`). */
+export function pushedTag(key: string | null | undefined) {
+  if (!key?.startsWith("push:")) return undefined;
+  return key.slice(key.lastIndexOf(":") + 1) || undefined;
+}
+/** The label of an item's fix button: Push v0.3.0 for a tag. */
+export function fixLabel(fix: Fix, key: string | null | undefined) {
+  const tag = fix === "push_tag" ? pushedTag(key) : undefined;
+  return tag ? `Push ${tag}` : fixLabels[fix];
 }
 /** Whether a fix always waits for your tap, whatever Bit's rules. */
 export const asksFirst = (fix: Fix): fix is AskingFix =>

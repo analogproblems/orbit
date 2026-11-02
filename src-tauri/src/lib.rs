@@ -45,6 +45,7 @@ pub mod server;
 pub mod service;
 pub mod setup;
 pub mod storage;
+pub mod tagging;
 pub mod text;
 pub mod types;
 pub mod usage;

@@ -160,7 +160,7 @@ impl Proposal {
 /// Trusted accounts aren't among them: they decide which pull requests are
 /// published automatically. A repository's own settings are changed with
 /// Set up repository instead.
-pub const SETTINGS: [&str; 39] = [
+pub const SETTINGS: [&str; 40] = [
     "automatic",
     "autoPost",
     "pollSeconds",
@@ -200,6 +200,7 @@ pub const SETTINGS: [&str; 39] = [
     "buddy.rules.rerun_flaky",
     "buddy.rules.rerun_again",
     "buddy.rules.propose_ci",
+    "buddy.rules.push_tag",
 ];
 
 /// What Bit's answerer is told about being Bit, for every question.
