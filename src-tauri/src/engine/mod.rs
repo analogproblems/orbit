@@ -34,6 +34,7 @@ mod queue;
 mod rounds;
 mod run;
 mod scans;
+mod security_settings;
 mod settings;
 mod setup;
 mod sign_in;
@@ -131,8 +132,9 @@ type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// `setup` (repositories Bit sets up), `ledger` (each repository's
 /// pull-request history, for the Decisions page), `writeup` (its
 /// plain-language write-ups), `watch` (reading CI), `ops` (Orbit's
-/// comments and issues about failing CI) and `moving` (moving into an
-/// always-on Orbit).
+/// comments and issues about failing CI), `security_settings` (each
+/// repository's security settings, and changing one on your tap) and
+/// `moving` (moving into an always-on Orbit).
 ///
 /// # Locks
 ///
@@ -210,8 +212,9 @@ pub struct Engine {
     /// Security alerts are being read; another read skips rather than
     /// waits.
     reading_security: AtomicBool,
-    /// Security settings are being read; another read skips rather than
-    /// waits.
+    /// Security settings are being read or changed; another read skips
+    /// rather than waits, and a change you asked for meanwhile is made
+    /// before this one stops (`read_settings`).
     reading_settings: AtomicBool,
     /// The pull-request history is being read; another read skips rather
     /// than waits.

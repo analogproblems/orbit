@@ -11,6 +11,21 @@ pub async fn run(
 ) -> Result<String, String> {
     run_with_timeout(program, args, cwd, input, Duration::from_secs(120)).await
 }
+/// Starts `cmd`. A program file still open for writing somewhere can't
+/// start ("Text file busy"), as for a moment while it's written or
+/// replaced, so Orbit tries again a few times first.
+async fn spawn(cmd: &mut Command) -> std::io::Result<tokio::process::Child> {
+    let mut tries = 0;
+    loop {
+        match cmd.spawn() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 5 => {
+                tries += 1;
+                tokio::time::sleep(Duration::from_millis(10 << tries)).await;
+            }
+            started => return started,
+        }
+    }
+}
 pub async fn run_with_timeout(
     program: &str,
     args: &[String],
@@ -35,8 +50,8 @@ pub async fn run_with_timeout(
     if let Some(p) = cwd {
         cmd.current_dir(p);
     }
-    let mut child = cmd
-        .spawn()
+    let mut child = spawn(&mut cmd)
+        .await
         .map_err(|e| format!("Cannot start {program}: {e}"))?;
     #[cfg(unix)]
     let mut terminate = TerminateOnDrop(child.id());
@@ -131,6 +146,27 @@ pub async fn api_text(endpoint: &str) -> Result<String, String> {
     .map(String::from)
     .collect();
     run(&gh(), &args, None, None).await
+}
+/// A GitHub API write that GitHub may answer with no body, such as turning
+/// on a repository's setting.
+pub async fn api_write(endpoint: &str, method: &str, body: Option<Value>) -> Result<(), String> {
+    let mut args: Vec<String> = [
+        "api",
+        "--hostname",
+        "github.com",
+        "--method",
+        method,
+        endpoint,
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    if body.is_some() {
+        args.extend(["--input".into(), "-".into()]);
+    }
+    run(&gh(), &args, None, body.map(|v| v.to_string()))
+        .await
+        .map(|_| ())
 }
 /// Asks GitHub Actions to rerun a job, and the jobs that need it. GitHub
 /// answers with no body.
@@ -1057,6 +1093,24 @@ pub const PAGE: usize = 100;
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A program still open for writing, as one just written is for a
+    /// moment, starts once it's closed rather than failing.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_program_still_being_written_starts_once_it_is_closed() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let program = d.path().join("tool");
+        let mut file = std::fs::File::create(&program).unwrap();
+        file.write_all(b"#!/bin/sh\necho started\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = program.to_string_lossy().into_owned();
+        let started = tokio::spawn(async move { run(&path, &[], None, None).await });
+        tokio::time::sleep(Duration::from_millis(15)).await;
+        drop(file);
+        assert_eq!(started.await.unwrap().unwrap().trim(), "started");
+    }
     #[test]
     fn a_list_is_read_a_page_at_a_time_until_orbit_has_all_github_counts() {
         let items = |from: u64, n: u64| -> Vec<Value> {

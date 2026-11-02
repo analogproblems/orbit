@@ -263,6 +263,14 @@ mod desktop {
         engine.rerun_job(&key, number).await
     }
     #[tauri::command]
+    async fn fix_setting(
+        engine: State<'_, AppState>,
+        repo: String,
+        setting: baseline::Setting,
+    ) -> Result<(), String> {
+        engine.fix_setting(&repo, setting).await
+    }
+    #[tauri::command]
     async fn ask_buddy(
         engine: State<'_, AppState>,
         question: buddy::Question,
@@ -773,6 +781,7 @@ mod desktop {
                 use_fix,
                 tell_agent,
                 rerun_job,
+                fix_setting,
                 ask_buddy,
                 ask_buddy_anything,
                 use_proposal,

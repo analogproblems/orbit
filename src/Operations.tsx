@@ -20,6 +20,7 @@ import {
   alertNeedsYou,
   buddyOf,
   checkNames,
+  lastChange,
   ownerOf,
   readinessLine,
   sameRepo,
@@ -42,6 +43,7 @@ import {
   type Problem,
   type RepoCi,
   type RepoSettings,
+  type SecuritySetting,
   type Runner,
   type RunnerPlace,
   type SecurityAlert,
@@ -1147,31 +1149,61 @@ function Security() {
   );
 }
 
-/** The self-hosted runners Orbit sees for each repository, and for each
- * organization that owns one, and where it can't see them. Places with
- * none aren't listed. */
-/** What a repository's security settings say against its owner's
- * baseline: a line per setting it has off, then those Orbit can't tell
- * about, or that it matches. Nothing while Orbit can't see them. */
-export function settingsLines(s: Snapshot, r: RepoSettings) {
+/** What Orbit says about a repository's security settings, besides each
+ * one it drifts on: that it matches, that Orbit can't see them, or which
+ * Orbit can't tell are on. */
+export function settingsNotes(s: Snapshot, r: RepoSettings) {
   if (r.unseen) return [r.unseen];
   if (!r.readAt) return [];
   const wanted = wantedFor(s.settings.securityBaselines, ownerOf(r.repo));
   const { drift, matched, unknown } = settingsDrift(r, wanted);
-  const about = (k: string) => securitySettings.find((x) => x.key === k)!;
-  const lines = drift.map((k) => about(k).offText);
-  if (!drift.length && !unknown.length) lines.push("It matches its baseline.");
+  const notes = [];
+  if (!drift.length && !unknown.length) notes.push("It matches its baseline.");
   else if (!drift.length && matched.length)
-    lines.push("Everything else matches its baseline.");
+    notes.push("Everything else matches its baseline.");
   if (unknown.length)
-    lines.push(
-      `Orbit can’t tell whether ${unknown.length === 1 ? "this is" : "these are"} on: ${unknown.map((k) => about(k).name).join(", ")}.`,
+    notes.push(
+      `Orbit can’t tell whether ${unknown.length === 1 ? "this is" : "these are"} on: ${unknown.map((k) => aboutSetting(k).name).join(", ")}.`,
     );
-  return lines;
+  return notes;
 }
-/** Each repository's security settings, against its owner's baseline. */
+/** A repository's security settings in sentences: each it drifts on,
+ * then the rest. */
+export function settingsLines(s: Snapshot, r: RepoSettings) {
+  return [
+    ...driftOf(s, r).map((k) => aboutSetting(k).offText),
+    ...settingsNotes(s, r),
+  ];
+}
+function driftOf(s: Snapshot, r: RepoSettings) {
+  const wanted = wantedFor(s.settings.securityBaselines, ownerOf(r.repo));
+  return settingsDrift(r, wanted).drift;
+}
+function aboutSetting(k: SecuritySetting) {
+  return securitySettings.find((x) => x.key === k)!;
+}
+/** Where changing a setting a repository drifts on stands: on its way,
+ * after you tapped Fix, or what came of the last change. */
+export function fixState(s: Snapshot, r: RepoSettings, k: SecuritySetting) {
+  const last = lastChange(s.journal, r.repo, k);
+  if (r.asked?.includes(k) || last?.state === "sending")
+    return { busy: true, note: "Orbit is changing this on GitHub." };
+  if (last?.state === "failed")
+    return {
+      busy: false,
+      note: last.error ?? "Orbit’s last change didn’t go through.",
+    };
+  if (last?.state === "done")
+    return {
+      busy: false,
+      note: "GitHub took Orbit’s last change, but still shows this.",
+    };
+  return { busy: false };
+}
+/** Each repository's security settings, against its owner's baseline,
+ * with Fix on each it drifts on. */
 function SecuritySettings() {
-  const { snapshot: s } = useOrbit();
+  const { snapshot: s, action } = useOrbit();
   const read = (s.repoSettings ?? []).filter((r) => r.readAt || r.error);
   return (
     <VStack gap={3}>
@@ -1179,8 +1211,8 @@ function SecuritySettings() {
       <Text color="secondary">
         Every hour, Orbit reads each repository’s security settings and compares
         them with its owner’s baseline, which you choose in Settings under
-        Automation. GitHub shows them only to a repository’s admins. Orbit only
-        reads them here; it changes nothing.
+        Automation. GitHub shows them only to a repository’s admins. Orbit
+        changes one only when you tap Fix, after reading it again on GitHub.
       </Text>
       {!read.length ? (
         <Card padding={3}>
@@ -1217,7 +1249,35 @@ function SecuritySettings() {
                   label={<Text weight="medium">{r.repo}</Text>}
                   description={
                     <VStack gap={1}>
-                      {settingsLines(s, r).map((line) => (
+                      {drift.map((k) => {
+                        const fix = fixState(s, r, k);
+                        return (
+                          <VStack key={k} gap={0.5}>
+                            <HStack gap={2} vAlign="center" wrap="wrap">
+                              <Text>{aboutSetting(k).offText}</Text>
+                              {!fix.busy && (
+                                <Button
+                                  label={`Fix ${aboutSetting(k).name} in ${r.repo}`}
+                                  size="sm"
+                                  variant="secondary"
+                                  onClick={() =>
+                                    void action("fix_setting", {
+                                      repo: r.repo,
+                                      setting: k,
+                                    })
+                                  }
+                                >
+                                  Fix
+                                </Button>
+                              )}
+                            </HStack>
+                            {fix.note && (
+                              <Text color="secondary">{fix.note}</Text>
+                            )}
+                          </VStack>
+                        );
+                      })}
+                      {settingsNotes(s, r).map((line) => (
                         <Text key={line}>{line}</Text>
                       ))}
                       {r.error && <Text color="secondary">{r.error}</Text>}
@@ -1238,6 +1298,9 @@ function SecuritySettings() {
   );
 }
 
+/** The self-hosted runners Orbit sees for each repository, and for each
+ * organization that owns one, and where it can't see them. Places with
+ * none aren't listed. */
 function Runners() {
   const { snapshot: s } = useOrbit();
   const read = (s.runners ?? []).filter(
@@ -1500,10 +1563,15 @@ const writeText: Record<OpsAction, string> = {
   close_issue: "Closed its issue on",
   reopen_issue: "Reopened its issue on",
   rerun_job: "Reran a job on",
+  change_setting: "Changed a security setting in",
 };
-/** A write in words, such as "Opened an issue on acme/api #45". */
+/** A write in words, such as "Opened an issue on acme/api #45", or
+ * "Turned on Dependabot alerts in acme/api". */
 export function writeSummary(w: OpsWrite) {
   const target = w.number ? `${w.repo} #${w.number}` : w.repo;
+  const setting = securitySettings.find((x) => x.key === w.setting);
+  if (w.action === "change_setting" && setting)
+    return `${setting.fixedText} in ${target}.`;
   return `${writeText[w.action]} ${target}.`;
 }
 

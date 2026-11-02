@@ -347,6 +347,356 @@ async fn reads_each_setting_as_github_has_it() {
     assert!(e.contains("HTTP 502"), "{e}");
 }
 
+fn change_entry(state: WriteState, action: Action, setting: Option<Setting>) -> Write {
+    Write {
+        id: format!("w{}", setting.map_or("", |s| s.key())),
+        thread: "settings:acme/api".into(),
+        action,
+        repo: "acme/api".into(),
+        number: None,
+        state,
+        at: "2026-11-02T00:00:00.000Z".into(),
+        done_at: None,
+        url: String::new(),
+        error: None,
+        setting,
+    }
+}
+
+/// A tap on Fix is noted once, only for a setting Orbit last read off
+/// where the baseline wants it on.
+#[test]
+fn a_tap_asks_for_a_setting_that_drifts_once() {
+    use Setting::*;
+    let mut read = vec![read_at(&[
+        (SecretScanning, Some(true)),
+        (DependabotAlerts, Some(false)),
+        (PushProtection, Some(false)),
+        (ReadOnlyToken, None),
+    ])];
+    assert_eq!(
+        ask(&mut [], &[], &[], "acme/api", DependabotAlerts).unwrap_err(),
+        "Orbit hasn't read acme/api's security settings yet."
+    );
+    for (setting, why) in [
+        (SecretScanning, "Secret scanning is already on in acme/api."),
+        (
+            PushProtection,
+            "acme/api's baseline doesn't ask for Push protection for secrets.",
+        ),
+        (
+            ReadOnlyToken,
+            "Orbit can't tell whether Read-only Actions token is on in acme/api, so it changes nothing.",
+        ),
+    ] {
+        assert_eq!(
+            ask(&mut read, &[], &[], "acme/api", setting).unwrap_err(),
+            why
+        );
+    }
+    // Whatever the case of the name, and once.
+    ask(&mut read, &[], &[], "ACME/api", DependabotAlerts).unwrap();
+    assert_eq!(read[0].asked, [DependabotAlerts]);
+    assert!(any_asked(&read));
+    let again = "Orbit is already changing Dependabot alerts in acme/api.";
+    assert_eq!(
+        ask(&mut read, &[], &[], "acme/api", DependabotAlerts).unwrap_err(),
+        again
+    );
+    // Nor while one is on its way.
+    read[0].asked.clear();
+    let journal = [change_entry(
+        WriteState::Sending,
+        Action::ChangeSetting,
+        Some(DependabotAlerts),
+    )];
+    assert!(sending(&journal, "acme/API", DependabotAlerts));
+    assert_eq!(
+        ask(&mut read, &journal, &[], "acme/api", DependabotAlerts).unwrap_err(),
+        again
+    );
+    // A repository Orbit can't see has nothing to change.
+    read[0].unseen = Some(unseen_text("acme/api"));
+    assert_eq!(
+        ask(&mut read, &[], &[], "acme/api", DependabotAlerts).unwrap_err(),
+        unseen_text("acme/api")
+    );
+}
+
+/// A read keeps what you asked for; the look before a change takes the
+/// ask, and says whether the change is still needed.
+#[test]
+fn a_read_keeps_your_asks_and_the_look_takes_them() {
+    use Setting::*;
+    let now = Utc::now();
+    let mut read = vec![read_at(&[(DependabotAlerts, Some(false))])];
+    read[0].asked = vec![DependabotAlerts, DependabotUpdates];
+    record(
+        &mut read,
+        "acme/api",
+        Ok(read_at(&[
+            (DependabotAlerts, Some(false)),
+            (DependabotUpdates, Some(true)),
+        ])),
+        now,
+    );
+    assert_eq!(read[0].asked, [DependabotAlerts, DependabotUpdates]);
+    record(&mut read, "acme/api", Err("HTTP 502".into()), now);
+    assert_eq!(read[0].asked.len(), 2);
+
+    assert_eq!(
+        next_ask(&mut read, &["acme/api".into()]),
+        Some(("acme/api".into(), DependabotAlerts))
+    );
+    // Still off: it's sent, but only after a read that worked.
+    assert!(!take(&mut read, &[], "acme/api", DependabotAlerts, false));
+    read[0].asked.insert(0, DependabotAlerts);
+    assert!(take(&mut read, &[], "acme/api", DependabotAlerts, true));
+    // On by now: nothing to send.
+    assert!(!take(&mut read, &[], "acme/api", DependabotUpdates, true));
+    assert!(!any_asked(&read));
+
+    // A repository Orbit no longer watches loses its asks.
+    read[0].asked = vec![DependabotAlerts];
+    assert_eq!(next_ask(&mut read, &[]), None);
+    assert!(!any_asked(&read));
+}
+
+/// A change Orbit stopped in the middle of is marked as cut off and never
+/// sent again; other writes are left to the journal's own pass, and the
+/// journal's pass leaves changes alone.
+#[test]
+fn a_change_cut_off_by_orbit_stopping_is_never_sent_again() {
+    use Setting::*;
+    let now = Utc::now();
+    let mut journal = vec![
+        change_entry(
+            WriteState::Sending,
+            Action::ChangeSetting,
+            Some(ReadOnlyToken),
+        ),
+        change_entry(WriteState::Sending, Action::PostComment, None),
+        change_entry(
+            WriteState::Done,
+            Action::ChangeSetting,
+            Some(DependabotAlerts),
+        ),
+    ];
+    let mut threads = vec![];
+    assert!(crate::ops::interrupted(&mut journal, &mut threads, now));
+    assert_eq!(journal[0].state, WriteState::Sending);
+    assert_eq!(journal[1].state, WriteState::Failed);
+
+    assert_eq!(interrupted(&mut journal, now), ["acme/api"]);
+    assert_eq!(journal[0].state, WriteState::Failed);
+    assert_eq!(journal[0].error.as_deref(), Some(INTERRUPTED));
+    assert_eq!(journal[2].state, WriteState::Done);
+    assert!(interrupted(&mut journal, now).is_empty());
+}
+
+/// A change is recorded as on its way before it is sent, then done, with
+/// where GitHub shows it, or failed, with why.
+#[test]
+fn a_change_is_recorded_before_it_is_sent_and_settled_after() {
+    use Setting::*;
+    let now = Utc::now();
+    let mut journal = vec![];
+    let id = record_change(&mut journal, "Acme/Api", ReadOnlyToken, now);
+    assert_eq!(
+        (
+            journal[0].action,
+            journal[0].state,
+            journal[0].setting,
+            journal[0].thread.as_str()
+        ),
+        (
+            Action::ChangeSetting,
+            WriteState::Sending,
+            Some(ReadOnlyToken),
+            "settings:acme/api"
+        )
+    );
+    assert!(sending(&journal, "acme/api", ReadOnlyToken));
+    settle(&mut journal, &id, Ok(()), now);
+    assert_eq!(journal[0].state, WriteState::Done);
+    assert_eq!(
+        journal[0].url,
+        "https://github.com/Acme/Api/settings/actions"
+    );
+    assert!(!sending(&journal, "acme/api", ReadOnlyToken));
+
+    let id = record_change(&mut journal, "acme/api", SecretScanning, now);
+    settle(&mut journal, &id, Err(change_error("HTTP 409")), now);
+    assert_eq!(journal[1].state, WriteState::Failed);
+    assert!(journal[1].url.is_empty());
+    assert_eq!(
+        journal[1].error.as_deref(),
+        Some("The organization's own settings don't let a repository change this, so an owner of the organization changes it there.")
+    );
+    assert_eq!(
+        page("acme/api", DependabotAlerts),
+        "https://github.com/acme/api/settings/security_analysis"
+    );
+    // The journal's file keeps which setting, and older entries load.
+    let saved = serde_json::to_value(&journal[1]).unwrap();
+    assert_eq!(saved["setting"], "secret_scanning");
+    let older: Write = serde_json::from_value(json!({
+        "id": "w", "thread": "pr:a/b#1", "action": "post_comment",
+        "repo": "a/b", "at": "2026-11-02T00:00:00.000Z",
+    }))
+    .unwrap();
+    assert_eq!(older.setting, None);
+    assert!(serde_json::to_value(&older)
+        .unwrap()
+        .get("setting")
+        .is_none());
+}
+
+#[test]
+fn why_github_didnt_make_a_change_is_said_plainly() {
+    assert_eq!(
+        change_error("gh: API rate limit exceeded (HTTP 403)"),
+        "GitHub's rate limit held this back. Tap Fix again later."
+    );
+    for refused in ["gh: Forbidden (HTTP 403)", "gh: Not Found (HTTP 404)"] {
+        assert_eq!(
+            change_error(refused),
+            "GitHub didn't let Orbit change this. Orbit's sign-in needs to be an admin of the repository."
+        );
+    }
+    assert!(change_error("gh: Validation Failed (HTTP 422)")
+        .starts_with("GitHub didn't make the change: "));
+}
+
+/// Each setting is changed with the call GitHub has for it; the Actions
+/// token and approvals are set together, so the one not asked about is
+/// sent as Orbit read it, or left out when Orbit couldn't tell.
+#[test]
+fn each_setting_is_changed_with_its_own_call() {
+    use Setting::*;
+    let read = read_at(&[(ReadOnlyToken, Some(false)), (NoActionsApproval, None)]);
+    let call = |s| {
+        let (path, method, body) = change(s, &read);
+        (path, method, body.unwrap_or(Value::Null))
+    };
+    assert_eq!(
+        call(SecretScanning),
+        (
+            "",
+            "PATCH",
+            json!({"security_and_analysis": {"secret_scanning": {"status": "enabled"}}})
+        )
+    );
+    assert_eq!(
+        call(PushProtection).2,
+        json!({"security_and_analysis": {"secret_scanning_push_protection": {"status": "enabled"}}})
+    );
+    assert_eq!(
+        call(DependabotAlerts),
+        ("/vulnerability-alerts", "PUT", Value::Null)
+    );
+    assert_eq!(
+        call(DependabotUpdates),
+        ("/automated-security-fixes", "PUT", Value::Null)
+    );
+    assert_eq!(
+        call(PrivateReporting),
+        ("/private-vulnerability-reporting", "PUT", Value::Null)
+    );
+    assert_eq!(
+        call(ReadOnlyToken),
+        (
+            "/actions/permissions/workflow",
+            "PUT",
+            json!({"default_workflow_permissions": "read"})
+        )
+    );
+    assert_eq!(
+        call(NoActionsApproval).2,
+        json!({"default_workflow_permissions": "write", "can_approve_pull_request_reviews": false})
+    );
+    assert_eq!(
+        call(ForkApproval),
+        (
+            "/actions/permissions/fork-pr-contributor-approval",
+            "PUT",
+            json!({"approval_policy": "first_time_contributors"})
+        )
+    );
+}
+
+/// Against GitHub as the fake has it: with every setting off, turning
+/// each on leaves a read that finds them all on.
+#[cfg(unix)]
+#[tokio::test]
+async fn turning_each_setting_on_leaves_it_on() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    std::fs::write(
+        d.path().join("repo.json"),
+        json!({
+            "full_name": "a/b",
+            "private": false,
+            "visibility": "public",
+            "permissions": {"admin": true},
+            "security_and_analysis": {
+                "secret_scanning": {"status": "disabled"},
+                "secret_scanning_push_protection": {"status": "disabled"},
+            },
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        d.path().join("settings.json"),
+        json!({
+            "vulnerability-alerts": false,
+            "automated-security-fixes": false,
+            "private-vulnerability-reporting": {"enabled": false},
+            "actions/permissions/workflow": {
+                "default_workflow_permissions": "write",
+                "can_approve_pull_request_reviews": true,
+            },
+            "actions/permissions/fork-pr-contributor-approval": {
+                "approval_policy": "first_time_contributors_new_to_github",
+            },
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let r = crate::github::GH
+        .scope(gh.clone(), read("a/b"))
+        .await
+        .unwrap();
+    assert!(r.found.iter().all(|f| f.on == Some(false)), "{r:?}");
+    for setting in Setting::ALL {
+        // As the engine does: each change from a read just before it.
+        let before = crate::github::GH
+            .scope(gh.clone(), read("a/b"))
+            .await
+            .unwrap();
+        crate::github::GH
+            .scope(gh.clone(), turn_on("a/b", setting, &before))
+            .await
+            .unwrap();
+    }
+    let r = crate::github::GH
+        .scope(gh.clone(), read("a/b"))
+        .await
+        .unwrap();
+    assert!(r.found.iter().all(|f| f.on == Some(true)), "{r:?}");
+    assert_eq!(r.found.len(), 8);
+
+    // A change GitHub refuses fails.
+    std::fs::write(d.path().join("change-error"), "gh: Conflict (HTTP 409)\n").unwrap();
+    let e = crate::github::GH
+        .scope(gh.clone(), turn_on("a/b", Setting::ReadOnlyToken, &r))
+        .await
+        .unwrap_err();
+    assert!(e.contains("HTTP 409"), "{e}");
+    assert!(turn_on("a b", Setting::ReadOnlyToken, &r).await.is_err());
+}
+
 #[test]
 fn only_a_repository_everyone_sees_is_public() {
     for (about, is) in [

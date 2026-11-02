@@ -267,6 +267,29 @@ describe("demo agents", () => {
   });
 });
 
+describe("demo security settings", () => {
+  it("fixes a setting a repository drifts on, once", async () => {
+    const args = { repo: "acme/docs", setting: "dependabot_alerts" };
+    const result = await useOrbit.getState().action("fix_setting", args);
+    expect(result.ok).toBe(true);
+    const s = useOrbit.getState().snapshot;
+    const docs = s.repoSettings!.find((r) => r.repo === "acme/docs")!;
+    expect(docs.found.find((f) => f.setting === "dependabot_alerts")?.on).toBe(
+      true,
+    );
+    expect(s.journal!.at(-1)).toMatchObject({
+      action: "change_setting",
+      repo: "acme/docs",
+      setting: "dependabot_alerts",
+      state: "done",
+    });
+    const again = await useOrbit
+      .getState()
+      .action("fix_setting", args, { quiet: true });
+    expect(again.ok).toBe(false);
+  });
+});
+
 describe("demo buddy", () => {
   it("gives older demos Bit and saves one buddy field at a time", async () => {
     const old = structuredClone(useOrbit.getState().snapshot);

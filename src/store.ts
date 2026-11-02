@@ -33,6 +33,10 @@ import {
   canPublish,
   activeStatuses,
   sameRepo,
+  ownerOf,
+  settingsDrift,
+  wantedFor,
+  type SecuritySetting,
   trustedSource,
   scanActive,
   type ScanMode,
@@ -582,6 +586,39 @@ async function demoAction(
         at,
         doneAt: at,
         url: i.url,
+      },
+    ];
+    commit();
+    return;
+  }
+  if (command === "fix_setting") {
+    const r = demo.repoSettings?.find((r) =>
+      sameRepo(r.repo, String(args.repo)),
+    );
+    const setting = args.setting as SecuritySetting;
+    const wanted = r
+      ? wantedFor(demo.settings.securityBaselines, ownerOf(r.repo))
+      : [];
+    if (!r || !settingsDrift(r, wanted).drift.includes(setting))
+      throw Error("There’s nothing to change there now.");
+    // GitHub takes the change at once, and the read after it shows it on.
+    const at = new Date().toISOString();
+    r.found = r.found.map((f) =>
+      f.setting === setting ? { ...f, on: true } : f,
+    );
+    r.readAt = at;
+    demo.journal = [
+      ...(demo.journal ?? []),
+      {
+        id: `demo-write-${Date.now()}`,
+        thread: `settings:${r.repo.toLowerCase()}`,
+        action: "change_setting",
+        repo: r.repo,
+        state: "done",
+        at,
+        doneAt: at,
+        url: `https://github.com/${r.repo}/settings`,
+        setting,
       },
     ];
     commit();

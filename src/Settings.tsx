@@ -674,7 +674,8 @@ function SecurityBaselines() {
           hour, Orbit reads each repository’s settings and shows on the
           Operations page where they drift from its owner’s baseline. Each owner
           starts from Orbit’s baseline: all of these but push protection, which
-          blocks pushes. Orbit only reads these settings; it changes none.
+          blocks pushes. Orbit changes a setting only when you tap Fix on it
+          there.
         </Text>
       </VStack>
       {owners.map((owner) => {
