@@ -1436,6 +1436,8 @@ export interface VersionMismatch {
   want: string;
   /** The files that say `want`. */
   others: string[];
+  /** Every other file it was compared with. */
+  group?: string[];
   /** The commit Orbit first found it at. */
   since?: string;
 }

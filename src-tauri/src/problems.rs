@@ -753,8 +753,9 @@ pub fn versions_text(p: &Problem) -> String {
 /// is the same one while it does, whatever the versions, and keeps its
 /// number; one that agrees and then disagrees again is new. One Orbit
 /// couldn't read or make out now, a lockfile whose manifest it couldn't,
-/// and one none of whose others it could, stays as it was, as Orbit can't
-/// say it was fixed. It
+/// and one any file it was compared with it couldn't, stays as it was, as
+/// Orbit can't say it was fixed: that file may be what joins it to the
+/// others. It
 /// closes, as passed at that commit, once nothing is left.
 pub fn see_versions(problems: &mut Vec<Problem>, setup: &Setup, now: DateTime<Utc>) {
     use crate::versions::{mismatches, names};
@@ -799,9 +800,11 @@ pub fn see_versions(problems: &mut Vec<Problem>, setup: &Setup, now: DateTime<Ut
     p.branch = setup.branch.clone();
     let mut gone = vec![];
     p.mismatches.retain(|m| {
+        // A file it was compared with that Orbit can't read now may be
+        // what joins it to the others, so it can't be said to agree.
         let stays = unread(&m.path)
             || (!m.of.is_empty() && unread(&m.of))
-            || (!m.others.is_empty() && m.others.iter().all(|o| unread(o)))
+            || m.others.iter().chain(&m.group).any(|o| unread(o))
             || found.iter().any(|f| f.same(m));
         if !stays {
             gone.push(m.clone());
@@ -816,6 +819,7 @@ pub fn see_versions(problems: &mut Vec<Problem>, setup: &Setup, now: DateTime<Ut
                 m.says = f.says;
                 m.want = f.want;
                 m.others = f.others;
+                m.group = f.group;
             }
             None => {
                 p.mismatch_count += 1;

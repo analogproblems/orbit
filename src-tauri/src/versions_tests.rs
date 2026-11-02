@@ -277,6 +277,179 @@ fn a_cargo_workspace() {
 }
 
 #[test]
+fn a_workspace_member_uses_the_top_lockfile() {
+    // Cargo uses the top lockfile for a member, so one left over in the
+    // member's folder isn't the one to compare, whatever it says.
+    let top =
+        "[workspace]\nmembers = [\"src-tauri\"]\n\n[workspace.package]\nversion = \"1.2.0\"\n";
+    let app = "[package]\nname = \"app\"\nversion.workspace = true\n";
+    let (fresh, stale) = (
+        cargo_lock(&[("app", "1.2.0")]),
+        cargo_lock(&[("app", "1.1.0")]),
+    );
+    let files = [
+        ("Cargo.toml", Some(top)),
+        ("Cargo.lock", Some(fresh.as_str())),
+        ("src-tauri/Cargo.toml", Some(app)),
+        ("src-tauri/Cargo.lock", Some(stale.as_str())),
+    ];
+    let (found, unread) = read(&files);
+    assert_eq!(
+        found,
+        [
+            says("src-tauri/Cargo.toml", "", "1.2.0"),
+            says("Cargo.lock", "src-tauri/Cargo.toml", "1.2.0"),
+        ]
+    );
+    assert!(unread.is_empty());
+    assert!(differ(&files).is_empty());
+    // And when the top lockfile is the stale one, it is the one flagged.
+    let files = [
+        ("Cargo.toml", Some(top)),
+        ("Cargo.lock", Some(stale.as_str())),
+        ("src-tauri/Cargo.toml", Some(app)),
+        ("src-tauri/Cargo.lock", Some(fresh.as_str())),
+    ];
+    assert_eq!(
+        differ(&files),
+        ["Cargo.lock says 1.1.0, want 1.2.0 (src-tauri/Cargo.toml)"]
+    );
+
+    // Whether the app is a member, as Cargo decides it, so which lockfile
+    // is compared: the top's, or its own in its folder.
+    let app = cargo_toml("app", "1.2.0");
+    let lock = |top: &str, app: &str| {
+        let files = [
+            ("Cargo.toml", Some(top)),
+            ("Cargo.lock", Some(fresh.as_str())),
+            ("src-tauri/Cargo.toml", Some(app)),
+            ("src-tauri/Cargo.lock", Some(stale.as_str())),
+        ];
+        let (found, _) = read(&files);
+        found
+            .into_iter()
+            .find(|(_, of, _)| of == "src-tauri/Cargo.toml")
+            .map(|(path, _, _)| path)
+            .unwrap_or_default()
+    };
+    let workspace = |rest: &str| format!("[workspace]\n{rest}");
+    for (top, own, member) in [
+        // Listed, as written in any of the ways Cargo takes.
+        (workspace("members = [\"src-tauri\"]"), app.clone(), true),
+        (workspace("members = [\"./src-tauri/\"]"), app.clone(), true),
+        (workspace("members = [\"src-*\"]"), app.clone(), true),
+        (workspace("members = [\"src-?auri\"]"), app.clone(), true),
+        // Not listed, or listed and then left out.
+        (workspace("members = [\"crates/*\"]"), app.clone(), false),
+        (
+            workspace("members = [\"*\"]\nexclude = [\"src-tauri\"]"),
+            app.clone(),
+            false,
+        ),
+        // A path dependency of the top's package is a member.
+        (
+            format!(
+                "{}\n[workspace]\n\n[dependencies]\napp = {{ path = \"src-tauri\" }}\n",
+                cargo_toml("core", "0.5.0").replace("[dependencies]\nserde = \"1\"\n", "")
+            ),
+            app.clone(),
+            true,
+        ),
+        // The member's own word decides.
+        (
+            workspace(""),
+            format!("{app}\n").replace("edition", "workspace = \"..\"\nedition"),
+            true,
+        ),
+        (
+            workspace("members = [\"src-tauri\"]"),
+            format!("{app}\n").replace("edition", "workspace = \"../other\"\nedition"),
+            false,
+        ),
+        // A top with no workspace has no members.
+        (cargo_toml("core", "0.5.0"), app.clone(), false),
+    ] {
+        let want = if member {
+            "Cargo.lock"
+        } else {
+            "src-tauri/Cargo.lock"
+        };
+        assert_eq!(lock(&top, &own), want, "{top}\n---\n{own}");
+    }
+    assert!(glob("crates/*", "crates/a") && !glob("crates/*", "crates/a/b"));
+    assert!(glob("*", "src-tauri") && !glob("src", "src-tauri"));
+    assert!(!glob("src-?auri", "src-/auri") && glob("", ""));
+}
+
+#[test]
+fn python_versions_are_compared_as_pep_440_does() {
+    // uv writes the version its own way, which is the same version.
+    let python = |v: &str| format!("[project]\nname = \"tool\"\nversion = \"{v}\"\n");
+    let uv = |v: &str| {
+        format!("version = 1\n\n[[package]]\nname = \"tool\"\nversion = \"{v}\"\nsource = {{ editable = \".\" }}\n")
+    };
+    for (written, locked) in [
+        ("1.0-alpha1", "1.0a1"),
+        ("1.0.0", "1.0"),
+        ("2.0.0-beta.2", "2.0.0b2"),
+        ("1.0-1", "1.0.post1"),
+        ("1.0.dev", "1.0.dev0"),
+    ] {
+        let (p, u) = (python(written), uv(locked));
+        let files = [
+            ("pyproject.toml", Some(p.as_str())),
+            ("uv.lock", Some(u.as_str())),
+        ];
+        assert!(differ(&files).is_empty(), "{written} and {locked}");
+    }
+    // Another version is still another, said as each file writes it.
+    let (p, u) = (python("1.0-alpha1"), uv("1.0a2"));
+    let files = [
+        ("pyproject.toml", Some(p.as_str())),
+        ("uv.lock", Some(u.as_str())),
+    ];
+    assert_eq!(
+        differ(&files),
+        ["uv.lock says 1.0a2, want 1.0-alpha1 (pyproject.toml)"]
+    );
+    // Only Python's files: npm and Cargo versions are compared as written.
+    let (package, lock) = (package_json("1.0.0"), package_lock("1.0"));
+    let files = [
+        ("package.json", Some(package.as_str())),
+        ("package-lock.json", Some(lock.as_str())),
+    ];
+    assert_eq!(differ(&files).len(), 1);
+
+    for (v, canonical) in [
+        ("1.0-alpha1", Some("1a1")),
+        ("1.0.0a1", Some("1a1")),
+        ("1.0.a1", Some("1a1")),
+        ("V1.2", Some("1.2")),
+        ("1.0b", Some("1b0")),
+        ("1.0rc1", Some("1rc1")),
+        ("1.0c1", Some("1rc1")),
+        ("1.0.pre2", Some("1rc2")),
+        ("1.0preview", Some("1rc0")),
+        ("1.0-1", Some("1.post1")),
+        ("1.0.post1", Some("1.post1")),
+        ("1.0-r1", Some("1.post1")),
+        ("1.0rev", Some("1.post0")),
+        ("1.0-dev", Some("1.dev0")),
+        ("1.0a1.post2.dev3", Some("1a1.post2.dev3")),
+        ("1!2.0", Some("1!2")),
+        ("0!2.0", Some("2")),
+        ("1.0+Ubuntu-1", Some("1+ubuntu.1")),
+        ("10.20.0", Some("10.20")),
+        ("abc", None),
+        ("1.0foo", None),
+        ("1.0+", None),
+        ("1.0+a..b", None),
+    ] {
+        assert_eq!(pep440(v).as_deref(), canonical, "{v}");
+    }
+}
+
+#[test]
 fn a_lockfile_entry_is_the_package_s_own() {
     // Two of the same name are the package and a dependency of that name,
     // so Orbit can't tell which is which; none says nothing.

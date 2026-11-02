@@ -76,6 +76,11 @@ pub struct Mismatch {
     pub want: String,
     /// The files that say `want`.
     pub others: Vec<String>,
+    /// Every other file it was compared with, some of which may only join
+    /// it to the others, such as a `tauri.conf.json` between a
+    /// `package.json` and a `Cargo.toml`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub group: Vec<String>,
     /// The commit Orbit first found it at.
     pub since: String,
 }
@@ -145,13 +150,12 @@ pub fn found(files: &[(&str, Option<&str>)]) -> (Vec<VersionFile>, Vec<String>) 
             Says::Nothing => {}
         }
     }
-    // The top `Cargo.toml`'s workspace version, for a member that takes it.
-    let workspace = text("Cargo.toml")
-        .and_then(|t| toml::from_str::<toml::Table>(t).ok())
-        .and_then(|t| {
-            let v = t.get("workspace")?.get("package")?.get("version")?;
-            v.as_str().map(str::to_string)
-        });
+    // The top `Cargo.toml`, for a member's workspace version and lockfile.
+    let top = text("Cargo.toml").and_then(|t| toml::from_str::<toml::Table>(t).ok());
+    let workspace = top.as_ref().and_then(|t| {
+        let v = t.get("workspace")?.get("package")?.get("version")?;
+        v.as_str().map(str::to_string)
+    });
     for folder in ["", "src-tauri/"] {
         let manifest = format!("{folder}Cargo.toml");
         let Some(t) = text(&manifest) else {
@@ -160,11 +164,16 @@ pub fn found(files: &[(&str, Option<&str>)]) -> (Vec<VersionFile>, Vec<String>) 
         match cargo(t, workspace.as_deref()) {
             Says::Version((name, version)) => {
                 keep(&manifest, Kind::Cargo, Says::Version(version), "");
-                // Its own lockfile, or else the workspace's at the top.
+                // A member of the top's workspace uses the top's lockfile,
+                // as Cargo does, whatever lockfile of its own is left in
+                // its folder; another package its own, or else the top's.
                 let own = format!("{folder}Cargo.lock");
-                let lock = [own.as_str(), "Cargo.lock"]
-                    .into_iter()
-                    .find_map(|p| Some((p, text(p)?)));
+                let member = !folder.is_empty() && member(top.as_ref(), t, folder);
+                let paths = match member {
+                    true => vec!["Cargo.lock"],
+                    false => vec![own.as_str(), "Cargo.lock"],
+                };
+                let lock = paths.into_iter().find_map(|p| Some((p, text(p)?)));
                 if let Some((path, lock)) = lock {
                     keep(
                         path,
@@ -286,6 +295,70 @@ fn package_lock(text: &str, name: &str) -> Says<String> {
         Some(given) => version(given.as_str()),
         None => Says::Nothing,
     }
+}
+/// A folder or pattern as Cargo writes one in a workspace: "./a/" is "a".
+fn folder_name(path: &str) -> &str {
+    path.trim_start_matches("./").trim_end_matches('/')
+}
+/// Whether a glob such as `crates/*` or `src-?auri` takes in all of `name`.
+fn glob(pattern: &str, name: &str) -> bool {
+    match (pattern.chars().next(), name.chars().next()) {
+        (None, None) => true,
+        (Some('*'), _) => {
+            glob(&pattern[1..], name)
+                || name
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c != '/' && glob(pattern, &name[c.len_utf8()..]))
+        }
+        (Some('?'), Some(c)) if c != '/' => glob(&pattern[1..], &name[c.len_utf8()..]),
+        (Some(p), Some(c)) if p == c => glob(&pattern[p.len_utf8()..], &name[c.len_utf8()..]),
+        _ => false,
+    }
+}
+/// Whether the package in `folder` (such as `src-tauri/`), with the
+/// manifest `text`, is a member of the workspace in the top `Cargo.toml`:
+/// its manifest names the top as its workspace, or the top's
+/// `workspace.members` take it in, or the top's package depends on it by
+/// path, and `workspace.exclude` doesn't leave it out.
+fn member(top: Option<&toml::Table>, text: &str, folder: &str) -> bool {
+    let Some(top) = top else {
+        return false;
+    };
+    let Some(workspace) = top.get("workspace") else {
+        return false;
+    };
+    let folder = folder_name(folder);
+    let listed = |key: &str| -> Vec<&str> {
+        workspace
+            .get(key)
+            .and_then(|l| l.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str())
+            .map(folder_name)
+            .collect()
+    };
+    let own = toml::from_str::<toml::Table>(text).ok();
+    if let Some(at) = own
+        .as_ref()
+        .and_then(|t| t.get("package")?.get("workspace")?.as_str())
+    {
+        return folder_name(at) == "..";
+    }
+    if listed("exclude")
+        .iter()
+        .any(|e| folder == *e || folder.starts_with(&format!("{e}/")))
+    {
+        return false;
+    }
+    let by_path = ["dependencies", "dev-dependencies", "build-dependencies"]
+        .iter()
+        .filter_map(|k| top.get(*k)?.as_table())
+        .flat_map(|deps| deps.values())
+        .filter_map(|d| d.get("path")?.as_str())
+        .any(|p| folder_name(p) == folder);
+    by_path || listed("members").iter().any(|m| glob(m, folder))
 }
 /// A `Cargo.toml`'s package name and version, taking the workspace's when
 /// it says to.
@@ -432,6 +505,111 @@ fn groups(files: &[VersionFile]) -> Vec<usize> {
     }
     (0..files.len()).map(|i| top(&group, i)).collect()
 }
+/// A Python version as PEP 440 compares it, written one way: `1.0-alpha1`,
+/// `1.0a1` and `1.0.0a1` are all `1a1`. None when it isn't one.
+pub fn pep440(v: &str) -> Option<String> {
+    let v = v.trim().to_ascii_lowercase();
+    let v = v.strip_prefix('v').unwrap_or(&v);
+    let (v, local) = match v.split_once('+') {
+        Some((v, local)) => (v, Some(local)),
+        None => (v, None),
+    };
+    let (epoch, mut rest) = match v.split_once('!') {
+        Some((e, rest)) => (e.parse::<u64>().ok()?, rest),
+        None => (0, v),
+    };
+    let digits = |s: &str| s.chars().take_while(|c| c.is_ascii_digit()).count();
+    // The release: numbers between dots.
+    let mut release = vec![];
+    loop {
+        let n = digits(rest);
+        if n == 0 {
+            return None;
+        }
+        release.push(rest[..n].parse::<u64>().ok()?);
+        rest = &rest[n..];
+        match rest.strip_prefix('.') {
+            Some(after) if digits(after) > 0 => rest = after,
+            _ => break,
+        }
+    }
+    while release.len() > 1 && release.last() == Some(&0) {
+        release.pop();
+    }
+    let sep = |s: &str| s.strip_prefix(['.', '-', '_']).unwrap_or(s).to_string();
+    // A word, with what follows it, after an optional separator.
+    let word = |s: &str, words: &[&str]| -> Option<(String, String)> {
+        let after = sep(s);
+        words
+            .iter()
+            .find(|w| after.starts_with(**w))
+            .map(|w| (w.to_string(), after[w.len()..].to_string()))
+    };
+    // A number after an optional separator, or 0.
+    let number = |s: &str| -> Option<(u64, String)> {
+        let after = sep(s);
+        let n = digits(&after);
+        if n == 0 {
+            return Some((0, s.to_string()));
+        }
+        Some((after[..n].parse().ok()?, after[n..].to_string()))
+    };
+    let mut out = String::new();
+    if epoch > 0 {
+        out.push_str(&format!("{epoch}!"));
+    }
+    let release: Vec<String> = release.iter().map(u64::to_string).collect();
+    out.push_str(&release.join("."));
+    let mut rest = rest.to_string();
+    let pre = ["alpha", "beta", "preview", "pre", "rc", "a", "b", "c"];
+    if let Some((w, after)) = word(&rest, &pre) {
+        let (n, after) = number(&after)?;
+        let w = match w.as_str() {
+            "alpha" | "a" => "a",
+            "beta" | "b" => "b",
+            _ => "rc",
+        };
+        out.push_str(&format!("{w}{n}"));
+        rest = after;
+    }
+    if let Some(after) = rest.strip_prefix('-').filter(|a| digits(a) > 0) {
+        let n = digits(after);
+        out.push_str(&format!(".post{}", after[..n].parse::<u64>().ok()?));
+        rest = after[n..].to_string();
+    } else if let Some((_, after)) = word(&rest, &["post", "rev", "r"]) {
+        let (n, after) = number(&after)?;
+        out.push_str(&format!(".post{n}"));
+        rest = after;
+    }
+    if let Some((_, after)) = word(&rest, &["dev"]) {
+        let (n, after) = number(&after)?;
+        out.push_str(&format!(".dev{n}"));
+        rest = after;
+    }
+    if !rest.is_empty() {
+        return None;
+    }
+    if let Some(local) = local {
+        let parts: Vec<&str> = local.split(['.', '-', '_']).collect();
+        if parts
+            .iter()
+            .any(|p| p.is_empty() || !p.chars().all(|c| c.is_ascii_alphanumeric()))
+        {
+            return None;
+        }
+        out.push('+');
+        out.push_str(&parts.join("."));
+    }
+    Some(out)
+}
+/// What a file's version is compared by: as written, but a Python
+/// project's as PEP 440 compares it, as `uv lock` writes it its own way.
+fn compared(f: &VersionFile) -> String {
+    match f.kind {
+        Kind::Pyproject | Kind::UvLock => pep440(&f.version).unwrap_or_else(|| f.version.clone()),
+        _ => f.version.clone(),
+    }
+}
 /// The files that say another version than the files they should agree
 /// with, found at `sha`, for the caller to number. In each group, the
 /// version most of its manifests say is the one, as a lockfile only copies
@@ -450,14 +628,19 @@ pub fn mismatches(files: &[VersionFile], sha: &str) -> Vec<Mismatch> {
         if members.len() < 2 {
             continue;
         }
+        let group: Vec<String> = members
+            .iter()
+            .filter(|m| m.path != f.path || m.of != f.of)
+            .map(|m| m.path.clone())
+            .collect();
         let manifests: Vec<&VersionFile> =
             members.into_iter().filter(|m| !m.kind.is_lock()).collect();
-        let count = |v: &str| manifests.iter().filter(|m| m.version == v).count();
-        let most = manifests.iter().map(|m| count(&m.version)).max();
-        let Some(want) = manifests.iter().find(|m| Some(count(&m.version)) == most) else {
+        let count = |v: &str| manifests.iter().filter(|m| compared(m) == v).count();
+        let most = manifests.iter().map(|m| count(&compared(m))).max();
+        let Some(want) = manifests.iter().find(|m| Some(count(&compared(m))) == most) else {
             continue;
         };
-        if f.version == want.version {
+        if compared(f) == compared(want) {
             continue;
         }
         found.push(Mismatch {
@@ -468,9 +651,10 @@ pub fn mismatches(files: &[VersionFile], sha: &str) -> Vec<Mismatch> {
             want: want.version.clone(),
             others: manifests
                 .iter()
-                .filter(|m| m.version == want.version)
+                .filter(|m| compared(m) == compared(want))
                 .map(|m| m.path.clone())
                 .collect(),
+            group,
             since: sha.to_string(),
             ..Default::default()
         });

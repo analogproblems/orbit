@@ -1792,6 +1792,66 @@ mod versions {
     }
 
     #[test]
+    fn one_whose_comparison_can_t_be_read_now_stays() {
+        let mut problems = vec![];
+        let first = read(A, app("0.3.0", "0.3.0", "0.2.0", "0.2.0"), &[]);
+        see_versions(&mut problems, &first, at(0));
+        // tauri.conf.json can't be read now. It joined package.json to the
+        // Rust side, so without it nothing is compared, and nothing can be
+        // said to agree.
+        let mut files = app("0.3.0", "0.3.0", "0.2.0", "0.2.0");
+        files.retain(|f| f.kind != Kind::Tauri);
+        let unread = read(B, files, &["src-tauri/tauri.conf.json"]);
+        see_versions(&mut problems, &unread, at(1));
+        assert_eq!(problems.len(), 1);
+        let p = &problems[0];
+        assert!(p.is_open() && p.sha == B);
+        assert_eq!(
+            differ(p),
+            [
+                (1, "src-tauri/Cargo.toml", "0.2.0", "0.3.0"),
+                (2, "src-tauri/Cargo.lock", "0.2.0", "0.3.0"),
+            ]
+        );
+        assert_eq!(p.timeline.len(), 1);
+        // The same when it said a third version, so it was compared with
+        // the others and was none of them.
+        let mut problems = vec![];
+        let three = read(A, app("0.3.0", "0.4.0", "0.2.0", "0.2.0"), &[]);
+        see_versions(&mut problems, &three, at(0));
+        let p = &problems[0];
+        assert_eq!(
+            differ(p),
+            [
+                (1, "src-tauri/Cargo.toml", "0.2.0", "0.3.0"),
+                (2, "src-tauri/Cargo.lock", "0.2.0", "0.3.0"),
+                (3, "src-tauri/tauri.conf.json", "0.4.0", "0.3.0"),
+            ]
+        );
+        assert_eq!(p.mismatches[0].others, ["package.json"]);
+        assert_eq!(
+            p.mismatches[0].group,
+            [
+                "package.json",
+                "src-tauri/Cargo.lock",
+                "src-tauri/tauri.conf.json"
+            ]
+        );
+        let mut files = app("0.3.0", "0.4.0", "0.2.0", "0.2.0");
+        files.retain(|f| f.kind != Kind::Tauri);
+        let unread = read(B, files, &["src-tauri/tauri.conf.json"]);
+        see_versions(&mut problems, &unread, at(1));
+        let p = &problems[0];
+        assert!(p.is_open());
+        assert_eq!(p.mismatches.len(), 3);
+        assert_eq!(p.timeline.len(), 1);
+        // Read again, and agreeing, it closes.
+        let fixed = read(C, app("0.3.0", "0.3.0", "0.3.0", "0.3.0"), &[]);
+        see_versions(&mut problems, &fixed, at(2));
+        assert!(problems[0].passed());
+    }
+
+    #[test]
     fn one_orbit_can_t_read_stays_and_one_that_disagrees_again_is_new() {
         let mut problems = vec![];
         let first = read(A, app("0.3.0", "0.3.0", "0.2.0", "0.2.0"), &[]);
