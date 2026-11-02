@@ -2,6 +2,7 @@
 import "./test-setup";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -292,6 +293,58 @@ describe("security scans", () => {
           { repo: "acme/api", mode: "standard", provider: "claude" },
         ],
       ]);
+    } finally {
+      restore();
+    }
+  });
+  it("scans with Antigravity, following what can scan while it's open", async () => {
+    const snapshot = freshDemo();
+    snapshot.scans = [];
+    snapshot.codexReady = false;
+    snapshot.codexError = "Codex is not signed in. Sign in, then reconnect.";
+    snapshot.settings = {
+      ...snapshot.settings,
+      antigravityModel: "gemini-3.1-pro-high",
+      antigravityEffort: "high",
+    };
+    useOrbit.setState({ snapshot });
+    const { calls, restore } = mockActions({ start_scan: "scan-new" });
+    const checked = (name: RegExp) =>
+      (screen.getByRole("radio", { name }) as HTMLInputElement).checked;
+    const disabled = (name: RegExp) =>
+      screen.getByRole("radio", { name }).hasAttribute("disabled");
+    try {
+      render(<ScanDialog isOpen onOpenChange={() => {}} repo="acme/api" />);
+      expect(disabled(/Antigravity/)).toBe(false);
+      fireEvent.click(screen.getByRole("radio", { name: /Antigravity/ }));
+      expect(checked(/Antigravity/)).toBe(true);
+      expect(screen.queryByRole("radio", { name: /Deep/ })).toBeNull();
+      // Its model is cleared while the dialog is open: Claude scans instead.
+      act(() =>
+        useOrbit.setState({
+          snapshot: {
+            ...snapshot,
+            settings: { ...snapshot.settings, antigravityModel: "" },
+          },
+        }),
+      );
+      expect(disabled(/Antigravity/)).toBe(true);
+      expect(
+        screen.getByText("Choose an Antigravity model in Settings."),
+      ).toBeTruthy();
+      expect(checked(/Claude/)).toBe(true);
+      // Once it can scan again, your choice comes back.
+      act(() => useOrbit.setState({ snapshot }));
+      expect(checked(/Antigravity/)).toBe(true);
+      fireEvent.click(screen.getByRole("button", { name: "Start scan" }));
+      await waitFor(() =>
+        expect(calls).toEqual([
+          [
+            "start_scan",
+            { repo: "acme/api", mode: "standard", provider: "antigravity" },
+          ],
+        ]),
+      );
     } finally {
       restore();
     }

@@ -136,8 +136,9 @@ impl Engine {
     }
     /// Runs one turn of scan `id`. Once the CLI reports the conversation's
     /// start, its model, conversation and permission mode are checked, and
-    /// `confirm` records it, which fails when the scan was stopped; any
-    /// failure stops the process.
+    /// `confirm` records it, which fails when the scan was stopped. The
+    /// confirmation is saved before it counts (`Engine::save`); any failure,
+    /// one to save included, stops the process.
     async fn run_scan_turn(
         self: &Arc<Self>,
         id: &str,
@@ -159,18 +160,27 @@ impl Engine {
                 .map_err(|_| format!("{name} did not start a conversation in time."))?
                 .map_err(|_| format!("{name} stopped before starting a conversation."))??;
             let session = confirmed(provider, &turn, &init)?;
-            let mut confirmed = Err("The scan was stopped.".to_string());
-            self.update(|s| {
-                if let Some(x) = s
-                    .scans
-                    .iter_mut()
-                    .find(|x| x.id == id && scan_active(&x.status))
-                {
-                    confirmed = confirm(x, &session).map(|()| x.turn_id = Some(turn_id.clone()));
-                }
-            })
-            .await;
-            confirmed
+            // Saved before the turn goes on, as for a review: a run Orbit
+            // can't record would carry on with nothing to show for it after
+            // a restart.
+            let mut state = self.state.lock().await;
+            self.save(
+                &mut state,
+                |next| {
+                    let x = next
+                        .scans
+                        .iter_mut()
+                        .find(|x| x.id == id && scan_active(&x.status))
+                        .ok_or("The scan was stopped.")?;
+                    confirm(x, &session)?;
+                    x.turn_id = Some(turn_id.clone());
+                    Ok(())
+                },
+                |e| format!("Orbit couldn't save the confirmed {name} scan, so it stopped it: {e}"),
+            )?;
+            self.changed
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
         }
         .await;
         if let Err(error) = started {
@@ -358,6 +368,11 @@ impl Engine {
             found.sort_by_key(|f| f.priority);
             x.findings = found;
             x.warnings.extend(warnings);
+            // What it didn't get to, as a review's published text says it.
+            if !extracted.not_checked.is_empty() {
+                x.warnings
+                    .push(format!("Not checked: {}", extracted.not_checked.join("; ")));
+            }
             x.finished_at = Some(now());
             x.disk_bytes = Some(bytes);
             x.progress = None;

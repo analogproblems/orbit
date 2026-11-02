@@ -174,7 +174,12 @@ if (prompt.startsWith("You are running a security scan")) {
 ) {
   const structured =
     mode === "incomplete"
-      ? { ...scanFindings, completed: false, summary: "src/ was refused." }
+      ? {
+          ...scanFindings,
+          completed: false,
+          summary: "src/ was refused.",
+          notChecked: ["src/, which was refused"],
+        }
       : scanFindings;
   result({
     result: JSON.stringify(structured),

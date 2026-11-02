@@ -340,6 +340,43 @@ async fn cancelling_a_claude_scan_stops_it_at_once() {
     assert!(e.snapshot().await.scans.is_empty());
 }
 
+/// A scan turn Orbit can't record as confirmed is stopped there, as a
+/// review's is: its command ends, and no report or extraction follows.
+#[tokio::test]
+async fn a_scan_turn_orbit_cant_save_is_stopped() {
+    let (d, e) = engine(Provider::Claude).await;
+    let log = d.path().join("calls.log");
+    e.use_claude(fake("ok"));
+    e.check_claude().await.unwrap();
+    e.use_claude(fake(&format!("slow@{}", log.display())));
+    let (_repo, worktree) = prepared(&e, "scan-1", Provider::Claude).await;
+    e.flush().await.unwrap();
+    let blocker = d.path().join("state").join("state.json.tmp");
+    std::fs::create_dir(&blocker).unwrap();
+    let error = e.start_cli_scan("scan-1", &worktree).await.unwrap_err();
+    assert!(
+        error.starts_with("Orbit couldn't save the confirmed Claude scan, so it stopped it: "),
+        "{error}"
+    );
+    let scan = e.snapshot().await.scans[0].clone();
+    assert_eq!(scan.status, "preparing");
+    assert!(scan.thread_id.is_none() && scan.turn_id.is_none() && scan.progress.is_none());
+    assert!(e.cli_turns.lock().unwrap().is_empty());
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    if let Ok(child) = std::fs::read_to_string(format!("{}.child", log.display())) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while alive(&child) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the scan's command still runs");
+    }
+    assert_eq!(turns(&log).len(), 1, "no extraction");
+    assert!(!e.scan_results("scan-1").join("report.md").exists());
+    std::fs::remove_dir(&blocker).unwrap();
+}
+
 #[tokio::test]
 async fn a_scan_turn_that_fails_or_doesnt_finish_says_so() {
     for (mode, says) in [
@@ -369,6 +406,16 @@ async fn a_scan_turn_that_fails_or_doesnt_finish_says_so() {
         assert_eq!(
             scan.findings.len(),
             usize::from(mode == "incomplete"),
+            "{mode}"
+        );
+        // What it didn't get to shows on its row too.
+        assert_eq!(
+            scan.warnings,
+            if mode == "incomplete" {
+                vec!["Not checked: src/, which was refused".to_string()]
+            } else {
+                vec![]
+            },
             "{mode}"
         );
     }

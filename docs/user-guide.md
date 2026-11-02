@@ -602,7 +602,7 @@ A scan by **Claude** or **Antigravity** runs the reviewer the way its pull reque
 - **Antigravity** runs with `--sandbox`, and doesn't start if its settings would let it reach past the sandbox.
 - It uses the model and effort chosen for that reviewer's reviews in Settings, and has an hour to answer, like a review turn. Orbit asks it to read the riskiest code first, to report only weaknesses it confirmed by reading the code, and to say what it didn't get to.
 - Its row shows **Claude is reading the repository**, then **Claude is writing up its findings** while it restates them in the form reviews use. Those findings join **Findings** like any other scan's, with how it breaks, the evidence, whether it was verified, a suggested fix and how to tell it's fixed. **Report** opens its report.
-- Anything it ran that needed approval was refused, as nobody is there to approve it, and the row lists it. If it left changes in its copy, the row says so too.
+- Anything it ran that needed approval was refused, as nobody is there to approve it, and the row lists it. If it left changes in its copy, the row says so too, as it does what the reviewer says it didn't check.
 - **Cancel scan** stops it at once, as does Orbit closing: its run is Orbit's own process. A scan Orbit closed during shows **Interrupted**.
 - When it can't finish, the scan shows **Failed** with the reason, and keeps its report when it wrote one. When it says it couldn't read the repository, it shows **Failed** and keeps the findings it had.
 
