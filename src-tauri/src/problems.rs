@@ -151,7 +151,7 @@ pub struct Problem {
     #[serde(skip_serializing_if = "is_zero")]
     pub risk_count: u32,
 }
-fn is_zero(n: &u32) -> bool {
+pub(crate) fn is_zero(n: &u32) -> bool {
     *n == 0
 }
 impl Problem {
@@ -605,7 +605,9 @@ pub fn risks_text(p: &Problem) -> String {
 /// default branch's latest commit (see `crate::risks`). A risk is the same
 /// one wherever it moves in its file, and keeps its number; one that comes
 /// back after it went is new. What Orbit found before in a file it
-/// couldn't check now stays, as Orbit can't say it was fixed. It closes,
+/// couldn't check now, or in one with more risks than it keeps
+/// (`crate::risks::MAX_PER_FILE`), stays, as Orbit can't say it was
+/// fixed. It closes,
 /// as passed at that commit, once nothing is left.
 pub fn see_risks(problems: &mut Vec<Problem>, setup: &Setup, now: DateTime<Utc>) {
     use crate::risks::{names, sort};
@@ -615,10 +617,12 @@ pub fn see_risks(problems: &mut Vec<Problem>, setup: &Setup, now: DateTime<Utc>)
     let at = stamp(now);
     let short = ci::short(&setup.sha).to_string();
     let key = workflows_key(&setup.repo);
-    let unchecked: Vec<&str> = setup
+    // Files where a risk Orbit found before but not now may still be
+    // there: ones it couldn't check, and ones with more than it keeps.
+    let unseen: Vec<&str> = setup
         .workflows
         .iter()
-        .filter(|w| !w.checked)
+        .filter(|w| !w.checked || w.more > 0)
         .map(|w| w.path.as_str())
         .collect();
     let found: Vec<&crate::risks::Risk> = setup.workflows.iter().flat_map(|w| &w.risks).collect();
@@ -664,7 +668,7 @@ pub fn see_risks(problems: &mut Vec<Problem>, setup: &Setup, now: DateTime<Utc>)
     p.private = setup.private;
     let mut gone = vec![];
     p.risks.retain(|r| {
-        let stays = unchecked.contains(&r.path.as_str()) || found.iter().any(|f| f.same(r));
+        let stays = unseen.contains(&r.path.as_str()) || found.iter().any(|f| f.same(r));
         if !stays {
             gone.push(r.clone());
         }

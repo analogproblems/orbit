@@ -532,7 +532,8 @@ export function risksText(p: Problem) {
 }
 /** A link to a risky setting's line on GitHub, at the commit Orbit read. */
 function riskLink(p: Problem, r: WorkflowRisk) {
-  return `https://github.com/${p.repo}/blob/${p.sha}/${r.path}#L${r.line}`;
+  const path = r.path.split("/").map(encodeURIComponent).join("/");
+  return `https://github.com/${p.repo}/blob/${p.sha}/${path}#L${r.line}`;
 }
 
 function Repositories({ go }: { go: AttentionHandlers }) {

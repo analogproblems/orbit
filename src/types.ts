@@ -1640,10 +1640,11 @@ export interface CiSetup {
   workflows: {
     path: string;
     onPulls: "yes" | "no" | "unknown";
-    /** Whether Orbit checked it for risky settings, what it found, and
-     * why it couldn't check it. */
+    /** Whether Orbit checked it for risky settings, the most severe it
+     * found, how many more there are, and why it couldn't check it. */
     checked?: boolean;
     risks?: WorkflowRisk[];
+    more?: number;
     why?: string;
   }[];
   /** Another CI service's files at the top, such as `.circleci`. */

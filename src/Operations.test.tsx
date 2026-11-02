@@ -924,6 +924,19 @@ describe("operations page", () => {
       "noopener,noreferrer",
     );
     cleanup();
+    // A file name a link can't hold as it is still opens that file.
+    const release = s.problems!.find((p) => p.id === "demo-workflows-2")!;
+    release.risks![0].path = ".github/workflows/re lease#1.yml";
+    show(s);
+    fireEvent.click(
+      within(row("acme/orbit")).getByRole("button", { name: "Open file" }),
+    );
+    expect(open).toHaveBeenLastCalledWith(
+      `https://github.com/acme/orbit/blob/${"5a7d0c4".padEnd(40, "0")}/.github/workflows/re%20lease%231.yml#L6`,
+      "_blank",
+      "noopener,noreferrer",
+    );
+    cleanup();
     // Bit asks first: a tap opens the issue.
     const issue = s.ops!.find((t) => t.key === "issue:demo-workflows-1")!;
     issue.url = "";

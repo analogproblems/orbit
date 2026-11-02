@@ -8,11 +8,14 @@
 //! Orbit reads each file itself, with no network and nothing run. A file
 //! it can't read (too big, not YAML, or one that grows past `MAX_WEIGHT`
 //! once its aliases are expanded) isn't checked, and what Orbit found
-//! there before stays (see `crate::problems::see_risks`).
+//! there before stays (see `crate::problems::see_risks`). Nor is a risk
+//! called fixed because a file has more than `MAX_PER_FILE` and it is no
+//! longer among the most severe.
 use crate::{security::Severity, text::shorten};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
+    hash::{DefaultHasher, Hash, Hasher},
     rc::Rc,
 };
 use yaml_rust2::{
@@ -194,15 +197,23 @@ pub fn names(risks: &[Risk]) -> String {
     }
 }
 
+/// What Orbit found in one workflow file: the most severe `MAX_PER_FILE`
+/// risks, and how many more there are.
+#[derive(Debug, Default)]
+pub struct Checked {
+    pub risks: Vec<Risk>,
+    pub more: u32,
+}
+
 /// The risky settings in one workflow file, at `path`, in a repository
 /// owned by `owner`, whose own actions count as its own rather than a
 /// third party's. An error says why Orbit couldn't check it.
-pub fn check(path: &str, text: &str, owner: &str) -> Result<Vec<Risk>, String> {
+pub fn check(path: &str, text: &str, owner: &str) -> Result<Checked, String> {
     if text.len() > MAX_TEXT {
         return Err("it's too big to check".into());
     }
     let Some(root) = load(text)? else {
-        return Ok(vec![]);
+        return Ok(Checked::default());
     };
     let mut found = Found {
         path,
@@ -211,7 +222,7 @@ pub fn check(path: &str, text: &str, owner: &str) -> Result<Vec<Risk>, String> {
     };
     // Anything else isn't a workflow GitHub runs.
     if root.map().is_none() {
-        return Ok(vec![]);
+        return Ok(Checked::default());
     }
     let events = events(root.get("on"));
     let jobs: Vec<(&str, &Node)> = root
@@ -267,24 +278,28 @@ pub fn check(path: &str, text: &str, owner: &str) -> Result<Vec<Risk>, String> {
     let mut risks = found.risks;
     sort(&mut risks);
     risks.truncate(MAX_PER_FILE);
-    Ok(risks)
+    let more = found.seen.len().saturating_sub(risks.len());
+    Ok(Checked {
+        risks,
+        more: u32::try_from(more).unwrap_or(u32::MAX),
+    })
 }
 
-/// What a file's checks found so far, each risk once, where it first is.
+/// What a file's checks found so far, each risk once, where it first is:
+/// the most severe of them, and what makes each one found the same one
+/// (see `Risk::same`), hashed.
 struct Found<'a> {
     path: &'a str,
     risks: Vec<Risk>,
-    seen: HashSet<(RiskKind, String, String)>,
+    seen: HashSet<u64>,
 }
 impl Found<'_> {
     fn add(&mut self, kind: RiskKind, line: usize, job: &str, subject: &str) {
-        // Enough to keep the most severe `MAX_PER_FILE`, in any real file.
-        if self.risks.len() >= 20 * MAX_PER_FILE {
-            return;
-        }
         let job = shorten(job, MAX_SUBJECT);
         let subject = shorten(subject, MAX_SUBJECT);
-        if !self.seen.insert((kind, job.clone(), subject.clone())) {
+        let mut same = DefaultHasher::new();
+        (kind, &job, &subject).hash(&mut same);
+        if !self.seen.insert(same.finish()) {
             return;
         }
         self.risks.push(Risk {
@@ -296,6 +311,12 @@ impl Found<'_> {
             subject,
             ..Default::default()
         });
+        // Only the most severe are kept, so a file with thousands holds
+        // few at a time, and one found late can still be among them.
+        if self.risks.len() >= 4 * MAX_PER_FILE {
+            sort(&mut self.risks);
+            self.risks.truncate(MAX_PER_FILE);
+        }
     }
 }
 
@@ -387,7 +408,7 @@ fn run_checkout(script: &str) -> Option<&'static str> {
         .flatten()
 }
 /// What names a pull request's own commit, branch or repository, once
-/// spaces are dropped and indexes like `[0]` or `.*` taken out.
+/// normalized (see `normalize`).
 const PULL_HEADS: [&str; 10] = [
     "github.event.pull_request.head.sha",
     "github.event.pull_request.head.ref",
@@ -477,21 +498,49 @@ fn expressions(text: &str) -> impl Iterator<Item = String> + '_ {
         Some(normalize(&text[open + 3..close]))
     })
 }
-/// An expression in lower case with no spaces, and no indexes: `[0]`,
-/// `['x']` and `.*` are taken out, so `github.event.commits[0].message`
-/// reads `github.event.commits.message`.
+/// An expression in lower case with no spaces, a quoted name in brackets
+/// read as a property and other indexes taken out: `github['event'].issue`
+/// reads `github.event.issue`, and `github.event.commits[0].message` and
+/// `github.event.commits.*.message` read `github.event.commits.message`.
 fn normalize(expression: &str) -> String {
     let mut out = String::new();
-    let mut depth = 0usize;
-    for c in expression.chars() {
+    let mut chars = expression.chars();
+    while let Some(c) = chars.next() {
         match c {
-            '[' => depth += 1,
-            ']' => depth = depth.saturating_sub(1),
-            _ if depth > 0 || c.is_whitespace() => {}
+            '[' => {
+                // To the bracket that closes this one, past quoted text.
+                let mut inside = String::new();
+                let (mut depth, mut quote) = (1usize, None);
+                for c in chars.by_ref() {
+                    match (quote, c) {
+                        (Some(q), c) if c == q => quote = None,
+                        (Some(_), _) => {}
+                        (None, '\'' | '"') => quote = Some(c),
+                        (None, '[') => depth += 1,
+                        (None, ']') if depth == 1 => break,
+                        (None, ']') => depth -= 1,
+                        _ => {}
+                    }
+                    inside.push(c);
+                }
+                if let Some(name) = quoted(inside.trim()) {
+                    out.push('.');
+                    let name = name.chars().filter(|c| !c.is_whitespace());
+                    out.extend(name.map(|c| c.to_ascii_lowercase()));
+                }
+            }
+            c if c.is_whitespace() => {}
             c => out.push(c.to_ascii_lowercase()),
         }
     }
     out.replace(".*", "")
+}
+/// The text in a quoted string such as `'issue'`, or nothing if it is
+/// anything else.
+fn quoted(text: &str) -> Option<&str> {
+    let q = text.chars().next().filter(|c| matches!(c, '\'' | '"'))?;
+    let inside = text.strip_prefix(q)?.strip_suffix(q)?;
+    (!inside.contains(q)).then_some(inside)
 }
 /// Whether an expression names `path`, not as part of a longer name; with
 /// `whole`, only the object itself, not something in it.

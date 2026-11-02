@@ -1226,10 +1226,11 @@ mod risks {
     fn workflow(path: &str, text: &str) -> Workflow {
         let path = format!(".github/workflows/{path}");
         match check(&path, text, "a") {
-            Ok(risks) => Workflow {
+            Ok(found) => Workflow {
                 path,
                 checked: true,
-                risks,
+                risks: found.risks,
+                more: found.more,
                 ..Default::default()
             },
             Err(why) => Workflow {
@@ -1344,6 +1345,59 @@ mod risks {
         see_risks(&mut problems, &first, at(5));
         assert_eq!(problems.len(), 2);
         assert_eq!(problems[1].risk_count, 3);
+    }
+
+    #[test]
+    fn a_risk_isnt_fixed_because_one_more_severe_pushed_it_past_the_limit() {
+        use crate::risks::MAX_PER_FILE;
+        let tools: Vec<String> = (1..=MAX_PER_FILE)
+            .map(|i| format!("      - uses: other/tool{i:02}@v1\n"))
+            .collect();
+        let tools: Vec<&str> = tools.iter().map(String::as_str).collect();
+        let mut problems = vec![];
+        let all = read(A, vec![workflow("ci.yml", &ci(&tools))]);
+        assert_eq!(all.workflows[0].more, 0);
+        see_risks(&mut problems, &all, at(0));
+        assert_eq!(problems[0].risks.len(), MAX_PER_FILE);
+        let last = |p: &Problem| {
+            p.risks
+                .iter()
+                .find(|r| r.subject == "other/tool50@v1")
+                .map(|r| r.number)
+        };
+        assert_eq!(last(&problems[0]), Some(MAX_PER_FILE as u32));
+
+        // A high one comes first, so the last action is no longer among
+        // the 50 Orbit keeps; it is still there, so it stays open.
+        let more = read(
+            B,
+            vec![workflow("ci.yml", &ci(&[&tools[..], &[TITLE]].concat()))],
+        );
+        assert_eq!(more.workflows[0].more, 1);
+        assert!(more.workflows[0]
+            .risks
+            .iter()
+            .all(|r| r.subject != "other/tool50@v1"));
+        see_risks(&mut problems, &more, at(1));
+        let p = &problems[0];
+        assert!(p.is_open());
+        assert_eq!(p.risks.len(), MAX_PER_FILE + 1);
+        assert_eq!(last(p), Some(MAX_PER_FILE as u32));
+        assert_eq!(
+            timeline(p)[1..],
+            ["New at 2222222: github.event.issue.title in a script, in ci.yml, job build."]
+        );
+
+        // Once the file has no more than Orbit keeps, what's gone is fixed.
+        let fixed = read(C, vec![workflow("ci.yml", &ci(&tools[1..]))]);
+        see_risks(&mut problems, &fixed, at(2));
+        let p = &problems[0];
+        assert_eq!(p.risks.len(), MAX_PER_FILE - 1);
+        assert_eq!(last(p), Some(MAX_PER_FILE as u32));
+        assert_eq!(
+            timeline(p)[2..],
+            ["Fixed at 3333333: github.event.issue.title in a script, in ci.yml, job build and other/tool01@v1 isn't pinned, in ci.yml."]
+        );
     }
 
     #[test]

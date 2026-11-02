@@ -3051,7 +3051,7 @@ mod workflows {
             branch: "main".into(),
             sha: sha.into(),
             workflows: vec![Workflow {
-                risks: check(&path, &text, "a").unwrap(),
+                risks: check(&path, &text, "a").unwrap().risks,
                 path,
                 checked: true,
                 ..Default::default()

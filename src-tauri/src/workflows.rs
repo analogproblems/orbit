@@ -73,12 +73,15 @@ pub struct Workflow {
     /// Such as `.github/workflows/ci.yml`.
     pub path: String,
     pub on_pulls: OnPulls,
-    /// Whether Orbit checked it for risky settings, what it found, and
-    /// why it couldn't check it when it couldn't (see `crate::risks`).
+    /// Whether Orbit checked it for risky settings, the most severe it
+    /// found, how many more there are, and why it couldn't check it when it
+    /// couldn't (see `crate::risks`).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub checked: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub risks: Vec<crate::risks::Risk>,
+    #[serde(skip_serializing_if = "crate::problems::is_zero")]
+    pub more: u32,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub why: String,
 }
@@ -290,15 +293,16 @@ pub fn understand(
                 Some(text) => crate::risks::check(&path, text, owner),
                 None => Err("GitHub didn't send all of it".into()),
             };
-            let (checked, risks, why) = match checked {
-                Ok(risks) => (true, risks, String::new()),
-                Err(why) => (false, vec![], why),
+            let (checked, found, why) = match checked {
+                Ok(found) => (true, found, String::new()),
+                Err(why) => (false, Default::default(), why),
             };
             Some(Workflow {
                 on_pulls: text.map_or(OnPulls::Unknown, on_pulls),
                 path,
                 checked,
-                risks,
+                risks: found.risks,
+                more: found.more,
                 why,
             })
         })

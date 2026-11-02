@@ -3,7 +3,7 @@ use super::*;
 const PATH: &str = ".github/workflows/ci.yml";
 
 fn check_ok(text: &str) -> Vec<Risk> {
-    check(PATH, text, "acme").unwrap()
+    check(PATH, text, "acme").unwrap().risks
 }
 fn kinds(risks: &[Risk]) -> Vec<(RiskKind, &str, &str, usize)> {
     risks
@@ -143,6 +143,58 @@ fn text_anyone_can_write_in_a_script() {
 }
 
 #[test]
+fn names_in_brackets_read_as_properties() {
+    let text = "on: [issues, pull_request_target]\npermissions: {}\njobs:\n  a:\n    runs-on: x\n    steps:\n      - run: echo \"${{ github.event['issue'].title }}\"\n      - run: echo \"${{ github['event'][\"comment\"]['body'] }}\"\n      - run: echo ${{ github.event[ 'pull_request' ][ 'title' ] }} ${{ github.event.issue['title_x'] }}\n      - run: echo '${{ toJSON(github['event']) }}'\n      - uses: actions/checkout@v5\n        with:\n          ref: ${{ github.event['pull_request'].head.sha }}\n";
+    assert_eq!(
+        kinds(&check_ok(text)),
+        vec![
+            (RiskKind::Injection, "a", "github.event.issue.title", 7),
+            (RiskKind::Injection, "a", "github.event.comment.body", 8),
+            (
+                RiskKind::Injection,
+                "a",
+                "github.event.pull_request.title",
+                9
+            ),
+            (RiskKind::Injection, "a", "github.event", 10),
+            (
+                RiskKind::PullCheckout,
+                "a",
+                "github.event.pull_request.head.sha",
+                13
+            ),
+        ]
+    );
+    // Only a quoted name is a property; other indexes are taken out.
+    for (expression, reads) in [
+        (" github.event['issue'].title ", "github.event.issue.title"),
+        (
+            "github[\"event\"][ 'pull_request' ]['head'].sha",
+            "github.event.pull_request.head.sha",
+        ),
+        (
+            "github.event.commits[0].message",
+            "github.event.commits.message",
+        ),
+        (
+            "github.event.commits.*.message",
+            "github.event.commits.message",
+        ),
+        (
+            "github.event[github.event['x']].title",
+            "github.event.title",
+        ),
+        (
+            "fromJSON(env.X)[github.event.issue.number]",
+            "fromjson(env.x)",
+        ),
+        ("github.event['a]b'].c", "github.event.a]b.c"),
+    ] {
+        assert_eq!(normalize(expression), reads, "{expression}");
+    }
+}
+
+#[test]
 fn files_orbit_cant_check_say_why() {
     assert!(check(PATH, "on: [push", "acme")
         .unwrap_err()
@@ -204,12 +256,38 @@ fn many_risks_keep_the_most_severe() {
         text.push_str(&format!("      - uses: other/tool{i}@v1\n"));
     }
     text.push_str("      - run: echo ${{ github.event.issue.body }}\n");
-    let risks = check_ok(&text);
+    let found = check(PATH, &text, "acme").unwrap();
+    let risks = &found.risks;
     assert_eq!(risks.len(), MAX_PER_FILE);
     assert_eq!(risks[0].kind, RiskKind::Injection);
     assert_eq!(risks[1].subject, "other/tool0@v1");
     // The missing permissions are low, so they go first.
     assert!(risks.iter().all(|r| r.subject != "missing"));
+    // 80 actions, the script and the permissions, less the 50 kept.
+    assert_eq!(found.more, 32);
+
+    // However many come first, a high one found last is kept.
+    let mut text =
+        String::from("on: issues\npermissions: {}\njobs:\n  a:\n    runs-on: x\n    steps:\n");
+    for i in 0..3000 {
+        text.push_str(&format!("      - uses: other/tool{i}@v1\n"));
+    }
+    text.push_str("      - run: echo ${{ github.event.issue.body }}\n");
+    let found = check(PATH, &text, "acme").unwrap();
+    assert_eq!(found.risks[0].kind, RiskKind::Injection);
+    assert_eq!(found.risks[1].subject, "other/tool0@v1");
+    assert_eq!(found.risks.len(), MAX_PER_FILE);
+    assert_eq!(found.more, 3001 - MAX_PER_FILE as u32);
+    // A file with no more than it keeps has none more.
+    assert_eq!(check(PATH, &ci_with(1), "acme").unwrap().more, 0);
+}
+fn ci_with(actions: usize) -> String {
+    let mut text =
+        String::from("on: push\npermissions: {}\njobs:\n  a:\n    runs-on: x\n    steps:\n");
+    for i in 0..actions {
+        text.push_str(&format!("      - uses: other/tool{i}@v1\n"));
+    }
+    text
 }
 
 #[test]

@@ -1278,7 +1278,7 @@ fn a_security_alert_is_one_heads_up_and_counts_in_how_are_my_repositories() {
         sha: "1".repeat(40),
         checks: crate::workflows::CHECKS,
         workflows: vec![crate::workflows::Workflow {
-            risks: crate::risks::check(&path, text, "a").unwrap(),
+            risks: crate::risks::check(&path, text, "a").unwrap().risks,
             path,
             checked: true,
             ..Default::default()
