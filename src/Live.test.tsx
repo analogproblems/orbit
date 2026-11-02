@@ -158,7 +158,7 @@ describe("live page", () => {
       within(panel).getByRole("button", { name: "Publish v1.5.0" }),
     );
     expect(action).toHaveBeenCalledWith("use_fix", {
-      key: "release:acme/orbit:v1.5.0",
+      key: "release:acme/orbit:v1.5.0:42:5d1e0c7a",
     });
     fireEvent.click(
       within(panel).getByRole("button", { name: "Continue loop" }),

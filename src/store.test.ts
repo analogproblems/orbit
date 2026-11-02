@@ -432,6 +432,18 @@ describe("demo buddy", () => {
       ok: false,
       error: "Error: This doesn't need you any more.",
     });
+    // Publishing the draft takes it off Releases, as the latest.
+    const draft = useOrbit
+      .getState()
+      .snapshot.attention!.find((a) => a.fix === "publish_release")!;
+    expect((await store.action("use_fix", { key: draft.key })).ok).toBe(true);
+    expect(last().text).toBe("Published v1.5.0 in acme/orbit! 🚀");
+    const orbit = useOrbit
+      .getState()
+      .snapshot.releases!.find((r) => r.repo === "acme/orbit")!;
+    expect(orbit.drafts).toEqual([]);
+    expect(orbit.draftCount).toBe(0);
+    expect(orbit.latest?.tag).toBe("v1.5.0");
   });
   it("walks through setup and taps each step", async () => {
     const store = useOrbit.getState();

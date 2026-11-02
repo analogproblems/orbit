@@ -514,6 +514,8 @@ async function demoAction(
       demo.posting = demo.posting?.map((p) =>
         p.prId === item.prId ? { ...p, resumed: p.other ?? null } : p,
       );
+    else if (item.fix === "publish_release")
+      demo.releases = D.demoPublished(demo.releases ?? [], item.key);
     else demo.lastPoll = new Date().toISOString();
     demo.attention = demo.attention?.filter((a) => a.key !== item.key);
     demoNote({

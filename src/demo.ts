@@ -663,7 +663,7 @@ export function freshDemo(): Snapshot {
         reason: `${redReason} It still fails at ${red.sha.slice(0, 7)}. It started failing with #208, merged as 7d41e09; 3b8e6f4 before it passed.`,
       },
       {
-        key: "release:acme/orbit:v1.5.0",
+        key: "release:acme/orbit:v1.5.0:42:5d1e0c7a",
         kind: "release",
         prId: null,
         reviewId: null,
@@ -2308,6 +2308,28 @@ const line = (
   prId: string | null = null,
   key: string | null = null,
 ): BuddyNoteLine => ({ text, prId, key });
+/** The releases once the demo publishes the draft a Needs you item's key
+ * (`release:<repo>:<tag>:…`) names: out, and the latest, as on GitHub. */
+export function demoPublished(releases: RepoReleases[], key: string) {
+  const [, repo, tag] = key.split(":");
+  return releases.map((r) => {
+    const draft =
+      r.repo === repo ? r.drafts.find((d) => d.tag === tag) : undefined;
+    if (!draft) return r;
+    const out = {
+      ...draft,
+      draft: false,
+      publishedAt: new Date().toISOString(),
+    };
+    return {
+      ...r,
+      drafts: r.drafts.filter((d) => d !== draft),
+      draftCount: r.draftCount - 1,
+      published: r.published + 1,
+      ...(draft.prerelease ? { prerelease: out } : { latest: out, since: 0 }),
+    };
+  });
+}
 /** What Bit says when a fix goes through, as the engine words it in the
  * cheerful tone. */
 export function demoFixed(
@@ -2317,10 +2339,11 @@ export function demoFixed(
   key?: string,
 ) {
   const pr = prLabel(s, prId) || "this pull request";
-  const tagIn = (prefix: string) =>
-    key?.startsWith(prefix)
-      ? `${key.slice(key.lastIndexOf(":") + 1)} in ${key.slice(prefix.length, key.lastIndexOf(":"))}`
-      : undefined;
+  // `push:<repo>:<tag>` or `release:<repo>:<tag>:<id>:<look>`.
+  const tagIn = (prefix: string) => {
+    const [, repo, tag] = key?.startsWith(prefix) ? key.split(":") : [];
+    return repo && tag ? `${tag} in ${repo}` : undefined;
+  };
   const tag = tagIn("push:") ?? "the tag";
   const release = tagIn("release:") ?? "the release";
   return {

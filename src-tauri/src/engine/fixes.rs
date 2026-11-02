@@ -187,11 +187,7 @@ impl Engine {
             }
             // The draft on the button, checked with GitHub just before, and
             // recorded in the journal before it is sent.
-            Fix::PublishRelease => {
-                let (repo, tag) = crate::drafts::from_key(&item.key)
-                    .ok_or("This isn't about a draft release.")?;
-                self.publish_release(repo, tag, &still).await
-            }
+            Fix::PublishRelease => self.publish_release(&item.key, &still).await,
             // Done once the item closes, whatever else is still off.
             Fix::CheckConnections => {
                 let _ = self.check_connections().await;

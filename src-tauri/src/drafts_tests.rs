@@ -69,6 +69,7 @@ fn repo() -> Snapshot {
         repo: "A/B".into(),
         tag: "v0.3.0".into(),
         sha: A.into(),
+        runs: vec![run(9, "Release", "success"), run(10, "Docs", "success")],
         ci: CommitCi {
             sha: A.into(),
             state: CiState::Passing,
@@ -79,6 +80,21 @@ fn repo() -> Snapshot {
         ..Default::default()
     });
     s
+}
+/// A workflow's newest run at the tag, ended as `conclusion`.
+fn run(id: u64, name: &str, conclusion: &str) -> crate::builds::Run {
+    crate::builds::Run {
+        id,
+        name: name.into(),
+        state: match conclusion {
+            "success" => CiState::Passing,
+            "failure" => CiState::Failing,
+            "" => CiState::Running,
+            _ => CiState::None,
+        },
+        conclusion: conclusion.into(),
+        ..Default::default()
+    }
 }
 fn ready(s: &Snapshot) -> Vec<(String, String, String, u64)> {
     waiting(s)
@@ -95,9 +111,29 @@ fn a_draft_for_the_newest_tag_whose_build_passed_is_ready() {
     let s = repo();
     assert_eq!(ready(&s), the_draft());
     let d = &waiting(&s)[0];
-    assert_eq!(key(d), "release:a/b:v0.3.0");
-    assert_eq!(from_key(&key(d)), Some(("a/b", "v0.3.0")));
-    assert_eq!(from_key("push:a/b:v0.3.0"), None);
+    // The key names the release, and how it looked, by a short hash.
+    let k = key(d);
+    let look = k.strip_prefix("release:a/b:v0.3.0:7:").unwrap();
+    assert_eq!(look.len(), 8);
+    assert!(look.chars().all(|c| c.is_ascii_hexdigit()));
+    assert_eq!(from_key(&k), Some(("a/b", "v0.3.0")));
+    for other in [
+        "push:a/b:v0.3.0",
+        "release:a/b:v0.3.0",
+        "release:a/b:v0.3.0:x:1234abcd",
+        "release:a/b:v0.3.0:7:1234abcd:more",
+    ] {
+        assert_eq!(from_key(other), None, "{other}");
+    }
+    let differs = |change: &dyn Fn(&mut Draft)| {
+        let mut other = d.clone();
+        change(&mut other);
+        key(&other) != k
+    };
+    assert!(differs(&|d| d.id = 8));
+    assert!(differs(&|d| d.prerelease = true));
+    assert!(differs(&|d| d.name = "Orbit 0.3".into()));
+    assert!(!differs(&|d| d.sha = B.into()));
     assert_eq!(
         reason(d),
         "a/b has a draft release for v0.3.0 (Orbit 0.3.0), and every run the tag started passed at 1111111."
@@ -190,6 +226,22 @@ fn nothing_is_ready_until_every_part_of_it_is() {
             Box::new(|s| s.builds[0].error = Some("Bad Gateway".into())),
         ),
         (
+            "a run was cancelled, though the rest passed",
+            Box::new(|s| s.builds[0].runs[0] = run(9, "Release", "cancelled")),
+        ),
+        (
+            "a run ended another way",
+            Box::new(|s| s.builds[0].runs[0] = run(9, "Release", "neutral")),
+        ),
+        (
+            "Orbit didn't read how a run ended",
+            Box::new(|s| s.builds[0].runs[0].conclusion.clear()),
+        ),
+        (
+            "more runs than Orbit read",
+            Box::new(|s| s.builds[0].ci.incomplete = true),
+        ),
+        (
             "a newer tag with no draft",
             Box::new(|s| {
                 s.releases[0].tags.insert(
@@ -233,20 +285,42 @@ fn nothing_is_ready_until_every_part_of_it_is() {
         now(),
     );
     assert_eq!(ready(&s), the_draft());
+    // A workflow its own conditions skipped doesn't hold it back.
+    let mut s = repo();
+    s.builds[0].runs[1] = run(10, "Docs", "skipped");
+    assert_eq!(ready(&s), the_draft());
 }
 
 #[test]
 fn the_draft_tapped_is_the_one_published() {
     let s = repo();
-    assert_eq!(offered(&s, "a/b", "v0.3.0").unwrap().id, 7);
+    let shown = key(&waiting(&s)[0]);
+    assert_eq!(offered(&s, &shown).unwrap().id, 7);
+    let older = shown.replace(":v0.3.0:", ":v0.2.0:");
     assert_eq!(
-        offered(&s, "a/b", "v0.2.0").unwrap_err(),
+        offered(&s, &older).unwrap_err(),
         "a/b has a draft for v0.3.0 ready now, not v0.2.0, so Orbit didn't publish v0.2.0."
+    );
+    // Replaced by another draft for the tag, or changed, since it was shown.
+    for change in [
+        Box::new(|s: &mut Snapshot| s.releases[0].drafts[0].id = 8) as Change,
+        Box::new(|s: &mut Snapshot| s.releases[0].drafts[0].prerelease = true),
+    ] {
+        let mut s = repo();
+        change(&mut s);
+        assert_eq!(
+            offered(&s, &shown).unwrap_err(),
+            "The draft for v0.3.0 changed since Orbit showed it, so Orbit didn't publish it. Look at it again."
+        );
+    }
+    assert_eq!(
+        offered(&s, "push:a/b:v0.3.0").unwrap_err(),
+        "This isn't about a draft release."
     );
     let mut gone = repo();
     gone.builds.clear();
     assert_eq!(
-        offered(&gone, "a/b", "v0.3.0").unwrap_err(),
+        offered(&gone, &shown).unwrap_err(),
         "a/b has no draft for v0.3.0 ready any more, so Orbit didn't publish it."
     );
     assert_eq!(
@@ -416,4 +490,24 @@ fn a_published_pre_release_is_kept_as_the_newest_pre_release() {
     // Found out again, nothing is counted twice.
     published(&mut s.releases[0], release(7, "v0.3.0", false));
     assert_eq!((s.releases[0].published, s.releases[0].draft_count), (2, 0));
+}
+
+/// A draft GitHub says changed is kept as it is now, in place of what
+/// Orbit read, so it is offered as it is.
+#[test]
+fn a_changed_draft_is_kept_as_github_says() {
+    let mut s = repo();
+    let before = key(&waiting(&s)[0]);
+    let mut now = s.releases[0].drafts[0].clone();
+    now.prerelease = true;
+    changed(&mut s.releases[0], now);
+    assert!(s.releases[0].drafts[0].prerelease);
+    let after = waiting(&s);
+    assert!(after[0].prerelease);
+    assert_ne!(key(&after[0]), before);
+    // Another release than those read is left out.
+    let mut s = repo();
+    changed(&mut s.releases[0], release(9, "v0.3.0", true));
+    assert_eq!(s.releases[0].drafts.len(), 1);
+    assert_eq!(s.releases[0].drafts[0].id, 7);
 }

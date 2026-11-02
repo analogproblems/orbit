@@ -1,32 +1,35 @@
 //! Publishing a draft release, on your tap or Bit's (`crate::drafts`).
 use super::{Engine, MOVING};
-use crate::{drafts, logs, types::Snapshot};
+use crate::{builds, drafts, logs, releases::Tag, types::Snapshot};
 use std::sync::atomic::Ordering;
 
 impl Engine {
-    /// Publishes the draft release for `tag` that `repo` is ready to
-    /// publish, on your tap, or on Bit's while `still` says it is still
-    /// Bit's to do. What is ready is taken as it is now, release, commit
-    /// and all (`drafts::offered`), and published only if that is still
-    /// what is ready once it is this publish's turn. First Orbit looks on
-    /// GitHub for any tag or publish it may or may not have made. Then it
-    /// asks GitHub whether the release is still a draft for that tag, and
-    /// the tag still at the commit its build passed at, and only then
-    /// records the publish in the journal, saves that, and publishes it.
-    /// One release write at a time, sharing `tagging` with pushing a tag,
-    /// and a release is never published twice. None starts once this Orbit
-    /// is moving, and a move waits for one on its way (`fence`).
+    /// Publishes the draft release the Needs you item `key` shows, on your
+    /// tap, or on Bit's while `still` says it is still Bit's to do. What is
+    /// ready is taken as it is now, release, commit and all
+    /// (`drafts::offered`), only if it is the release the item showed, and
+    /// published only if that is still what is ready once it is this
+    /// publish's turn. First Orbit looks on GitHub for any tag or publish
+    /// it may or may not have made. Then it asks GitHub whether the release
+    /// is still a draft for that tag, with the same title and pre-release
+    /// mark, whether the tag is still at the commit its build passed at,
+    /// and how the runs the tag started stand now (`builds::publishable`),
+    /// and only then records the publish in the journal, saves that, and
+    /// publishes it. One release write at a time, sharing `tagging` with
+    /// pushing a tag, and a release is never published twice. None starts
+    /// once this Orbit is moving, and a move waits for one on its way
+    /// (`fence`).
     pub async fn publish_release(
         &self,
-        repo: &str,
-        tag: &str,
+        key: &str,
         still: &(dyn Fn(&Snapshot) -> Result<(), String> + Sync),
     ) -> Result<(), String> {
         let pinned = {
             let s = self.state.lock().await;
             still(&s)?;
-            drafts::offered(&s, repo, tag)?
+            drafts::offered(&s, key)?
         };
+        let (repo, tag) = (pinned.repo.as_str(), pinned.tag.as_str());
         let _one = self.tagging.lock().await;
         if self.moving() {
             return Err(MOVING.into());
@@ -77,10 +80,35 @@ impl Engine {
             }
             Some(r) => r,
         };
-        if release.tag != tag {
+        if release.tag != tag
+            || release.prerelease != wanted.prerelease
+            || release.name != wanted.name
+        {
+            let what = if release.tag != tag {
+                format!(": it's for {} now", release.tag)
+            } else if release.prerelease != wanted.prerelease {
+                if release.prerelease {
+                    ": it's a pre-release now".into()
+                } else {
+                    ": it isn't a pre-release any more".into()
+                }
+            } else {
+                ": its title changed".into()
+            };
+            // Kept as GitHub says, so it is offered as it is now.
+            self.update(|s| {
+                if let Some(read) = s
+                    .releases
+                    .iter_mut()
+                    .find(|x| crate::types::same_repo(&x.repo, repo))
+                {
+                    drafts::changed(read, release.clone());
+                }
+            })
+            .await;
+            let _ = self.flush().await;
             return Err(format!(
-                "The draft is for {} now, not {tag}, so Orbit didn't publish it.",
-                release.tag
+                "The draft for {tag} changed on GitHub since Orbit showed it{what}, so Orbit didn't publish it. Look at it again."
             ));
         }
         let at = crate::tagging::tag_sha(repo, tag).await.map_err(first)?;
@@ -99,6 +127,28 @@ impl Engine {
             }
             Some(_) => {}
         }
+        // A run may have started, or been rerun, at the tag since Orbit
+        // last read them, so it reads them again, and keeps what it read.
+        let pinned_tag = Tag {
+            name: tag.to_string(),
+            sha: wanted.sha.clone(),
+        };
+        let fresh = builds::read(repo, &pinned_tag, chrono::Utc::now()).await;
+        let build = fresh.clone();
+        self.update(|s| builds::keep(s, repo, &pinned_tag, fresh, chrono::Utc::now()))
+            .await;
+        let _ = self.flush().await;
+        let build = build.map_err(|e| {
+            format!(
+                "Orbit couldn't read the runs {tag} started just now, so it didn't publish it: {}.",
+                logs::short(&e)
+            )
+        })?;
+        builds::publishable(&build).map_err(|why| {
+            format!(
+                "The release build for {tag} isn't ready now: {why}. So Orbit didn't publish it."
+            )
+        })?;
         if self.moving() {
             return Err(MOVING.into());
         }

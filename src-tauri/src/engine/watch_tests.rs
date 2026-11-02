@@ -1316,6 +1316,13 @@ fn drafted(dir: &Path) {
     });
     std::fs::write(dir.join("queued.json"), json!([run]).to_string()).unwrap();
 }
+/// The key of the Needs you item that offers to publish a draft, if any.
+fn draft_key(s: &Snapshot) -> Option<String> {
+    s.attention
+        .iter()
+        .find(|a| a.fix == Some(crate::buddy::Fix::PublishRelease))
+        .map(|a| a.key.clone())
+}
 fn publish_of(s: &Snapshot) -> Option<&crate::ops::Write> {
     s.journal
         .iter()
@@ -1350,7 +1357,12 @@ async fn a_draft_whose_build_passed_is_published_on_one_tap_and_only_once() {
         .filter(|a| a.kind == AttentionKind::Release)
         .collect();
     assert_eq!(offer.len(), 1);
-    assert_eq!(offer[0].key, "release:a/b:v0.3.0");
+    assert!(
+        offer[0].key.starts_with("release:a/b:v0.3.0:7:"),
+        "{}",
+        offer[0].key
+    );
+    let key = offer[0].key.clone();
     assert_eq!(offer[0].fix, Some(crate::buddy::Fix::PublishRelease));
     assert_eq!(
         offer[0].reason,
@@ -1362,7 +1374,7 @@ async fn a_draft_whose_build_passed_is_published_on_one_tap_and_only_once() {
     // The tag moved just before: nothing is published.
     std::fs::write(d.path().join("tag-v0.3.0.txt"), "4".repeat(40)).unwrap();
     let error = crate::github::GH
-        .scope(gh.clone(), e.fix("release:a/b:v0.3.0"))
+        .scope(gh.clone(), e.fix(&key))
         .await
         .unwrap_err();
     assert_eq!(
@@ -1372,7 +1384,7 @@ async fn a_draft_whose_build_passed_is_published_on_one_tap_and_only_once() {
     // Gone, publishing would make it again.
     std::fs::remove_file(d.path().join("tag-v0.3.0.txt")).unwrap();
     let error = crate::github::GH
-        .scope(gh.clone(), e.fix("release:a/b:v0.3.0"))
+        .scope(gh.clone(), e.fix(&key))
         .await
         .unwrap_err();
     assert_eq!(
@@ -1385,7 +1397,7 @@ async fn a_draft_whose_build_passed_is_published_on_one_tap_and_only_once() {
     // GitHub publishes it, but its answer is lost.
     std::fs::write(d.path().join("release-lost"), "").unwrap();
     let error = crate::github::GH
-        .scope(gh.clone(), e.fix("release:a/b:v0.3.0"))
+        .scope(gh.clone(), e.fix(&key))
         .await
         .unwrap_err();
     assert!(error.contains("didn't answer clearly"), "{error}");
@@ -1415,11 +1427,109 @@ async fn a_draft_whose_build_passed_is_published_on_one_tap_and_only_once() {
     assert_eq!(latest, Some("v0.3.0"));
     assert_eq!(writes(d.path()), ["PATCH repos/a/b/releases/7"]);
     let error = crate::github::GH
-        .scope(gh.clone(), e.fix("release:a/b:v0.3.0"))
+        .scope(gh.clone(), e.fix(&key))
         .await
         .unwrap_err();
     assert_eq!(error, "This doesn't need you any more.");
     assert_eq!(writes(d.path()).len(), 1);
+}
+
+/// A tap publishes only the release its button showed, as it showed it,
+/// and only while the runs its tag started still pass as Orbit reads them
+/// just before: a rerun still going, a pre-release mark changed on GitHub,
+/// or the draft replaced by another for the same tag holds it back.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_draft_is_published_only_as_shown_and_while_its_build_still_passes() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    drafted(d.path());
+    let e = connected(d.path()).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let key = draft_key(&e.shown_snapshot().await).unwrap();
+    let tap = |key: String| {
+        let (e, gh) = (&e, gh.clone());
+        async move { crate::github::GH.scope(gh, e.fix(&key)).await }
+    };
+    let builds_read_long_ago = || {
+        e.update(|s| {
+            for b in &mut s.builds {
+                b.read_at = "2020-01-01T00:00:00.000Z".into();
+            }
+        })
+    };
+
+    // Someone reran the build since Orbit last read it, at the same tag
+    // and commit: Orbit reads the runs again and doesn't publish.
+    let runs = std::fs::read_to_string(d.path().join("queued.json")).unwrap();
+    std::fs::write(
+        d.path().join("queued.json"),
+        runs.replace("\"completed\"", "\"in_progress\""),
+    )
+    .unwrap();
+    assert_eq!(
+        tap(key.clone()).await.unwrap_err(),
+        "The release build for v0.3.0 isn't ready now: Release is still running. So Orbit didn't publish it."
+    );
+    // What it read is kept: nothing to tap while it runs.
+    let s = e.shown_snapshot().await;
+    assert_eq!(s.builds[0].ci.state, crate::ci::CiState::Running);
+    assert_eq!(draft_key(&s), None);
+    std::fs::write(d.path().join("queued.json"), &runs).unwrap();
+    builds_read_long_ago().await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!(draft_key(&e.shown_snapshot().await), Some(key.clone()));
+
+    // Someone made it a pre-release on GitHub since Orbit read it.
+    let listed = std::fs::read_to_string(d.path().join("releases.json")).unwrap();
+    std::fs::write(
+        d.path().join("releases.json"),
+        listed.replacen("\"prerelease\":false", "\"prerelease\":true", 1),
+    )
+    .unwrap();
+    assert_eq!(
+        tap(key.clone()).await.unwrap_err(),
+        "The draft for v0.3.0 changed on GitHub since Orbit showed it: it's a pre-release now, so Orbit didn't publish it. Look at it again."
+    );
+    // It is offered as it is now, with a new button; the old one is gone.
+    let s = e.shown_snapshot().await;
+    let now = draft_key(&s).unwrap();
+    assert!(
+        now.starts_with("release:a/b:v0.3.0:7:") && now != key,
+        "{now}"
+    );
+    let offer = s.attention.iter().find(|a| a.key == now).unwrap();
+    assert!(offer
+        .reason
+        .starts_with("a/b has a draft pre-release for v0.3.0"));
+    assert_eq!(
+        tap(key.clone()).await.unwrap_err(),
+        "This doesn't need you any more."
+    );
+    std::fs::write(d.path().join("releases.json"), &listed).unwrap();
+    releases_read_long_ago(&e).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!(draft_key(&e.shown_snapshot().await), Some(key.clone()));
+
+    // The draft was deleted and another made for the same tag, and Orbit
+    // read that before your tap: the old button publishes nothing.
+    std::fs::write(
+        d.path().join("releases.json"),
+        listed.replacen("\"id\":7", "\"id\":8", 1),
+    )
+    .unwrap();
+    releases_read_long_ago(&e).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let replaced = draft_key(&e.shown_snapshot().await).unwrap();
+    assert!(replaced.starts_with("release:a/b:v0.3.0:8:"), "{replaced}");
+    assert_eq!(
+        tap(key.clone()).await.unwrap_err(),
+        "This doesn't need you any more."
+    );
+    assert!(writes(d.path()).is_empty());
+    // The new one's own button publishes it.
+    tap(replaced).await.unwrap();
+    assert_eq!(writes(d.path()), ["PATCH repos/a/b/releases/8"]);
 }
 
 /// With Publish a draft release on Do it, Bit publishes it on its own and
@@ -1466,7 +1576,7 @@ async fn bit_publishes_a_draft_itself_only_on_do_it() {
     crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
     assert!(e.fixing.lock().unwrap().is_empty());
     let s = e.shown_snapshot().await;
-    assert!(s.attention.iter().any(|a| a.key == "release:a/b:v0.3.0"));
+    assert!(draft_key(&s).is_some());
     assert!(writes(d.path()).is_empty());
 }
 
@@ -1480,8 +1590,8 @@ async fn a_draft_published_or_deleted_meanwhile_is_left() {
     drafted(d.path());
     let e = connected(d.path()).await;
     crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
-    let offered = |s: &Snapshot| s.attention.iter().any(|a| a.key == "release:a/b:v0.3.0");
-    assert!(offered(&e.shown_snapshot().await));
+    let offered = |s: &Snapshot| draft_key(s).is_some();
+    let key = draft_key(&e.shown_snapshot().await).unwrap();
     let text = std::fs::read_to_string(d.path().join("releases.json")).unwrap();
 
     // Someone published it on GitHub meanwhile.
@@ -1491,7 +1601,7 @@ async fn a_draft_published_or_deleted_meanwhile_is_left() {
     )
     .unwrap();
     let error = crate::github::GH
-        .scope(gh.clone(), e.fix("release:a/b:v0.3.0"))
+        .scope(gh.clone(), e.fix(&key))
         .await
         .unwrap_err();
     assert_eq!(
@@ -1508,9 +1618,10 @@ async fn a_draft_published_or_deleted_meanwhile_is_left() {
     drafted(d.path());
     let e = connected(d.path()).await;
     crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let key = draft_key(&e.shown_snapshot().await).unwrap();
     std::fs::write(d.path().join("releases.json"), "[]").unwrap();
     let error = crate::github::GH
-        .scope(gh.clone(), e.fix("release:a/b:v0.3.0"))
+        .scope(gh.clone(), e.fix(&key))
         .await
         .unwrap_err();
     assert_eq!(

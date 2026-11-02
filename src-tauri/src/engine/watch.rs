@@ -455,32 +455,10 @@ impl Engine {
             let result = builds::read(repo, tag, chrono::Utc::now()).await;
             // After a rate limit, the rest wait for the next pass.
             let limited = result.as_ref().is_err_and(|e| logs::rate_limited(e));
-            let fresh = result.is_ok();
-            self.update(|s| {
-                // Watch CI went off, the repository went, or a newer tag
-                // came, such as one Orbit pushed, meanwhile.
-                let connected = repos_of(s);
-                let known = s.builds.iter().find(|b| same_repo(&b.repo, repo));
-                let now_watched = s
-                    .releases
-                    .iter()
-                    .find(|r| same_repo(&r.repo, repo))
-                    .and_then(|r| builds::target(r, known));
-                if !s.settings.watch_ci
-                    || !connected.iter().any(|c| same_repo(c, repo))
-                    || now_watched.is_none_or(|t| t.name != tag.name || t.sha != tag.sha)
-                {
-                    return;
-                }
-                let now = chrono::Utc::now();
-                builds::record(&mut s.builds, repo, tag, result, now);
-                builds::prune(&mut s.builds, &connected);
-                let read = s.builds.iter().find(|b| same_repo(&b.repo, repo));
-                if let Some(b) = read.filter(|_| fresh) {
-                    problems::see_build(&mut s.problems, b, now);
-                }
-            })
-            .await;
+            // Unless Watch CI went off, the repository went, or a newer tag
+            // came, such as one Orbit pushed, meanwhile.
+            self.update(|s| builds::keep(s, repo, tag, result, chrono::Utc::now()))
+                .await;
             if limited {
                 break;
             }

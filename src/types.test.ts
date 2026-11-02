@@ -453,6 +453,7 @@ describe("Bit's fixes", () => {
     expect(asksFirst("push_tag")).toBe(false);
   });
   it("names the release a publish offers on its button", () => {
+    expect(releasedTag("release:acme/api:v0.3.0:7:0a1b2c3d")).toBe("v0.3.0");
     expect(releasedTag("release:acme/api:v0.3.0")).toBe("v0.3.0");
     expect(releasedTag("push:acme/api:v0.3.0")).toBeUndefined();
     expect(fixLabel("publish_release", "release:acme/api:v0.3.0")).toBe(

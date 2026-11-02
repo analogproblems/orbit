@@ -818,13 +818,14 @@ export function pushedTag(key: string | null | undefined) {
   return keyTag("push:", key);
 }
 /** The tag whose draft release a Needs you item offers to publish, from
- * its key (`release:<repo>:<tag>`). */
+ * its key (`release:<repo>:<tag>:<id>:<look>`). */
 export function releasedTag(key: string | null | undefined) {
   return keyTag("release:", key);
 }
+/** The tag a key names: what follows its repository. */
 function keyTag(prefix: string, key: string | null | undefined) {
   if (!key?.startsWith(prefix)) return undefined;
-  return key.slice(key.lastIndexOf(":") + 1) || undefined;
+  return key.split(":")[2] || undefined;
 }
 /** The label of an item's fix button: Push v0.3.0 for a tag, Publish
  * v0.3.0 for a draft release. */

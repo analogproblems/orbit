@@ -5,7 +5,8 @@
 //! decides whether Bit asks first, does it, or leaves it to you. Each
 //! publish is recorded in the journal and saved before it is sent, after
 //! GitHub says just then that the release is still a draft for that tag,
-//! and that the tag still points at the commit its build passed at. One
+//! as its button showed it, that the tag still points at the commit its
+//! build passed at, and that the runs the tag started still pass. One
 //! GitHub may or may not have taken is looked up on GitHub before anything
 //! else (`unsettled`, `found`), so a release is never published twice.
 //! Orbit only turns the draft into a release: it never changes its text,
@@ -34,14 +35,24 @@ pub struct Draft {
 }
 
 /// The Needs you item's key for a draft ready to publish:
-/// `release:<repo>:<tag>`.
+/// `release:<repo>:<tag>:<id>:<look>`, with the draft's id on GitHub and
+/// `look`, a short hash of its title and whether it is a pre-release, so a
+/// tap on a button for a draft that was replaced, or changed, since Orbit
+/// showed it finds no item, and publishes nothing.
 pub fn key(d: &Draft) -> String {
-    format!("release:{}:{}", d.repo, d.tag)
+    use sha2::{Digest, Sha256};
+    let look = Sha256::digest(format!("{}\n{}", d.prerelease, d.name).as_bytes());
+    let look: String = look[..4].iter().map(|b| format!("{b:02x}")).collect();
+    format!("release:{}:{}:{}:{look}", d.repo, d.tag, d.id)
 }
 /// The repository and tag a Needs you item's key names, for a draft ready
 /// to publish.
 pub fn from_key(key: &str) -> Option<(&str, &str)> {
-    key.strip_prefix("release:")?.rsplit_once(':')
+    let mut parts = key.strip_prefix("release:")?.split(':');
+    let (repo, tag) = (parts.next()?, parts.next()?);
+    let id = parts.next()?;
+    (parts.next().is_some() && parts.next().is_none() && id.parse::<u64>().is_ok())
+        .then_some((repo, tag))
 }
 /// What the Needs you item says.
 pub fn reason(d: &Draft) -> String {
@@ -89,7 +100,8 @@ pub fn waiting(s: &Snapshot) -> Vec<Draft> {
 ///   Orbit watches, its newest version tag (`crate::builds::target`);
 /// - no release Orbit read for that tag is out already;
 /// - Orbit's latest read of the runs the tag started, at the commit it
-///   points at, worked and says each passed;
+///   points at, worked and says each passed, or was skipped by its own
+///   workflow, with none cancelled (`crate::builds::publishable`);
 /// - no publish of that draft is on its way or done.
 pub fn of(s: &Snapshot, r: &RepoReleases) -> Option<Draft> {
     if r.read_at.is_empty() || r.unseen.is_some() || r.drafts_hidden {
@@ -120,8 +132,8 @@ pub fn of(s: &Snapshot, r: &RepoReleases) -> Option<Draft> {
         same_repo(&b.repo, &r.repo)
             && b.tag == tag.name
             && b.sha == tag.sha
-            && b.error.is_none()
             && b.ci.state == crate::ci::CiState::Passing
+            && crate::builds::publishable(b).is_ok()
     });
     if !passed || publishing(&s.journal, &r.repo, draft.id) {
         return None;
@@ -148,12 +160,17 @@ pub fn publishing(journal: &[Write], repo: &str, id: u64) -> bool {
 }
 
 /// The draft you tapped, or Bit took on, while it is still ready: the one
-/// `repo` is ready to publish now, if it is for `tag`. Kept as it is then,
-/// commit and all, so a draft that takes its place while Orbit waits for
-/// its turn isn't published instead.
-pub fn offered(s: &Snapshot, repo: &str, tag: &str) -> Result<Draft, String> {
+/// the item's `key` shows, if its repository is ready to publish just that
+/// one now, the same release, title and pre-release mark. Kept as it is
+/// then, commit and all, so a draft that takes its place while Orbit waits
+/// for its turn isn't published instead.
+pub fn offered(s: &Snapshot, key_shown: &str) -> Result<Draft, String> {
+    let (repo, tag) = from_key(key_shown).ok_or("This isn't about a draft release.")?;
     match waiting(s).into_iter().find(|d| same_repo(&d.repo, repo)) {
-        Some(d) if d.tag == tag => Ok(d),
+        Some(d) if key(&d) == key_shown => Ok(d),
+        Some(d) if d.tag == tag => Err(format!(
+            "The draft for {tag} changed since Orbit showed it, so Orbit didn't publish it. Look at it again."
+        )),
         Some(d) => Err(format!(
             "{repo} has a draft for {} ready now, not {tag}, so Orbit didn't publish {tag}.",
             d.tag
@@ -327,6 +344,15 @@ pub fn found(
         releases.iter_mut().find(|r| same_repo(&r.repo, &w.repo)),
     ) {
         published(r, release);
+    }
+}
+
+/// Keeps a draft as GitHub says it is now, in place of what Orbit read of
+/// it, so what is ready to publish is worked out from it until the next
+/// read: a new title or pre-release mark gives a new item and button.
+pub fn changed(r: &mut RepoReleases, release: Release) {
+    if let Some(d) = r.drafts.iter_mut().find(|d| d.id == release.id) {
+        *d = release;
     }
 }
 
