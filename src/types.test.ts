@@ -13,6 +13,8 @@ import {
 import {
   securitySettings,
   settingsDrift,
+  lastChange,
+  type SecuritySetting,
   wantedFor,
   attentionAction,
   categoryLabels,
@@ -321,6 +323,29 @@ describe("security settings baseline", () => {
     expect(
       settingsDrift({ ...read, unseen: "Can't see them." }, wanted),
     ).toEqual({ drift: [], matched: [], unknown: [] });
+  });
+  it("finds the latest change to a repository's setting", () => {
+    const change = (id: string, repo: string, setting?: SecuritySetting) => ({
+      id,
+      thread: `settings:${repo}`,
+      action: "change_setting" as const,
+      repo,
+      state: "done" as const,
+      at: "",
+      url: "",
+      setting,
+    });
+    const journal = [
+      change("1", "acme/api", "dependabot_alerts"),
+      change("2", "ACME/API", "dependabot_alerts"),
+      change("3", "acme/api", "secret_scanning"),
+      { ...change("4", "acme/api"), action: "rerun_job" as const },
+    ];
+    expect(lastChange(journal, "acme/api", "dependabot_alerts")?.id).toBe("2");
+    expect(lastChange(journal, "acme/api", "read_only_token")).toBeUndefined();
+    expect(
+      lastChange(undefined, "acme/api", "secret_scanning"),
+    ).toBeUndefined();
   });
 });
 

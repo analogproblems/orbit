@@ -29,6 +29,7 @@ import {
   toolsText,
   waitingText,
   whyText,
+  writeSummary,
 } from "./Operations";
 import { freshDemo } from "./demo";
 import { useOrbit } from "./store";
@@ -40,6 +41,7 @@ import {
   type OpsItem,
   type OpsRerun,
   type OpsThread,
+  type OpsWrite,
   type Problem,
   type RepoCi,
   type RunnerPlace,
@@ -1053,6 +1055,82 @@ describe("operations page", () => {
     ).toBeTruthy();
   });
 
+  it("fixes a setting a repository drifts on with your tap, and says how it went", () => {
+    const action = vi.fn().mockResolvedValue({ ok: true });
+    useOrbit.setState({ action });
+    const s = freshDemo();
+    show(s);
+    const row = () =>
+      within(
+        screen.getByRole("list", { name: "Security settings" }),
+      ).getAllByRole("listitem")[1];
+    // One Fix for each setting acme/api drifts on, none where it matches.
+    expect(
+      within(row())
+        .getAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual(["Fix", "Fix"]);
+    expect(
+      within(
+        screen.getByRole("list", { name: "Security settings" }),
+      ).getAllByRole("listitem")[0].textContent,
+    ).not.toContain("Fix");
+    fireEvent.click(
+      within(row()).getByRole("button", {
+        name: "Fix Read-only Actions token in acme/api",
+      }),
+    );
+    expect(action).toHaveBeenCalledWith("fix_setting", {
+      repo: "acme/api",
+      setting: "read_only_token",
+    });
+    cleanup();
+
+    // While Orbit changes it, no Fix.
+    const api = s.repoSettings!.find((r) => r.repo === "acme/api")!;
+    api.asked = ["read_only_token"];
+    show(s);
+    expect(row().textContent).toContain("Orbit is changing this on GitHub.");
+    expect(within(row()).getAllByRole("button")).toHaveLength(1);
+    cleanup();
+
+    // A change that didn't go through says why, and Fix is back.
+    api.asked = [];
+    const change = (state: OpsWrite["state"], error?: string): OpsWrite => ({
+      id: `w-${state}`,
+      thread: "settings:acme/api",
+      action: "change_setting",
+      repo: "acme/api",
+      state,
+      at: "2026-11-02T00:00:00.000Z",
+      url: "",
+      error,
+      setting: "read_only_token",
+    });
+    s.journal = [...(s.journal ?? []), change("sending")];
+    show(s);
+    expect(within(row()).getAllByRole("button")).toHaveLength(1);
+    cleanup();
+    const refused =
+      "The organization's own settings don't let a repository change this, so an owner of the organization changes it there.";
+    s.journal = [...s.journal.slice(0, -1), change("failed", refused)];
+    show(s);
+    expect(row().textContent).toContain(refused);
+    expect(within(row()).getAllByRole("button")).toHaveLength(2);
+    cleanup();
+    s.journal = [...s.journal.slice(0, -1), change("done")];
+    show(s);
+    expect(row().textContent).toContain(
+      "GitHub took Orbit’s last change, but still shows this.",
+    );
+    // And in what Orbit did on GitHub.
+    expect(
+      within(
+        screen.getByRole("list", { name: "What Orbit did on GitHub" }),
+      ).getAllByRole("listitem")[0].textContent,
+    ).toContain("Made the Actions token read-only in acme/api.");
+  });
+
   it("says when a read failed or GitHub has more alerts than Orbit reads", () => {
     const s = freshDemo();
     const api = s.security!.find((r) => r.repo === "acme/api")!;
@@ -1240,6 +1318,26 @@ describe("security sentences", () => {
 });
 
 describe("security settings sentences", () => {
+  it("say what Orbit did when it changed one", () => {
+    const w: OpsWrite = {
+      id: "w",
+      thread: "settings:acme/api",
+      action: "change_setting",
+      repo: "acme/api",
+      state: "done",
+      at: "",
+      url: "",
+      setting: "dependabot_alerts",
+    };
+    expect(writeSummary(w)).toBe("Turned on Dependabot alerts in acme/api.");
+    expect(writeSummary({ ...w, setting: "no_actions_approval" })).toBe(
+      "Stopped GitHub Actions approving pull requests in acme/api.",
+    );
+    expect(writeSummary({ ...w, setting: undefined })).toBe(
+      "Changed a security setting in acme/api.",
+    );
+  });
+
   it("say where each repository drifts from its owner's baseline", () => {
     const s = freshDemo();
     const lines = (repo: string) =>

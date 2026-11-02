@@ -1487,7 +1487,8 @@ export type SecuritySetting =
   | "fork_approval";
 /** Each security setting, in the engine's order: its name, whether only
  * a public repository has it, whether Orbit's baseline asks for it, what
- * it does, and what a repository that drifts from it has. */
+ * it does, what a repository that drifts from it has, and what Orbit did
+ * when it changed it. */
 export const securitySettings: {
   key: SecuritySetting;
   name: string;
@@ -1495,6 +1496,7 @@ export const securitySettings: {
   orbit: boolean;
   about: string;
   offText: string;
+  fixedText: string;
 }[] = [
   {
     key: "secret_scanning",
@@ -1503,6 +1505,7 @@ export const securitySettings: {
     orbit: true,
     about: "GitHub looks for secrets, such as tokens, pushed to it.",
     offText: "Secret scanning is off.",
+    fixedText: "Turned on secret scanning",
   },
   {
     key: "push_protection",
@@ -1512,6 +1515,7 @@ export const securitySettings: {
     about:
       "GitHub blocks a push that holds a secret it knows. It blocks pushes, so Orbit’s baseline leaves it out.",
     offText: "Push protection for secrets is off.",
+    fixedText: "Turned on push protection for secrets",
   },
   {
     key: "dependabot_alerts",
@@ -1520,6 +1524,7 @@ export const securitySettings: {
     orbit: true,
     about: "GitHub says when a dependency has a known weakness.",
     offText: "Dependabot alerts are off.",
+    fixedText: "Turned on Dependabot alerts",
   },
   {
     key: "dependabot_updates",
@@ -1528,6 +1533,7 @@ export const securitySettings: {
     orbit: true,
     about: "Dependabot opens pull requests that fix those weaknesses.",
     offText: "Dependabot security updates are off.",
+    fixedText: "Turned on Dependabot security updates",
   },
   {
     key: "private_reporting",
@@ -1537,6 +1543,7 @@ export const securitySettings: {
     about:
       "Anyone can report a weakness privately rather than in an issue. Only public repositories have it.",
     offText: "Private vulnerability reporting is off.",
+    fixedText: "Turned on private vulnerability reporting",
   },
   {
     key: "read_only_token",
@@ -1546,6 +1553,7 @@ export const securitySettings: {
     about:
       "The token each workflow gets can only read, unless the workflow asks for more.",
     offText: "The Actions token can write by default.",
+    fixedText: "Made the Actions token read-only",
   },
   {
     key: "no_actions_approval",
@@ -1554,6 +1562,7 @@ export const securitySettings: {
     orbit: true,
     about: "A workflow can’t approve a pull request.",
     offText: "GitHub Actions can approve pull requests.",
+    fixedText: "Stopped GitHub Actions approving pull requests",
   },
   {
     key: "fork_approval",
@@ -1564,6 +1573,7 @@ export const securitySettings: {
       "Workflows from a first-time contributor’s fork wait for a maintainer’s approval, not only those of someone new to GitHub. Only public repositories have it.",
     offText:
       "Workflows from first-time contributors run without approval, unless they’re new to GitHub.",
+    fixedText: "Made workflows from first-time contributors wait for approval",
   },
 ];
 /** The security settings one owner's repositories should have. */
@@ -1586,6 +1596,8 @@ export interface RepoSettings {
   error?: string | null;
   tries: number;
   retryAt?: string | null;
+  /** The settings you tapped Fix on that Orbit hasn't tried yet. */
+  asked?: SecuritySetting[];
 }
 /** The owner of a repository, such as `acme` for `acme/api`. */
 export function ownerOf(repo: string) {
@@ -1616,6 +1628,21 @@ export function settingsDrift(r: RepoSettings, wanted: SecuritySetting[]) {
   const of = (state: boolean | null) =>
     seen ? wanted.filter((k) => has(k) && on(k) === state) : [];
   return { drift: of(false), matched: of(true), unknown: of(null) };
+}
+/** The latest change Orbit made, or tried, to a repository's setting. */
+export function lastChange(
+  journal: OpsWrite[] | undefined,
+  repo: string,
+  setting: SecuritySetting,
+) {
+  return (journal ?? [])
+    .filter(
+      (w) =>
+        w.action === "change_setting" &&
+        w.setting === setting &&
+        w.repo.toLowerCase() === repo.toLowerCase(),
+    )
+    .at(-1);
 }
 /** Whether only you should see to an alert now: every secret, and every
  * high or critical alert, as the engine has it (`security.rs`). */
@@ -2019,7 +2046,8 @@ export type OpsAction =
   | "note_on_issue"
   | "close_issue"
   | "reopen_issue"
-  | "rerun_job";
+  | "rerun_job"
+  | "change_setting";
 /** One write Orbit made on GitHub, recorded before it was sent. */
 export interface OpsWrite {
   id: string;
@@ -2032,6 +2060,8 @@ export interface OpsWrite {
   doneAt?: string | null;
   url: string;
   error?: string | null;
+  /** For a change to a security setting, which one. */
+  setting?: SecuritySetting;
 }
 /** A commit's first seven characters, as GitHub shows them. */
 export function shortSha(sha: string) {

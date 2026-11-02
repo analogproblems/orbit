@@ -6,18 +6,26 @@
 //! repositories a pass, while Watch security alerts is on.
 //!
 //! GitHub shows these settings only to a repository's admins, so for
-//! another repository Orbit says it can't see them. Nothing here changes a
-//! setting: it only reads. Push protection for secrets blocks pushes, so
-//! it's in a baseline only if you add it, and branch protection, rulesets
-//! and required checks are never part of one.
+//! another repository Orbit says it can't see them. Push protection for
+//! secrets blocks pushes, so it's in a baseline only if you add it, and
+//! branch protection, rulesets and required checks are never part of one.
+//!
+//! Orbit changes a setting only when you tap Fix on it (`ask`), as
+//! changing settings always asks first. Each tap tries once: Orbit reads
+//! the repository's settings again, and only if the setting is still off
+//! does it record the change in the journal, save it, and send it
+//! (`record_change`, `turn_on`). A change cut off by Orbit stopping is
+//! never sent again on its own (`interrupted`): Orbit reads the setting
+//! again instead, and you tap Fix again if it's still off.
 use crate::{
     logs,
+    ops::{Action, Write, WriteState},
     problems::{stamp, time},
     types::{same_repo, validate_repo},
 };
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Map, Value};
 
 /// Repositories Orbit reads in one pass.
 pub const PER_PASS: usize = 2;
@@ -189,6 +197,10 @@ pub struct RepoSettings {
     pub error: Option<String>,
     pub tries: u32,
     pub retry_at: Option<String>,
+    /// The settings you tapped Fix on that Orbit hasn't tried to change
+    /// yet. A read keeps them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub asked: Vec<Setting>,
 }
 impl RepoSettings {
     /// Whether a setting is on, as Orbit last read it.
@@ -416,7 +428,10 @@ pub fn record(
 ) {
     let known = read.iter().position(|s| same_repo(&s.repo, repo));
     let settings = match result {
-        Ok(settings) => settings,
+        Ok(mut settings) => {
+            settings.asked = known.map(|i| read[i].asked.clone()).unwrap_or_default();
+            settings
+        }
         Err(error) => {
             let mut before = known
                 .map(|i| read[i].clone())
@@ -443,6 +458,223 @@ pub fn record(
 /// Forgets repositories that are no longer connected.
 pub fn prune(read: &mut Vec<RepoSettings>, connected: &[String]) {
     read.retain(|s| connected.iter().any(|r| same_repo(r, &s.repo)));
+}
+
+/// Why a change cut off by Orbit stopping isn't sent again.
+pub const INTERRUPTED: &str = "Orbit stopped before GitHub answered. It read the setting again rather than send the change twice.";
+
+/// Notes your tap on Fix for a setting `repo` drifts on, for Orbit to
+/// change. Refused unless Orbit last read it off where its baseline wants
+/// it on, and while a change to it waits or is on its way.
+pub fn ask(
+    read: &mut [RepoSettings],
+    journal: &[Write],
+    baselines: &[Baseline],
+    repo: &str,
+    setting: Setting,
+) -> Result<(), String> {
+    let r = read
+        .iter_mut()
+        .find(|r| same_repo(&r.repo, repo) && !r.read_at.is_empty())
+        .ok_or_else(|| format!("Orbit hasn't read {repo}'s security settings yet."))?;
+    if let Some(unseen) = &r.unseen {
+        return Err(unseen.clone());
+    }
+    if r.asked.contains(&setting) || sending(journal, &r.repo, setting) {
+        return Err(format!(
+            "Orbit is already changing {} in {}.",
+            setting.name(),
+            r.repo
+        ));
+    }
+    let (name, repo) = (setting.name(), &r.repo);
+    if !wanted_for(baselines, owner(repo)).contains(&setting) || !r.has(setting) {
+        return Err(format!("{repo}'s baseline doesn't ask for {name}."));
+    }
+    match r.on(setting) {
+        Some(false) => {}
+        Some(true) => return Err(format!("{name} is already on in {repo}.")),
+        None => {
+            return Err(format!(
+                "Orbit can't tell whether {name} is on in {repo}, so it changes nothing."
+            ))
+        }
+    }
+    r.asked.push(setting);
+    Ok(())
+}
+/// Whether a change to `setting` in `repo` is on its way to GitHub.
+pub fn sending(journal: &[Write], repo: &str, setting: Setting) -> bool {
+    journal.iter().any(|w| {
+        w.action == Action::ChangeSetting
+            && w.state == WriteState::Sending
+            && w.setting == Some(setting)
+            && same_repo(&w.repo, repo)
+    })
+}
+/// The next change you asked for, in a repository in `watched`. Asks in
+/// any other repository are dropped, as Orbit no longer watches it.
+pub fn next_ask(read: &mut [RepoSettings], watched: &[String]) -> Option<(String, Setting)> {
+    for r in read.iter_mut() {
+        if !watched.iter().any(|w| same_repo(w, &r.repo)) {
+            r.asked.clear();
+        }
+    }
+    read.iter()
+        .find_map(|r| Some((r.repo.clone(), *r.asked.first()?)))
+}
+/// Takes your ask for a change once Orbit has read the repository again
+/// for it, and says whether the setting still needs it: still off, as
+/// GitHub showed just now (`fresh`), where its baseline wants it on.
+pub fn take(
+    read: &mut [RepoSettings],
+    baselines: &[Baseline],
+    repo: &str,
+    setting: Setting,
+    fresh: bool,
+) -> bool {
+    let Some(r) = read.iter_mut().find(|r| same_repo(&r.repo, repo)) else {
+        return false;
+    };
+    r.asked.retain(|&s| s != setting);
+    fresh && drift(r, &wanted_for(baselines, owner(&r.repo))).contains(&setting)
+}
+/// Whether any change you asked for waits.
+pub fn any_asked(read: &[RepoSettings]) -> bool {
+    read.iter().any(|r| !r.asked.is_empty())
+}
+
+/// Changes left on their way to GitHub when Orbit stopped: GitHub may or
+/// may not have made them. None is sent again on its own; Orbit reads each
+/// repository again instead. Run before a change is sent, while none is.
+/// Returns their repositories.
+pub fn interrupted(journal: &mut [Write], now: DateTime<Utc>) -> Vec<String> {
+    let mut repos: Vec<String> = vec![];
+    for w in journal
+        .iter_mut()
+        .filter(|w| w.action == Action::ChangeSetting && w.state == WriteState::Sending)
+    {
+        w.state = WriteState::Failed;
+        w.done_at = Some(stamp(now));
+        w.error = Some(INTERRUPTED.into());
+        if !repos.iter().any(|r| same_repo(r, &w.repo)) {
+            repos.push(w.repo.clone());
+        }
+    }
+    repos
+}
+/// Records a change before it is sent.
+pub fn record_change(
+    journal: &mut Vec<Write>,
+    repo: &str,
+    setting: Setting,
+    now: DateTime<Utc>,
+) -> String {
+    let id = crate::types::id();
+    journal.push(Write {
+        id: id.clone(),
+        thread: format!("settings:{}", repo.to_lowercase()),
+        action: Action::ChangeSetting,
+        repo: repo.to_string(),
+        number: None,
+        state: WriteState::Sending,
+        at: stamp(now),
+        done_at: None,
+        url: String::new(),
+        error: None,
+        setting: Some(setting),
+    });
+    id
+}
+/// Records what GitHub said to a change: done, or why not, in a sentence
+/// (`change_error`).
+pub fn settle(journal: &mut [Write], id: &str, result: Result<(), String>, now: DateTime<Utc>) {
+    let Some(w) = journal.iter_mut().find(|w| w.id == id) else {
+        return;
+    };
+    w.done_at = Some(stamp(now));
+    match result {
+        Ok(()) => {
+            w.state = WriteState::Done;
+            w.url = w.setting.map(|s| page(&w.repo, s)).unwrap_or_default();
+        }
+        Err(error) => {
+            w.state = WriteState::Failed;
+            w.error = Some(error);
+        }
+    }
+}
+/// Where GitHub shows a repository's setting.
+pub fn page(repo: &str, setting: Setting) -> String {
+    let page = match setting {
+        Setting::ReadOnlyToken | Setting::NoActionsApproval | Setting::ForkApproval => "actions",
+        _ => "security_analysis",
+    };
+    format!("https://github.com/{repo}/settings/{page}")
+}
+/// Why GitHub didn't make a change, in a sentence.
+pub fn change_error(error: &str) -> String {
+    if logs::rate_limited(error) {
+        "GitHub's rate limit held this back. Tap Fix again later.".into()
+    } else if error.contains("HTTP 409") {
+        "The organization's own settings don't let a repository change this, so an owner of the organization changes it there.".into()
+    } else if logs::refused(error) {
+        "GitHub didn't let Orbit change this. Orbit's sign-in needs to be an admin of the repository.".into()
+    } else {
+        format!("GitHub didn't make the change: {}.", logs::short(error))
+    }
+}
+
+/// Turns a setting on in a repository. Anything GitHub sets along with it
+/// is sent as Orbit just read it (`read`), so it stays as it is.
+pub async fn turn_on(repo: &str, setting: Setting, read: &RepoSettings) -> Result<(), String> {
+    validate_repo(repo)?;
+    let (path, method, body) = change(setting, read);
+    crate::github::api_write(&format!("repos/{repo}{path}"), method, body).await
+}
+/// The call that turns a setting on: the path under the repository, the
+/// method, and what's sent.
+pub fn change(
+    setting: Setting,
+    read: &RepoSettings,
+) -> (&'static str, &'static str, Option<Value>) {
+    let analysis = |key: &str| {
+        let mut status = Map::new();
+        status.insert(key.into(), json!({ "status": "enabled" }));
+        Some(json!({ "security_and_analysis": status }))
+    };
+    match setting {
+        Setting::SecretScanning => ("", "PATCH", analysis("secret_scanning")),
+        Setting::PushProtection => ("", "PATCH", analysis("secret_scanning_push_protection")),
+        Setting::DependabotAlerts => ("/vulnerability-alerts", "PUT", None),
+        Setting::DependabotUpdates => ("/automated-security-fixes", "PUT", None),
+        Setting::PrivateReporting => ("/private-vulnerability-reporting", "PUT", None),
+        Setting::ReadOnlyToken | Setting::NoActionsApproval => {
+            // GitHub sets both together; one Orbit doesn't know is left out.
+            let on = |s: Setting| if s == setting { Some(true) } else { read.on(s) };
+            let mut body = Map::new();
+            if let Some(read_only) = on(Setting::ReadOnlyToken) {
+                let token = if read_only { "read" } else { "write" };
+                body.insert("default_workflow_permissions".into(), json!(token));
+            }
+            if let Some(no_approval) = on(Setting::NoActionsApproval) {
+                body.insert(
+                    "can_approve_pull_request_reviews".into(),
+                    json!(!no_approval),
+                );
+            }
+            (
+                "/actions/permissions/workflow",
+                "PUT",
+                Some(Value::Object(body)),
+            )
+        }
+        Setting::ForkApproval => (
+            "/actions/permissions/fork-pr-contributor-approval",
+            "PUT",
+            Some(json!({ "approval_policy": "first_time_contributors" })),
+        ),
+    }
 }
 
 #[cfg(test)]

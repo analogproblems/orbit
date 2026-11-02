@@ -458,6 +458,9 @@ pub enum Action {
     ReopenIssue,
     /// Reruns a failed GitHub Actions job (see `crate::reruns`).
     RerunJob,
+    /// Turns on a repository's security setting, on your tap (see
+    /// `crate::baseline`). It belongs to no thread.
+    ChangeSetting,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -489,6 +492,9 @@ pub struct Write {
     pub url: String,
     #[serde(default)]
     pub error: Option<String>,
+    /// For a change to a setting, which one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setting: Option<crate::baseline::Setting>,
 }
 
 /// A write a thread needs, ready to send.
@@ -2226,12 +2232,13 @@ pub fn closing_note(t: &Thread, p: &Problem) -> String {
 
 /// Writes left on their way to GitHub when Orbit stopped: GitHub may or may
 /// not have them. Run before a pass sends anything. Returns whether any
-/// were left.
+/// were left. A change to a setting is sent apart from these, so
+/// `crate::baseline::interrupted` looks after its own.
 pub fn interrupted(journal: &mut [Write], threads: &mut [Thread], now: DateTime<Utc>) -> bool {
     let mut any = false;
     for w in journal
         .iter_mut()
-        .filter(|w| w.state == WriteState::Sending)
+        .filter(|w| w.state == WriteState::Sending && w.action != Action::ChangeSetting)
     {
         w.state = WriteState::Failed;
         w.done_at = Some(stamp(now));
@@ -2342,6 +2349,7 @@ pub fn record(journal: &mut Vec<Write>, planned: &Planned, now: DateTime<Utc>) -
         done_at: None,
         url: String::new(),
         error: None,
+        setting: None,
     });
     id
 }
@@ -2408,6 +2416,8 @@ pub fn settle(
                 Action::NoteOnIssue => t.noted = planned.closed_at.clone(),
                 // Settled by `crate::reruns::settle`.
                 Action::RerunJob => {}
+                // Settled by `crate::baseline::settle`.
+                Action::ChangeSetting => {}
             }
         }
         Err(error) => {
