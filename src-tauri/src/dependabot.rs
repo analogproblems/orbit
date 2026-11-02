@@ -423,6 +423,7 @@ pub fn record_rebase(
         error: None,
         setting: None,
         head: Some(head.to_string()),
+        tag: None,
     });
     id
 }

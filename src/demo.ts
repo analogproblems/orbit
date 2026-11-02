@@ -2261,8 +2261,16 @@ const line = (
 ): BuddyNoteLine => ({ text, prId, key });
 /** What Bit says when a fix goes through, as the engine words it in the
  * cheerful tone. */
-export function demoFixed(s: Snapshot, fix: Fix, prId: string | null) {
+export function demoFixed(
+  s: Snapshot,
+  fix: Fix,
+  prId: string | null,
+  key?: string,
+) {
   const pr = prLabel(s, prId) || "this pull request";
+  const tag = key?.startsWith("push:")
+    ? `${key.slice(key.lastIndexOf(":") + 1)} in ${key.slice(5, key.lastIndexOf(":"))}`
+    : "the tag";
   return {
     continue_loop: `Gave ${pr} two more rounds!`,
     review_again: `Queued a new review of ${pr}. Fingers crossed!`,
@@ -2271,6 +2279,7 @@ export function demoFixed(s: Snapshot, fix: Fix, prId: string | null) {
     turn_on_autopilot: "Autopilot is back on!",
     check_connections: "It's connected again. All good!",
     post_here_again: `I'll post on ${pr} again!`,
+    push_tag: `Pushed ${tag}! 🏷️`,
   }[fix];
 }
 /** Bit's answer to a quick question, from the demo's state, as the engine

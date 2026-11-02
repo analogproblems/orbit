@@ -13,7 +13,7 @@ import {
 import { Loops } from "./Loops";
 import { freshDemo } from "./demo";
 import { useOrbit } from "./store";
-import { autopilotSummary, type Snapshot } from "./types";
+import { autopilotSummary, buddyOf, type Snapshot } from "./types";
 afterEach(cleanup);
 function show(snapshot: Snapshot) {
   useOrbit.setState({ snapshot });
@@ -172,6 +172,48 @@ describe("needs you list", () => {
     });
     fireEvent.click(within(needs).getByText(pr.title));
     expect(go.onChoose).toHaveBeenCalledWith(pr, undefined);
+  });
+  it("pushes a version's missing tag on one tap, unless left to you", () => {
+    const snapshot = freshDemo();
+    const key = "push:acme/api:v0.3.0";
+    snapshot.attention = [
+      {
+        key,
+        kind: "release",
+        prId: null,
+        reviewId: null,
+        approvalId: null,
+        repo: "acme/api",
+        reason:
+          "acme/api says 0.3.0 on main at abc1234, where CI passed, and there's no tag v0.3.0 yet.",
+        fix: "push_tag",
+      },
+    ];
+    const action = vi.fn().mockResolvedValue({ ok: true });
+    useOrbit.setState({ action });
+    show(snapshot);
+    const needs = list("Needs you");
+    expect(within(needs).getByText("acme/api")).toBeTruthy();
+    fireEvent.click(within(needs).getByRole("button", { name: "Push v0.3.0" }));
+    expect(action).toHaveBeenCalledWith("use_fix", { key });
+    cleanup();
+    const settings = snapshot.settings;
+    const buddy = buddyOf(settings);
+    show({
+      ...snapshot,
+      settings: {
+        ...settings,
+        buddy: { ...buddy, rules: { ...buddy.rules, push_tag: "leave_it" } },
+      },
+    });
+    expect(
+      within(list("Needs you")).queryByRole("button", { name: "Push v0.3.0" }),
+    ).toBeNull();
+    expect(
+      within(list("Needs you")).getByRole("button", {
+        name: "Open operations",
+      }),
+    ).toBeTruthy();
   });
   it("shows no list when nothing needs you", () => {
     show({ ...freshDemo(), attention: [] });

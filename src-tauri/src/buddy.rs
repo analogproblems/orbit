@@ -136,7 +136,9 @@ pub const MEMORY_CHANGES: usize = 10;
 
 /// One of Orbit's own controls, offered for something that needs you. A fix
 /// only uses Orbit: it never answers a reviewer's request, changes a
-/// repository's setup or access, or touches the code under review.
+/// repository's setup or access, or touches the code under review. Pushing
+/// a release tag makes a tag at a commit already on the default branch,
+/// and never moves or deletes one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Fix {
@@ -161,6 +163,9 @@ pub enum Fix {
     /// Orbit (`crate::orbits`). It always waits for your tap: only you
     /// know whether the other one still runs.
     PostHereAgain,
+    /// Pushes the release tag for a version the default branch says, with
+    /// none yet, where CI passed (`crate::tagging`).
+    PushTag,
 }
 
 /// The rule for each fix Bit can do on its own, keyed by the fix's own name
@@ -184,6 +189,8 @@ pub struct Rules {
     /// Opening an `orbit` issue that proposes CI for a repository where
     /// none runs on pull requests.
     pub propose_ci: String,
+    /// Pushing a release tag (`Fix::PushTag`).
+    pub push_tag: String,
 }
 impl Default for Rules {
     fn default() -> Self {
@@ -197,6 +204,7 @@ impl Default for Rules {
             rerun_flaky: "do_it".into(),
             rerun_again: "ask_first".into(),
             propose_ci: "ask_first".into(),
+            push_tag: "ask_first".into(),
         }
     }
 }
@@ -208,10 +216,11 @@ impl Rules {
             Fix::ReviewAgain => &self.review_again,
             Fix::Publish => &self.publish,
             Fix::SyncNow => &self.sync_now,
+            Fix::PushTag => &self.push_tag,
             Fix::TurnOnAutopilot | Fix::CheckConnections | Fix::PostHereAgain => "ask_first",
         }
     }
-    fn each(&self) -> [&str; 9] {
+    fn each(&self) -> [&str; 10] {
         [
             &self.continue_loop,
             &self.review_again,
@@ -222,9 +231,10 @@ impl Rules {
             &self.rerun_flaky,
             &self.rerun_again,
             &self.propose_ci,
+            &self.push_tag,
         ]
     }
-    fn each_mut(&mut self) -> [&mut String; 9] {
+    fn each_mut(&mut self) -> [&mut String; 10] {
         [
             &mut self.continue_loop,
             &mut self.review_again,
@@ -235,6 +245,7 @@ impl Rules {
             &mut self.rerun_flaky,
             &mut self.rerun_again,
             &mut self.propose_ci,
+            &mut self.push_tag,
         ]
     }
 }
@@ -251,6 +262,7 @@ pub struct RulesPatch {
     pub rerun_flaky: Option<String>,
     pub rerun_again: Option<String>,
     pub propose_ci: Option<String>,
+    pub push_tag: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -530,6 +542,7 @@ impl BuddyPatch {
                 rules.rerun_flaky,
                 rules.rerun_again,
                 rules.propose_ci,
+                rules.push_tag,
             ];
             for (rule, v) in buddy.rules.each_mut().into_iter().zip(patch) {
                 if let Some(v) = v {
@@ -1014,6 +1027,7 @@ mod say {
             ("calm", Fix::TurnOnAutopilot) => "Autopilot is on again.".into(),
             ("calm", Fix::CheckConnections) => "That's connected again.".into(),
             ("calm", Fix::PostHereAgain) => format!("Posting on {pr} again."),
+            ("calm", Fix::PushTag) => format!("Pushed {pr}."),
             ("dry", Fix::ContinueLoop) => format!("{pr} gets two more rounds."),
             ("dry", Fix::ReviewAgain) => format!("{pr} is queued for another go."),
             ("dry", Fix::Publish) => format!("{pr}'s report is out."),
@@ -1021,6 +1035,7 @@ mod say {
             ("dry", Fix::TurnOnAutopilot) => "Autopilot: on.".into(),
             ("dry", Fix::CheckConnections) => "Reconnected. Good.".into(),
             ("dry", Fix::PostHereAgain) => format!("{pr} is mine again."),
+            ("dry", Fix::PushTag) => format!("{pr}: tagged."),
             (_, Fix::ContinueLoop) => format!("Gave {pr} two more rounds!"),
             (_, Fix::ReviewAgain) => format!("Queued a new review of {pr}. Fingers crossed!"),
             (_, Fix::Publish) => format!("Published the report on {pr}! 📬"),
@@ -1028,6 +1043,7 @@ mod say {
             (_, Fix::TurnOnAutopilot) => "Autopilot is back on!".into(),
             (_, Fix::CheckConnections) => "It's connected again. All good!".into(),
             (_, Fix::PostHereAgain) => format!("I'll post on {pr} again!"),
+            (_, Fix::PushTag) => format!("Pushed {pr}! 🏷️"),
         }
     }
     pub fn not_done(tone: &str, fix: Fix, pr: &str, error: &str) -> String {
@@ -1039,6 +1055,7 @@ mod say {
             Fix::TurnOnAutopilot => "turn autopilot back on".into(),
             Fix::CheckConnections => "reconnect".into(),
             Fix::PostHereAgain => format!("post on {pr} again"),
+            Fix::PushTag => format!("push {pr}"),
         };
         let error = error.trim();
         match tone {
@@ -1156,7 +1173,7 @@ pub(crate) fn samples(tone: &str) -> Vec<(NoteKind, String)> {
 }
 /// Every fix, for tests.
 #[cfg(test)]
-pub(crate) const FIXES: [Fix; 7] = [
+pub(crate) const FIXES: [Fix; 8] = [
     Fix::ContinueLoop,
     Fix::ReviewAgain,
     Fix::Publish,
@@ -1164,6 +1181,7 @@ pub(crate) const FIXES: [Fix; 7] = [
     Fix::TurnOnAutopilot,
     Fix::CheckConnections,
     Fix::PostHereAgain,
+    Fix::PushTag,
 ];
 
 /// Compares the loops with what Bit last saw and writes a note for each
@@ -1475,6 +1493,10 @@ pub fn will_fix(s: &Snapshot, item: &Attention) -> Option<Fix> {
     })
 }
 fn pr_or_this(s: &Snapshot, item: &Attention) -> String {
+    // A tag's item says which tag, in which repository.
+    if let Some((repo, tag)) = crate::tagging::from_key(&item.key) {
+        return format!("{tag} in {repo}");
+    }
     pr_label(s, item.pr_id.as_deref()).unwrap_or_else(|| "this pull request".into())
 }
 /// Notes that a fix went through. A loop Bit continued is recorded as seen,

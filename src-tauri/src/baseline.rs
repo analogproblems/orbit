@@ -584,6 +584,7 @@ pub fn record_change(
         error: None,
         setting: Some(setting),
         head: None,
+        tag: None,
     });
     id
 }

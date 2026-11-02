@@ -87,6 +87,30 @@ fn a_workflow_orbit_cant_read_for_sure_is_unknown() {
     assert_eq!(on_pulls(mixed), OnPulls::Yes);
 }
 
+#[test]
+fn the_tags_a_workflow_runs_on_are_what_its_push_filter_names() {
+    for (text, tags) in [
+        ("on:\n  push:\n    tags:\n      - 'v*'\n", vec!["v*"]),
+        (
+            "on:\n  push:\n    branches: [main]\n    tags: [v*, '1.*']\n",
+            vec!["v*", "1.*"],
+        ),
+        (
+            "on:\n  push:\n    tags:\n      - '[0-9]*'\n",
+            vec!["[0-9]*"],
+        ),
+        ("on:\n  push:\n    tags:\n", vec!["**"]),
+        // Every push runs it, but Orbit only counts a workflow made for tags.
+        ("on: [push, pull_request]\n", vec![]),
+        ("on:\n  push:\n    branches: [main]\n", vec![]),
+        ("on:\n  release:\n    types: [published]\n", vec![]),
+        ("on:\n  push:\n    tags-ignore: ['v*']\n", vec![]),
+        ("not a workflow", vec![]),
+    ] {
+        assert_eq!(on_tags(text), tags, "{text}");
+    }
+}
+
 fn names(list: &[&str]) -> Vec<String> {
     list.iter().map(|n| n.to_string()).collect()
 }

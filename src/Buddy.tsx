@@ -49,7 +49,7 @@ import {
   buddyAnswerers,
   buddyTones,
   fixDescriptions,
-  fixLabels,
+  fixLabel,
   fixRuleLabels,
   maxQuestion,
   memoryChangeText,
@@ -168,7 +168,7 @@ function FixButton({ itemKey }: { itemKey: string | null | undefined }) {
     <VStack gap={2}>
       <HStack>
         <Button
-          label={fixLabels[offered.fix]}
+          label={fixLabel(offered.fix, offered.item.key)}
           size="sm"
           clickAction={async () => {
             setError(null);

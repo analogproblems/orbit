@@ -26,10 +26,13 @@ pub const FOLDER: &str = ".github/workflows";
 /// Which checks of workflow files a read made, so a commit read before
 /// they were added, or changed, is read again: 1 is Orbit's own
 /// (`crate::risks`), 2 adds actionlint and zizmor (`crate::lint`), and 3
-/// the version files (`crate::versions`).
-pub const CHECKS: u32 = 3;
+/// the version files (`crate::versions`), and 4 the tags a workflow runs
+/// on (`Workflow::tags`).
+pub const CHECKS: u32 = 4;
 /// The first `CHECKS` that read the version files.
 pub const VERSIONS: u32 = 3;
+/// The first `CHECKS` that read the tags workflows run on.
+pub const TAGS: u32 = 4;
 /// Files and folders at the top of a repository that set up another CI
 /// service.
 pub const OTHER_CI: [&str; 22] = [
@@ -92,6 +95,11 @@ pub struct Workflow {
     /// why (`crate::lint`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub missed: Vec<ToolRun>,
+    /// The tags a `push` runs it for, as its `tags` filter writes them,
+    /// such as `v*`; `**` when it names `tags` with no list. Empty when it
+    /// runs on no tag, or Orbit can't read its `on:`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 }
 /// What Orbit read about a repository's CI at its default branch's latest
 /// commit.
@@ -363,6 +371,7 @@ pub fn understand(
             };
             Some(Workflow {
                 on_pulls: text.map_or(OnPulls::Unknown, on_pulls),
+                tags: text.map(on_tags).unwrap_or_default(),
                 path,
                 checked,
                 risks: found.risks,
@@ -461,6 +470,26 @@ pub fn on_pulls(text: &str) -> OnPulls {
     }
 }
 
+/// The tags a workflow's `push` runs it for, as its `tags` filter writes
+/// them, or `**` for a `tags` with no list. None for a workflow that runs
+/// on no tag, or whose `on:` Orbit can't read.
+pub fn on_tags(text: &str) -> Vec<String> {
+    let Some(events) = events(text) else {
+        return vec![];
+    };
+    events
+        .iter()
+        .filter(|e| e.name == "push")
+        .filter_map(|e| e.filters())
+        .flatten()
+        .filter(|(key, _)| *key == "tags")
+        .flat_map(|(_, list)| match list.is_empty() {
+            true => vec!["**".to_string()],
+            false => list,
+        })
+        .collect()
+}
+
 /// An event a workflow's `on:` names, with its settings: on its line, or
 /// the lines under it.
 #[derive(Debug)]
@@ -482,12 +511,42 @@ impl Event<'_> {
     /// for tags, or for branches named outright, which Orbit takes to be
     /// where pull requests go rather than where they come from.
     fn push(&self) -> Option<bool> {
-        if !self.under.is_empty() {
-            if !self.value.is_empty() {
+        if self.under.is_empty() {
+            return matches!(self.value, "" | "{}" | "null" | "~").then_some(true);
+        }
+        let filters = self.filters()?;
+        let has = |name: &str| filters.iter().any(|(k, _)| *k == name);
+        for (key, _) in &filters {
+            let known = [
+                "branches",
+                "branches-ignore",
+                "tags",
+                "tags-ignore",
+                "paths",
+                "paths-ignore",
+            ];
+            if !known.contains(key) {
                 return None;
             }
-        } else {
-            return matches!(self.value, "" | "{}" | "null" | "~").then_some(true);
+        }
+        if has("branches-ignore") {
+            return Some(true);
+        }
+        if let Some((_, branches)) = filters.iter().find(|(k, _)| *k == "branches") {
+            let glob = |b: &String| b.chars().any(|c| matches!(c, '*' | '?' | '+' | '[' | '!'));
+            return Some(branches.iter().any(glob));
+        }
+        // Only tags, or every branch.
+        Some(!(has("tags") || has("tags-ignore")))
+    }
+    /// The filters under an event, such as `branches` or `tags`, each with
+    /// its list. None when Orbit can't read them; empty when there are none.
+    fn filters(&self) -> Option<Vec<(&str, Vec<String>)>> {
+        if self.under.is_empty() {
+            return Some(vec![]);
+        }
+        if !self.value.is_empty() {
+            return None;
         }
         let indent = self.under[0].0;
         let mut filters: Vec<(&str, Vec<String>)> = vec![];
@@ -514,29 +573,7 @@ impl Event<'_> {
             }
             filters.push((key, list));
         }
-        let has = |name: &str| filters.iter().any(|(k, _)| *k == name);
-        for (key, _) in &filters {
-            let known = [
-                "branches",
-                "branches-ignore",
-                "tags",
-                "tags-ignore",
-                "paths",
-                "paths-ignore",
-            ];
-            if !known.contains(key) {
-                return None;
-            }
-        }
-        if has("branches-ignore") {
-            return Some(true);
-        }
-        if let Some((_, branches)) = filters.iter().find(|(k, _)| *k == "branches") {
-            let glob = |b: &String| b.chars().any(|c| matches!(c, '*' | '?' | '+' | '[' | '!'));
-            return Some(branches.iter().any(glob));
-        }
-        // Only tags, or every branch.
-        Some(!(has("tags") || has("tags-ignore")))
+        Some(filters)
     }
 }
 

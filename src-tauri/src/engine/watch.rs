@@ -370,10 +370,14 @@ impl Engine {
     /// of its newest and new version tags (`releases::due`), then opens or
     /// closes its problems about tags on the wrong commit. One GitHub
     /// didn't answer for keeps what was read before and is tried again
-    /// after a wait.
+    /// after a wait. First, unless a release tag is being pushed now, it
+    /// looks on GitHub for any push GitHub may or may not have taken.
     async fn read_releases(&self) {
         if self.reading_releases.swap(true, Ordering::SeqCst) {
             return;
+        }
+        if let Ok(_one) = self.tagging.try_lock() {
+            self.look_for_cut_off_tags().await;
         }
         let wanted = {
             let s = self.state.lock().await;

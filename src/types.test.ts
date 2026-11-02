@@ -36,6 +36,8 @@ import {
   defaults,
   offeredFix,
   asksFirst,
+  fixLabel,
+  pushedTag,
   readinessLine,
   withPatch,
   type Attention,
@@ -441,6 +443,14 @@ describe("Bit's fixes", () => {
     s.attention = [item(null)];
     expect(offeredFix(s, item(null).key)).toBeUndefined();
   });
+  it("names the tag a push offers on its button", () => {
+    expect(pushedTag("push:acme/api:v0.3.0")).toBe("v0.3.0");
+    expect(pushedTag("problem:1")).toBeUndefined();
+    expect(fixLabel("push_tag", "push:acme/api:v0.3.0")).toBe("Push v0.3.0");
+    expect(fixLabel("push_tag", undefined)).toBe("Push a release tag");
+    expect(fixLabel("publish", "push:acme/api:v0.3.0")).toBe("Publish report");
+    expect(asksFirst("push_tag")).toBe(false);
+  });
   it("patches one rule at a time, as the engine does", () => {
     const settings = structuredClone(defaults);
     delete settings.buddy;
@@ -457,6 +467,7 @@ describe("Bit's fixes", () => {
       rerun_flaky: "do_it",
       rerun_again: "ask_first",
       propose_ci: "ask_first",
+      push_tag: "ask_first",
     });
     expect(
       buddyOf(withPatch(patched, { buddy: { name: "Orbie" } })).rules.publish,

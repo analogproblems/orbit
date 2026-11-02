@@ -178,6 +178,15 @@ impl Engine {
                 self.tell_agents().await;
                 Ok(())
             }
+            // Checked with GitHub just before, and recorded in the journal
+            // before it is sent.
+            Fix::PushTag => {
+                let repo = item
+                    .repo
+                    .as_deref()
+                    .ok_or("This isn't about a repository.")?;
+                self.push_tag(repo, &still).await
+            }
             // Done once the item closes, whatever else is still off.
             Fix::CheckConnections => {
                 let _ = self.check_connections().await;
