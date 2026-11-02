@@ -376,8 +376,26 @@ fn a_workspace_member_uses_the_top_lockfile() {
         };
         assert_eq!(lock(&top, &own), want, "{top}\n---\n{own}");
     }
+    // Cargo's globs: `*` and `?` in a name, character sets and `**`.
+    for (pattern, takes) in [
+        ("*", true),
+        ("src", false),
+        ("src-[st]auri", true),
+        ("src-[!t]auri", false),
+        ("src-[a-z]auri", true),
+        ("src-[0-9]auri", false),
+        ("**", true),
+        ("**/src-tauri", true),
+        ("apps/**", false),
+        // Not patterns Cargo takes.
+        ("src-**", false),
+        ("src-[t", false),
+    ] {
+        assert_eq!(glob(pattern, "src-tauri"), takes, "{pattern}");
+    }
     assert!(glob("crates/*", "crates/a") && !glob("crates/*", "crates/a/b"));
-    assert!(glob("*", "src-tauri") && !glob("src", "src-tauri"));
+    assert!(glob("crates/**", "crates/a/b") && glob("**/b", "crates/a/b"));
+    assert!(glob("[]]", "]") && glob("[!]]", "a") && !glob("[!]]", "]"));
     assert!(!glob("src-?auri", "src-/auri") && glob("", ""));
 }
 
@@ -402,6 +420,13 @@ fn python_versions_are_compared_as_pep_440_does() {
         ];
         assert!(differ(&files).is_empty(), "{written} and {locked}");
     }
+    // A local part's numbers are numbers, as uv writes them.
+    let (p, u) = (python("1.0+build.001"), uv("1.0+build.1"));
+    let files = [
+        ("pyproject.toml", Some(p.as_str())),
+        ("uv.lock", Some(u.as_str())),
+    ];
+    assert!(differ(&files).is_empty());
     // Another version is still another, said as each file writes it.
     let (p, u) = (python("1.0-alpha1"), uv("1.0a2"));
     let files = [
@@ -439,6 +464,9 @@ fn python_versions_are_compared_as_pep_440_does() {
         ("1!2.0", Some("1!2")),
         ("0!2.0", Some("2")),
         ("1.0+Ubuntu-1", Some("1+ubuntu.1")),
+        ("1.0+build.001", Some("1+build.1")),
+        ("1.0+00.a010", Some("1+0.a010")),
+        ("1.01.0a01", Some("1.1a1")),
         ("10.20.0", Some("10.20")),
         ("abc", None),
         ("1.0foo", None),

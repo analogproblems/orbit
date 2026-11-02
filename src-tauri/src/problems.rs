@@ -755,7 +755,8 @@ pub fn versions_text(p: &Problem) -> String {
 /// couldn't read or make out now, a lockfile whose manifest it couldn't,
 /// and one any file it was compared with it couldn't, stays as it was, as
 /// Orbit can't say it was fixed: that file may be what joins it to the
-/// others. It
+/// others. A file it was compared with stays in its group while Orbit
+/// can't read it, even when it is found again among fewer files. It
 /// closes, as passed at that commit, once nothing is left.
 pub fn see_versions(problems: &mut Vec<Problem>, setup: &Setup, now: DateTime<Utc>) {
     use crate::versions::{mismatches, names};
@@ -815,11 +816,20 @@ pub fn see_versions(problems: &mut Vec<Problem>, setup: &Setup, now: DateTime<Ut
     for f in found {
         match p.mismatches.iter_mut().find(|m| m.same(&f)) {
             Some(m) => {
+                // A file it was compared with before that Orbit can't read
+                // now stays in its group, so a smaller group read now can't
+                // make it agree until Orbit reads that file again.
+                let mut group = f.group;
+                for g in m.group.iter().chain(&m.others) {
+                    if unread(g) && !group.contains(g) {
+                        group.push(g.clone());
+                    }
+                }
                 m.kind = f.kind;
                 m.says = f.says;
                 m.want = f.want;
                 m.others = f.others;
-                m.group = f.group;
+                m.group = group;
             }
             None => {
                 p.mismatch_count += 1;

@@ -300,21 +300,70 @@ fn package_lock(text: &str, name: &str) -> Says<String> {
 fn folder_name(path: &str) -> &str {
     path.trim_start_matches("./").trim_end_matches('/')
 }
-/// Whether a glob such as `crates/*` or `src-?auri` takes in all of `name`.
+/// Whether a glob in `workspace.members`, as Cargo reads one, takes in all
+/// of `name`: `*` and `?` within a folder's name, `[...]` and `[!...]` for
+/// one of, or none of, some characters or ranges, and `**` as a whole part
+/// for any number of folders. A pattern Cargo would refuse takes in nothing.
 fn glob(pattern: &str, name: &str) -> bool {
-    match (pattern.chars().next(), name.chars().next()) {
-        (None, None) => true,
-        (Some('*'), _) => {
-            glob(&pattern[1..], name)
-                || name
-                    .chars()
-                    .next()
-                    .is_some_and(|c| c != '/' && glob(pattern, &name[c.len_utf8()..]))
+    fn parts(pats: &[&str], names: &[&str]) -> bool {
+        match pats.split_first() {
+            None => names.is_empty(),
+            Some((&"**", rest)) => {
+                parts(rest, names) || (!names.is_empty() && parts(pats, &names[1..]))
+            }
+            Some((p, rest)) => match names.split_first() {
+                Some((n, names)) => {
+                    let (p, n): (Vec<char>, Vec<char>) = (p.chars().collect(), n.chars().collect());
+                    part(&p, &n) && parts(rest, names)
+                }
+                None => false,
+            },
         }
-        (Some('?'), Some(c)) if c != '/' => glob(&pattern[1..], &name[c.len_utf8()..]),
-        (Some(p), Some(c)) if p == c => glob(&pattern[p.len_utf8()..], &name[c.len_utf8()..]),
-        _ => false,
     }
+    fn part(p: &[char], n: &[char]) -> bool {
+        match p.first() {
+            None => n.is_empty(),
+            Some('*') => part(&p[1..], n) || (!n.is_empty() && part(p, &n[1..])),
+            Some('?') => !n.is_empty() && part(&p[1..], &n[1..]),
+            Some('[') => {
+                let Some((&c, n)) = n.split_first() else {
+                    return false;
+                };
+                let negate = p.get(1) == Some(&'!');
+                let mut i = if negate { 2 } else { 1 };
+                let (mut hit, mut first) = (false, true);
+                loop {
+                    // An unclosed bracket is no pattern.
+                    let Some(&a) = p.get(i) else {
+                        return false;
+                    };
+                    // A `]` straight after the opening is one to match.
+                    if a == ']' && !first {
+                        break;
+                    }
+                    first = false;
+                    match (p.get(i + 1), p.get(i + 2)) {
+                        (Some('-'), Some(&b)) if b != ']' => {
+                            hit |= a <= c && c <= b;
+                            i += 3;
+                        }
+                        _ => {
+                            hit |= a == c;
+                            i += 1;
+                        }
+                    }
+                }
+                hit != negate && part(&p[i + 1..], n)
+            }
+            Some(a) => n.first() == Some(a) && part(&p[1..], &n[1..]),
+        }
+    }
+    let pats: Vec<&str> = pattern.split('/').collect();
+    if pats.iter().any(|p| p.contains("**") && *p != "**") {
+        return false;
+    }
+    let names: Vec<&str> = name.split('/').collect();
+    parts(&pats, &names)
 }
 /// Whether the package in `folder` (such as `src-tauri/`), with the
 /// manifest `text`, is a member of the workspace in the top `Cargo.toml`:
@@ -597,6 +646,17 @@ pub fn pep440(v: &str) -> Option<String> {
         {
             return None;
         }
+        // A part that is all digits is a number: `001` is `1`.
+        let parts: Vec<&str> = parts
+            .into_iter()
+            .map(|p| match p.chars().all(|c| c.is_ascii_digit()) {
+                true => match p.trim_start_matches('0') {
+                    "" => "0",
+                    n => n,
+                },
+                false => p,
+            })
+            .collect();
         out.push('+');
         out.push_str(&parts.join("."));
     }

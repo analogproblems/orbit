@@ -1852,6 +1852,73 @@ mod versions {
     }
 
     #[test]
+    fn a_file_orbit_can_t_read_stays_compared_across_reads() {
+        let mut problems = vec![];
+        // Only the Rust lockfile is behind.
+        let first = read(A, app("0.3.0", "0.3.0", "0.3.0", "0.1.0"), &[]);
+        see_versions(&mut problems, &first, at(0));
+        assert_eq!(
+            differ(&problems[0]),
+            [(1, "src-tauri/Cargo.lock", "0.1.0", "0.3.0")]
+        );
+        // tauri.conf.json can't be read, and Cargo.toml moved on, so the
+        // lockfile is found again among fewer files.
+        let without = |cargo: &str, lock: &str| {
+            let mut files = app("0.3.0", "", cargo, lock);
+            files.retain(|f| f.kind != Kind::Tauri);
+            files
+        };
+        let unread = &["src-tauri/tauri.conf.json"];
+        see_versions(
+            &mut problems,
+            &read(B, without("0.2.0", "0.1.0"), unread),
+            at(1),
+        );
+        let p = &problems[0];
+        assert_eq!(differ(p), [(1, "src-tauri/Cargo.lock", "0.1.0", "0.2.0")]);
+        assert_eq!(p.mismatches[0].others, ["src-tauri/Cargo.toml"]);
+        assert_eq!(
+            p.mismatches[0].group,
+            ["src-tauri/Cargo.toml", "src-tauri/tauri.conf.json"]
+        );
+        // The lockfile agrees with Cargo.toml, but tauri.conf.json and
+        // package.json may still say 0.3.0, so it isn't said to agree.
+        see_versions(
+            &mut problems,
+            &read(C, without("0.2.0", "0.2.0"), unread),
+            at(2),
+        );
+        let p = &problems[0];
+        assert!(p.is_open() && !p.passed());
+        assert_eq!(differ(p), [(1, "src-tauri/Cargo.lock", "0.1.0", "0.2.0")]);
+        assert_eq!(p.timeline.len(), 1);
+        // Read again, the Rust side is behind the rest.
+        let read_all = read(D, app("0.3.0", "0.3.0", "0.2.0", "0.2.0"), &[]);
+        see_versions(&mut problems, &read_all, at(3));
+        let p = &problems[0];
+        assert!(p.is_open());
+        assert_eq!(
+            differ(p),
+            [
+                (1, "src-tauri/Cargo.lock", "0.2.0", "0.3.0"),
+                (2, "src-tauri/Cargo.toml", "0.2.0", "0.3.0"),
+            ]
+        );
+        // Its group is what was read now.
+        assert_eq!(
+            p.mismatches[0].group,
+            [
+                "package.json",
+                "src-tauri/Cargo.toml",
+                "src-tauri/tauri.conf.json"
+            ]
+        );
+        let fixed = read(E, app("0.3.0", "0.3.0", "0.3.0", "0.3.0"), &[]);
+        see_versions(&mut problems, &fixed, at(4));
+        assert!(problems[0].passed());
+    }
+
+    #[test]
     fn one_orbit_can_t_read_stays_and_one_that_disagrees_again_is_new() {
         let mut problems = vec![];
         let first = read(A, app("0.3.0", "0.3.0", "0.2.0", "0.2.0"), &[]);
