@@ -41,6 +41,7 @@ import {
   type RunnerPlace,
   type SecurityAlert,
   type Snapshot,
+  type WorkflowRisk,
 } from "./types";
 
 /** How many closed problems the page lists, and how many writes. */
@@ -108,6 +109,17 @@ function partlyRead(s: Snapshot, repo: string) {
   );
 }
 
+/** Whether a problem's agent hears of it in an issue rather than a
+ * comment on a pull request. */
+function opensIssue(p: Problem) {
+  return (
+    p.kind === "default_branch" ||
+    p.kind === "security" ||
+    p.kind === "workflow_risks" ||
+    p.kind === "no_ci"
+  );
+}
+
 /** Whether a problem is yours to see to: a failing default branch, or runs
  * waiting for a runner. */
 function needsYou(p: Problem) {
@@ -123,16 +135,15 @@ function threadOf(s: Snapshot, p: Problem) {
 function ruleOf(s: Snapshot, p: Problem) {
   const { rules } = buddyOf(s.settings);
   if (p.kind === "no_ci") return rules.propose_ci;
-  return p.kind === "default_branch" || p.kind === "security"
-    ? rules.open_issues
-    : rules.comment_on_prs;
+  return opensIssue(p) ? rules.open_issues : rules.comment_on_prs;
 }
 
-/** Whether nothing about a problem's security alerts goes to GitHub, as
- * GitHub last said its repository isn't private, as the engine has it
- * (`withheld`). What is already on GitHub stays as it is. */
+/** Whether nothing about a problem's security alerts or risky workflow
+ * settings goes to GitHub, as GitHub last said its repository isn't
+ * private, as the engine has it (`withheld`). What is already on GitHub
+ * stays as it is. */
 function withheld(p: Problem) {
-  return p.kind === "security" && !p.private;
+  return (p.kind === "security" || p.kind === "workflow_risks") && !p.private;
 }
 
 /** Whether Bit waits for your tap before it posts about a problem. */
@@ -185,14 +196,15 @@ export function toldText(s: Snapshot, p: Problem, t: OpsThread | undefined) {
     return "Only a person can add or fix a runner, so Orbit doesn’t tell an agent.";
   if (p.kind === "security" && p.source === "secret_scanning")
     return "Only a person can revoke a secret, so Orbit doesn’t tell an agent.";
-  if (withheld(p))
+  if (withheld(p)) {
+    const these = p.kind === "security" ? "these alerts" : "these settings";
     return t?.url
-      ? `Orbit told the repository’s agent in issue #${t.number}, but the repository isn’t private now, so Orbit leaves that issue as it is. These alerts stay with you.`
-      : "Orbit keeps these alerts with you, as the repository isn’t private and an issue would show others where the weakness is.";
+      ? `Orbit told the repository’s agent in issue #${t.number}, but the repository isn’t private now, so Orbit leaves that issue as it is. ${these[0].toUpperCase()}${these.slice(1)} stay with you.`
+      : `Orbit keeps ${these} with you, as the repository isn’t private and an issue would show others where the weakness is.`;
+  }
   const buddy = buddyOf(s.settings);
   const proposal = p.kind === "no_ci";
-  const issue =
-    p.kind === "default_branch" || p.kind === "security" || proposal;
+  const issue = opensIssue(p);
   if (t?.gone) return t.error ?? "";
   if (t?.url) {
     const where = proposal
@@ -344,6 +356,12 @@ export function answerText(t: OpsThread, item: OpsItem) {
         const where = a.commit ? ` in ${a.commit.slice(0, 7)}` : "";
         return `${about} ${who} says it’s added${where}. Orbit is waiting to see a workflow that runs on pull requests on ${t.branch || "the default branch"}.`;
       }
+      // Nor for a risky setting: Orbit reads the files again at the next
+      // commit on the default branch.
+      if (item.kind === "risk") {
+        const where = a.commit ? ` in ${a.commit.slice(0, 7)}` : "";
+        return `${about} ${who} says it’s fixed${where}. Orbit checks again at the next commit on ${t.branch || "the default branch"}.`;
+      }
       // Nor for an alert: only GitHub says when one is fixed.
       if (item.kind === "alert") {
         const where = a.commit ? ` in ${a.commit.slice(0, 7)}` : "";
@@ -468,10 +486,53 @@ function title(s: Snapshot, p: Problem) {
     return `${p.repo}: ${alertKinds[p.source ?? "dependabot"].many}`;
   if (p.kind === "no_ci") return `${p.repo}: CI on pull requests`;
   if (p.kind === "waiting") return `${p.repo}: runs waiting for a runner`;
+  if (p.kind === "workflow_risks") return `${p.repo}: workflow settings`;
   if (p.kind === "default_branch")
     return `${p.repo}: ${p.branch || "default branch"}`;
   const pr = s.prs.find((pr) => pr.id === p.prId);
   return pr ? `${p.prId} · ${pr.title}` : (p.prId ?? p.repo);
+}
+
+/** Where a risky setting is: "ci.yml line 12, job build". */
+function riskPlace(r: WorkflowRisk) {
+  const file = r.path.split("/").at(-1) || r.path;
+  return `${file} line ${r.line}${r.job ? `, job ${r.job}` : ""}`;
+}
+/** A risky workflow setting on one line, in the words of Orbit's issue. */
+export function riskText(r: WorkflowRisk) {
+  const at = riskPlace(r);
+  switch (r.kind) {
+    case "unpinned":
+      return `${r.subject} isn’t pinned to a full commit, in ${at}.`;
+    case "permissions":
+      return r.subject === "missing"
+        ? `No permissions are set, so its jobs get the token’s default, in ${at}.`
+        : `It asks for ${r.subject} permissions, in ${at}.`;
+    case "pull_checkout":
+      return `It checks out a pull request’s code (${r.subject}) where secrets are exposed, in ${at}.`;
+    case "injection":
+      return `${r.subject} goes straight into a script, in ${at}.`;
+  }
+}
+/** A workflows problem in a sentence, as the engine has it
+ * (`risks_text`). */
+export function risksText(p: Problem) {
+  const risks = p.risks ?? [];
+  const n = risks.length;
+  const high = risks.filter(
+    (r) => r.severity === "high" || r.severity === "critical",
+  ).length;
+  const many = n === 1 ? "1 risky setting" : `${n} risky settings`;
+  const which = !high
+    ? ""
+    : n === 1
+      ? ", and it is high"
+      : `, ${high} of them high`;
+  return `Its workflows on ${p.branch || "the default branch"} have ${many}${which}, at ${shortSha(p.sha)}.`;
+}
+/** A link to a risky setting's line on GitHub, at the commit Orbit read. */
+function riskLink(p: Problem, r: WorkflowRisk) {
+  return `https://github.com/${p.repo}/blob/${p.sha}/${r.path}#L${r.line}`;
 }
 
 function Repositories({ go }: { go: AttentionHandlers }) {
@@ -647,6 +708,8 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
           const pr = s.prs.find((pr) => pr.id === p.prId);
           const yours = needsYou(p);
           const waiting = p.kind === "waiting";
+          const risky = p.kind === "workflow_risks";
+          const risks = p.risks ?? [];
           const t = threadOf(s, p);
           const told = toldText(s, p, t);
           const broke =
@@ -668,7 +731,13 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
               startContent={
                 <StatusDot
                   variant={yours ? "error" : "warning"}
-                  label={yours ? "Needs you" : "Author’s to fix"}
+                  label={
+                    yours
+                      ? "Needs you"
+                      : risky
+                        ? "Risky settings"
+                        : "Author’s to fix"
+                  }
                 />
               }
               label={
@@ -681,12 +750,35 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
                   <Text>
                     {waiting
                       ? waitingText(p)
-                      : yours
-                        ? `Failing: ${checkNames(p.failing)}.`
-                        : p.kind === "base_moved"
-                          ? movedText(p)
-                          : `Failing: ${checkNames(p.failing)}. Its author’s to fix.`}
+                      : risky
+                        ? risksText(p)
+                        : yours
+                          ? `Failing: ${checkNames(p.failing)}.`
+                          : p.kind === "base_moved"
+                            ? movedText(p)
+                            : `Failing: ${checkNames(p.failing)}. Its author’s to fix.`}
                   </Text>
+                  {risks.slice(0, ALERTS).map((r) => (
+                    <HStack
+                      key={r.number ?? `${r.path}:${r.line}`}
+                      gap={2}
+                      vAlign="start"
+                    >
+                      <Token
+                        label={severityLabels[r.severity]}
+                        color={severityColours[r.severity]}
+                        size="sm"
+                      />
+                      <Text color="secondary" maxLines={2}>
+                        {riskText(r)}
+                      </Text>
+                    </HStack>
+                  ))}
+                  {risks.length > ALERTS && (
+                    <Text color="secondary">
+                      And {risks.length - ALERTS} more.
+                    </Text>
+                  )}
                   {waiting &&
                     p.waiting?.slice(0, RUNS).map((r) => (
                       <HStack key={r.id} gap={1} vAlign="center">
@@ -738,7 +830,7 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
                   )}
                   {t && asksFirst(s, p, t) ? (
                     <Button
-                      label={yours ? "Open issue" : "Post comment"}
+                      label={opensIssue(p) ? "Open issue" : "Post comment"}
                       size="sm"
                       variant="primary"
                       onClick={() => void action("tell_agent", { key: t.key })}
@@ -756,6 +848,13 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
                       size="sm"
                       variant="secondary"
                       onClick={() => openLink(longest.url)}
+                    />
+                  ) : risks[0] ? (
+                    <Button
+                      label="Open file"
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => openLink(riskLink(p, risks[0]))}
                     />
                   ) : (
                     !reruns.length && (

@@ -188,9 +188,10 @@ impl Engine {
                 }
             }
             // Last, just before the write: nothing about security alerts
-            // goes to GitHub unless GitHub says now that the repository is
-            // private, whatever Orbit read before.
-            let security = ops::about_security(&*self.state.lock().await, &planned.thread);
+            // or risky workflow settings goes to GitHub unless GitHub says
+            // now that the repository is private, whatever Orbit read
+            // before.
+            let security = ops::sensitive(&*self.state.lock().await, &planned.thread);
             if security {
                 match crate::security::private_now(&planned.repo).await {
                     Ok(true) => {}
@@ -200,6 +201,7 @@ impl Engine {
                             crate::problems::see_private(
                                 &mut s.problems,
                                 &mut s.security,
+                                &mut s.setups,
                                 repo,
                                 false,
                             );

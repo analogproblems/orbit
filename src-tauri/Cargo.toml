@@ -50,6 +50,8 @@ keyring-core = "1"
 # Signing the empty wake-ups sent to phones and browsers (`push`).
 ring = "0.17"
 base64 = "0.22"
+# Reading workflow files for risky settings (`risks`).
+yaml-rust2 = { version = "0.13", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "1", features = ["keychain"] }

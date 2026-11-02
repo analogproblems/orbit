@@ -1320,7 +1320,8 @@ export type ProblemKind =
   | "base_moved"
   | "no_ci"
   | "waiting"
-  | "security";
+  | "security"
+  | "workflow_risks";
 export interface ProblemEvent {
   at: string;
   text: string;
@@ -1332,7 +1333,8 @@ export interface ProblemEvent {
  * (`base_moved`). A repository where no CI runs on pull requests (`no_ci`)
  * is listed with the repository. A repository's open security alerts of
  * one kind (`security`) are listed on their own, and need you while one of
- * them does (`alertNeedsYou`). */
+ * them does (`alertNeedsYou`). Risky settings in a repository's workflow
+ * files (`workflow_risks`) are listed with the other open problems. */
 export interface Problem {
   id: string;
   key: string;
@@ -1371,12 +1373,37 @@ export interface Problem {
   source?: AlertSource | null;
   securityAlerts?: SecurityAlert[];
   toldAlerts?: number[];
-  /** For `security`: GitHub says the repository is private, so Orbit can
-   * tell its agent in an issue. */
+  /** For `security` and `workflow_risks`: GitHub says the repository is
+   * private, so Orbit can tell its agent in an issue. */
   private?: boolean;
   /** For `security`: the alerts that left GitHub's list without GitHub
    * saying what became of them, as it no longer had them. */
   vanished?: number[];
+  /** For `workflow_risks`: those Orbit found when it last read the files
+   * at `sha`, the most severe first, and how many it has numbered. */
+  risks?: WorkflowRisk[];
+  riskCount?: number;
+}
+/** What a risky workflow setting is, as the engine has it (`risks.rs`). */
+export type RiskKind =
+  "unpinned" | "permissions" | "pull_checkout" | "injection";
+/** One risky setting in a workflow file. Its text is the file's words,
+ * shown as plain text. */
+export interface WorkflowRisk {
+  /** Orbit's number for it within its problem. */
+  number?: number;
+  kind: RiskKind;
+  severity: AlertSeverity;
+  /** Such as `.github/workflows/ci.yml`, and the line, from 1. */
+  path: string;
+  line: number;
+  /** The job's ID, or none for the whole workflow. */
+  job?: string;
+  /** The action as written, `missing` or `write-all` for permissions,
+   * what a checkout takes, or the text put in a script. */
+  subject: string;
+  /** The commit Orbit first saw it at. */
+  since?: string;
 }
 /** Where GitHub found a security alert. */
 export type AlertSource = "dependabot" | "code_scanning" | "secret_scanning";
@@ -1610,7 +1637,15 @@ export interface CiSetup {
   branch: string;
   sha: string;
   readAt: string;
-  workflows: { path: string; onPulls: "yes" | "no" | "unknown" }[];
+  workflows: {
+    path: string;
+    onPulls: "yes" | "no" | "unknown";
+    /** Whether Orbit checked it for risky settings, what it found, and
+     * why it couldn't check it. */
+    checked?: boolean;
+    risks?: WorkflowRisk[];
+    why?: string;
+  }[];
   /** Another CI service's files at the top, such as `.circleci`. */
   others: string[];
   proposal: string;
@@ -1620,6 +1655,10 @@ export interface CiSetup {
   retryAt?: string | null;
   /** Why Orbit knows something runs checks here, from checks it saw. */
   ran?: string | null;
+  /** GitHub says the repository is private, read with its files. */
+  private?: boolean;
+  /** Which checks of its workflow files this read made. */
+  checks?: number;
 }
 /** Where a default branch broke: the commits after the last one whose
  * checks passed, up to the first that failed. */
@@ -1649,11 +1688,13 @@ export interface OpsItem {
   number: number;
   /** A failing check, a pull request's base moving on since its checks
    * began (then `check` is the base branch), or adding CI that runs on pull
-   * requests (then it is the default branch), or an open security alert
-   * (then `check` is its subject and `alert` its number). */
-  kind?: "check" | "base_moved" | "no_ci" | "alert";
+   * requests (then it is the default branch), an open security alert
+   * (then `check` is its subject and `alert` its number), or a risky
+   * workflow setting (then `check` names it and `risk` is its number). */
+  kind?: "check" | "base_moved" | "no_ci" | "alert" | "risk";
   check: string;
   alert?: number;
+  risk?: number;
   url: string;
   /** Whether it failed at `at`, the latest commit Orbit saw. */
   failing: boolean;

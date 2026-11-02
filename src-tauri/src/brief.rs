@@ -165,6 +165,7 @@ pub fn lines(s: &Snapshot) -> Vec<Line> {
                 short(&p.base_sha)
             ),
             ProblemKind::NoCi => format!("No CI runs on the pull requests of {}.", p.repo),
+            ProblemKind::WorkflowRisks => crate::problems::risks_text(p),
         };
         failing.push(Line {
             pr_id: p.pr_id.clone(),
