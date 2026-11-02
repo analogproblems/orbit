@@ -18,6 +18,7 @@ pub(crate) mod claims;
 mod cli_review;
 mod clones;
 mod connection;
+mod dependabot;
 mod events;
 mod extras;
 mod findings;
@@ -133,7 +134,8 @@ type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// pull-request history, for the Decisions page), `writeup` (its
 /// plain-language write-ups), `watch` (reading CI), `ops` (Orbit's
 /// comments and issues about failing CI), `security_settings` (each
-/// repository's security settings, and changing one on your tap) and
+/// repository's security settings, and changing one on your tap),
+/// `dependabot` (whether Dependabot's pull requests can merge) and
 /// `moving` (moving into an always-on Orbit).
 ///
 /// # Locks

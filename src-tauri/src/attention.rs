@@ -627,6 +627,7 @@ pub fn shown(s: &Snapshot) -> Snapshot {
     let mut shown = s.clone();
     shown.loop_states = crate::review_loop::states(s);
     shown.readiness = crate::readiness::all(s);
+    shown.updates = crate::dependabot::all(s);
     shown.attention = items(s);
     shown.mood = Some(crate::buddy::mood(s, &shown.attention, &shown.loop_states));
     shown.clock_zone = crate::clock::computer_zone();

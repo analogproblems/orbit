@@ -139,7 +139,7 @@ fn a_day_with_changes_gives_one_brief_and_a_quiet_day_none() {
     );
     assert_eq!(
         b.text,
-        "Here's your morning brief! 1 pull request is clear to merge, 4 CI problems are open and 4 notes are about runners or storage."
+        "Here's your morning brief! 1 pull request is clear to merge, 4 CI problems are open and 4 notes are about runners, storage or security settings."
     );
     assert_eq!(
         texts(&b),
@@ -243,7 +243,7 @@ fn a_brief_marks_whats_new_and_counts_what_settled() {
     assert_eq!(b.settled, 2);
     assert_eq!(
         b.text,
-        "Here's your morning brief! 1 pull request is clear to merge, 3 CI problems are open and 4 notes are about runners or storage. 1 is new since the last brief. 2 things from the last brief have settled."
+        "Here's your morning brief! 1 pull request is clear to merge, 3 CI problems are open and 4 notes are about runners, storage or security settings. 1 is new since the last brief. 2 things from the last brief have settled."
     );
     let new: Vec<&str> = b
         .lines
@@ -560,6 +560,81 @@ fn a_repository_that_drifts_is_in_the_brief() {
     );
 }
 
+/// Dependabot's fixes for high or critical alerts, ready or not; a line
+/// that turns ready is the same thing, new again.
+#[test]
+fn dependabots_fixes_for_high_or_critical_alerts_are_in_the_brief() {
+    use crate::ci::CiState;
+    use crate::dependabot::tests as d;
+    use crate::security::{Kind, RepoSecurity, Severity, Source};
+    let mut s = d::snapshot(
+        vec![
+            d::update(12, "Bump qs from 6.10.1 to 6.10.3", '3'),
+            d::update(13, "Bump minimist from 1.2.5 to 1.2.6", '4'),
+            d::update(10, "Bump vite from 5.4.10 to 5.4.11", '1'),
+        ],
+        &[
+            (12, CiState::Passing),
+            (13, CiState::Passing),
+            (10, CiState::Passing),
+        ],
+    );
+    let medium = crate::security::Alert {
+        severity: Severity::Medium,
+        ..d::alert(8, "minimist", "package-lock.json", "< 1.2.6", "1.2.6")
+    };
+    s.security.push(RepoSecurity {
+        repo: "a/b".into(),
+        kinds: vec![Kind {
+            source: Source::Dependabot,
+            alerts: vec![
+                d::alert(7, "qs", "package-lock.json", "< 6.10.3", "6.10.3"),
+                medium,
+            ],
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    s.dependabot = vec![
+        d::merge(&s, 12, Some(false), "dirty"),
+        d::merge(&s, 13, Some(true), "clean"),
+        d::merge(&s, 10, Some(true), "clean"),
+    ];
+    let fixes = |s: &Snapshot| -> Vec<Line> {
+        lines(s)
+            .into_iter()
+            .filter(|l| l.key.starts_with("dependabot:"))
+            .collect()
+    };
+    let before = fixes(&s);
+    assert_eq!(before.len(), 1, "only fixes for high or critical alerts");
+    assert_eq!(
+        before[0].text,
+        "Dependabot's fix for qs (high) in a/b#12 isn't ready yet. It conflicts with main."
+    );
+    assert_eq!(before[0].pr_id.as_deref(), Some("a/b#12"));
+    assert_eq!(
+        say("", &before, 0, true),
+        "Here's your morning brief! 1 Dependabot fix for a high or critical alert is open."
+    );
+
+    s.dependabot[0] = d::merge(&s, 12, Some(true), "clean");
+    let after = fixes(&s);
+    assert_eq!(
+        after[0].text,
+        "Dependabot's fix for qs (high) in a/b#12 is ready to merge."
+    );
+    assert_ne!(after[0].key, before[0].key);
+    assert_eq!(thing(&after[0].key), thing(&before[0].key));
+    assert_eq!(thing(&after[0].key), "dependabot:a/b#12");
+
+    s.dependabot[0].error = Some("Orbit couldn't ask GitHub whether it merges.".into());
+    assert_eq!(
+        fixes(&s)[0].text,
+        "Dependabot's fix for qs (high) in a/b#12 is ready to merge. Orbit's latest question about it failed, so this may be out of date."
+    );
+}
+
 /// A pull request Orbit nudged someone about, while the first thing in the
 /// way is still theirs at the same head.
 #[test]
@@ -868,7 +943,7 @@ fn security_alerts_that_need_you_are_in_the_brief() {
     let b = latest(&s).clone();
     assert_eq!(
         b.text,
-        "Here's your morning brief! 1 pull request is clear to merge, 4 CI problems are open, 2 security problems need you and 4 notes are about runners or storage."
+        "Here's your morning brief! 1 pull request is clear to merge, 4 CI problems are open, 2 security problems need you and 4 notes are about runners, storage or security settings."
     );
     assert!(b
         .lines

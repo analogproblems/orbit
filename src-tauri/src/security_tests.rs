@@ -108,6 +108,7 @@ fn a_dependabot_alert_names_its_package_file_and_the_version_that_fixes_it() {
     assert_eq!(a.title, "Prototype pollution in lodash");
     assert_eq!(a.path, "package-lock.json");
     assert_eq!(a.fixed_in, "4.17.21");
+    assert_eq!(a.range, "< 4.17.21");
     assert_eq!(a.url, "https://github.com/a/b/security/dependabot/12");
     assert!(a.needs_you());
     assert_eq!(a.name(), "lodash (critical)");

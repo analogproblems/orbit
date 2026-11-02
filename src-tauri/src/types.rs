@@ -1412,6 +1412,13 @@ pub struct Snapshot {
     /// like `loop_states`.
     #[serde(skip_deserializing, skip_serializing_if = "Vec::is_empty")]
     pub readiness: Vec<crate::readiness::Readiness>,
+    /// What GitHub last said about whether each of Dependabot's pull
+    /// requests can merge (see `crate::dependabot`).
+    pub dependabot: Vec<crate::readiness::Merge>,
+    /// Dependabot's pull requests as Operations shows them. Derived like
+    /// `readiness`.
+    #[serde(skip_deserializing, skip_serializing_if = "Vec::is_empty")]
+    pub updates: Vec<crate::dependabot::Update>,
     /// Bit's morning briefs: the latest, and the day Orbit last looked.
     pub brief: crate::brief::Briefs,
     /// Who this Orbit is, by the name that signs what it posts on pull

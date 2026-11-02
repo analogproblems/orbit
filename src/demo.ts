@@ -13,6 +13,7 @@ import {
   type BuddyNoteLine,
   type CiFailure,
   type CiSetup,
+  type DependabotUpdate,
   type Fix,
   type LoopStatus,
   type Proposal,
@@ -624,6 +625,7 @@ export function freshDemo(): Snapshot {
     ops: [...ci.ops!, ...security.ops],
     security: security.security,
     repoSettings: demoRepoSettings(),
+    updates: demoUpdates(),
     reviews: [review, ...limited, ...waiting, ...clean],
     // The browser demo has no engine to derive these, so they are fixed.
     attention: [
@@ -925,6 +927,11 @@ function demoBrief(prs: PullRequest[], problems: Problem[], at: string) {
   const [red, failing, behind, docs] = problems;
   const lines: BriefLine[] = [
     {
+      key: "dependabot:acme/api#64:" + "6".repeat(40) + ":false",
+      text: "Dependabot's fix for lodash (critical) in acme/api#64 isn't ready yet. It conflicts with main.",
+      new: true,
+    },
+    {
       key: `stuck:${behind.prId}:${at}`,
       text: `${label(behind.prId)} has waited on its author for more than 2 hours: main moved on since its checks ran: merge main in and let them run again.`,
       prId: behind.prId ?? undefined,
@@ -962,12 +969,69 @@ function demoBrief(prs: PullRequest[], problems: Problem[], at: string) {
   const latest: Brief = {
     day,
     at,
-    text: "Here's your morning brief! 1 pull request is stuck, 4 CI problems are open and 2 notes are about runners or storage. 2 are new since the last brief. 1 thing from the last brief has settled.",
+    text: "Here's your morning brief! 1 Dependabot fix for a high or critical alert is open, 1 pull request is stuck, 4 CI problems are open and 2 notes are about runners, storage or security settings. 3 are new since the last brief. 1 thing from the last brief has settled.",
     lines,
     settled: 1,
     open: false,
   };
   return { looked: day, latest };
+}
+
+/** Dependabot's pull requests, as the engine would show them: a fix for
+ * a critical alert that conflicts, a green patch update and a major update
+ * whose checks fail. */
+export function demoUpdates(): DependabotUpdate[] {
+  const update = (
+    repo: string,
+    number: number,
+    title: string,
+    head: string,
+    rest: Partial<DependabotUpdate>,
+  ): DependabotUpdate => ({
+    prId: `${repo}#${number}`,
+    repo,
+    number,
+    title,
+    url: `https://github.com/${repo}/pull/${number}`,
+    headSha: head.repeat(40),
+    what: "",
+    fixes: [],
+    checks: "passing",
+    checksText: "All 6 of its checks passed.",
+    conflicts: false,
+    mergeText: "GitHub says it can merge.",
+    ready: false,
+    ...rest,
+  });
+  return [
+    update("acme/api", 64, "Bump lodash from 4.17.20 to 4.17.21", "6", {
+      what: "Updates lodash from 4.17.20 to 4.17.21, a patch update.",
+      change: "patch",
+      fixes: [
+        {
+          number: 14,
+          severity: "critical",
+          package: "lodash",
+          name: "lodash (critical)",
+          url: "https://github.com/acme/api/security/dependabot/14",
+        },
+      ],
+      conflicts: true,
+      mergeText: "It conflicts with main.",
+    }),
+    update("acme/orbit", 152, "Bump vite from 5.4.10 to 5.4.11", "7", {
+      what: "Updates vite from 5.4.10 to 5.4.11, a patch update.",
+      change: "patch",
+      ready: true,
+    }),
+    update("acme/orbit", 153, "Bump react from 18.3.1 to 19.0.0", "8", {
+      what: "Updates react from 18.3.1 to 19.0.0, a major update.",
+      change: "major",
+      checks: "failing",
+      checksText: "CI / test failed on 8888888.",
+      mergeText: "GitHub says a check on it isn't passing.",
+    }),
+  ];
 }
 
 export function demoCi(

@@ -4,8 +4,9 @@
 //! repository's pull requests (`crate::workflows`), the self-hosted
 //! runners its runs wait for (`crate::runners`), its Actions storage
 //! (`crate::actions_storage`), and whether GitHub says each pull request
-//! Orbit reviews can merge (`crate::readiness`); each repository's security
-//! alerts and settings, with a switch of their own (`crate::security`,
+//! Orbit reviews can merge (`crate::readiness`), and whether Dependabot's
+//! can (`crate::dependabot`); each repository's security alerts and
+//! settings, with a switch of their own (`crate::security`,
 //! `crate::baseline`); then Bit's morning brief once a day (`crate::brief`).
 use super::Engine;
 use crate::{
@@ -34,6 +35,7 @@ impl Engine {
         self.read_breaks().await;
         self.read_setups().await;
         self.read_merges().await;
+        self.read_updates().await;
         self.watching_ci.store(false, Ordering::SeqCst);
         // Also with Watch CI off, so what Orbit posted is closed.
         self.tell_agents().await;

@@ -146,6 +146,10 @@ pub struct Alert {
     pub line: u64,
     /// The version that fixes it, for a dependency, when there is one.
     pub fixed_in: String,
+    /// The versions it affects, for a dependency, as GitHub writes them:
+    /// "< 4.17.21" or ">= 2.0.0, < 2.0.5". Empty when GitHub didn't say.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub range: String,
     pub url: String,
     pub created_at: String,
     /// For a secret: whether GitHub says it still works (`active`),
@@ -496,6 +500,7 @@ pub fn alert(source: Source, v: &Value) -> Option<Alert> {
             a.title = str_of(&v["security_advisory"]["summary"]);
             a.path = str_of(&v["dependency"]["manifest_path"]);
             a.fixed_in = str_of(&vulnerability["first_patched_version"]["identifier"]);
+            a.range = str_of(&vulnerability["vulnerable_version_range"]);
             a.severity = [
                 &vulnerability["severity"],
                 &v["security_advisory"]["severity"],

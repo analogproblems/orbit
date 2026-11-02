@@ -1164,6 +1164,12 @@ export interface Snapshot {
   /** Whether each pull request Orbit reviews is clear to merge, and what
    * is in the way. Derived like `loopStates`. */
   readiness?: Readiness[];
+  /** What GitHub last said about whether each of Dependabot's pull
+   * requests can merge. */
+  dependabot?: Merge[];
+  /** Dependabot's pull requests as Operations shows them. Derived like
+   * `readiness`. */
+  updates?: DependabotUpdate[];
   /** Bit's morning briefs: the latest, and the day Orbit last looked. */
   brief?: Briefs;
   /** Who this Orbit is, by the name that signs what it posts on pull
@@ -1441,6 +1447,9 @@ export interface SecurityAlert {
   line: number;
   /** The version that fixes a dependency, when there is one. */
   fixedIn: string;
+  /** The versions a dependency's alert affects, as GitHub writes them,
+   * such as "< 4.17.21". */
+  range?: string;
   url: string;
   createdAt: string;
   /** For a secret: "active" when GitHub says it still works, "inactive"
@@ -1793,6 +1802,42 @@ export interface Merge {
   retryAt?: string | null;
   /** Who was asked to review it and their reviews, as GitHub said then. */
   reviews?: Reviews | null;
+}
+/** How big an update is, by the first part of its version that changes. */
+export type UpdateChange = "patch" | "minor" | "major";
+/** An open Dependabot alert an update fixes. */
+export interface UpdateFix {
+  number: number;
+  severity: AlertSeverity;
+  /** The package, and with its severity: "lodash (critical)". */
+  package: string;
+  name: string;
+  url: string;
+}
+/** One of Dependabot's pull requests: what it updates, the alerts it
+ * fixes, its checks and whether GitHub says it can merge. Orbit never
+ * merges it. */
+export interface DependabotUpdate {
+  prId: string;
+  repo: string;
+  number: number;
+  /** Its title, in Dependabot's words, and its page on GitHub. */
+  title: string;
+  url: string;
+  headSha: string;
+  /** What it updates, in a sentence. */
+  what: string;
+  change?: UpdateChange | null;
+  /** The most severe first. */
+  fixes: UpdateFix[];
+  checks: CiState;
+  checksText: string;
+  conflicts: boolean;
+  mergeText: string;
+  /** Every check on its latest commit passed and GitHub says it can
+   * merge. */
+  ready: boolean;
+  error?: string | null;
 }
 /** A readiness answer in one line, as Orbit says it. */
 export function readinessLine(r: Readiness) {

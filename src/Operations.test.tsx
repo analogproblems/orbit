@@ -27,6 +27,8 @@ import {
   risksText,
   settingsLines,
   toolsText,
+  updateDot,
+  updatesSummary,
   waitingText,
   whyText,
   writeSummary,
@@ -1131,6 +1133,59 @@ describe("operations page", () => {
     ).toContain("Made the Actions token read-only in acme/api.");
   });
 
+  it("lists Dependabot's pull requests, the fix for the most severe alert first", () => {
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    const s = freshDemo();
+    show(s);
+    const list = screen.getByRole("list", { name: "Dependabot updates" });
+    const rows = within(list).getAllByRole("listitem");
+    expect(rows.map((r) => r.textContent?.split(" · ")[0])).toEqual([
+      expect.stringContaining("acme/api#64"),
+      expect.stringContaining("acme/orbit#152"),
+      expect.stringContaining("acme/orbit#153"),
+    ]);
+    expect(
+      screen.getByText(
+        "3 pull requests from Dependabot are open, and 1 is ready to merge.",
+        { exact: false },
+      ),
+    ).toBeTruthy();
+    // A fix that conflicts, a green patch update and a failing major one.
+    expect(within(rows[0]).getByLabelText("Conflicts")).toBeTruthy();
+    expect(within(rows[0]).getByText("Critical")).toBeTruthy();
+    expect(
+      within(rows[0]).getByText("Fixes Dependabot alert 14, lodash."),
+    ).toBeTruthy();
+    expect(rows[0].textContent).toContain("It conflicts with main.");
+    expect(within(rows[1]).getByLabelText("Ready")).toBeTruthy();
+    expect(rows[1].textContent).toContain(
+      "Updates vite from 5.4.10 to 5.4.11, a patch update.",
+    );
+    expect(within(rows[2]).getByLabelText("Checks failing")).toBeTruthy();
+    expect(rows[2].textContent).toContain("a major update");
+    expect(rows[2].textContent).toContain("CI / test failed on 8888888.");
+    // A row opens the pull request on GitHub.
+    fireEvent.click(within(rows[1]).getByText(/Bump vite/));
+    expect(open).toHaveBeenCalledWith(
+      "https://github.com/acme/orbit/pull/152",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    open.mockRestore();
+    cleanup();
+    // Only with Watch security alerts on, and only while there are some.
+    s.settings.watchSecurity = false;
+    show(s);
+    expect(
+      screen.queryByRole("list", { name: "Dependabot updates" }),
+    ).toBeNull();
+    cleanup();
+    s.settings.watchSecurity = true;
+    s.updates = [];
+    show(s);
+    expect(screen.queryByText("Dependabot updates")).toBeNull();
+  });
+
   it("says when a read failed or GitHub has more alerts than Orbit reads", () => {
     const s = freshDemo();
     const api = s.security!.find((r) => r.repo === "acme/api")!;
@@ -1314,6 +1369,25 @@ describe("security sentences", () => {
     );
     expect(alertCount("secret_scanning", [])).toBe("no secrets found.");
     expect(alertCount("secret_scanning", [low, low])).toBe("2 secrets found.");
+  });
+});
+
+describe("dependabot sentences", () => {
+  it("count what's open and ready, and pick each one's dot", () => {
+    const [fix, patch, major] = freshDemo().updates!;
+    expect(updatesSummary([patch])).toBe(
+      "1 pull request from Dependabot is open, and 1 is ready to merge.",
+    );
+    expect(updatesSummary([fix, major])).toBe(
+      "2 pull requests from Dependabot are open, and none is ready to merge.",
+    );
+    expect(updatesSummary([patch, { ...fix, ready: true }])).toBe(
+      "2 pull requests from Dependabot are open, and 2 are ready to merge.",
+    );
+    expect(updateDot(patch).label).toBe("Ready");
+    expect(updateDot(major).label).toBe("Checks failing");
+    expect(updateDot(fix).label).toBe("Conflicts");
+    expect(updateDot({ ...patch, ready: false }).label).toBe("Not ready yet");
   });
 });
 

@@ -1,9 +1,11 @@
 //! Bit's morning brief: once a day, at the time you choose in Bit's
 //! settings, in the time zone chosen there (`crate::clock`), Bit sums up
-//! the pull requests clear to merge, the stuck ones and whose move it is,
-//! the open CI problems, the security alerts that need you, and what it
-//! notes about runners, storage and security settings that drift from their
-//! baseline (`crate::baseline`). It marks each line that is new since the last brief
+//! the pull requests clear to merge, Dependabot's fixes for high or
+//! critical alerts and whether each is ready (`crate::dependabot`), the
+//! stuck pull requests and whose move it is, the open CI problems, the
+//! security alerts that need you, and what it notes about runners, storage
+//! and security settings that drift from their baseline
+//! (`crate::baseline`). It marks each line that is new since the last brief
 //! and counts what settled since then. On a day with nothing new and
 //! nothing settled, nothing is sent. A brief shows in Bit's conversation
 //! and in Needs you until you mark it read or the next brief's time comes.
@@ -44,8 +46,8 @@ pub struct Brief {
     pub at: String,
     /// What Bit says first: how many of each, what is new and what settled.
     pub text: String,
-    /// Clear to merge first, then stuck, CI problems, and runners and
-    /// storage.
+    /// Clear to merge first, then Dependabot's fixes, stuck, CI problems,
+    /// security alerts, and runners, storage and security settings.
     pub lines: Vec<Line>,
     /// How many lines of the brief before are gone.
     pub settled: u32,
@@ -112,6 +114,18 @@ pub fn lines(s: &Snapshot) -> Vec<Line> {
             ));
         }
     }
+    // Read only while Watch CI and Watch security alerts are both on.
+    let fixes: Vec<Line> = crate::dependabot::all(s)
+        .iter()
+        .filter(|u| u.severity() >= Some(crate::security::Severity::High))
+        .map(|u| {
+            line(
+                format!("dependabot:{}:{}:{}", u.pr_id, u.head_sha, u.ready),
+                crate::dependabot::brief_text(u),
+                Some(&u.pr_id),
+            )
+        })
+        .collect();
     let mut failing = vec![];
     let mut security = vec![];
     let mut notes = vec![];
@@ -218,15 +232,20 @@ pub fn lines(s: &Snapshot) -> Vec<Line> {
             None,
         ));
     }
-    [clear, stuck, failing, security, notes].concat()
+    [clear, fixes, stuck, failing, security, notes].concat()
 }
 /// What a line is about: its key, but a security line's without the count
-/// of alerts told that makes it new again.
+/// of alerts told that makes it new again, and a Dependabot fix's without
+/// its head and whether it is ready.
 fn thing(key: &str) -> &str {
-    match key.strip_prefix("security:") {
-        Some(rest) => rest.rsplit_once(':').map_or(key, |(id, _)| id),
-        None => key,
+    if let Some(rest) = key.strip_prefix("security:") {
+        return rest.rsplit_once(':').map_or(key, |(id, _)| id);
     }
+    if let Some(rest) = key.strip_prefix("dependabot:") {
+        let end = "dependabot:".len() + rest.find(':').unwrap_or(rest.len());
+        return &key[..end];
+    }
+    key
 }
 fn line(key: String, text: String, pr_id: Option<&str>) -> Line {
     Line {
@@ -425,12 +444,18 @@ fn say(tone: &str, lines: &[Line], settled: u32, first: bool) -> String {
     let count = |prefix: &str| lines.iter().filter(|l| l.key.starts_with(prefix)).count();
     let (clear, stuck, failing) = (count("clear:"), count("stuck:"), count("problem:"));
     let security = count("security:");
-    let notes = lines.len() - clear - stuck - failing - security;
+    let fixes = count("dependabot:");
+    let notes = lines.len() - clear - stuck - failing - security - fixes;
     let parts: Vec<String> = [
         (
             clear,
             "pull request is clear to merge",
             "pull requests are clear to merge",
+        ),
+        (
+            fixes,
+            "Dependabot fix for a high or critical alert is open",
+            "Dependabot fixes for high or critical alerts are open",
         ),
         (stuck, "pull request is stuck", "pull requests are stuck"),
         (failing, "CI problem is open", "CI problems are open"),
@@ -441,8 +466,8 @@ fn say(tone: &str, lines: &[Line], settled: u32, first: bool) -> String {
         ),
         (
             notes,
-            "note is about runners or storage",
-            "notes are about runners or storage",
+            "note is about runners, storage or security settings",
+            "notes are about runners, storage or security settings",
         ),
     ]
     .into_iter()
