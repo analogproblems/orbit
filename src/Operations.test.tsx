@@ -25,6 +25,7 @@ import {
   quotaText,
   riskText,
   risksText,
+  toolsText,
   waitingText,
   whyText,
 } from "./Operations";
@@ -884,7 +885,13 @@ describe("operations page", () => {
         .find((i) => i.textContent?.includes(`${repo}: workflow settings`))!;
     const api = row("acme/api");
     expect(api.textContent).toContain(
-      "Its workflows on main have 2 risky settings, 1 of them high, at 9e1f3b2.",
+      "Its workflows on main have 3 risky settings, 1 of them high, at 9e1f3b2.",
+    );
+    expect(api.textContent).toContain(
+      "zizmor found: credential persistence through GitHub Actions artifacts, in ci.yml line 12, job test.",
+    );
+    expect(api.textContent).toContain(
+      "actionlint and zizmor checked them too.",
     );
     expect(api.textContent).toContain(
       "github.event.issue.title goes straight into a script, in triage.yml line 18, job label.",
@@ -1034,13 +1041,39 @@ describe("workflow sentences", () => {
     ).toBe(
       "It checks out a pull request’s code (github.head_ref) where secrets are exposed, in ci.yml line 7, job a.",
     );
+    expect(
+      riskText(
+        risk({
+          kind: "actionlint",
+          severity: "low",
+          subject: "syntax-check",
+          detail: 'property "foo" is not defined',
+        }),
+      ),
+    ).toBe(
+      'actionlint found: property "foo" is not defined, in ci.yml line 7.',
+    );
+  });
+  it("say which tools checked them too, and why one couldn't", () => {
+    const s = freshDemo();
+    const p = s.problems!.find((p) => p.id === "demo-workflows-1")!;
+    expect(toolsText(s, p)).toBe("actionlint and zizmor checked them too.");
+    const setup = s.setups!.find((x) => x.repo === "acme/api")!;
+    setup.tools = [
+      { tool: "zizmor", error: "it took longer than 120 seconds" },
+    ];
+    expect(toolsText(s, p)).toBe(
+      "zizmor couldn’t check them: it took longer than 120 seconds. What it found before stays.",
+    );
+    setup.tools = [];
+    expect(toolsText(s, p)).toBe("");
   });
   it("count them as the engine does", () => {
     const p = {
       ...freshDemo().problems!.find((p) => p.id === "demo-workflows-1")!,
     };
     expect(risksText(p)).toBe(
-      "Its workflows on main have 2 risky settings, 1 of them high, at 9e1f3b2.",
+      "Its workflows on main have 3 risky settings, 1 of them high, at 9e1f3b2.",
     );
     p.risks = [risk({ severity: "high" })];
     expect(risksText(p)).toBe(

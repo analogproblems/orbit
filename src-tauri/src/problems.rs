@@ -607,7 +607,8 @@ pub fn risks_text(p: &Problem) -> String {
 /// back after it went is new. What Orbit found before in a file it
 /// couldn't check now, or in one with more risks than it keeps
 /// (`crate::risks::MAX_PER_FILE`), stays, as Orbit can't say it was
-/// fixed. It closes,
+/// fixed; so does what a tool found when it didn't run (`crate::lint`). It
+/// closes,
 /// as passed at that commit, once nothing is left.
 pub fn see_risks(problems: &mut Vec<Problem>, setup: &Setup, now: DateTime<Utc>) {
     use crate::risks::{names, sort};
@@ -624,6 +625,13 @@ pub fn see_risks(problems: &mut Vec<Problem>, setup: &Setup, now: DateTime<Utc>)
         .iter()
         .filter(|w| !w.checked || w.more > 0)
         .map(|w| w.path.as_str())
+        .collect();
+    // Nor is what a tool found before, when it didn't run this time.
+    let ran: Vec<crate::risks::RiskKind> = setup
+        .tools
+        .iter()
+        .filter(|t| t.error.is_empty())
+        .map(|t| t.tool)
         .collect();
     let found: Vec<&crate::risks::Risk> = setup.workflows.iter().flat_map(|w| &w.risks).collect();
     let fresh = |p: &mut Problem, r: &crate::risks::Risk| {
@@ -668,7 +676,9 @@ pub fn see_risks(problems: &mut Vec<Problem>, setup: &Setup, now: DateTime<Utc>)
     p.private = setup.private;
     let mut gone = vec![];
     p.risks.retain(|r| {
-        let stays = unseen.contains(&r.path.as_str()) || found.iter().any(|f| f.same(r));
+        let stays = unseen.contains(&r.path.as_str())
+            || (r.kind.tool() && !ran.contains(&r.kind))
+            || found.iter().any(|f| f.same(r));
         if !stays {
             gone.push(r.clone());
         }

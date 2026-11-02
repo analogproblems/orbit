@@ -1673,6 +1673,12 @@ fn risk_line(item: &Item, t: &Thread, p: &Problem) -> String {
             code(&r.subject)
         ),
         RiskKind::Injection => format!("{} goes straight into a script", code(&r.subject)),
+        RiskKind::Actionlint | RiskKind::Zizmor => format!(
+            "{} found: {} ({})",
+            r.kind.key(),
+            plain(&r.detail),
+            code(&r.subject)
+        ),
     };
     let job = if r.job.is_empty() {
         String::new()

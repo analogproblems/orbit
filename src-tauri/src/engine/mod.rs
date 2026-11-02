@@ -271,6 +271,8 @@ pub struct Engine {
     wake_retry: std::sync::Mutex<HashMap<String, (std::time::Instant, Duration)>>,
     /// How Docker and the Dev Container CLI are started; tests use fakes.
     dev_tools: std::sync::Mutex<crate::devcontainer::Tools>,
+    /// How actionlint and zizmor are started; tests use fakes.
+    lint_tools: std::sync::Mutex<crate::lint::Tools>,
     /// Dev containers kept for reviewers' own commands, by review; removed
     /// when the review ends.
     boxes: std::sync::Mutex<HashMap<String, checks::ReviewBox>>,
@@ -374,6 +376,7 @@ impl Engine {
             wake_retry: std::sync::Mutex::new(HashMap::new()),
             antigravity: std::sync::Mutex::new(crate::antigravity::Setup::default()),
             dev_tools: std::sync::Mutex::new(Default::default()),
+            lint_tools: std::sync::Mutex::new(Default::default()),
             boxes: Default::default(),
             building: Mutex::new(()),
             cli_turns: std::sync::Mutex::new(HashMap::new()),

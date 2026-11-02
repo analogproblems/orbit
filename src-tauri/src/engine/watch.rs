@@ -204,7 +204,15 @@ impl Engine {
             workflows::wanted(&s.ci, &s.setups, chrono::Utc::now())
         };
         for (repo, branch, sha) in &wanted {
-            let result = workflows::read(repo, branch, sha).await;
+            let result = match workflows::read(repo, branch, sha).await {
+                Ok((mut setup, files)) => {
+                    let tools = self.lint_tools.lock().unwrap().clone();
+                    let ran = crate::lint::run(&tools, &self.root.join("lint"), &files).await;
+                    crate::lint::merge(&mut setup, ran);
+                    Ok(setup)
+                }
+                Err(e) => Err(e),
+            };
             self.update(|s| {
                 // Watch CI went off, or the repository went, meanwhile.
                 let watched = repos_of(s).iter().any(|r| same_repo(r, repo));
@@ -226,6 +234,10 @@ impl Engine {
             .await;
         }
         let _ = self.flush().await;
+    }
+    #[cfg(test)]
+    pub(super) fn use_lint_tools(&self, tools: crate::lint::Tools) {
+        *self.lint_tools.lock().unwrap() = tools;
     }
 }
 impl Engine {

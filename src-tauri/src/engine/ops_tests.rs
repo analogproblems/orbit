@@ -2715,6 +2715,48 @@ async fn risky_workflow_settings_go_to_a_private_repositorys_agent_until_fixed()
     assert_eq!(writes(d.path()).len(), sent);
 }
 
+/// With actionlint and zizmor installed, what they find beyond Orbit's own
+/// checks joins the same problem and issue, from a folder Orbit removes.
+#[cfg(unix)]
+#[tokio::test]
+async fn what_actionlint_and_zizmor_find_joins_orbits_own() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let e = connected(d.path()).await;
+    e.use_lint_tools(crate::lint::tests::fake("ok", &d.path().join("lint-log")));
+    e.update(|s| s.settings.buddy.rules.open_issues = "do_it".into())
+        .await;
+    std::fs::write(
+        d.path().join("repo.json"),
+        json!({ "full_name": "a/b", "private": true, "visibility": "private" }).to_string(),
+    )
+    .unwrap();
+    let ci = "on: [issues]\npermissions: {}\njobs:\n  build:\n    runs-on: x\n    steps:\n      - uses: actions/checkout@v5\n      - run: echo \"${{ github.event.issue.title }}\"\n";
+    answer(d.path(), '1', &[], None);
+    files(d.path(), '1', &[("ci.yml", ci)], &[], None);
+    private_at(d.path(), '1');
+    watch(&e, &gh).await;
+    let s = e.snapshot().await;
+    let tools: Vec<_> = s.setups[0].tools.iter().map(|t| t.tool).collect();
+    use crate::risks::RiskKind;
+    assert_eq!(tools, [RiskKind::Actionlint, RiskKind::Zizmor]);
+    let p = s
+        .problems
+        .iter()
+        .find(|p| p.kind == crate::problems::ProblemKind::WorkflowRisks)
+        .unwrap();
+    let kinds: Vec<_> = p.risks.iter().map(|r| r.kind).collect();
+    assert_eq!(kinds, [RiskKind::Injection, RiskKind::Zizmor]);
+    let g = github(d.path());
+    let body = g["issues"][0]["body"].as_str().unwrap();
+    assert!(
+        body.contains("- **I2** · zizmor found: credential persistence through GitHub Actions artifacts (`artipacked`) (medium) · `.github/workflows/ci.yml` line 7, job `build`"),
+        "{body}"
+    );
+    assert!(body.contains("https://docs.zizmor.sh/audits/#artipacked"));
+    assert_eq!(std::fs::read_dir(e.root.join("lint")).unwrap().count(), 0);
+}
+
 /// A repository with no CI on pull requests: once Orbit is sure, Bit
 /// offers an issue with a workflow to start from, opens it when you say
 /// yes, and closes it as done once a workflow there runs on pull

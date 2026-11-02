@@ -1100,6 +1100,25 @@ export function demoCi(
       from: docsFrom,
       tries: 0,
     },
+    // actionlint and zizmor are installed, and checked acme/api's
+    // workflows too.
+    {
+      repo: "acme/api",
+      branch: "main",
+      sha: sha("9e1f3b2"),
+      readAt: ago(200),
+      workflows: [
+        { path: ".github/workflows/ci.yml", onPulls: "yes", checked: true },
+        { path: ".github/workflows/triage.yml", onPulls: "no", checked: true },
+      ],
+      others: [],
+      proposal: "",
+      from: [],
+      tries: 0,
+      private: true,
+      tools: [{ tool: "actionlint" }, { tool: "zizmor" }],
+      checks: 2,
+    },
   ];
   ci.find((c) => sameRepo(c.repo, failingPr.repo))?.pulls.push({
     number: failingPr.number,
@@ -1777,6 +1796,16 @@ function demoSecurity(): {
         subject: "github.event.issue.title",
       },
       {
+        number: 3,
+        kind: "zizmor",
+        severity: "medium",
+        path: ".github/workflows/ci.yml",
+        line: 12,
+        job: "test",
+        subject: "artipacked",
+        detail: "credential persistence through GitHub Actions artifacts",
+      },
+      {
         number: 2,
         kind: "unpinned",
         severity: "medium",
@@ -1849,6 +1878,17 @@ function demoSecurity(): {
           kind: "risk",
           risk: 2,
           check: "codecov/codecov-action@v4 isn't pinned, in ci.yml",
+          url: "",
+          failing: true,
+          since: sha("9e1f3b2"),
+          at: sha("9e1f3b2"),
+        },
+        {
+          number: 3,
+          kind: "risk",
+          risk: 3,
+          check:
+            "zizmor: credential persistence through GitHub Actions artifacts, in ci.yml, job test",
           url: "",
           failing: true,
           since: sha("9e1f3b2"),

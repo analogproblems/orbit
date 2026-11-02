@@ -34,7 +34,7 @@ const MAX_DEPTH: usize = 64;
 /// The most risks Orbit keeps for one file, the most severe first.
 pub const MAX_PER_FILE: usize = 50;
 /// The longest text Orbit keeps from a file, such as an action's name.
-const MAX_SUBJECT: usize = 120;
+pub(crate) const MAX_SUBJECT: usize = 120;
 
 /// What a risk is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -53,6 +53,10 @@ pub enum RiskKind {
     /// Text anyone can write put straight into a script, where it can run
     /// as part of it.
     Injection,
+    /// What `actionlint` found, when it is installed (`crate::lint`).
+    Actionlint,
+    /// What `zizmor` found, when it is installed.
+    Zizmor,
 }
 impl RiskKind {
     pub fn key(self) -> &'static str {
@@ -61,7 +65,13 @@ impl RiskKind {
             RiskKind::Permissions => "permissions",
             RiskKind::PullCheckout => "pull_checkout",
             RiskKind::Injection => "injection",
+            RiskKind::Actionlint => "actionlint",
+            RiskKind::Zizmor => "zizmor",
         }
+    }
+    /// Whether another tool found it, rather than Orbit's own checks.
+    pub fn tool(self) -> bool {
+        matches!(self, RiskKind::Actionlint | RiskKind::Zizmor)
     }
 }
 
@@ -86,8 +96,13 @@ pub struct Risk {
     /// `codecov/codecov-action@v4`; `missing` or `write-all` for
     /// permissions; what a checkout takes, such as
     /// `github.event.pull_request.head.sha`; or the text put in a script,
-    /// such as `github.event.issue.title`.
+    /// such as `github.event.issue.title`. For a tool's, the rule, such as
+    /// `artipacked` or `expression`.
     pub subject: String,
+    /// For a tool's, what it says, such as "credential persistence through
+    /// GitHub Actions artifacts".
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub detail: String,
     /// The commit Orbit first saw it at.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub since: String,
@@ -103,6 +118,7 @@ impl Risk {
             && self.path == other.path
             && self.job == other.job
             && self.subject == other.subject
+            && self.detail == other.detail
     }
     /// The file's name, without its folder.
     pub fn file(&self) -> &str {
@@ -123,11 +139,14 @@ impl Risk {
             (RiskKind::Permissions, s) => format!("{s} permissions, in {file}{job}"),
             (RiskKind::PullCheckout, _) => format!("Pull request code checked out, in {file}{job}"),
             (RiskKind::Injection, s) => format!("{s} in a script, in {file}{job}"),
+            (RiskKind::Actionlint | RiskKind::Zizmor, _) => {
+                format!("{}: {}, in {file}{job}", self.kind.key(), self.detail)
+            }
         }
     }
     /// What to change, in a sentence an agent can act on.
-    pub fn advice(&self) -> &'static str {
-        match (self.kind, self.subject.as_str()) {
+    pub fn advice(&self) -> String {
+        let advice = match (self.kind, self.subject.as_str()) {
             (RiskKind::Unpinned, s) if s.starts_with("docker://") => {
                 "pin the image to its digest (`@sha256:` and the full digest)"
             }
@@ -146,13 +165,25 @@ impl Risk {
             (RiskKind::Injection, _) => {
                 "pass it in through `env:` and use the variable in the script, quoted"
             }
-        }
+            (RiskKind::Actionlint, _) => {
+                "fix what actionlint says; its checks are explained at https://github.com/rhysd/actionlint/blob/main/docs/checks.md"
+            }
+            // `crate::lint` keeps only a rule of letters, digits and `-`.
+            (RiskKind::Zizmor, rule) => {
+                return format!(
+                    "fix what zizmor says, as explained at https://docs.zizmor.sh/audits/#{rule}"
+                )
+            }
+        };
+        advice.into()
     }
     fn severity_of(kind: RiskKind, subject: &str) -> Severity {
         match (kind, subject) {
             (RiskKind::Permissions, "missing") => Severity::Low,
             (RiskKind::Unpinned | RiskKind::Permissions, _) => Severity::Medium,
             (RiskKind::PullCheckout | RiskKind::Injection, _) => Severity::High,
+            // A tool's severity is its own (`crate::lint`).
+            (RiskKind::Actionlint | RiskKind::Zizmor, _) => Severity::Low,
         }
     }
 }
@@ -502,7 +533,7 @@ fn expressions(text: &str) -> impl Iterator<Item = String> + '_ {
 /// read as a property and other indexes taken out: `github['event'].issue`
 /// reads `github.event.issue`, and `github.event.commits[0].message` and
 /// `github.event.commits.*.message` read `github.event.commits.message`.
-fn normalize(expression: &str) -> String {
+pub(crate) fn normalize(expression: &str) -> String {
     let mut out = String::new();
     let mut chars = expression.chars();
     while let Some(c) = chars.next() {
