@@ -9,8 +9,8 @@
 //! `crate::baseline`); then Bit's morning brief once a day (`crate::brief`).
 use super::Engine;
 use crate::{
-    actions_storage as storage, baseline, broke, ci, logs, problems, readiness, runners, security,
-    types::*, workflows,
+    actions_storage as storage, broke, ci, logs, problems, readiness, runners, security, types::*,
+    workflows,
 };
 use std::sync::atomic::Ordering;
 
@@ -466,51 +466,6 @@ impl Engine {
         }
         self.security_problems().await != before
     }
-    /// Reads the security settings of a few connected repositories whose
-    /// owner's baseline asks for any, with Watch security alerts on, and
-    /// forgets what it no longer watches. Only reads.
-    async fn read_settings(&self) {
-        if self.reading_settings.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        let now = chrono::Utc::now();
-        let (watch, stale, wanted) = {
-            let s = self.state.lock().await;
-            let watched = watched_settings(&s);
-            let stale = s
-                .repo_settings
-                .iter()
-                .any(|r| !watched.iter().any(|w| same_repo(w, &r.repo)));
-            let wanted = baseline::wanted(&watched, &s.repo_settings, now);
-            (s.settings.watch_security, stale, wanted)
-        };
-        if stale {
-            self.update(|s| {
-                let watched = watched_settings(s);
-                baseline::prune(&mut s.repo_settings, &watched);
-            })
-            .await;
-        }
-        for repo in &wanted {
-            let result = baseline::read(repo).await;
-            let limited = result.as_ref().is_err_and(|e| logs::rate_limited(e));
-            self.update(|s| {
-                // The switch, the baseline or the repository changed
-                // meanwhile.
-                if watched_settings(s).iter().any(|r| same_repo(r, repo)) {
-                    baseline::record(&mut s.repo_settings, repo, result, chrono::Utc::now());
-                }
-            })
-            .await;
-            if limited {
-                break;
-            }
-        }
-        self.reading_settings.store(false, Ordering::SeqCst);
-        if watch || stale {
-            let _ = self.flush().await;
-        }
-    }
     /// The security problems as they stand, to tell whether a read changed
     /// them.
     async fn security_problems(&self) -> Vec<problems::Problem> {
@@ -560,20 +515,7 @@ fn stop_watching(s: &mut Snapshot) {
     s.merges.clear();
     problems::close_unwatched(&mut s.problems, &[], true, chrono::Utc::now());
 }
-/// The connected repositories whose security settings Orbit reads: with
-/// Watch security alerts on, those whose owner's baseline asks for any.
-fn watched_settings(s: &Snapshot) -> Vec<String> {
-    if !s.settings.watch_security {
-        return vec![];
-    }
-    repos_of(s)
-        .into_iter()
-        .filter(|r| {
-            !baseline::wanted_for(&s.settings.security_baselines, baseline::owner(r)).is_empty()
-        })
-        .collect()
-}
-fn repos_of(s: &Snapshot) -> Vec<String> {
+pub(super) fn repos_of(s: &Snapshot) -> Vec<String> {
     s.settings
         .repositories
         .iter()

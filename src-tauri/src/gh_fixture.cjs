@@ -41,7 +41,9 @@
 // Dependabot security updates (`automated-security-fixes`, 404 when
 // false), private vulnerability reporting, the Actions token's default
 // and fork approval; while <dir>/settings-error exists, reading one fails
-// with its text.
+// with its text. A PUT turns one on, or sets what it sends, and a PATCH of
+// repos/a/b sets its `security_and_analysis` in <dir>/repo.json; while
+// <dir>/change-error exists, each fails with its text.
 // Pull request <n> of a/b is <dir>/pull-<n>.json, or 404; while
 // <dir>/pull-error exists, reading one fails with its text. Its reviews
 // are <dir>/reviews-<n>.json, or none, in pages, and while
@@ -86,6 +88,14 @@ if (fs.existsSync(path.join(dir, "down"))) {
   process.exit(1);
 }
 const answer = (v) => process.stdout.write(JSON.stringify(v));
+// A change to a security setting fails while <dir>/change-error exists.
+const changing = () => {
+  const failed = path.join(dir, "change-error");
+  if (fs.existsSync(failed)) {
+    process.stderr.write(fs.readFileSync(failed, "utf8"));
+    process.exit(1);
+  }
+};
 const missing = () => {
   process.stderr.write("gh: Not Found (HTTP 404)\n");
   process.exit(1);
@@ -314,6 +324,18 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
     save(db);
   }
   answer(i);
+} else if (endpoint === "repos/a/b" && method === "PATCH") {
+  changing();
+  const about = path.join(dir, "repo.json");
+  const repo = fs.existsSync(about)
+    ? JSON.parse(fs.readFileSync(about, "utf8"))
+    : { full_name: "a/b", private: false, visibility: "public" };
+  repo.security_and_analysis = {
+    ...repo.security_and_analysis,
+    ...input.security_and_analysis,
+  };
+  fs.writeFileSync(about, JSON.stringify(repo));
+  answer(repo);
 } else if (endpoint === "repos/a/b") {
   const about = path.join(dir, "repo.json");
   const failed = path.join(dir, "repo-error");
@@ -341,11 +363,14 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
   ))
 ) {
   const failed = path.join(dir, "settings-error");
-  if (fs.existsSync(failed)) {
+  if (method === "GET" && fs.existsSync(failed)) {
     process.stderr.write(fs.readFileSync(failed, "utf8"));
     process.exit(1);
   }
   const kept = path.join(dir, "settings.json");
+  const changed = fs.existsSync(kept)
+    ? JSON.parse(fs.readFileSync(kept, "utf8"))
+    : {};
   const settings = {
     "vulnerability-alerts": true,
     "automated-security-fixes": { enabled: true, paused: false },
@@ -357,8 +382,19 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
     "actions/permissions/fork-pr-contributor-approval": {
       approval_policy: "first_time_contributors",
     },
-    ...(fs.existsSync(kept) ? JSON.parse(fs.readFileSync(kept, "utf8")) : {}),
+    ...changed,
   };
+  if (method === "PUT") {
+    changing();
+    const on = {
+      "vulnerability-alerts": true,
+      "automated-security-fixes": { enabled: true, paused: false },
+      "private-vulnerability-reporting": { enabled: true },
+    };
+    changed[m[1]] = on[m[1]] ?? { ...settings[m[1]], ...input };
+    fs.writeFileSync(kept, JSON.stringify(changed));
+    process.exit(0);
+  }
   const v = settings[m[1]];
   if (v === false) missing();
   else if (v !== true) answer(v);

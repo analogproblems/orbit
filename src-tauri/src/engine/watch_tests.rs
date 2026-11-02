@@ -2861,3 +2861,266 @@ async fn a_repository_that_drifts_from_its_baseline_shows_it() {
     crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
     assert!(e.shown_snapshot().await.repo_settings.is_empty());
 }
+
+/// The calls that changed `a/b`'s security settings.
+fn setting_changes(dir: &Path) -> Vec<String> {
+    std::fs::read_to_string(dir.join("calls"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|c| !c.starts_with("GET ") && !c.contains("graphql") && !c.contains("issues"))
+        .map(String::from)
+        .collect()
+}
+/// What `a/b`'s settings file says now, as the fake GitHub keeps it.
+fn set_settings(dir: &Path, settings: serde_json::Value) {
+    std::fs::write(dir.join("settings.json"), settings.to_string()).unwrap();
+}
+
+/// A repository missing Dependabot alerts shows that drift, and a tap
+/// turns them on once, even across a restart. Nothing changes without a
+/// tap, and a change cut off by Orbit stopping isn't sent again: Orbit
+/// reads the setting again, and a new tap sends it once.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_tap_turns_a_setting_on_once_even_across_a_restart() {
+    use crate::baseline::{drifting, Setting, INTERRUPTED};
+    use crate::ops::{Action, WriteState};
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    std::fs::write(
+        d.path().join("answer.json"),
+        answer(&"1".repeat(40), "SUCCESS"),
+    )
+    .unwrap();
+    admin_of(d.path(), true);
+    set_settings(d.path(), json!({"vulnerability-alerts": false}));
+    let e = connected(d.path()).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let shown = e.shown_snapshot().await;
+    assert_eq!(
+        drifting(&shown.repo_settings, &[]),
+        [("a/b".to_string(), vec![Setting::DependabotAlerts])]
+    );
+    assert!(setting_changes(d.path()).is_empty(), "nothing on its own");
+
+    // Only for what drifts, in a repository Orbit watches.
+    assert!(e.ask_to_fix("a/b", Setting::SecretScanning).await.is_err());
+    assert!(e
+        .ask_to_fix("a/c", Setting::DependabotAlerts)
+        .await
+        .is_err());
+    // Your tap is saved, and sent once.
+    e.ask_to_fix("a/b", Setting::DependabotAlerts)
+        .await
+        .unwrap();
+    assert_eq!(
+        e.ask_to_fix("a/b", Setting::DependabotAlerts)
+            .await
+            .unwrap_err(),
+        "Orbit is already changing Dependabot alerts in a/b."
+    );
+    let reads = settings_calls(d.path()).len();
+    crate::github::GH.scope(gh.clone(), e.read_settings()).await;
+    assert_eq!(
+        setting_changes(d.path()),
+        ["PUT repos/a/b/vulnerability-alerts"]
+    );
+    // Read before and after it, twice the 5 calls a read makes.
+    assert_eq!(settings_calls(d.path()).len(), reads + 1 + 10);
+    let shown = e.shown_snapshot().await;
+    assert!(drifting(&shown.repo_settings, &[]).is_empty());
+    assert!(shown.repo_settings[0].asked.is_empty());
+    let changes: Vec<_> = shown
+        .journal
+        .iter()
+        .filter(|w| w.action == Action::ChangeSetting)
+        .collect();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(
+        (
+            changes[0].state,
+            changes[0].setting,
+            changes[0].url.as_str()
+        ),
+        (
+            WriteState::Done,
+            Some(Setting::DependabotAlerts),
+            "https://github.com/a/b/settings/security_analysis"
+        )
+    );
+
+    // Orbit restarts: nothing is sent again.
+    drop(e);
+    let e = connected(d.path()).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    crate::github::GH.scope(gh.clone(), e.read_settings()).await;
+    assert_eq!(setting_changes(d.path()).len(), 1);
+
+    // A tap saved just before Orbit stopped is made once after it starts.
+    set_settings(
+        d.path(),
+        json!({"vulnerability-alerts": true, "automated-security-fixes": false}),
+    );
+    e.update(|s| s.repo_settings[0].read_at = "2026-01-01T00:00:00.000Z".into())
+        .await;
+    crate::github::GH.scope(gh.clone(), e.read_settings()).await;
+    e.ask_to_fix("a/b", Setting::DependabotUpdates)
+        .await
+        .unwrap();
+    drop(e);
+    let e = connected(d.path()).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!(
+        setting_changes(d.path())[1..],
+        ["PUT repos/a/b/automated-security-fixes"]
+    );
+
+    // A change cut off by Orbit stopping: recorded and saved, but GitHub
+    // never answered.
+    set_settings(
+        d.path(),
+        json!({"vulnerability-alerts": true, "automated-security-fixes": false}),
+    );
+    e.update(|s| {
+        crate::baseline::record_change(
+            &mut s.journal,
+            "a/b",
+            Setting::DependabotUpdates,
+            chrono::Utc::now(),
+        );
+    })
+    .await;
+    e.flush().await.unwrap();
+    drop(e);
+    let e = connected(d.path()).await;
+    let reads = settings_calls(d.path()).len();
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    // Not sent again: read again instead, and shown off.
+    assert_eq!(setting_changes(d.path()).len(), 2);
+    assert_eq!(settings_calls(d.path()).len(), reads + 5);
+    let shown = e.shown_snapshot().await;
+    let cut = shown.journal.last().unwrap();
+    assert_eq!(
+        (cut.state, cut.error.as_deref()),
+        (WriteState::Failed, Some(INTERRUPTED))
+    );
+    assert_eq!(
+        drifting(&shown.repo_settings, &[])[0].1,
+        [Setting::DependabotUpdates]
+    );
+    // A new tap sends it, once.
+    e.ask_to_fix("a/b", Setting::DependabotUpdates)
+        .await
+        .unwrap();
+    crate::github::GH.scope(gh.clone(), e.read_settings()).await;
+    crate::github::GH.scope(gh.clone(), e.read_settings()).await;
+    assert_eq!(
+        setting_changes(d.path())[2..],
+        ["PUT repos/a/b/automated-security-fixes"]
+    );
+}
+
+/// A tap reads GitHub first: a setting someone turned on meanwhile isn't
+/// changed. A change GitHub refuses says why, and the token's change keeps
+/// whether Actions can approve pull requests as it was. Turning Watch
+/// security alerts off drops a tap that waits.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_tap_reads_github_first_and_says_why_a_change_failed() {
+    use crate::baseline::Setting;
+    use crate::ops::{Action, WriteState};
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    std::fs::write(
+        d.path().join("answer.json"),
+        answer(&"1".repeat(40), "SUCCESS"),
+    )
+    .unwrap();
+    admin_of(d.path(), true);
+    set_settings(
+        d.path(),
+        json!({
+            "private-vulnerability-reporting": {"enabled": false},
+            "actions/permissions/workflow": {
+                "default_workflow_permissions": "write",
+                "can_approve_pull_request_reviews": true,
+            },
+        }),
+    );
+    let e = connected(d.path()).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+
+    // Someone turns private reporting on before Orbit gets to your tap.
+    e.ask_to_fix("a/b", Setting::PrivateReporting)
+        .await
+        .unwrap();
+    set_settings(
+        d.path(),
+        json!({
+            "actions/permissions/workflow": {
+                "default_workflow_permissions": "write",
+                "can_approve_pull_request_reviews": true,
+            },
+        }),
+    );
+    crate::github::GH.scope(gh.clone(), e.read_settings()).await;
+    assert!(setting_changes(d.path()).is_empty());
+    let shown = e.shown_snapshot().await;
+    assert_eq!(
+        shown.repo_settings[0].on(Setting::PrivateReporting),
+        Some(true)
+    );
+    assert!(shown.repo_settings[0].asked.is_empty());
+    assert!(!shown
+        .journal
+        .iter()
+        .any(|w| w.action == Action::ChangeSetting));
+
+    // GitHub refuses: the organization holds the setting.
+    std::fs::write(d.path().join("change-error"), "gh: Conflict (HTTP 409)\n").unwrap();
+    e.ask_to_fix("a/b", Setting::ReadOnlyToken).await.unwrap();
+    crate::github::GH.scope(gh.clone(), e.read_settings()).await;
+    let shown = e.shown_snapshot().await;
+    let failed = shown.journal.last().unwrap();
+    assert_eq!(failed.state, WriteState::Failed);
+    assert!(failed.error.as_deref().unwrap().contains("organization"));
+    assert_eq!(
+        shown.repo_settings[0].on(Setting::ReadOnlyToken),
+        Some(false)
+    );
+    // Tried once: nothing more until you tap again.
+    crate::github::GH.scope(gh.clone(), e.read_settings()).await;
+    assert_eq!(
+        setting_changes(d.path()),
+        ["PUT repos/a/b/actions/permissions/workflow"]
+    );
+
+    // Tapped again once the organization allows it: approvals stay as
+    // they were.
+    std::fs::remove_file(d.path().join("change-error")).unwrap();
+    e.ask_to_fix("a/b", Setting::ReadOnlyToken).await.unwrap();
+    crate::github::GH.scope(gh.clone(), e.read_settings()).await;
+    let shown = e.shown_snapshot().await;
+    assert_eq!(shown.journal.last().unwrap().state, WriteState::Done);
+    let r = &shown.repo_settings[0];
+    assert_eq!(r.on(Setting::ReadOnlyToken), Some(true));
+    assert_eq!(r.on(Setting::NoActionsApproval), Some(false));
+
+    // A tap waiting when Watch security alerts goes off is dropped.
+    e.ask_to_fix("a/b", Setting::NoActionsApproval)
+        .await
+        .unwrap();
+    e.update_settings(crate::types::SettingsPatch {
+        watch_security: Some(false),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    crate::github::GH.scope(gh.clone(), e.read_settings()).await;
+    assert_eq!(setting_changes(d.path()).len(), 2);
+    assert!(e
+        .ask_to_fix("a/b", Setting::NoActionsApproval)
+        .await
+        .is_err());
+}

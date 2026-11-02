@@ -1,5 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { useOrbit } from "./store";
+import { freshDemo } from "./demo";
 import { canPublish, publishTarget, trustedSource } from "./types";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -264,6 +265,31 @@ describe("demo agents", () => {
       .getState()
       .action("tell_agent", { key: "pr:acme/none#1" }, { quiet: true });
     expect(gone.ok).toBe(false);
+  });
+});
+
+describe("demo security settings", () => {
+  it("fixes a setting a repository drifts on, once", async () => {
+    localStorage.setItem("orbit-demo-v3", JSON.stringify(freshDemo()));
+    await useOrbit.getState().init();
+    const args = { repo: "acme/docs", setting: "dependabot_alerts" };
+    const result = await useOrbit.getState().action("fix_setting", args);
+    expect(result.ok).toBe(true);
+    const s = useOrbit.getState().snapshot;
+    const docs = s.repoSettings!.find((r) => r.repo === "acme/docs")!;
+    expect(docs.found.find((f) => f.setting === "dependabot_alerts")?.on).toBe(
+      true,
+    );
+    expect(s.journal!.at(-1)).toMatchObject({
+      action: "change_setting",
+      repo: "acme/docs",
+      setting: "dependabot_alerts",
+      state: "done",
+    });
+    const again = await useOrbit
+      .getState()
+      .action("fix_setting", args, { quiet: true });
+    expect(again.ok).toBe(false);
   });
 });
 
