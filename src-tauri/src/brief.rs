@@ -5,7 +5,9 @@
 //! stuck pull requests and whose move it is, the open CI problems, the
 //! security alerts that need you, and what it notes about runners, storage
 //! and security settings that drift from their baseline
-//! (`crate::baseline`). It marks each line that is new since the last brief
+//! (`crate::baseline`), then the releases due this week, the drafts
+//! waiting and the versions waiting for a tag (`release_lines`). It marks
+//! each line that is new since the last brief
 //! and counts what settled since then. On a day with nothing new and
 //! nothing settled, nothing is sent. A brief shows in Bit's conversation
 //! and in Needs you until you mark it read or the next brief's time comes.
@@ -244,6 +246,77 @@ pub fn lines(s: &Snapshot) -> Vec<Line> {
     }
     [clear, fixes, stuck, failing, security, notes].concat()
 }
+/// What a brief lists about releases at `now`, after the rest, while Watch
+/// CI is on: each release due within a week, or late, by its milestone,
+/// with what stands in its way (`crate::milestones`); each repository's
+/// drafts waiting to be published, saying when one is ready
+/// (`crate::drafts`); and each version waiting for its tag
+/// (`crate::tagging`).
+pub fn release_lines(s: &Snapshot, now: DateTime<Utc>) -> Vec<Line> {
+    if !s.settings.watch_ci {
+        return vec![];
+    }
+    let mut out = vec![];
+    for d in crate::milestones::waiting(s, now) {
+        out.push(line(
+            format!(
+                "release-due:{}:{}:{}",
+                d.repo.to_ascii_lowercase(),
+                d.milestone.number,
+                d.milestone.due
+            ),
+            crate::milestones::reason(&d),
+            None,
+        ));
+    }
+    let ready = crate::drafts::waiting(s);
+    for r in &s.releases {
+        let connected = s
+            .settings
+            .repositories
+            .iter()
+            .any(|c| same_repo(&c.name, &r.repo));
+        if !connected || r.read_at.is_empty() || r.unseen.is_some() || r.draft_count == 0 {
+            continue;
+        }
+        let tags: Vec<String> = r.drafts.iter().map(|d| d.tag.clone()).collect();
+        let mut text = match (r.draft_count, tags.as_slice()) {
+            (1, [tag]) => format!(
+                "{} has a draft release, {tag}, waiting to be published.",
+                r.repo
+            ),
+            (n, _) if n as usize == tags.len() => format!(
+                "{} has {n} draft releases waiting to be published: {}.",
+                r.repo,
+                and(&tags)
+            ),
+            (n, _) => format!("{} has {n} draft releases waiting to be published.", r.repo),
+        };
+        if let Some(d) = ready.iter().find(|d| same_repo(&d.repo, &r.repo)) {
+            text.push_str(&format!(
+                " The one for {} is ready: every run its tag started passed.",
+                d.tag
+            ));
+        }
+        out.push(line(
+            format!(
+                "release-drafts:{}:{}",
+                r.repo.to_ascii_lowercase(),
+                tags.join(",")
+            ),
+            text,
+            None,
+        ));
+    }
+    for u in crate::tagging::waiting(s) {
+        out.push(line(
+            format!("release-untagged:{}:{}", u.repo.to_ascii_lowercase(), u.tag),
+            crate::tagging::reason(&u),
+            None,
+        ));
+    }
+    out
+}
 /// What a line is about: its key, but a security line's without the count
 /// of alerts told that makes it new again, and a Dependabot fix's without
 /// its head and whether it is ready.
@@ -383,6 +456,7 @@ pub fn look(s: &mut Snapshot, local: NaiveDateTime, now: DateTime<Utc>) -> bool 
         return false;
     };
     let mut current = lines(s);
+    current.extend(release_lines(s, now));
     let before: Vec<String> = s
         .brief
         .latest
@@ -455,7 +529,8 @@ fn say(tone: &str, lines: &[Line], settled: u32, first: bool) -> String {
     let (clear, stuck, failing) = (count("clear:"), count("stuck:"), count("problem:"));
     let security = count("security:");
     let fixes = count("dependabot:");
-    let notes = lines.len() - clear - stuck - failing - security - fixes;
+    let releases = count("release-");
+    let notes = lines.len() - clear - stuck - failing - security - fixes - releases;
     let parts: Vec<String> = [
         (
             clear,
@@ -478,6 +553,11 @@ fn say(tone: &str, lines: &[Line], settled: u32, first: bool) -> String {
             notes,
             "note is about runners, storage or security settings",
             "notes are about runners, storage or security settings",
+        ),
+        (
+            releases,
+            "note is about releases",
+            "notes are about releases",
         ),
     ]
     .into_iter()
