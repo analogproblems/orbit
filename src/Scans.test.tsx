@@ -14,6 +14,7 @@ import {
   ScansPage,
   progressLabel,
   scanDuration,
+  scanName,
   severityCounts,
 } from "./Scans";
 import { demoScan, freshDemo } from "./demo";
@@ -71,6 +72,19 @@ describe("security scans", () => {
     expect(progressLabel({ ...scan, status: "preparing" })).toBe(
       "Copying the repository at its latest commit",
     );
+    const claude = running({
+      provider: "claude",
+      progress: { phase: "reading", updatedAt: "" },
+    });
+    expect(progressLabel(claude)).toBe("Claude is reading the repository");
+    expect(
+      progressLabel({
+        ...claude,
+        progress: { phase: "writing_up", updatedAt: "" },
+      }),
+    ).toBe("Claude is writing up its findings");
+    expect(scanName(claude)).toBe("Claude");
+    expect(scanName({ ...scan, mode: "deep" })).toBe("Deep");
     const start = Date.parse(scan.createdAt);
     expect(scanDuration(scan, start + 30_000)).toBe("under a minute");
     expect(scanDuration(scan, start + 45 * 60_000)).toBe("45 min");
@@ -226,8 +240,90 @@ describe("security scans", () => {
       expect(calls.map(([c, a]) => [c, a])).toEqual([
         ["get_scan_plugin", {}],
         ["install_scan_plugin", {}],
-        ["start_scan", { repo: "acme/api", mode: "deep" }],
+        ["start_scan", { repo: "acme/api", mode: "deep", provider: "codex" }],
       ]);
+    } finally {
+      restore();
+    }
+  });
+  it("scans with Claude when Codex isn't signed in", async () => {
+    const snapshot = freshDemo();
+    snapshot.scans = [];
+    snapshot.codexReady = false;
+    snapshot.codexError = "Codex is not signed in. Sign in, then reconnect.";
+    useOrbit.setState({ snapshot });
+    const { calls, restore } = mockActions({ start_scan: "scan-new" });
+    const onStarted = vi.fn();
+    try {
+      render(
+        <ScanDialog
+          isOpen
+          onOpenChange={() => {}}
+          repo="acme/api"
+          onStarted={onStarted}
+        />,
+      );
+      const codex = screen.getByRole("radio", { name: /Codex Security/ });
+      expect(codex.hasAttribute("disabled")).toBe(true);
+      expect(
+        screen.getByText("Codex is not signed in. Sign in, then reconnect."),
+      ).toBeTruthy();
+      // Claude can scan, so it's chosen; Antigravity has no model yet.
+      const claude = screen.getByRole("radio", { name: /Claude/ });
+      expect((claude as HTMLInputElement).checked).toBe(true);
+      expect(
+        screen
+          .getByRole("radio", { name: /Antigravity/ })
+          .hasAttribute("disabled"),
+      ).toBe(true);
+      expect(
+        screen.getByText("Choose an Antigravity model in Settings."),
+      ).toBeTruthy();
+      // Deep scans and the plugin are Codex Security's.
+      expect(screen.queryByRole("radio", { name: /Deep/ })).toBeNull();
+      expect(
+        screen.queryByText("Checking for the Codex Security plugin…"),
+      ).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Start scan" }));
+      await waitFor(() => expect(onStarted).toHaveBeenCalledWith("scan-new"));
+      expect(calls).toEqual([
+        [
+          "start_scan",
+          { repo: "acme/api", mode: "standard", provider: "claude" },
+        ],
+      ]);
+    } finally {
+      restore();
+    }
+  });
+  it("picks Claude over a missing plugin", async () => {
+    const snapshot = freshDemo();
+    snapshot.scans = [];
+    useOrbit.setState({ snapshot });
+    const { calls, restore } = mockActions({
+      get_scan_plugin: { available: true, installed: false },
+      start_scan: "scan-new",
+    });
+    try {
+      render(<ScanDialog isOpen onOpenChange={() => {}} repo="acme/api" />);
+      expect(
+        await screen.findByText("The Codex Security plugin is not installed"),
+      ).toBeTruthy();
+      fireEvent.click(screen.getByRole("radio", { name: /Deep/ }));
+      fireEvent.click(screen.getByRole("radio", { name: /Claude/ }));
+      expect(
+        screen.queryByText("The Codex Security plugin is not installed"),
+      ).toBeNull();
+      expect(
+        screen.queryByRole("button", { name: "Install Codex Security" }),
+      ).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Start scan" }));
+      await waitFor(() =>
+        expect(calls).toContainEqual([
+          "start_scan",
+          { repo: "acme/api", mode: "standard", provider: "claude" },
+        ]),
+      );
     } finally {
       restore();
     }

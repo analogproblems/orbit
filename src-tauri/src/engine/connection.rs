@@ -233,7 +233,8 @@ impl Engine {
                 });
             }
             s.approvals.clear();
-            for scan in &mut s.scans {
+            // Claude's and Antigravity's scans don't use Codex.
+            for scan in s.scans.iter_mut().filter(|x| x.provider == Provider::Codex) {
                 const DISCONNECTED: &str =
                     "Codex disconnected while this scan was running. Run a new scan to start over.";
                 match scan.status.as_str() {

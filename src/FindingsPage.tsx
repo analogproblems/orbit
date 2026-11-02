@@ -47,7 +47,7 @@ import {
 } from "./findingIndex";
 import { FindingKind, priorityColors } from "./Findings";
 import { SafeMarkdown } from "./SafeMarkdown";
-import { ScanReportDialog } from "./Scans";
+import { ScanReportDialog, scanName } from "./Scans";
 
 const statuses = Object.keys(findingStatusLabels) as FindingStatus[];
 const PAGE = 100;
@@ -364,7 +364,7 @@ function FindingDetail({
           <HStack gap={1} vAlign="center">
             <Text>
               {row.scan
-                ? `${row.scan.mode === "deep" ? "Deep" : "Standard"} security scan ·`
+                ? `${scanName(row.scan)} security scan ·`
                 : `Round ${row.round} ·`}
             </Text>
             <Timestamp value={row.foundAt} format="relative_short" />

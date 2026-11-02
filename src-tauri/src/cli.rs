@@ -107,6 +107,10 @@ pub enum TurnKind {
     ExtractionWithTools,
     /// A developer's question.
     FollowUp,
+    /// A security scan of the whole repository
+    /// (`review_instructions::scan_prompt`); its result is the scan's report.
+    /// It has a review's tools.
+    Scan,
 }
 
 /// One turn of a review's conversation.

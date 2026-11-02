@@ -316,6 +316,47 @@ describe("demo Dependabot updates", () => {
   });
 });
 
+describe("demo security scans", () => {
+  it("runs a Claude scan and stops it at once", async () => {
+    const store = useOrbit.getState();
+    const deep = await store.action(
+      "start_scan",
+      { repo: "acme/api", mode: "deep", provider: "claude" },
+      { quiet: true },
+    );
+    expect(deep.ok).toBe(false);
+    const started = await store.action<string>("start_scan", {
+      repo: "acme/api",
+      mode: "standard",
+      provider: "claude",
+    });
+    expect(started.ok).toBe(true);
+    const id = started.ok ? started.data : "";
+    const scan = () =>
+      useOrbit.getState().snapshot.scans!.find((x) => x.id === id)!;
+    expect(scan()).toMatchObject({
+      provider: "claude",
+      status: "running",
+      progress: { phase: "reading" },
+    });
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(scan().progress?.phase).toBe("writing_up");
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(scan().status).toBe("completed");
+    expect(scan().findings.length).toBeGreaterThan(0);
+    const again = await store.action<string>("start_scan", {
+      repo: "acme/api",
+      mode: "standard",
+      provider: "claude",
+    });
+    const second = again.ok ? again.data : "";
+    await store.action("cancel_scan", { scanId: second });
+    expect(
+      useOrbit.getState().snapshot.scans!.find((x) => x.id === second)?.status,
+    ).toBe("cancelled");
+  });
+});
+
 describe("demo buddy", () => {
   it("gives older demos Bit and saves one buddy field at a time", async () => {
     const old = structuredClone(useOrbit.getState().snapshot);

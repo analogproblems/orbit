@@ -130,7 +130,12 @@ function run(prompt) {
         ...fields,
       },
     });
-  if (prompt.startsWith("You are reviewing a pull request.")) {
+  if (prompt.startsWith("You are running a security scan")) {
+    const report =
+      "A web service.\n\n### Problem 1: Path traversal in download\n\nSeverity: medium. src/files.rs:8.";
+    say(report);
+    result({ response: report });
+  } else if (prompt.startsWith("You are reviewing a pull request.")) {
     step += 1;
     const tool = {
       name: "view_file",

@@ -1,6 +1,7 @@
 // A fake `claude` for tests. Usage: node claude_fixture.cjs <mode>[@log] <claude args...>
 // Modes: ok, signed-out, wrong-model, no-model, crash, slow, orphan, escaped, denied,
 // schema-fail, incomplete, no-sandbox. A write-up (--no-session-persistence) answers with <log>.answer.
+// A security scan's prompt gets a report, and its extraction a security finding.
 const fs = require("node:fs");
 const [modeArg, ...args] = process.argv.slice(2);
 const [mode, log] = modeArg.split("@");
@@ -118,7 +119,68 @@ if (args.includes("--no-session-persistence")) {
   result({ result: JSON.stringify(answer), structured_output: answer });
   return;
 }
-if (prompt.startsWith("/code-review")) {
+// What a security scan's two turns answer.
+const scanReport =
+  "A web service with a public login page.\n\n### Problem 1: SQL injection in find_user\n\nSeverity: high. src/db.rs:12 builds the query from the user name.\n\n## Not checked\n\n- The admin tools.";
+const scanFindings = {
+  verdict: "changes_requested",
+  summary: "One weakness.",
+  completed: true,
+  notChecked: ["The admin tools."],
+  priorFindings: [],
+  findings: [
+    {
+      title: "SQL injection in find_user",
+      priority: 1,
+      category: "security",
+      locations: [{ path: "src/db.rs", startLine: 12, endLine: 14 }],
+      problem: "The query is built from the user name.",
+      failureScenario: "A user name of ' OR 1=1 -- logs in as anyone.",
+      evidence: "Read src/db.rs:12 and the login handler.",
+      confirmed: true,
+      suggestedFix: "Use a bound parameter.",
+      doneWhen: "A test logs in with a quote in the name and fails.",
+      reviewerNotes: null,
+      confidence: 0.8,
+    },
+  ],
+};
+if (prompt.startsWith("You are running a security scan")) {
+  send({
+    type: "assistant",
+    parent_tool_use_id: null,
+    message: {
+      id: "s1",
+      content: [
+        {
+          type: "tool_use",
+          id: "r1",
+          name: "Read",
+          input: { file_path: `${process.cwd()}/src/db.rs` },
+        },
+      ],
+    },
+  });
+  send({
+    type: "assistant",
+    parent_tool_use_id: null,
+    message: { id: "s2", content: [{ type: "text", text: scanReport }] },
+  });
+  result({ result: scanReport });
+} else if (
+  args.includes("--json-schema") &&
+  mode !== "schema-fail" &&
+  prompt.startsWith("Restate the findings from the security scan")
+) {
+  const structured =
+    mode === "incomplete"
+      ? { ...scanFindings, completed: false, summary: "src/ was refused." }
+      : scanFindings;
+  result({
+    result: JSON.stringify(structured),
+    structured_output: structured,
+  });
+} else if (prompt.startsWith("/code-review")) {
   const parent = "forked-command-code-review";
   send({
     type: "assistant",

@@ -1475,11 +1475,13 @@ pub struct LedgerRepo {
     /// Why the latest read stopped, when it did.
     pub error: Option<String>,
 }
-/// How far a security scan has come, as the Codex Security plugin reports it.
+/// How far a security scan has come, as the Codex Security plugin reports it,
+/// or which turn a scan by Claude or Antigravity is in.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ScanProgress {
-    /// preflight, threat_model, discovery, validation, attack_path or reporting.
+    /// preflight, threat_model, discovery, validation, attack_path or
+    /// reporting; for Claude or Antigravity, reading or writing_up.
     pub phase: Option<String>,
     pub completed: Option<u64>,
     pub total: Option<u64>,
@@ -1489,18 +1491,23 @@ pub struct ScanProgress {
     pub findings: Option<u64>,
     pub updated_at: String,
 }
-/// A whole-repository security scan with the Codex Security plugin, run on a
-/// detached worktree at one commit of the repository's default branch.
+/// A whole-repository security scan, run on a detached worktree at one
+/// commit of the repository's default branch: by Codex with its Codex
+/// Security plugin, or by Claude or Antigravity with Orbit's own
+/// instructions (`engine/cli_scans.rs`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct SecurityScan {
     pub id: String,
     pub repo: String,
-    /// "standard" or "deep".
+    /// Who scans. Codex in scans from before there was a choice.
+    pub provider: Provider,
+    /// "standard" or "deep". Only Codex Security runs deep scans.
     pub mode: String,
     /// preparing, running, cancelling (stopping: waiting for the plugin to
     /// confirm its scan stopped), importing, completed, failed, cancelled or
-    /// interrupted (Orbit or Codex stopped while it ran).
+    /// interrupted (Orbit or Codex stopped while it ran). A scan by Claude or
+    /// Antigravity stops at once, so it is never cancelling or importing.
     pub status: String,
     /// While stopping, the status to record once the plugin confirms the
     /// stop (cancelled when absent), and the reason to show with it.
@@ -1513,6 +1520,7 @@ pub struct SecurityScan {
     pub commit: Option<String>,
     pub model: String,
     pub effort: String,
+    /// Codex's thread, or Claude's or Antigravity's conversation.
     pub thread_id: Option<String>,
     pub turn_id: Option<String>,
     pub worktree: Option<String>,
