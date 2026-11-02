@@ -8,7 +8,8 @@
 // - zizmor reports `uses:` without a full commit (unpinned-uses), a
 //   checkout (artipacked), `github.event.issue.title` and `${{ inputs.x }}`
 //   (template-injection),
-//   and `# zizmor: <audit>`; one with `# zizmor: ignore` is ignored.
+//   and `# zizmor: <audit>`; one with `# zizmor: ignore` is ignored, and a
+//   file with `# zizmor: unreadable` can't be read.
 const fs = require("node:fs");
 const path = require("node:path");
 const [toolArg, ...args] = process.argv.slice(2);
@@ -38,7 +39,20 @@ if (mode === "fail") {
 if (mode === "slow") setTimeout(() => {}, 60_000);
 else if (mode === "garbled") process.stdout.write("this isn't JSON\n");
 else {
-  const files = args.filter((a) => a.startsWith(".github/"));
+  let files = args.filter((a) => a.startsWith(".github/"));
+  // zizmor can't read a file marked so: it says why with
+  // --strict-collection, and otherwise skips it with a warning.
+  const unreadable = (f) =>
+    tool === "zizmor" &&
+    fs.readFileSync(f, "utf8").includes("# zizmor: unreadable");
+  const bad = files.find(unreadable);
+  if (bad && args.includes("--strict-collection")) {
+    process.stderr.write(
+      ` INFO zizmor: v1\nfatal: no audit was performed\nfailed to load file://${bad} as workflow\n\nCaused by:\n    0: input does not match expected validation schema\n\nStack backtrace:\n   0: zizmor::main\n`,
+    );
+    process.exit(1);
+  }
+  files = files.filter((f) => !unreadable(f));
   const out = tool === "actionlint" ? actionlint(files) : zizmor(files);
   process.stdout.write(JSON.stringify(out) + "\n");
   process.exit(tool === "actionlint" && out.length ? 1 : 0);
@@ -170,7 +184,8 @@ function zizmor(files) {
             ),
           );
         const said = line.match(/# zizmor: (\S+)/);
-        if (said && said[1] === "ignore")
+        if (said && said[1] === "unreadable");
+        else if (said && said[1] === "ignore")
           out.push(
             finding(
               file,

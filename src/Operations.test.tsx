@@ -1065,7 +1065,16 @@ describe("workflow sentences", () => {
     expect(toolsText(s, p)).toBe(
       "zizmor couldn’t check them: it took longer than 120 seconds. What it found before stays.",
     );
+    // zizmor ran, but couldn't read one file.
+    setup.tools = [{ tool: "zizmor" }];
+    setup.workflows[0].missed = [
+      { tool: "zizmor", error: "it failed: failed to load it as workflow" },
+    ];
+    expect(toolsText(s, p)).toBe(
+      "zizmor checked them too. zizmor couldn’t check ci.yml: it failed: failed to load it as workflow. What it found there before stays.",
+    );
     setup.tools = [];
+    setup.workflows[0].missed = [];
     expect(toolsText(s, p)).toBe("");
   });
   it("count them as the engine does", () => {

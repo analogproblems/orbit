@@ -8,8 +8,8 @@
 //! neither reaches the network or reads anything else of the repository's.
 //! actionlint's own use of shellcheck and pyflakes is off. Orbit keeps a
 //! finding's rule, message, line and job, not the lines it quotes.
-//! A tool that isn't installed, fails or takes too long leaves what it
-//! found before as it was (see `crate::problems::see_risks`).
+//! A tool that isn't installed, fails, can't read a file or takes too long
+//! leaves what it found before as it was (see `crate::problems::see_risks`).
 use crate::{
     cli::Launcher,
     risks::{normalize, sort, Risk, RiskKind, MAX_PER_FILE, MAX_SUBJECT},
@@ -24,6 +24,7 @@ use std::{
     process::Stdio,
     time::Duration,
 };
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 /// How long a tool may take on a commit's files.
 #[cfg(not(test))]
@@ -32,8 +33,9 @@ const TIMEOUT: Duration = Duration::from_secs(120);
 const TIMEOUT: Duration = Duration::from_secs(3);
 /// How old a folder a run left must be before another run removes it.
 const LEFT: Duration = Duration::from_secs(60 * 60);
-/// The most output Orbit reads from a tool.
+/// The most output Orbit reads from a tool, and of its standard error.
 const MAX_OUTPUT: usize = 8 * 1024 * 1024;
+const MAX_STDERR: usize = 64 * 1024;
 /// The longest of a tool's own words Orbit keeps.
 const MAX_DETAIL: usize = 200;
 /// zizmor's audits about what Orbit's own checks look at, by their own
@@ -87,11 +89,13 @@ impl Default for Tools {
 pub type File = (String, String);
 
 /// What one installed tool did: what it found, or why it couldn't check
-/// the files.
+/// any of the files, and each file it couldn't check while it checked
+/// others, with why.
 #[derive(Debug)]
 pub struct Ran {
     pub tool: RiskKind,
     pub found: Result<Vec<Finding>, String>,
+    pub missed: Vec<(String, String)>,
 }
 /// One thing a tool found, and the text it is about when that is text put
 /// in a script, to tell whether Orbit found it too.
@@ -102,47 +106,91 @@ pub struct Finding {
 }
 
 /// Runs each tool that is installed on `files`, in a folder of its own
-/// under `dir`, removed after.
+/// under `dir`, removed after. actionlint checks them all at once and
+/// reports on each; zizmor checks one at a time, as a file it can't read
+/// would otherwise be skipped with only a warning.
 pub async fn run(tools: &Tools, dir: &Path, files: &[File]) -> Vec<Ran> {
     let files: Vec<&File> = files.iter().filter(|(p, _)| name(p).is_some()).collect();
     if files.is_empty() {
         return vec![];
     }
     sweep(dir, LEFT);
+    let known: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
     let mut ran = vec![];
     for (tool, launcher) in [
         (RiskKind::Actionlint, &tools.actionlint),
         (RiskKind::Zizmor, &tools.zizmor),
     ] {
-        let found = match one(tool, launcher, dir, &files).await {
-            Ok(Some(found)) => Ok(found),
-            // Not installed.
-            Ok(None) => continue,
-            Err(e) => Err(e),
+        let folder = match Folder::new(dir, tool, &files) {
+            Ok(folder) => folder,
+            Err(e) => {
+                ran.push(Ran {
+                    tool,
+                    found: Err(e),
+                    missed: vec![],
+                });
+                continue;
+            }
         };
-        ran.push(Ran { tool, found });
+        let batches: Vec<Vec<&str>> = match tool {
+            RiskKind::Actionlint => vec![known.clone()],
+            _ => known.iter().map(|p| vec![*p]).collect(),
+        };
+        let deadline = tokio::time::Instant::now() + TIMEOUT;
+        let (mut found, mut missed) = (vec![], vec![]);
+        let mut installed = true;
+        for batch in batches {
+            match call(tool, launcher, &folder.0, &batch, deadline).await {
+                Said::Missing => {
+                    installed = false;
+                    break;
+                }
+                Said::Failed(why) => {
+                    missed.extend(batch.iter().map(|p| (p.to_string(), why.clone())))
+                }
+                Said::Found(v) => found.extend(match tool {
+                    RiskKind::Actionlint => actionlint(&v, &known),
+                    _ => zizmor(&v, &known),
+                }),
+            }
+        }
+        if !installed {
+            continue;
+        }
+        // One that couldn't check any of them failed.
+        ran.push(if missed.len() == known.len() {
+            Ran {
+                tool,
+                found: Err(missed.swap_remove(0).1),
+                missed: vec![],
+            }
+        } else {
+            Ran {
+                tool,
+                found: Ok(found),
+                missed,
+            }
+        });
     }
     ran
 }
 
-/// Runs one tool, or says it isn't installed.
-async fn one(
+/// What a tool said about some files.
+enum Said {
+    /// It isn't installed.
+    Missing,
+    Failed(String),
+    Found(Value),
+}
+
+/// Runs a tool on `paths` in `folder`, until `deadline`.
+async fn call(
     tool: RiskKind,
     launcher: &Launcher,
-    dir: &Path,
-    files: &[&File],
-) -> Result<Option<Vec<Finding>>, String> {
-    let folder = Folder::new(dir, tool)?;
-    let workflows = folder.0.join(".github").join("workflows");
-    std::fs::create_dir_all(&workflows)
-        .map_err(|e| format!("Orbit couldn't make a folder: {e}"))?;
-    let mut paths = vec![];
-    for (path, text) in files {
-        let Some(name) = name(path) else { continue };
-        std::fs::write(workflows.join(name), text)
-            .map_err(|e| format!("Orbit couldn't write {name}: {e}"))?;
-        paths.push(format!(".github/workflows/{name}"));
-    }
+    folder: &Path,
+    paths: &[&str],
+    deadline: tokio::time::Instant,
+) -> Said {
     let mut cmd = launcher.command();
     match tool {
         RiskKind::Actionlint => cmd.args([
@@ -155,6 +203,7 @@ async fn one(
         _ => cmd.args([
             "--offline",
             "--no-config",
+            "--strict-collection",
             "--no-progress",
             "--color",
             "never",
@@ -165,9 +214,11 @@ async fn one(
             "low",
         ]),
     };
-    cmd.args(&paths)
-        .current_dir(&folder.0)
+    cmd.args(paths)
+        .current_dir(folder)
         .env("NO_COLOR", "1")
+        .env("RUST_BACKTRACE", "0")
+        .env("RUST_LIB_BACKTRACE", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -175,41 +226,83 @@ async fn one(
     for key in UNSET {
         cmd.env_remove(key);
     }
-    let child = match cmd.spawn() {
+    let mut child = match cmd.spawn() {
         Ok(child) => child,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(format!("it didn't start: {e}")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Said::Missing,
+        Err(e) => return Said::Failed(format!("it didn't start: {e}")),
     };
-    let out = tokio::time::timeout(TIMEOUT, child.wait_with_output())
-        .await
-        .map_err(|_| format!("it took longer than {} seconds", TIMEOUT.as_secs()))?
-        .map_err(|e| format!("Orbit couldn't read what it said: {e}"))?;
+    let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
+    let read = async {
+        tokio::join!(
+            capped(stdout, MAX_OUTPUT),
+            capped(stderr, MAX_STDERR),
+            child.wait()
+        )
+    };
+    // Dropping the child at a timeout stops it.
+    let Ok(((out, more), (err, _), status)) = tokio::time::timeout_at(deadline, read).await else {
+        return Said::Failed(format!("it took longer than {} seconds", TIMEOUT.as_secs()));
+    };
+    let Ok(status) = status else {
+        return Said::Failed("Orbit couldn't tell how it ended".into());
+    };
     // actionlint ends with 1 when it found something.
-    let code = out.status.code();
-    let ok = code == Some(0) || (tool == RiskKind::Actionlint && code == Some(1));
-    if !ok {
-        let said = String::from_utf8_lossy(&out.stderr);
-        let said = said.lines().rev().find(|l| !l.trim().is_empty());
-        return Err(match said {
-            Some(said) => format!("it failed: {}", shorten(said.trim(), MAX_DETAIL)),
-            None => "it failed".into(),
+    let code = status.code();
+    if !(code == Some(0) || (tool == RiskKind::Actionlint && code == Some(1))) {
+        return Said::Failed(match failure(&String::from_utf8_lossy(&err)) {
+            said if said.is_empty() => "it failed".into(),
+            said => format!("it failed: {said}"),
         });
     }
-    if out.stdout.len() > MAX_OUTPUT {
-        return Err("it said too much to read".into());
+    if more {
+        return Said::Failed("it said too much to read".into());
     }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let text = text.trim();
-    if text.is_empty() {
-        return Ok(Some(vec![]));
+    let text = String::from_utf8_lossy(&out);
+    match text.trim() {
+        "" => Said::Found(Value::Array(vec![])),
+        text => serde_json::from_str(text)
+            .map(Said::Found)
+            .unwrap_or_else(|_| Said::Failed("Orbit couldn't read what it said".into())),
     }
-    let v: Value =
-        serde_json::from_str(text).map_err(|_| "Orbit couldn't read what it said".to_string())?;
-    let known: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
-    Ok(Some(match tool {
-        RiskKind::Actionlint => actionlint(&v, &known),
-        _ => zizmor(&v, &known),
-    }))
+}
+
+/// Reads all of a stream, keeping at most `cap` bytes, and says whether
+/// there was more. It reads on past `cap`, so the tool never waits on it.
+async fn capped<R: AsyncRead + Unpin>(stream: Option<R>, cap: usize) -> (Vec<u8>, bool) {
+    let (mut kept, mut more) = (vec![], false);
+    let Some(mut stream) = stream else {
+        return (kept, more);
+    };
+    let mut buf = [0u8; 8192];
+    while let Ok(n @ 1..) = stream.read(&mut buf).await {
+        let room = cap.saturating_sub(kept.len());
+        kept.extend_from_slice(&buf[..n.min(room)]);
+        more |= n > room;
+    }
+    (kept, more)
+}
+
+/// Why a tool says it failed, from its standard error: its own lines, not
+/// its log lines or a backtrace, on one line.
+fn failure(stderr: &str) -> String {
+    let lines: Vec<&str> = stderr
+        .lines()
+        .map(str::trim)
+        .take_while(|l| !l.starts_with("Stack backtrace"))
+        .filter(|l| {
+            let log = ["INFO ", "WARN ", "DEBUG ", "TRACE "]
+                .iter()
+                .any(|p| l.starts_with(p));
+            !l.is_empty() && !log && *l != "Caused by:"
+        })
+        .map(|l| {
+            // A numbered cause, such as "0: input does not match".
+            l.split_once(": ")
+                .filter(|(n, _)| n.chars().all(|c| c.is_ascii_digit()))
+                .map_or(l, |(_, rest)| rest)
+        })
+        .collect();
+    words(&lines.join("; "))
 }
 
 /// A file's name when it is safe to write in a folder: one plain name in
@@ -241,13 +334,22 @@ fn sweep(dir: &Path, age: Duration) {
         }
     }
 }
-/// A folder of its own for one run, removed when it ends.
+/// A folder of its own for one run, holding only the files, removed when
+/// it ends.
 struct Folder(PathBuf);
 impl Folder {
-    fn new(dir: &Path, tool: RiskKind) -> Result<Self, String> {
+    fn new(dir: &Path, tool: RiskKind, files: &[&File]) -> Result<Self, String> {
         let path = dir.join(format!("{}-{}", tool.key(), uuid::Uuid::new_v4().simple()));
-        std::fs::create_dir_all(&path).map_err(|e| format!("Orbit couldn't make a folder: {e}"))?;
-        Ok(Self(path))
+        let workflows = path.join(".github").join("workflows");
+        std::fs::create_dir_all(&workflows)
+            .map_err(|e| format!("Orbit couldn't make a folder: {e}"))?;
+        let folder = Self(path);
+        for (path, text) in files {
+            let Some(name) = name(path) else { continue };
+            std::fs::write(workflows.join(name), text)
+                .map_err(|e| format!("Orbit couldn't write {name}: {e}"))?;
+        }
+        Ok(folder)
     }
 }
 impl Drop for Folder {
@@ -391,7 +493,7 @@ fn zizmor(v: &Value, known: &[&str]) -> Vec<Finding> {
 
 /// Adds what the tools found to each file's risks, once each, keeping the
 /// most severe `MAX_PER_FILE` and counting the rest in `more`, and records
-/// which tools ran. What a tool found about text Orbit already found put
+/// which tools ran, and which files one couldn't check. What a tool found about text Orbit already found put
 /// in a script on the same line is left out, as Orbit's own says it.
 pub fn merge(setup: &mut Setup, ran: Vec<Ran>) {
     setup.tools = ran
@@ -402,6 +504,14 @@ pub fn merge(setup: &mut Setup, ran: Vec<Ran>) {
         })
         .collect();
     for ran in ran {
+        for (path, why) in &ran.missed {
+            if let Some(w) = setup.workflows.iter_mut().find(|w| w.path == *path) {
+                w.missed.push(ToolRun {
+                    tool: ran.tool,
+                    error: why.clone(),
+                });
+            }
+        }
         let Ok(found) = ran.found else { continue };
         let mut seen = HashSet::new();
         for Finding { risk, script } in found {

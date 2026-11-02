@@ -518,7 +518,8 @@ export function riskText(r: WorkflowRisk) {
   }
 }
 /** Which of actionlint and zizmor checked a repository's workflows too,
- * and why one couldn't, from Orbit's latest read of them. */
+ * and why one couldn't check them, or one of them, from Orbit's latest
+ * read of them. */
 export function toolsText(s: Snapshot, p: Problem) {
   const setup = s.setups?.find((x) => sameRepo(x.repo, p.repo));
   const tools = setup?.tools ?? [];
@@ -530,6 +531,14 @@ export function toolsText(s: Snapshot, p: Problem) {
     lines.push(
       `${t.tool} couldn’t check them: ${t.error}. What it found before stays.`,
     );
+  for (const w of setup?.workflows ?? [])
+    for (const m of w.missed ?? []) {
+      const file = w.path.split("/").at(-1) || w.path;
+      const why = m.error ? `: ${m.error}` : "";
+      lines.push(
+        `${m.tool} couldn’t check ${file}${why}. What it found there before stays.`,
+      );
+    }
   return lines.join(" ");
 }
 /** A workflows problem in a sentence, as the engine has it

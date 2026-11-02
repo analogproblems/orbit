@@ -155,7 +155,13 @@ async fn the_tools_add_what_orbit_doesnt_find_and_each_counts_once() {
             PATH
         ]
     );
-    for flag in ["--offline", "--no-config", "--no-exit-codes", "json-v1"] {
+    for flag in [
+        "--offline",
+        "--no-config",
+        "--strict-collection",
+        "--no-exit-codes",
+        "json-v1",
+    ] {
         assert!(args(1).contains(&flag), "{flag}");
     }
     assert_eq!(std::fs::read_dir(&work).unwrap().count(), 0);
@@ -194,6 +200,83 @@ async fn a_tool_that_isnt_installed_isnt_run_and_one_that_fails_says_why() {
         assert_eq!(s.workflows[0].risks, before, "{mode}");
     }
     assert_eq!(std::fs::read_dir(&work).unwrap().count(), 0);
+}
+
+/// zizmor would skip a file it can't read with only a warning, so it
+/// checks one file at a time, and one it couldn't check is noted.
+#[tokio::test]
+async fn zizmor_checks_one_file_at_a_time_and_notes_one_it_couldnt() {
+    let d = tempfile::tempdir().unwrap();
+    let log = d.path().join("log");
+    let good = ".github/workflows/good.yml";
+    let bad = ".github/workflows/bad.yml";
+    let text = |extra: &str| {
+        format!("on: [issues]\npermissions: {{}}\njobs:\n  build:\n    runs-on: x\n    steps:\n      - uses: actions/checkout@v5{extra}\n")
+    };
+    let files = vec![
+        (good.to_string(), text("")),
+        (bad.to_string(), text(" # zizmor: unreadable")),
+    ];
+    let tools = Tools {
+        actionlint: Launcher::new("orbit-no-such-actionlint"),
+        ..fake("ok", &log)
+    };
+    let ran = run(&tools, &d.path().join("lint"), &files).await;
+    assert_eq!(ran.len(), 1);
+    let found = ran[0].found.as_ref().unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].risk.path, good);
+    assert_eq!(
+        ran[0].missed,
+        [(
+            bad.to_string(),
+            "it failed: fatal: no audit was performed; failed to load file://.github/workflows/bad.yml as workflow; input does not match expected validation schema".to_string()
+        )]
+    );
+    let runs: Vec<Value> = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(runs.len(), 2, "once a file");
+    let mut s = Setup {
+        workflows: [good, bad]
+            .iter()
+            .map(|p| Workflow {
+                path: p.to_string(),
+                checked: true,
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    merge(&mut s, ran);
+    assert_eq!(s.tools[0].error, "");
+    assert!(s.workflows[0].missed.is_empty());
+    assert_eq!(s.workflows[1].missed[0].tool, RiskKind::Zizmor);
+    assert_eq!(s.workflows[0].risks.len(), 1);
+    assert!(s.workflows[1].risks.is_empty());
+}
+
+#[test]
+fn a_tools_failure_reads_as_its_own_words() {
+    let stderr = " INFO zizmor: 🌈 zizmor v1.31.1\nfatal: no audit was performed\nfailed to load x\n\nCaused by:\n    0: input does not match expected validation schema\n\nStack backtrace:\n   0: zizmor::main\n";
+    assert_eq!(
+        failure(stderr),
+        "fatal: no audit was performed; failed to load x; input does not match expected validation schema"
+    );
+    assert_eq!(failure(""), "");
+    assert_eq!(failure("error: bad\n"), "error: bad");
+}
+
+#[tokio::test]
+async fn what_a_tool_says_is_read_only_so_far() {
+    let (kept, more) = capped(Some(&b"abcdef"[..]), 4).await;
+    assert_eq!((kept.as_slice(), more), (&b"abcd"[..], true));
+    let (kept, more) = capped(Some(&b"abc"[..]), 4).await;
+    assert_eq!((kept.as_slice(), more), (&b"abc"[..], false));
+    let (kept, more) = capped(None::<&[u8]>, 4).await;
+    assert!(kept.is_empty() && !more);
 }
 
 #[test]
@@ -263,6 +346,7 @@ fn what_the_tools_find_keeps_the_most_severe_and_counts_the_rest() {
             // The same again, elsewhere in its job, is one.
             finding(9, Severity::High, "cache-poisoning"),
         ]),
+        missed: vec![],
     };
     merge(&mut s, vec![ran]);
     let w = &s.workflows[0];
@@ -283,6 +367,7 @@ fn what_the_tools_find_keeps_the_most_severe_and_counts_the_rest() {
         vec![Ran {
             tool: RiskKind::Zizmor,
             found: Ok(vec![finding(1, Severity::High, "cache-poisoning")]),
+            missed: vec![],
         }],
     );
     assert!(s.workflows[0].risks.is_empty());

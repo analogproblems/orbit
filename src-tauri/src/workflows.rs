@@ -85,6 +85,10 @@ pub struct Workflow {
     pub more: u32,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub why: String,
+    /// The tools that checked other files but couldn't check this one, and
+    /// why (`crate::lint`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub missed: Vec<ToolRun>,
 }
 /// What Orbit read about a repository's CI at its default branch's latest
 /// commit.
@@ -347,6 +351,7 @@ pub fn understand(
                 risks: found.risks,
                 more: found.more,
                 why,
+                missed: vec![],
             })
         })
         .collect();

@@ -1655,6 +1655,8 @@ export interface CiSetup {
     risks?: WorkflowRisk[];
     more?: number;
     why?: string;
+    /** The tools that ran but couldn't check this file, and why. */
+    missed?: { tool: "actionlint" | "zizmor"; error?: string }[];
   }[];
   /** Another CI service's files at the top, such as `.circleci`. */
   others: string[];

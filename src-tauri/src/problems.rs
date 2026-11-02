@@ -607,8 +607,9 @@ pub fn risks_text(p: &Problem) -> String {
 /// back after it went is new. What Orbit found before in a file it
 /// couldn't check now, or in one with more risks than it keeps
 /// (`crate::risks::MAX_PER_FILE`), stays, as Orbit can't say it was
-/// fixed; so does what a tool found when it didn't run (`crate::lint`). It
-/// closes,
+/// fixed; so does what a tool found in a file still there when the tool
+/// didn't run or couldn't check that file (`crate::lint`). A file that went
+/// takes its risks with it. It closes,
 /// as passed at that commit, once nothing is left.
 pub fn see_risks(problems: &mut Vec<Problem>, setup: &Setup, now: DateTime<Utc>) {
     use crate::risks::{names, sort};
@@ -626,13 +627,21 @@ pub fn see_risks(problems: &mut Vec<Problem>, setup: &Setup, now: DateTime<Utc>)
         .filter(|w| !w.checked || w.more > 0)
         .map(|w| w.path.as_str())
         .collect();
-    // Nor is what a tool found before, when it didn't run this time.
+    // Nor is what a tool found before in a file that is still there, when
+    // it didn't run this time or couldn't check that file.
     let ran: Vec<crate::risks::RiskKind> = setup
         .tools
         .iter()
         .filter(|t| t.error.is_empty())
         .map(|t| t.tool)
         .collect();
+    let unchecked_by = |r: &crate::risks::Risk| {
+        let file = setup.workflows.iter().find(|w| w.path == r.path);
+        r.kind.tool()
+            && file.is_some_and(|w| {
+                !ran.contains(&r.kind) || w.missed.iter().any(|m| m.tool == r.kind)
+            })
+    };
     let found: Vec<&crate::risks::Risk> = setup.workflows.iter().flat_map(|w| &w.risks).collect();
     let fresh = |p: &mut Problem, r: &crate::risks::Risk| {
         p.risk_count += 1;
@@ -676,9 +685,8 @@ pub fn see_risks(problems: &mut Vec<Problem>, setup: &Setup, now: DateTime<Utc>)
     p.private = setup.private;
     let mut gone = vec![];
     p.risks.retain(|r| {
-        let stays = unseen.contains(&r.path.as_str())
-            || (r.kind.tool() && !ran.contains(&r.kind))
-            || found.iter().any(|f| f.same(r));
+        let stays =
+            unseen.contains(&r.path.as_str()) || unchecked_by(r) || found.iter().any(|f| f.same(r));
         if !stays {
             gone.push(r.clone());
         }
