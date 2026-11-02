@@ -332,13 +332,20 @@ fn the_latest_release_is_the_one_github_marks_and_a_full_page_says_nothing_of_ta
         .map(|n| listed(n + 1, &format!("v2.0.0-beta.{n}"), 1, false, true))
         .collect();
     let latest = listed(1, "v1.0.0", 90, false, false);
-    let refs = tags(
+    let mut refs = tags(
         &[("v2.0.0-beta.100", 'c'), ("v1.0.1", 'b'), ("v1.0.0", 'a')],
         3,
         "ADMIN",
     );
+    // A milestone left open for v1.0.0, and one for v1.1.0.
+    let milestone = |n: u64, title: &str| json!({ "number": n, "title": title, "dueOn": "2026-11-04T00:00:00Z" });
+    refs["data"]["repository"]["milestones"] =
+        json!({ "nodes": [milestone(1, "v1.0.0"), milestone(2, "v1.1.0")] });
     let (r, base) = understand("a/b", &json!(full), &latest, &refs, now()).unwrap();
     assert_eq!(r.latest.as_ref().map(|l| l.id), Some(1));
+    // v1.0.0 is out, though not on the page read.
+    let due: Vec<&str> = r.milestones.iter().map(|m| m.version.as_str()).collect();
+    assert_eq!(due, ["v1.1.0"]);
     assert_eq!(base, Some(sha('a')));
     assert_eq!(r.prerelease.as_ref().map(|p| p.id), Some(2));
     // v1.0.1's release may be among those Orbit didn't read.

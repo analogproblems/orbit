@@ -366,9 +366,14 @@ pub fn found(
 }
 
 /// Keeps a tag Orbit found on GitHub with the repository's version tags.
+/// In a repository with no releases, a tag is how a version comes out, so
+/// its milestones are done with.
 pub fn seen(r: &mut RepoReleases, tag: &str, sha: &str) {
     if r.tags.iter().any(|t| t.name == tag) || version(tag).is_none() {
         return;
+    }
+    if r.published == 0 && r.draft_count == 0 && r.latest.is_none() {
+        crate::milestones::out(r, tag);
     }
     r.tags.push(Tag {
         name: tag.to_string(),

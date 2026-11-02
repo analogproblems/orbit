@@ -34,8 +34,9 @@
 // false) changes it there; while <dir>/release-error exists, either fails
 // with its text, and while <dir>/release-lost exists, publishing changes it
 // but its answer is lost (HTTP 502). A query about
-// its tags answers with <dir>/tags.json, or no tags on
-// a default branch `main` that Orbit's sign-in can push to. Its tag <t> is
+// its tags (and its milestones) answers with <dir>/tags.json, or no tags
+// or milestones on a default branch `main` that Orbit's sign-in can push
+// to. Its tag <t> is
 // at the commit in <dir>/tag-<t>.txt, and its branch <b> at the one in
 // <dir>/head-<b>.txt, or 404; while <dir>/ref-error exists, reading either
 // fails with its text. Making a tag writes <dir>/tag-<t>.txt, or fails with

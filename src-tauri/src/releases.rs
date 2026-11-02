@@ -172,6 +172,9 @@ pub struct RepoReleases {
     /// checked, the highest version first, at most `CHECKS_KEPT`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub checks: Vec<TagCheck>,
+    /// Its open milestones named for a version, with a due date, those due
+    /// soonest first (see `crate::milestones`).
+    pub milestones: Vec<crate::milestones::Milestone>,
 }
 
 /// A version, as a version tag names it: `1.2.0`, or `v1.2.0`, maybe with
@@ -300,8 +303,17 @@ fn query() -> String {
       totalCount
       nodes {{ name target {{ __typename oid ... on Tag {{ target {{ __typename oid }} }} }} }}
     }}
+    milestones(first: {read}, states: OPEN, orderBy: {{field: DUE_DATE, direction: ASC}}) {{
+      nodes {{
+        number title dueOn url
+        issues(first: {listed}, states: OPEN) {{ totalCount nodes {{ number }} }}
+        pullRequests(first: {listed}, states: OPEN) {{ totalCount nodes {{ number }} }}
+      }}
+    }}
   }}
-}}"
+}}",
+        read = crate::milestones::READ,
+        listed = crate::milestones::LISTED,
     )
 }
 
@@ -439,6 +451,9 @@ pub fn understand(
         .and_then(|l| tags.iter().find(|t| t.name == l.tag))
         .map(|t| t.sha.clone())
         .filter(|_| !head.is_empty());
+    // The latest release counts as out even when it isn't on the page read.
+    let milestones =
+        crate::milestones::understand(&r["milestones"], &releases, latest.as_ref(), &tags);
     let read = RepoReleases {
         repo: repo.to_string(),
         read_at: stamp(now),
@@ -461,6 +476,7 @@ pub fn understand(
         since: None,
         drafts_hidden: !can_push,
         tags: versioned.iter().map(|(t, _)| (*t).clone()).collect(),
+        milestones,
         ..Default::default()
     };
     Ok((read, base))

@@ -374,6 +374,19 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
             )
         });
     }
+    // A release due within a week, or late, and what stands in its way.
+    for d in crate::milestones::waiting(s, chrono::Utc::now()) {
+        out.push(Attention {
+            repo: Some(d.repo.clone()),
+            ..item(
+                crate::milestones::key(&d),
+                AttentionKind::Release,
+                None,
+                None,
+                crate::milestones::reason(&d),
+            )
+        });
+    }
     // An agent that needs a person, about an item still failing.
     for t in s.ops.iter().filter(|t| !t.gone) {
         if !s

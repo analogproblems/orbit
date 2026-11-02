@@ -1510,9 +1510,22 @@ function waited(at: string, now: number) {
   const days = Math.floor(hours / 24);
   return days === 1 ? "1 day" : `${days} days`;
 }
+/** A milestone's due day, such as "Wed, Nov 4", as GitHub keeps it,
+ * whatever the time zone. */
+export function dueDay(due: string) {
+  const day = new Date(`${due}T00:00:00Z`);
+  if (Number.isNaN(day.getTime())) return due;
+  return day.toLocaleDateString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+}
 /** What Orbit read of a repository's releases, a sentence a line: the
  * latest release and the commits since, a newer pre-release, the drafts
- * waiting and for how long, and the version tags with no release. */
+ * waiting and for how long, the releases due and what their milestones
+ * still have open, and the version tags with no release. */
 export function releaseLines(r: RepoReleases, now = Date.now()) {
   const lines: string[] = [];
   const titled = (tag: string, name: string) =>
@@ -1551,6 +1564,17 @@ export function releaseLines(r: RepoReleases, now = Date.now()) {
     const long = waited(d.createdAt, now);
     lines.push(
       `Draft ${titled(d.tag, d.name)} ${long ? `has waited ${long}` : "waits"} to be published, with ${files(d.assets)}.`,
+    );
+  }
+  for (const m of r.milestones ?? []) {
+    const open = [
+      m.prCount > 0 &&
+        `${m.prCount} open ${m.prCount === 1 ? "pull request" : "pull requests"}`,
+      m.issueCount > 0 &&
+        `${m.issueCount} open ${m.issueCount === 1 ? "issue" : "issues"}`,
+    ].filter(Boolean);
+    lines.push(
+      `${m.version} is due ${dueDay(m.due)}. ${open.length ? `Its milestone has ${open.join(" and ")}.` : "Nothing in its milestone is open."}`,
     );
   }
   const moreDrafts = r.draftCount - r.drafts.length;
@@ -1632,8 +1656,8 @@ function Releases() {
       <Heading level={3}>Releases</Heading>
       <Text color="secondary">
         Each repository’s latest release, drafts waiting to be published,
-        version tags, such as v1.2.0, with no release, and how the build its
-        newest tag started went.
+        releases due by a milestone, version tags, such as v1.2.0, with no
+        release, and how the build its newest tag started went.
       </Text>
       <Card padding={0}>
         <List hasDividers aria-label="Releases">

@@ -1532,6 +1532,108 @@ async fn a_draft_is_published_only_as_shown_and_while_its_build_still_passes() {
     assert_eq!(writes(d.path()), ["PATCH repos/a/b/releases/8"]);
 }
 
+/// Adds open milestones to the answer about a/b's tags: each a number, a
+/// title and the day it is due, with its open pull requests by number.
+fn milestones_on_github(dir: &Path, milestones: &[(u64, &str, String, &[u64])]) {
+    let file = dir.join("tags.json");
+    let mut v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    let nodes: Vec<_> = milestones
+        .iter()
+        .map(|(number, title, due, prs)| {
+            json!({
+                "number": number,
+                "title": title,
+                "dueOn": format!("{due}T07:00:00Z"),
+                "url": format!("https://github.com/a/b/milestone/{number}"),
+                "issues": { "totalCount": 0, "nodes": [] },
+                "pullRequests": {
+                    "totalCount": prs.len(),
+                    "nodes": prs.iter().map(|n| json!({ "number": n })).collect::<Vec<_>>(),
+                },
+            })
+        })
+        .collect();
+    v["data"]["repository"]["milestones"] = json!({ "nodes": nodes });
+    std::fs::write(file, v.to_string()).unwrap();
+}
+
+/// The issue's example, through the fake GitHub: a milestone v0.3.0 due in
+/// two days, with one open pull request, reminds you on Needs you and
+/// through Bit a week before, the day before, on the day and each day
+/// late, once each, and closing the milestone stops it. The days pass by
+/// moving the date. Nothing is posted on GitHub.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_release_due_reminds_you_more_often_as_it_nears() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    tags_on_github(d.path(), &[("v0.2.0", 'b')]);
+    let today = crate::clock::local("", chrono::Utc::now()).date();
+    let day = |days: i64| {
+        (today + chrono::Duration::days(days))
+            .format("%Y-%m-%d")
+            .to_string()
+    };
+    let e = connected(d.path()).await;
+    let read = |due: Option<String>| {
+        let (e, gh, dir) = (&e, gh.clone(), d.path().to_path_buf());
+        async move {
+            tags_on_github(&dir, &[("v0.2.0", 'b')]);
+            let open: Vec<(u64, &str, String, &[u64])> = due
+                .into_iter()
+                .map(|due| (3, "v0.3.0", due, &[12u64][..]))
+                .collect();
+            milestones_on_github(&dir, &open);
+            releases_read_long_ago(e).await;
+            crate::github::GH.scope(gh, e.watch_ci()).await;
+            let s = e.shown_snapshot().await;
+            let notes = s
+                .buddy_feed
+                .notes
+                .iter()
+                .filter(|n| n.kind == NoteKind::NeedsYou && n.text.contains("v0.3.0 of a/b"))
+                .count();
+            let items: Vec<_> = s
+                .attention
+                .into_iter()
+                .filter(|a| a.key.starts_with("due:"))
+                .collect();
+            (items, notes)
+        }
+    };
+    let (items, notes) = read(Some(day(2))).await;
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].key, "due:a/b:3:week");
+    assert_eq!(
+        items[0].reason,
+        "v0.3.0 of a/b is due in 2 days. In its way: 1 open pull request (#12)."
+    );
+    assert_eq!(notes, 1);
+    // Read again the same day: not again.
+    let (items, notes) = read(Some(day(2))).await;
+    assert_eq!((items.len(), notes), (1, 1));
+    // A day on, and each day after: once each.
+    for (left, step, told) in [
+        (1, "tomorrow", 2),
+        (0, "today", 3),
+        (-1, "late-1", 4),
+        (-2, "late-2", 5),
+    ] {
+        let (items, notes) = read(Some(day(left))).await;
+        assert_eq!(items[0].key, format!("due:a/b:3:{step}"));
+        assert_eq!(notes, told, "{step}");
+    }
+    assert!(read(Some(day(-2))).await.0[0]
+        .reason
+        .starts_with("v0.3.0 of a/b was due 2 days ago."));
+    // The milestone closed: nothing more.
+    let (items, notes) = read(None).await;
+    assert!(items.is_empty());
+    assert_eq!(notes, 5);
+    assert!(writes(d.path()).is_empty());
+}
+
 /// With Publish a draft release on Do it, Bit publishes it on its own and
 /// says so, once; with Leave it to me, it only tells you.
 #[cfg(unix)]
