@@ -43,6 +43,7 @@ import {
   type OpsWrite,
   type Problem,
   type RepoCi,
+  type RepoReleases,
   type RepoSettings,
   type SecuritySetting,
   type Runner,
@@ -1398,6 +1399,151 @@ function DependabotUpdates() {
   );
 }
 
+/** "1 file" or "6 files". */
+function files(n: number) {
+  return n === 1 ? "1 file" : `${n} files`;
+}
+/** What Orbit read of a repository's releases, a sentence a line: the
+ * latest release and the commits since, a newer pre-release, the drafts
+ * waiting, and the version tags with no release. */
+export function releaseLines(r: RepoReleases) {
+  const lines: string[] = [];
+  const titled = (tag: string, name: string) =>
+    name && name !== tag ? `${tag} (${name})` : tag;
+  if (r.latest) {
+    const n = r.since;
+    const since =
+      n == null
+        ? ""
+        : n === 0
+          ? ` No commits on ${r.branch} since.`
+          : ` ${n} ${n === 1 ? "commit" : "commits"} on ${r.branch} since.`;
+    lines.push(
+      `Latest release: ${titled(r.latest.tag, r.latest.name)}.${since}`,
+    );
+  } else if (r.published > 0) {
+    lines.push("No full release yet, only pre-releases.");
+  } else if (r.draftCount > 0) {
+    lines.push("Nothing published yet.");
+  } else if (r.unreleasedCount > 0) {
+    lines.push(
+      `No releases on GitHub. Its newest version tag is ${r.unreleased[0].name}.`,
+    );
+  } else if (r.versionTags > 0) {
+    lines.push("No releases on GitHub yet.");
+  } else {
+    lines.push("No releases or version tags yet.");
+  }
+  if (r.prerelease)
+    lines.push(
+      r.latest
+        ? `A newer pre-release is out: ${titled(r.prerelease.tag, r.prerelease.name)}.`
+        : `Newest pre-release: ${titled(r.prerelease.tag, r.prerelease.name)}.`,
+    );
+  for (const d of r.drafts)
+    lines.push(
+      `Draft ${titled(d.tag, d.name)} waits to be published, with ${files(d.assets)}.`,
+    );
+  const moreDrafts = r.draftCount - r.drafts.length;
+  if (moreDrafts > 0)
+    lines.push(
+      `${moreDrafts} more ${moreDrafts === 1 ? "draft waits" : "drafts wait"} to be published.`,
+    );
+  if (r.draftsHidden)
+    lines.push(
+      "GitHub shows drafts only to accounts that can push here, and Orbit’s sign-in can’t, so any drafts aren’t listed.",
+    );
+  // With nothing out, tags without a release are how work goes.
+  const out = r.latest || r.published > 0;
+  if (out && r.unreleasedCount === 1)
+    lines.push(`The tag ${r.unreleased[0].name} has no release.`);
+  else if (out && r.unreleasedCount > 1)
+    lines.push(
+      `${r.unreleasedCount} newer version tags have no release: ${r.unreleased.map((t) => t.name).join(", ")}${r.unreleasedCount > r.unreleased.length ? " and more" : ""}.`,
+    );
+  if (r.moreReleases)
+    lines.push(
+      "GitHub has more releases than the newest 100 Orbit read, so Orbit can’t say which version tags have none, and there may be more drafts.",
+    );
+  if (r.moreTags)
+    lines.push(
+      "Orbit read only the tags on the newest commits, so there may be more.",
+    );
+  return lines;
+}
+/** The dot for a repository's releases. */
+export function releaseDot(r: RepoReleases) {
+  if (r.unseen || !r.readAt)
+    return { variant: "neutral" as const, label: "Not seen" };
+  if (r.draftCount > 0)
+    return { variant: "warning" as const, label: "Draft waiting" };
+  if ((r.latest || r.published > 0) && r.unreleasedCount > 0)
+    return { variant: "warning" as const, label: "Tag with no release" };
+  if (r.latest) return { variant: "success" as const, label: "Released" };
+  if (r.published > 0)
+    return { variant: "neutral" as const, label: "Pre-releases only" };
+  return { variant: "neutral" as const, label: "No releases" };
+}
+/** Each repository's latest release, the drafts waiting to be published
+ * and the version tags with no release. Orbit only reads them. */
+function Releases() {
+  const { snapshot: s } = useOrbit();
+  const read = (s.releases ?? []).filter((r) => r.readAt || r.error);
+  if (!read.length) return null;
+  return (
+    <VStack gap={3}>
+      <Heading level={3}>Releases</Heading>
+      <Text color="secondary">
+        Each repository’s latest release, drafts waiting to be published, and
+        version tags, such as v1.2.0, with no release.
+      </Text>
+      <Card padding={0}>
+        <List hasDividers aria-label="Releases">
+          {read.map((r) => {
+            const dot = releaseDot(r);
+            return (
+              <ListItem
+                key={r.repo}
+                startContent={
+                  <StatusDot variant={dot.variant} label={dot.label} />
+                }
+                label={<Text weight="medium">{r.repo}</Text>}
+                description={
+                  <VStack gap={1}>
+                    {r.readAt &&
+                      !r.unseen &&
+                      releaseLines(r).map((line, i) => (
+                        <Text key={`${i}:${line}`}>{line}</Text>
+                      ))}
+                    {r.unseen && <Text color="secondary">{r.unseen}</Text>}
+                    {r.error && (
+                      <HStack gap={2} vAlign="center">
+                        <StatusDot variant="warning" label="Not read" />
+                        <Text color="secondary">{r.error}</Text>
+                      </HStack>
+                    )}
+                  </VStack>
+                }
+                onClick={() =>
+                  openLink(`https://github.com/${r.repo}/releases`)
+                }
+                endContent={
+                  r.latest?.publishedAt && !r.unseen ? (
+                    <Timestamp
+                      value={r.latest.publishedAt}
+                      format="relative_short"
+                    />
+                  ) : undefined
+                }
+              />
+            );
+          })}
+        </List>
+      </Card>
+    </VStack>
+  );
+}
+
 /** The self-hosted runners Orbit sees for each repository, and for each
  * organization that owns one, and where it can't see them. Places with
  * none aren't listed. */
@@ -1771,6 +1917,7 @@ export function Operations(go: AttentionHandlers) {
           {security && <Security />}
           {security && <SecuritySettings />}
           {security && <DependabotUpdates />}
+          <Releases />
           <Runners />
           <StorageUse />
           <RecentlyFixed />

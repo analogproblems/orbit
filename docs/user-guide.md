@@ -430,6 +430,19 @@ GitHub Actions keeps two kinds of files for a repository. Caches speed up builds
 
 Orbit only reads storage: it never deletes a cache or an artifact.
 
+#### Releases
+
+After each CI read, while **Watch CI** is on, Orbit reads each connected repository's releases on GitHub and its version tags, a few repositories at a time, each one again every 30 minutes. A version tag is one named for a version, such as `v1.2.0` or `1.2.0`, maybe with a pre-release part such as `-beta.1`; other tags, such as `latest` or `app@1.2.0`, are left out.
+
+- **Releases** on **Operations** lists each repository with its latest release, the one GitHub marks **Latest** (usually the newest that is neither a draft nor a pre-release, unless someone chose another), and how many commits its default branch has had since, such as "Latest release: v1.4.0 (Orbit 1.4). 23 commits on main since.". A row opens the repository's releases on GitHub, and the time on its right is when the latest release came out.
+- A **newer pre-release** is listed too, such as "A newer pre-release is out: v1.0.0-beta.1.". A repository with only pre-releases says "No full release yet, only pre-releases." and names the newest, and one with only drafts says "Nothing published yet.".
+- **Drafts** waiting to be published are listed, newest first, with how many files each has, such as "Draft v1.5.0 (Orbit 1.5) waits to be published, with 6 files.". GitHub shows drafts only to accounts that can push to a repository; when Orbit's sign-in can't, the row says any drafts aren't listed.
+- **Version tags with no release**, newer than the latest release (or than the newest pre-release, when only pre-releases are out), are listed, such as "The tag v2.3.2 has no release.". A repository with nothing published says so and names its newest version tag. Orbit reads the tags on the newest 100 commits and the newest 100 releases; when a repository has more tags, the row says there may be more. When it has more than 100 releases, an older one may name a tag, so the row doesn't say which tags have none, and says there may be more drafts.
+- The dot says **Draft waiting**, **Tag with no release**, **Released**, **Pre-releases only**, **No releases** or **Not seen**. Bit says the same when you ask how your repositories are.
+- Where GitHub won't show a repository's releases to Orbit's sign-in, the row says so. When GitHub doesn't answer, the row says why and keeps what Orbit read before, and Orbit tries again after a minute, then waits twice as long each time, up to an hour.
+
+Orbit only reads releases and tags: it never makes, moves or deletes one.
+
 #### Security alerts
 
 GitHub raises three kinds of security alerts on a repository: Dependabot alerts for a dependency with a known weakness, code scanning alerts for code a tool such as CodeQL flagged, and secret scanning alerts for a secret, such as a token, committed to it. After each sync, Orbit reads each connected repository's open alerts of every kind, the newest 100 of each, two repositories at a time, each one again every 30 minutes. It does so whether or not **Watch CI** is on.

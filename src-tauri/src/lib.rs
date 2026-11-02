@@ -31,6 +31,7 @@ pub mod orbits;
 pub mod problems;
 pub mod push;
 pub mod readiness;
+pub mod releases;
 pub mod remote;
 pub mod reruns;
 pub mod review_instructions;

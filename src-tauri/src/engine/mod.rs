@@ -216,6 +216,8 @@ pub struct Engine {
     reading_runners: AtomicBool,
     /// Actions storage is being read; another read skips rather than waits.
     reading_storage: AtomicBool,
+    /// Releases are being read; another read skips rather than waits.
+    reading_releases: AtomicBool,
     /// Security alerts are being read; another read skips rather than
     /// waits.
     reading_security: AtomicBool,
@@ -369,6 +371,7 @@ impl Engine {
             telling: AtomicBool::new(false),
             reading_runners: AtomicBool::new(false),
             reading_storage: AtomicBool::new(false),
+            reading_releases: AtomicBool::new(false),
             reading_security: AtomicBool::new(false),
             reading_settings: AtomicBool::new(false),
             rebasing: Mutex::new(()),

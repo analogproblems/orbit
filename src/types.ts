@@ -1152,6 +1152,9 @@ export interface Snapshot {
   /** Each connected repository's GitHub Actions caches and artifacts, as
    * Orbit last read them. */
   actionsStorage?: ActionsStorage[];
+  /** Each connected repository's releases and version tags, as Orbit last
+   * read them. */
+  releases?: RepoReleases[];
   /** Each connected repository's open security alerts, as Orbit last read
    * them. */
   security?: RepoSecurity[];
@@ -1715,6 +1718,65 @@ export interface ActionsStorage {
   /** GitHub has more artifacts than Orbit read, so it may keep more. */
   moreArtifacts?: boolean;
   /** Why Orbit can't see its storage. */
+  unseen?: string | null;
+  /** Why the last read failed; what was read before is kept. */
+  error?: string | null;
+  tries: number;
+  retryAt?: string | null;
+}
+/** One of a repository's releases on GitHub. */
+export interface Release {
+  id: number;
+  /** The tag it is for, which a draft may not have made yet. */
+  tag: string;
+  /** Its title, or its tag when it has none. */
+  name: string;
+  prerelease: boolean;
+  draft: boolean;
+  createdAt: string;
+  publishedAt?: string | null;
+  url: string;
+  /** How many files are attached to it. */
+  assets: number;
+}
+/** A tag and the commit it points at. */
+export interface ReleaseTag {
+  name: string;
+  sha: string;
+}
+/** What Orbit read of one repository's releases and version tags. */
+export interface RepoReleases {
+  repo: string;
+  readAt: string;
+  /** The default branch, and its latest commit. */
+  branch: string;
+  head: string;
+  /** The release GitHub marks latest: usually the newest that is neither
+   * a draft nor a pre-release. */
+  latest?: Release | null;
+  /** The newest pre-release since it, or the newest, with none. */
+  prerelease?: Release | null;
+  /** Drafts waiting to be published, the newest first, a few of them, and
+   * how many there are. */
+  drafts: Release[];
+  draftCount: number;
+  /** How many releases Orbit read that aren't drafts, and whether GitHub
+   * has more. */
+  published: number;
+  moreReleases?: boolean;
+  /** How many version tags Orbit read, and whether there are more tags. */
+  versionTags: number;
+  moreTags?: boolean;
+  /** Version tags with no release, newer than the latest (or the newest
+   * pre-release), the highest first, a few of them, and how many there
+   * are. None when GitHub has more releases than Orbit read. */
+  unreleased: ReleaseTag[];
+  unreleasedCount: number;
+  /** Commits on the default branch since the latest release's tag. */
+  since?: number | null;
+  /** Orbit's sign-in can't push, so GitHub hides the drafts. */
+  draftsHidden?: boolean;
+  /** Why Orbit can't see its releases. */
   unseen?: string | null;
   /** Why the last read failed; what was read before is kept. */
   error?: string | null;

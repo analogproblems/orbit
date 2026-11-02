@@ -260,6 +260,7 @@ impl Engine {
             &self.telling,
             &self.reading_runners,
             &self.reading_storage,
+            &self.reading_releases,
             &self.reading_security,
             &self.reading_settings,
             &self.updating_clones,

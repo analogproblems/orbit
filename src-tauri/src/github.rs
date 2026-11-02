@@ -921,6 +921,30 @@ pub async fn compare(
         sha.to_string(),
     )))
 }
+/// How many commits `head` has that `base` doesn't, or None when GitHub
+/// doesn't know one of them. Both are full SHAs.
+pub async fn ahead_by(repo: &str, base: &str, head: &str) -> Result<Option<u32>, String> {
+    validate_repo(repo)?;
+    if !valid_sha(base) || !valid_sha(head) {
+        return Err("Invalid commit".into());
+    }
+    let v = match api(
+        &format!("repos/{repo}/compare/{base}...{head}"),
+        "GET",
+        &[("per_page", "1".into())],
+        None,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) if e.contains("HTTP 404") || e.contains("HTTP 422") => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let ahead = v["ahead_by"]
+        .as_u64()
+        .ok_or("GitHub didn't say how many commits came since.")?;
+    Ok(Some(ahead.min(u32::MAX as u64) as u32))
+}
 /// Posts a comment on an issue or pull request.
 pub async fn post_comment(
     repo: &str,

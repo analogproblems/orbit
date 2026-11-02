@@ -31,6 +31,8 @@ import {
   type RepositorySummary,
   type RunnerPlace,
   type ActionsStorage,
+  type Release,
+  type RepoReleases,
   type Attention,
   type RepoSecurity,
   type RepoSettings,
@@ -1048,6 +1050,7 @@ export function demoCi(
   | "setups"
   | "runners"
   | "actionsStorage"
+  | "releases"
 > {
   const failingPr = prs[2];
   const behindPr = prs[4];
@@ -1281,6 +1284,87 @@ export function demoCi(
         "Orbit can't see the Actions storage of acme/dashboard: GitHub doesn't show it to Orbit's sign-in.",
     },
     stored("acme/docs", 0, 0, 0, 0),
+  ];
+  const DAY = 24 * 60;
+  const release = (
+    id: number,
+    tag: string,
+    days: number,
+    more: Partial<Release> = {},
+  ): Release => ({
+    id,
+    tag,
+    name: tag,
+    prerelease: false,
+    draft: false,
+    createdAt: ago(days * DAY),
+    publishedAt: ago(days * DAY),
+    url: `https://github.com/acme/orbit/releases/tag/${tag}`,
+    assets: 6,
+    ...more,
+  });
+  const releasesOf = (
+    repo: string,
+    more: Partial<RepoReleases>,
+  ): RepoReleases => ({
+    repo,
+    readAt: ago(14),
+    branch: "main",
+    head: sha("9f3c2a1"),
+    drafts: [],
+    draftCount: 0,
+    published: 0,
+    versionTags: 0,
+    unreleased: [],
+    unreleasedCount: 0,
+    tries: 0,
+    ...more,
+  });
+  // Orbit has a draft waiting, api a tag with no release, dashboard hides
+  // its drafts from Orbit's sign-in, and docs has no releases.
+  const releases: RepoReleases[] = [
+    releasesOf("acme/orbit", {
+      latest: release(41, "v1.4.0", 9, { name: "Orbit 1.4" }),
+      drafts: [
+        release(42, "v1.5.0", 1, {
+          draft: true,
+          publishedAt: null,
+          name: "Orbit 1.5",
+          url: "https://github.com/acme/orbit/releases",
+        }),
+      ],
+      draftCount: 1,
+      published: 12,
+      versionTags: 13,
+      since: 23,
+    }),
+    releasesOf("acme/api", {
+      latest: release(30, "v2.3.1", 16, {
+        url: "https://github.com/acme/api/releases/tag/v2.3.1",
+        assets: 0,
+      }),
+      published: 9,
+      versionTags: 10,
+      unreleased: [{ name: "v2.3.2", sha: sha("4be81aa") }],
+      unreleasedCount: 1,
+      since: 4,
+    }),
+    releasesOf("acme/dashboard", {
+      latest: release(7, "v0.9.0", 40, {
+        url: "https://github.com/acme/dashboard/releases/tag/v0.9.0",
+        assets: 2,
+      }),
+      prerelease: release(8, "v1.0.0-beta.1", 3, {
+        prerelease: true,
+        url: "https://github.com/acme/dashboard/releases/tag/v1.0.0-beta.1",
+        assets: 2,
+      }),
+      published: 5,
+      versionTags: 5,
+      since: 11,
+      draftsHidden: true,
+    }),
+    releasesOf("acme/docs", {}),
   ];
   const problems: Problem[] = [
     {
@@ -1657,6 +1741,7 @@ export function demoCi(
     setups,
     runners,
     actionsStorage,
+    releases,
   };
 }
 /** Security alerts in the demo: a critical Dependabot alert and a found

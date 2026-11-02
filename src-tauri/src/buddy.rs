@@ -1919,6 +1919,14 @@ fn answer(
                 if let Some(storage) = storage {
                     text.push_str(&crate::actions_storage::sentence(storage));
                 }
+                let releases = s
+                    .releases
+                    .iter()
+                    .find(|r| same_repo(&r.repo, &repo.name))
+                    .filter(|_| s.settings.watch_ci);
+                if let Some(releases) = releases {
+                    text.push_str(&crate::releases::sentence(releases));
+                }
                 text.push_str(&security_sentence(s, &repo.name));
                 text.push_str(&workflows_sentence(s, &repo.name));
                 // A failing sync first: CI can't be read without one.
