@@ -1447,9 +1447,9 @@ export interface SecurityAlert {
   line: number;
   /** The version that fixes a dependency, when there is one. */
   fixedIn: string;
-  /** The versions a dependency's alert affects, as GitHub writes them,
-   * such as "< 4.17.21". */
-  range?: string;
+  /** Every range of versions a dependency's advisory affects, as GitHub
+   * writes them, such as "< 4.17.21". */
+  ranges?: string[];
   url: string;
   createdAt: string;
   /** For a secret: "active" when GitHub says it still works, "inactive"

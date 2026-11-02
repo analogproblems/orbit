@@ -3258,6 +3258,7 @@ async fn dependabots_pull_requests_show_what_they_fix_and_whether_theyre_ready()
     dependabot_merges(d.path(), 12, &fix, false, "dirty");
     let mut qs = crate::security::tests::dependabot(7, "qs", "high");
     qs["security_vulnerability"]["vulnerable_version_range"] = json!("< 6.10.3");
+    qs["security_advisory"]["vulnerabilities"][0]["vulnerable_version_range"] = json!("< 6.10.3");
     qs["security_vulnerability"]["first_patched_version"]["identifier"] = json!("6.10.3");
     alerts(d.path(), "dependabot", &[qs]);
     let e = connected(d.path()).await;

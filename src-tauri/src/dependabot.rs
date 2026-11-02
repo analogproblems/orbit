@@ -68,7 +68,8 @@ pub struct Parsed {
     /// How many packages its title says it updates, or 0.
     pub count: usize,
     /// Its folder, without slashes and empty for the top one, or None when
-    /// it spans more than one.
+    /// Orbit can't tell which one, as for a group across several: then it
+    /// claims no fix.
     pub folder: Option<String>,
 }
 
@@ -137,11 +138,20 @@ pub fn parse(title: &str, body: &str) -> Parsed {
         }
     }
     if p.folder.is_none() && across.is_none_or(|n| n == 1) {
-        p.folder = Some(
-            FOLDER
-                .captures(body)
-                .map_or(String::new(), |c| folder(&c[1])),
-        );
+        let mut named: Vec<String> = vec![];
+        for c in FOLDER.captures_iter(body) {
+            let f = folder(&c[1]);
+            if !named.contains(&f) {
+                named.push(f);
+            }
+        }
+        p.folder = match named.as_slice() {
+            [one] => Some(one.clone()),
+            // A title that names no folder, and isn't across any, is about
+            // the top one.
+            [] if across.is_none() => Some(String::new()),
+            _ => None,
+        };
     }
     p
 }
@@ -202,25 +212,30 @@ fn folder_of(path: &str) -> &str {
         .rsplit_once('/')
         .map_or("", |(folder, _)| folder)
 }
-/// Whether an update to `b`, in `folder` (None for more than one), fixes
-/// an open Dependabot alert: the same package, in the alert's folder, to a
-/// version outside its vulnerable range, or, where Orbit can't read the
-/// range, at or past the version that fixes it.
+/// Whether an update to `b`, in `folder` (None when Orbit can't tell
+/// which), fixes an open Dependabot alert: the same package, in the
+/// alert's folder, to a version outside every range its advisory affects.
+/// Where Orbit can't tell the folder, nothing is claimed; where it can't
+/// read every range, only the version that fixes it counts.
 pub fn fixes(a: &Alert, b: &Bump, folder: Option<&str>) -> bool {
     if a.source != Source::Dependabot || !a.subject.eq_ignore_ascii_case(&b.name) {
         return false;
     }
-    if let Some(folder) = folder {
-        if !a.path.is_empty() && folder_of(&a.path) != folder {
-            return false;
-        }
-    }
-    let Some(to) = numbers(&b.to) else {
-        return !a.fixed_in.is_empty() && a.fixed_in == b.to;
+    let Some(folder) = folder else {
+        return false;
     };
-    match in_range(&a.range, &b.to) {
-        Some(inside) => !inside,
-        None => numbers(&a.fixed_in).is_some_and(|fixed| compare(&to, &fixed).is_ge()),
+    if !a.path.is_empty() && folder_of(&a.path) != folder {
+        return false;
+    }
+    let exact = !a.fixed_in.is_empty() && a.fixed_in == b.to;
+    let outside: Option<Vec<bool>> = a
+        .ranges
+        .iter()
+        .map(|r| in_range(r, &b.to).map(|inside| !inside))
+        .collect();
+    match outside {
+        Some(outside) if !outside.is_empty() => outside.iter().all(|&o| o),
+        _ => exact,
     }
 }
 
@@ -248,12 +263,15 @@ fn pulls(s: &Snapshot) -> impl Iterator<Item = &PullRequest> {
 }
 /// The commit of its base branch Orbit asks GitHub about: the latest one
 /// Orbit read of CI for the default branch, or what the sync said for
-/// another branch.
+/// another branch, or while Orbit's latest read of CI failed, as what it
+/// kept from before may be older than the sync.
 fn base_of(s: &Snapshot, pr: &PullRequest) -> String {
-    s.ci.iter()
-        .find(|c| same_repo(&c.repo, &pr.repo))
-        .filter(|c| c.branch == pr.base_ref && !c.head.sha.is_empty())
+    ci_of(s, pr)
+        .filter(|c| c.error.is_none() && c.branch == pr.base_ref && !c.head.sha.is_empty())
         .map_or_else(|| pr.base_sha.clone(), |c| c.head.sha.clone())
+}
+fn ci_of<'a>(s: &'a Snapshot, pr: &PullRequest) -> Option<&'a crate::ci::RepoCi> {
+    s.ci.iter().find(|c| same_repo(&c.repo, &pr.repo))
 }
 fn asked<'a>(s: &'a Snapshot, pr: &PullRequest, base: &str) -> Option<&'a Merge> {
     s.dependabot
@@ -358,11 +376,12 @@ pub struct Update {
     pub conflicts: bool,
     /// Whether GitHub says it can merge, in a sentence.
     pub merge_text: String,
-    /// Every check on its latest commit passed, and GitHub says it can
-    /// merge.
+    /// Every check on its latest commit passed, GitHub says it can merge,
+    /// and Orbit's latest read of CI worked.
     pub ready: bool,
-    /// Why Orbit's latest question about it failed, when it did. What
-    /// GitHub said before stands meanwhile.
+    /// Why Orbit's latest question about it failed, or else its latest
+    /// read of CI, when one did. What GitHub said before stands meanwhile,
+    /// but after a failed read of CI it isn't ready.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -521,6 +540,13 @@ pub fn of(s: &Snapshot, pr: &PullRequest) -> Update {
     let (checks, checks_text) = checks_of(s, pr);
     let merge = asked(s, pr, &base_of(s, pr));
     let (merge_text, conflicts, merges) = merge_of(merge, pr);
+    let ci_failed = ci_of(s, pr).is_some_and(|c| c.error.is_some());
+    let error = merge.and_then(|m| m.error.clone()).or_else(|| {
+        ci_failed.then(|| {
+            "Orbit's latest read of CI here failed, so its checks and base may be out of date."
+                .to_string()
+        })
+    });
     Update {
         pr_id: pr.id.clone(),
         repo: pr.repo.clone(),
@@ -539,8 +565,8 @@ pub fn of(s: &Snapshot, pr: &PullRequest) -> Update {
         checks_text,
         conflicts,
         merge_text,
-        ready: checks == CiState::Passing && merges,
-        error: merge.and_then(|m| m.error.clone()),
+        ready: checks == CiState::Passing && merges && !ci_failed,
+        error,
     }
 }
 /// Every one of Dependabot's open pull requests Orbit shows: fixes for the

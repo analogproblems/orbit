@@ -25,7 +25,11 @@ pub(crate) fn alert(number: u64, package: &str, path: &str, range: &str, fixed: 
         severity: Severity::High,
         subject: package.into(),
         path: path.into(),
-        range: range.into(),
+        ranges: if range.is_empty() {
+            vec![]
+        } else {
+            vec![range.into()]
+        },
         fixed_in: fixed.into(),
         url: format!("https://github.com/a/b/security/dependabot/{number}"),
         ..Default::default()
@@ -167,6 +171,30 @@ fn dependabots_titles_and_descriptions_say_what_each_update_changes() {
         what_text(&p),
         "Updates 1 package in the npm_and_yarn group: lodash from 4.17.20 to 4.17.21, a patch update."
     );
+    // Its description names each folder: Orbit can't say which package
+    // is in which.
+    let p = parse(
+        "Bump the npm_and_yarn group across 2 directories with 2 updates",
+        "Bumps the npm_and_yarn group with 1 update in the /web directory: lodash.\nBumps the npm_and_yarn group with 1 update in the /api directory: lodash.\n\nUpdates `lodash` from 4.17.20 to 4.17.21",
+    );
+    assert_eq!(p.folder, None);
+    // One folder named twice is that folder; none named across one is
+    // unknown, and a title that names none is about the top one.
+    let p = parse(
+        "Bump the npm_and_yarn group across 1 directory with 2 updates",
+        "Bumps the npm_and_yarn group with 2 updates in the /web directory. Updates `qs` from 6.10.1 to 6.10.3 in the /web directory.",
+    );
+    assert_eq!(p.folder.as_deref(), Some("web"));
+    let p = parse(
+        "Bump the npm_and_yarn group across 1 directory with 1 update",
+        "Updates `qs` from 6.10.1 to 6.10.3",
+    );
+    assert_eq!(p.folder, None);
+    let p = parse(
+        "Bump the npm_and_yarn group with 1 update",
+        "Updates `qs` from 6.10.1 to 6.10.3",
+    );
+    assert_eq!(p.folder.as_deref(), Some(""));
     let p = parse("Bump the github-actions group in /ci with 2 updates", "");
     assert_eq!(p.folder.as_deref(), Some("ci"));
     assert_eq!(
@@ -200,7 +228,7 @@ fn an_update_fixes_an_alert_when_its_new_version_is_outside_the_range() {
     // Another package, folder or kind of alert.
     assert!(!fixes(&a, &bump("qs", "4.17.20", "4.17.21"), Some("")));
     assert!(!fixes(&a, &fixed, Some("web")));
-    assert!(fixes(&a, &fixed, None), "a group across folders");
+    assert!(!fixes(&a, &fixed, None), "a folder Orbit can't tell");
     let web = alert(2, "lodash", "web/package-lock.json", "< 4.17.21", "");
     assert!(fixes(&web, &fixed, Some("web")));
     assert!(!fixes(&web, &fixed, Some("")));
@@ -214,9 +242,15 @@ fn an_update_fixes_an_alert_when_its_new_version_is_outside_the_range() {
     assert!(!fixes(&both, &bump("qs", "6.9.0", "6.10.1"), Some("")));
     assert!(fixes(&both, &bump("qs", "6.10.1", "6.10.3"), Some("")));
     assert!(fixes(&both, &bump("qs", "6.10.1", "7.0.0"), Some("")));
-    // Without a range Orbit can read, the version that fixes it counts.
+    // Without every range Orbit can read, only the version that fixes it
+    // counts, as another release line may still be affected.
     let fixed_only = alert(4, "lodash", "", "", "4.17.21");
     assert!(fixes(
+        &fixed_only,
+        &bump("lodash", "4.17.20", "4.17.21"),
+        Some("")
+    ));
+    assert!(!fixes(
         &fixed_only,
         &bump("lodash", "4.17.20", "4.17.22"),
         Some("")
@@ -224,6 +258,20 @@ fn an_update_fixes_an_alert_when_its_new_version_is_outside_the_range() {
     assert!(!fixes(
         &fixed_only,
         &bump("lodash", "4.17.19", "4.17.20"),
+        Some("")
+    ));
+    let unread = Alert {
+        ranges: vec!["< 4.17.21".into(), "~> 5.0".into()],
+        ..fixed_only.clone()
+    };
+    assert!(!fixes(
+        &unread,
+        &bump("lodash", "4.17.20", "4.17.22"),
+        Some("")
+    ));
+    assert!(fixes(
+        &unread,
+        &bump("lodash", "4.17.20", "4.17.21"),
         Some("")
     ));
     let pre = alert(5, "lodash", "", "< 5.0.0-rc.1", "5.0.0-rc.1");
@@ -238,6 +286,24 @@ fn an_update_fixes_an_alert_when_its_new_version_is_outside_the_range() {
         Some("")
     ));
     assert!(!fixes(&alert(6, "lodash", "", "", ""), &fixed, Some("")));
+
+    // An advisory that affects two release lines: leaving one isn't a fix
+    // while the new version is in the other.
+    let django = Alert {
+        ranges: vec![">= 1.11.8, < 1.11.10".into(), ">= 2.0.0, < 2.0.2".into()],
+        ..alert(7, "django", "requirements.txt", "", "1.11.10")
+    };
+    assert!(!fixes(
+        &django,
+        &bump("django", "1.11.9", "2.0.1"),
+        Some("")
+    ));
+    assert!(fixes(&django, &bump("django", "1.11.9", "2.0.2"), Some("")));
+    assert!(fixes(
+        &django,
+        &bump("django", "1.11.9", "1.11.10"),
+        Some("")
+    ));
 
     assert_eq!(in_range("< 4.17.21", "4.17.20"), Some(true));
     assert_eq!(in_range("<= 1.0.0", "1.0"), Some(true));
@@ -388,6 +454,83 @@ fn what_orbit_hasnt_read_yet_is_said_so_and_never_ready() {
     let u = &all(&s)[0];
     assert_eq!(u.merge_text, s.dependabot[0].error.clone().unwrap());
     assert!(u.error.is_some());
+}
+
+/// A read of CI that failed keeps what Orbit read before, which may be
+/// older than the sync: its base isn't trusted, and nothing is ready.
+#[test]
+fn after_a_failed_read_of_ci_its_base_isnt_trusted_and_nothing_is_ready() {
+    let mut s = snapshot(
+        vec![update(10, "Bump vite from 5.4.10 to 5.4.11", '1')],
+        &[(10, CiState::Passing)],
+    );
+    // GitHub said it merges cleanly into main at A, the commit CI read.
+    s.dependabot = vec![merge(&s, 10, Some(true), "clean")];
+    assert!(all(&s)[0].ready);
+    // The sync then saw main at B, but CI's next read failed.
+    let b = "b".repeat(40);
+    s.prs[0].base_sha = b.clone();
+    s.ci[0].error = Some("Bad Gateway (HTTP 502)".into());
+    let u = &all(&s)[0];
+    assert!(!u.ready);
+    assert_eq!(
+        u.merge_text,
+        "Orbit hasn't asked GitHub yet whether it merges."
+    );
+    assert_eq!(
+        u.error.as_deref(),
+        Some("Orbit's latest read of CI here failed, so its checks and base may be out of date.")
+    );
+    assert!(brief_text(u)
+        .ends_with(" Orbit's latest question about it failed, so this may be out of date."));
+    // So Orbit asks GitHub about B.
+    assert_eq!(
+        wanted(&s, now()),
+        [("a/b".to_string(), 10, "1".repeat(40), b.clone())]
+    );
+    // Even GitHub's answer for B isn't ready while CI can't be read.
+    s.dependabot = vec![Merge {
+        base_sha: b,
+        ..merge(&s, 10, Some(true), "clean")
+    }];
+    let u = &all(&s)[0];
+    assert_eq!(u.merge_text, "GitHub says it can merge.");
+    assert!(!u.ready);
+    s.ci[0].error = None;
+    assert!(
+        !all(&s)[0].ready,
+        "CI's main is A again, so B's answer isn't it"
+    );
+}
+
+/// A group across several folders claims no fix, even for an alert in a
+/// folder it doesn't touch.
+#[test]
+fn a_group_across_folders_claims_no_fix_for_an_untouched_folder() {
+    let mut group = update(
+        10,
+        "Bump the npm_and_yarn group across 2 directories with 2 updates",
+        '1',
+    );
+    group.body = "Bumps the npm_and_yarn group with 1 update in the /web directory: lodash.\nBumps the npm_and_yarn group with 1 update in the /api directory: lodash.\n\nUpdates `lodash` from 4.17.20 to 4.17.21".into();
+    let mut s = snapshot(vec![group], &[(10, CiState::Passing)]);
+    s.security.push(RepoSecurity {
+        repo: "a/b".into(),
+        read_at: crate::problems::stamp(now()),
+        kinds: vec![Kind {
+            source: Source::Dependabot,
+            alerts: vec![alert(
+                9,
+                "lodash",
+                "legacy/package-lock.json",
+                "< 4.17.21",
+                "4.17.21",
+            )],
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    assert!(all(&s)[0].fixes.is_empty());
 }
 
 #[test]
