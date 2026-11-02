@@ -23,7 +23,8 @@
 // ("<time") when it is given.
 // The releases of a/b are the list in <dir>/releases.json, or none, in
 // pages; while <dir>/releases-error exists, listing them fails with its
-// text. A query about its tags answers with <dir>/tags.json, or no tags on
+// text. Its latest release is <dir>/latest.json, or the newest made in the
+// list that is neither a draft nor a pre-release, or none (HTTP 404). A query about its tags answers with <dir>/tags.json, or no tags on
 // a default branch `main` that Orbit's sign-in can push to.
 // The cache usage of a/b is <dir>/cache.json, or none, and its artifacts the
 // list in <dir>/artifacts.json, or none, in pages; while <dir>/cache-error or
@@ -439,6 +440,22 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
   const list = path.join(dir, `runners-${which}.json`);
   if (fs.existsSync(list)) process.stdout.write(fs.readFileSync(list, "utf8"));
   else answer({ total_count: 0, runners: [] });
+} else if (endpoint === "repos/a/b/releases/latest") {
+  const chosen = path.join(dir, "latest.json");
+  const kept = path.join(dir, "releases.json");
+  const list = fs.existsSync(kept)
+    ? JSON.parse(fs.readFileSync(kept, "utf8"))
+    : [];
+  const latest = fs.existsSync(chosen)
+    ? JSON.parse(fs.readFileSync(chosen, "utf8"))
+    : list
+        .filter((r) => !r.draft && !r.prerelease)
+        .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+  if (!latest) {
+    process.stderr.write("gh: Not Found (HTTP 404)\n");
+    process.exit(1);
+  }
+  answer(latest);
 } else if (endpoint === "repos/a/b/releases") {
   const refused = path.join(dir, "releases-error");
   if (fs.existsSync(refused)) {

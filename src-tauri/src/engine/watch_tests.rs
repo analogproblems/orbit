@@ -934,6 +934,7 @@ async fn releases_are_read_and_kept_when_github_fails() {
     assert_eq!(r.since, Some(5));
     assert!(r.unseen.is_none() && r.error.is_none() && !r.drafts_hidden);
     assert_eq!(sent(d.path(), "GET repos/a/b/releases"), 1);
+    assert_eq!(sent(d.path(), "GET repos/a/b/releases/latest"), 1);
     assert_eq!(sent(d.path(), "GET tags"), 1);
     assert!(writes(d.path()).is_empty());
     // Bit's answer about repositories says it.

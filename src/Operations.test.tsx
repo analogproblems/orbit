@@ -1732,6 +1732,47 @@ describe("ci sentences", () => {
     expect(releaseDot(r({ latest, draftCount: 1 })).label).toBe(
       "Draft waiting",
     );
+    // Only a pre-release is out: said so, not "no releases", and a newer
+    // tag with none counts.
+    const beta = { ...release("v1.0.0-beta.1"), prerelease: true };
+    const preOnly = r({
+      prerelease: beta,
+      published: 1,
+      versionTags: 2,
+      unreleased: [tag("v1.0.0-beta.2")],
+      unreleasedCount: 1,
+    });
+    expect(releaseLines(preOnly)).toEqual([
+      "No full release yet, only pre-releases.",
+      "Newest pre-release: v1.0.0-beta.1.",
+      "The tag v1.0.0-beta.2 has no release.",
+    ]);
+    expect(releaseDot(preOnly).label).toBe("Tag with no release");
+    expect(
+      releaseDot({ ...preOnly, unreleased: [], unreleasedCount: 0 }).label,
+    ).toBe("Pre-releases only");
+    // A draft for a tag already pushed.
+    expect(
+      releaseLines(
+        r({
+          drafts: [drafts[1]],
+          draftCount: 1,
+          versionTags: 1,
+        }),
+      ),
+    ).toEqual([
+      "Nothing published yet.",
+      "Draft v1.1.0 waits to be published, with 0 files.",
+    ]);
+    expect(releaseLines(r({ versionTags: 3 }))).toEqual([
+      "No releases on GitHub yet.",
+    ]);
+    // GitHub has more releases than Orbit read: no tag is said to have
+    // none.
+    expect(releaseLines(r({ latest, moreReleases: true }))).toEqual([
+      "Latest release: v1.0.0.",
+      "GitHub has more releases than the newest 100 Orbit read, so Orbit can’t say which version tags have none, and there may be more drafts.",
+    ]);
   });
 
   it("say how a place's runners stand", () => {

@@ -1421,16 +1421,24 @@ export function releaseLines(r: RepoReleases) {
     lines.push(
       `Latest release: ${titled(r.latest.tag, r.latest.name)}.${since}`,
     );
+  } else if (r.published > 0) {
+    lines.push("No full release yet, only pre-releases.");
+  } else if (r.draftCount > 0) {
+    lines.push("Nothing published yet.");
   } else if (r.unreleasedCount > 0) {
     lines.push(
       `No releases on GitHub. Its newest version tag is ${r.unreleased[0].name}.`,
     );
+  } else if (r.versionTags > 0) {
+    lines.push("No releases on GitHub yet.");
   } else {
     lines.push("No releases or version tags yet.");
   }
   if (r.prerelease)
     lines.push(
-      `A newer pre-release is out: ${titled(r.prerelease.tag, r.prerelease.name)}.`,
+      r.latest
+        ? `A newer pre-release is out: ${titled(r.prerelease.tag, r.prerelease.name)}.`
+        : `Newest pre-release: ${titled(r.prerelease.tag, r.prerelease.name)}.`,
     );
   for (const d of r.drafts)
     lines.push(
@@ -1445,11 +1453,17 @@ export function releaseLines(r: RepoReleases) {
     lines.push(
       "GitHub shows drafts only to accounts that can push here, and Orbit’s sign-in can’t, so any drafts aren’t listed.",
     );
-  if (r.latest && r.unreleasedCount === 1)
+  // With nothing out, tags without a release are how work goes.
+  const out = r.latest || r.published > 0;
+  if (out && r.unreleasedCount === 1)
     lines.push(`The tag ${r.unreleased[0].name} has no release.`);
-  else if (r.latest && r.unreleasedCount > 1)
+  else if (out && r.unreleasedCount > 1)
     lines.push(
       `${r.unreleasedCount} newer version tags have no release: ${r.unreleased.map((t) => t.name).join(", ")}${r.unreleasedCount > r.unreleased.length ? " and more" : ""}.`,
+    );
+  if (r.moreReleases)
+    lines.push(
+      "GitHub has more releases than the newest 100 Orbit read, so Orbit can’t say which version tags have none, and there may be more drafts.",
     );
   if (r.moreTags)
     lines.push(
@@ -1463,9 +1477,11 @@ export function releaseDot(r: RepoReleases) {
     return { variant: "neutral" as const, label: "Not seen" };
   if (r.draftCount > 0)
     return { variant: "warning" as const, label: "Draft waiting" };
-  if (r.latest && r.unreleasedCount > 0)
+  if ((r.latest || r.published > 0) && r.unreleasedCount > 0)
     return { variant: "warning" as const, label: "Tag with no release" };
   if (r.latest) return { variant: "success" as const, label: "Released" };
+  if (r.published > 0)
+    return { variant: "neutral" as const, label: "Pre-releases only" };
   return { variant: "neutral" as const, label: "No releases" };
 }
 /** Each repository's latest release, the drafts waiting to be published

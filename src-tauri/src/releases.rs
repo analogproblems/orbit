@@ -1,12 +1,13 @@
 //! Releases: each connected repository's GitHub releases and version tags,
 //! read every `EVERY`, a few repositories a pass, while Watch CI is on. A
 //! version tag is one named for a version, such as `v1.2.0` or `1.2.0`.
-//! Orbit works out the latest release, a newer pre-release, the drafts
-//! waiting to be published, the version tags with no release, and how many
-//! commits the default branch has had since the latest release. GitHub
-//! shows drafts only to accounts that can push to the repository, so
-//! Orbit says when its sign-in can't. Nothing here reaches GitHub but
-//! reads.
+//! Orbit takes the latest release from GitHub, and works out a newer
+//! pre-release, the drafts waiting to be published, the version tags with
+//! no release, and how many commits the default branch has had since the
+//! latest release. GitHub shows drafts only to accounts that can push to
+//! the repository, so Orbit says when its sign-in can't. Orbit reads one
+//! page of releases, so when GitHub has more, it doesn't say which tags
+//! have none. Nothing here reaches GitHub but reads.
 use crate::{
     github::PAGE,
     logs,
@@ -61,10 +62,11 @@ pub struct RepoReleases {
     /// The default branch, and its latest commit.
     pub branch: String,
     pub head: String,
-    /// The latest release: the newest made that is neither a draft nor a
-    /// pre-release, as GitHub counts it.
+    /// The latest release, as GitHub marks it: usually the newest made that
+    /// is neither a draft nor a pre-release.
     pub latest: Option<Release>,
-    /// The newest pre-release made after it, or any, when there is none.
+    /// The newest pre-release made after it, or the newest, when there is
+    /// none.
     pub prerelease: Option<Release>,
     /// Drafts waiting to be published, the newest first, at most `SHOWN`,
     /// and how many there are.
@@ -79,8 +81,10 @@ pub struct RepoReleases {
     pub version_tags: u32,
     pub more_tags: bool,
     /// Version tags with no release, not even a draft, newer than the
-    /// latest release (or any, when there is none), the highest version
-    /// first, at most `SHOWN`, and how many there are.
+    /// latest release, or the newest pre-release when there is none, or
+    /// any, when nothing is published, the highest version first, at most
+    /// `SHOWN`, and how many there are. None when GitHub has more releases
+    /// than Orbit read, as one of those may name a tag.
     pub unreleased: Vec<Tag>,
     pub unreleased_count: u32,
     /// How many commits the default branch has had since the latest
@@ -255,6 +259,14 @@ pub async fn read(repo: &str) -> Result<RepoReleases, String> {
         }
         Err(e) => return Err(e),
     };
+    // The one GitHub marks latest, which may be off the page Orbit read,
+    // or not the newest when someone chose another. None has none.
+    let marked = format!("repos/{repo}/releases/latest");
+    let latest = match crate::github::api(&marked, "GET", &[], None).await {
+        Ok(v) => v,
+        Err(e) if e.contains("HTTP 404") => Value::Null,
+        Err(e) => return Err(e),
+    };
     let refs = crate::github::api(
         "graphql",
         "POST",
@@ -266,7 +278,7 @@ pub async fn read(repo: &str) -> Result<RepoReleases, String> {
         None,
     )
     .await?;
-    let (mut read, base) = understand(repo, &listed, &refs, now)?;
+    let (mut read, base) = understand(repo, &listed, &latest, &refs, now)?;
     if let Some(base) = base {
         read.since = crate::github::ahead_by(repo, &base, &read.head).await?;
     }
@@ -277,12 +289,14 @@ pub fn unseen(repo: &str) -> String {
     format!("Orbit can't see the releases of {repo}: GitHub doesn't show them to Orbit's sign-in.")
 }
 
-/// What GitHub's list of releases and its answer to `query` say, and the
-/// commit of the latest release's tag, to count the commits since, when
-/// Orbit read that tag and the default branch has a commit.
+/// What GitHub's list of releases, the release it marks latest (null for
+/// none) and its answer to `query` say, and the commit of the latest
+/// release's tag, to count the commits since, when Orbit read that tag and
+/// the default branch has a commit.
 pub fn understand(
     repo: &str,
     listed: &Value,
+    latest: &Value,
     refs: &Value,
     now: DateTime<Utc>,
 ) -> Result<(RepoReleases, Option<String>), String> {
@@ -315,15 +329,14 @@ pub fn understand(
     let newest = |a: &&Release, b: &&Release| made(b).cmp(&made(a));
     let mut published: Vec<&Release> = releases.iter().filter(|r| !r.draft).collect();
     published.sort_by(newest);
-    let latest = published
-        .iter()
-        .find(|r| !r.prerelease)
-        .map(|r| (*r).clone());
+    let latest = release(latest).filter(|l| !l.draft && !l.prerelease);
     let prerelease = published
         .iter()
         .filter(|r| r.prerelease)
         .find(|r| latest.as_ref().is_none_or(|l| made(r) > made(l)))
         .map(|r| (*r).clone());
+    // GitHub may have more than the page Orbit read.
+    let more_releases = list.len() >= PAGE;
     let mut drafts: Vec<Release> = releases.iter().filter(|r| r.draft).cloned().collect();
     drafts.sort_by(|a, b| newest(&a, &b));
     let draft_count = drafts.len() as u32;
@@ -333,9 +346,13 @@ pub fn understand(
         .iter()
         .filter_map(|t| Some((t, version(&t.name)?)))
         .collect();
-    let floor = latest.as_ref().and_then(|l| version(&l.tag));
+    // Newer than what is out: the latest release, or with none, the newest
+    // pre-release.
+    let out = latest.as_ref().or(prerelease.as_ref());
+    let floor = out.and_then(|l| version(&l.tag));
     let mut unreleased: Vec<&(&Tag, Version)> = versioned
         .iter()
+        .filter(|_| !more_releases)
         .filter(|(t, _)| !releases.iter().any(|r| r.tag == t.name))
         .filter(|(_, v)| floor.as_ref().is_none_or(|f| v > f))
         .collect();
@@ -357,7 +374,7 @@ pub fn understand(
         drafts,
         draft_count,
         published: published.len() as u32,
-        more_releases: list.len() >= PAGE,
+        more_releases,
         version_tags: versioned.len() as u32,
         more_tags: total > nodes.len() as u64,
         unreleased: unreleased
@@ -470,14 +487,19 @@ pub fn sentence(r: &RepoReleases) -> String {
             };
             format!(" Its latest release is {}{since}.", l.tag)
         }
+        None if r.published > 0 => " It has no full release yet, only pre-releases.".to_string(),
+        None if r.draft_count > 0 => " It has nothing published yet.".to_string(),
         None if r.unreleased_count > 0 => format!(
             " It has no releases on GitHub; its newest version tag is {}.",
             r.unreleased[0].name
         ),
-        None => " It has no releases on GitHub.".to_string(),
+        None if r.version_tags > 0 => " It has no releases on GitHub yet.".to_string(),
+        None => " It has no releases or version tags yet.".to_string(),
     };
-    if let Some(p) = &r.prerelease {
-        text.push_str(&format!(" A newer pre-release, {}, is out.", p.tag));
+    match (&r.prerelease, &r.latest) {
+        (Some(p), Some(_)) => text.push_str(&format!(" A newer pre-release, {}, is out.", p.tag)),
+        (Some(p), None) => text.push_str(&format!(" Its newest pre-release is {}.", p.tag)),
+        _ => {}
     }
     match r.draft_count {
         0 => {}
@@ -487,7 +509,8 @@ pub fn sentence(r: &RepoReleases) -> String {
         )),
         n => text.push_str(&format!(" {n} drafts wait to be published.")),
     }
-    if r.latest.is_some() {
+    // With nothing out, tags without a release are how work goes.
+    if r.latest.is_some() || r.published > 0 {
         match r.unreleased_count {
             0 => {}
             1 => text.push_str(&format!(

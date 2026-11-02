@@ -36,6 +36,18 @@ fn listed(id: u64, tag: &str, days: i64, draft: bool, prerelease: bool) -> Value
         "assets": [{ "id": 1 }, { "id": 2 }],
     })
 }
+/// The release GitHub marks latest in a list, when nobody chose another:
+/// the newest made that is neither a draft nor a pre-release, or none.
+fn marked(list: &Value) -> Value {
+    let mut out: Vec<&Value> = list
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|r| r["draft"] != true && r["prerelease"] != true)
+        .collect();
+    out.sort_by(|a, b| b["created_at"].as_str().cmp(&a["created_at"].as_str()));
+    out.first().map_or(Value::Null, |r| (*r).clone())
+}
 /// GitHub's answer about a repository's tags, as `(name, commit)`, the
 /// first an annotated tag.
 fn tags(list: &[(&str, char)], total: u64, permission: &str) -> Value {
@@ -153,7 +165,7 @@ fn the_latest_release_drafts_and_tags_with_no_release_are_worked_out() {
         7,
         "WRITE",
     );
-    let (r, base) = understand("a/b", &list, &refs, now()).unwrap();
+    let (r, base) = understand("a/b", &list, &marked(&list), &refs, now()).unwrap();
     assert_eq!(r.repo, "a/b");
     assert_eq!(r.read_at, stamp(now()));
     assert_eq!((r.branch.as_str(), r.head.clone()), ("main", sha('f')));
@@ -184,7 +196,8 @@ fn the_latest_release_drafts_and_tags_with_no_release_are_worked_out() {
     assert!(!r.more_tags && !r.more_releases && !r.drafts_hidden);
     // The latest release's tag, an annotated one here, through to its commit.
     assert_eq!(base, Some(sha('b')));
-    let (_, base) = understand("a/b", &list, &tags(&[("v0.2.0", 'b')], 1, "ADMIN"), now()).unwrap();
+    let one = tags(&[("v0.2.0", 'b')], 1, "ADMIN");
+    let (_, base) = understand("a/b", &list, &marked(&list), &one, now()).unwrap();
     assert_eq!(base, Some(sha('b')));
 }
 
@@ -195,7 +208,7 @@ fn a_repository_with_no_releases_lists_every_version_tag() {
         300,
         "READ",
     );
-    let (r, base) = understand("a/b", &json!([]), &refs, now()).unwrap();
+    let (r, base) = understand("a/b", &json!([]), &Value::Null, &refs, now()).unwrap();
     assert_eq!(r.latest, None);
     assert_eq!(base, None);
     let names: Vec<&str> = r.unreleased.iter().map(|t| t.name.as_str()).collect();
@@ -207,10 +220,16 @@ fn a_repository_with_no_releases_lists_every_version_tag() {
         sentence(&r),
         " It has no releases on GitHub; its newest version tag is v1.4.0."
     );
-    let none = understand("a/b", &json!([]), &tags(&[], 0, "ADMIN"), now())
-        .unwrap()
-        .0;
-    assert_eq!(sentence(&none), " It has no releases on GitHub.");
+    let none = understand(
+        "a/b",
+        &json!([]),
+        &Value::Null,
+        &tags(&[], 0, "ADMIN"),
+        now(),
+    )
+    .unwrap()
+    .0;
+    assert_eq!(sentence(&none), " It has no releases or version tags yet.");
 }
 
 #[test]
@@ -220,7 +239,8 @@ fn drafts_and_tags_are_kept_to_a_few_and_counted() {
         .collect();
     let names: Vec<String> = (0..15).map(|n| format!("v2.{n}.0")).collect();
     let refs: Vec<(&str, char)> = names.iter().map(|n| (n.as_str(), 'a')).collect();
-    let (r, _) = understand("a/b", &json!(list), &tags(&refs, 15, "ADMIN"), now()).unwrap();
+    let refs = tags(&refs, 15, "ADMIN");
+    let (r, _) = understand("a/b", &json!(list), &Value::Null, &refs, now()).unwrap();
     assert_eq!((r.drafts.len(), r.draft_count), (SHOWN, 12));
     // The newest draft first.
     assert_eq!(r.drafts[0].id, 12);
@@ -231,7 +251,8 @@ fn drafts_and_tags_are_kept_to_a_few_and_counted() {
     let full: Vec<Value> = (1..=PAGE as u64)
         .map(|n| listed(n, &format!("v0.0.{n}"), 1, false, false))
         .collect();
-    let (r, _) = understand("a/b", &json!(full), &tags(&[], 0, "ADMIN"), now()).unwrap();
+    let full = json!(full);
+    let (r, _) = understand("a/b", &full, &marked(&full), &tags(&[], 0, "ADMIN"), now()).unwrap();
     assert!(r.more_releases);
 }
 
@@ -239,13 +260,21 @@ fn drafts_and_tags_are_kept_to_a_few_and_counted() {
 fn githubs_odd_answers_are_errors_or_left_out() {
     let refs = tags(&[], 0, "ADMIN");
     assert_eq!(
-        understand("a/b", &json!({ "message": "x" }), &refs, now()).unwrap_err(),
+        understand(
+            "a/b",
+            &json!({ "message": "x" }),
+            &Value::Null,
+            &refs,
+            now()
+        )
+        .unwrap_err(),
         "GitHub didn't return the releases."
     );
     assert_eq!(
         understand(
             "a/b",
             &json!([]),
+            &Value::Null,
             &json!({ "errors": [{ "message": "Something went wrong" }] }),
             now()
         )
@@ -256,6 +285,7 @@ fn githubs_odd_answers_are_errors_or_left_out() {
         understand(
             "a/b",
             &json!([]),
+            &Value::Null,
             &json!({ "data": { "repository": null } }),
             now()
         )
@@ -280,7 +310,7 @@ fn githubs_odd_answers_are_errors_or_left_out() {
             { "name": "v4.0.0", "target": { "__typename": "Tree", "oid": sha('2') } },
         ] },
     } } });
-    let (r, base) = understand("a/b", &list, &odd, now()).unwrap();
+    let (r, base) = understand("a/b", &list, &list[2], &odd, now()).unwrap();
     let latest = r.latest.unwrap();
     assert_eq!(
         (latest.id, latest.name.as_str(), latest.url.as_str()),
@@ -292,6 +322,85 @@ fn githubs_odd_answers_are_errors_or_left_out() {
     // With no default branch commit, there is nothing to count since.
     assert_eq!(base, None);
     assert!(r.drafts_hidden);
+}
+
+#[test]
+fn the_latest_release_is_the_one_github_marks_and_a_full_page_says_nothing_of_tags() {
+    // 100 newer pre-releases push the latest release off the page Orbit
+    // reads, and one of them names a tag on it.
+    let full: Vec<Value> = (1..=PAGE as u64)
+        .map(|n| listed(n + 1, &format!("v2.0.0-beta.{n}"), 1, false, true))
+        .collect();
+    let latest = listed(1, "v1.0.0", 90, false, false);
+    let refs = tags(
+        &[("v2.0.0-beta.100", 'c'), ("v1.0.1", 'b'), ("v1.0.0", 'a')],
+        3,
+        "ADMIN",
+    );
+    let (r, base) = understand("a/b", &json!(full), &latest, &refs, now()).unwrap();
+    assert_eq!(r.latest.as_ref().map(|l| l.id), Some(1));
+    assert_eq!(base, Some(sha('a')));
+    assert_eq!(r.prerelease.as_ref().map(|p| p.id), Some(2));
+    // v1.0.1's release may be among those Orbit didn't read.
+    assert!(r.more_releases);
+    assert!(r.unreleased.is_empty() && r.unreleased_count == 0);
+    assert_eq!(r.version_tags, 3);
+    assert_eq!(
+        sentence(&r),
+        " Its latest release is v1.0.0. A newer pre-release, v2.0.0-beta.1, is out."
+    );
+    // Someone kept a newer maintenance release from being marked latest.
+    let list = json!([
+        listed(2, "v1.4.1", 1, false, false),
+        listed(1, "v2.0.0", 5, false, false),
+    ]);
+    let refs = tags(&[("v1.4.1", 'b'), ("v2.0.0", 'a')], 2, "ADMIN");
+    let (r, base) = understand("a/b", &list, &list[1], &refs, now()).unwrap();
+    assert_eq!(r.latest.map(|l| l.tag), Some("v2.0.0".into()));
+    assert_eq!(base, Some(sha('a')));
+    assert!(r.unreleased.is_empty() && !r.more_releases);
+    // Nothing GitHub marks latest is a draft or a pre-release.
+    let beta = listed(3, "v3.0.0-beta.1", 1, false, true);
+    let (r, _) = understand("a/b", &json!([beta.clone()]), &beta, &refs, now()).unwrap();
+    assert!(r.latest.is_none());
+}
+
+#[test]
+fn pre_releases_and_drafts_alone_are_said_so() {
+    // Only a pre-release is out, and a newer tag has no release.
+    let list = json!([listed(1, "v1.0.0-beta.1", 3, false, true)]);
+    let refs = tags(
+        &[
+            ("v1.0.0-beta.2", 'b'),
+            ("v1.0.0-beta.1", 'a'),
+            ("v0.9.0", '9'),
+        ],
+        3,
+        "ADMIN",
+    );
+    let (r, base) = understand("a/b", &list, &Value::Null, &refs, now()).unwrap();
+    assert_eq!((r.latest.is_none(), r.published), (true, 1));
+    assert_eq!(r.prerelease.as_ref().map(|p| p.id), Some(1));
+    assert_eq!(base, None);
+    // Only tags newer than the newest pre-release count.
+    let names: Vec<&str> = r.unreleased.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, ["v1.0.0-beta.2"]);
+    assert_eq!(
+        sentence(&r),
+        " It has no full release yet, only pre-releases. Its newest pre-release is v1.0.0-beta.1. \
+         Its tag v1.0.0-beta.2 has no release."
+    );
+    // A draft for a tag already pushed: nothing is out, and the tag has
+    // its draft.
+    let list = json!([listed(1, "v1.0.0", 1, true, false)]);
+    let refs = tags(&[("v1.0.0", 'a')], 1, "ADMIN");
+    let (r, _) = understand("a/b", &list, &Value::Null, &refs, now()).unwrap();
+    assert_eq!((r.draft_count, r.published, r.version_tags), (1, 0, 1));
+    assert!(r.unreleased.is_empty());
+    assert_eq!(
+        sentence(&r),
+        " It has nothing published yet. A draft, v1.0.0, waits to be published."
+    );
 }
 
 #[test]

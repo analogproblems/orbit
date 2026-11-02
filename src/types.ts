@@ -1751,9 +1751,10 @@ export interface RepoReleases {
   /** The default branch, and its latest commit. */
   branch: string;
   head: string;
-  /** The newest release that is neither a draft nor a pre-release. */
+  /** The release GitHub marks latest: usually the newest that is neither
+   * a draft nor a pre-release. */
   latest?: Release | null;
-  /** The newest pre-release since it. */
+  /** The newest pre-release since it, or the newest, with none. */
   prerelease?: Release | null;
   /** Drafts waiting to be published, the newest first, a few of them, and
    * how many there are. */
@@ -1766,8 +1767,9 @@ export interface RepoReleases {
   /** How many version tags Orbit read, and whether there are more tags. */
   versionTags: number;
   moreTags?: boolean;
-  /** Version tags with no release, newer than the latest, the highest
-   * first, a few of them, and how many there are. */
+  /** Version tags with no release, newer than the latest (or the newest
+   * pre-release), the highest first, a few of them, and how many there
+   * are. None when GitHub has more releases than Orbit read. */
   unreleased: ReleaseTag[];
   unreleasedCount: number;
   /** Commits on the default branch since the latest release's tag. */
