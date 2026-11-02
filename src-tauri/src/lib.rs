@@ -14,6 +14,7 @@ pub mod claude;
 pub mod cli;
 pub mod client;
 pub mod clock;
+pub mod dependabot;
 pub mod devcontainer;
 pub mod engine;
 pub mod extras;

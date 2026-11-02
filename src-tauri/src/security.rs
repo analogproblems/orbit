@@ -146,6 +146,12 @@ pub struct Alert {
     pub line: u64,
     /// The version that fixes it, for a dependency, when there is one.
     pub fixed_in: String,
+    /// Every range of versions its advisory affects, for a dependency's
+    /// package, as GitHub writes them: "< 4.17.21" or ">= 2.0.0, < 2.0.5".
+    /// An advisory can affect more than one release line. Empty when
+    /// GitHub didn't list them, or Orbit couldn't keep them all.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ranges: Vec<String>,
     pub url: String,
     pub created_at: String,
     /// For a secret: whether GitHub says it still works (`active`),
@@ -465,6 +471,51 @@ fn plain(text: &str) -> String {
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     shorten(&text, MAX_TEXT)
 }
+/// The most ranges Orbit keeps for one alert.
+const MAX_RANGES: usize = 20;
+/// Every range of versions a Dependabot alert's advisory affects for its
+/// package: the advisory's vulnerabilities in the same ecosystem for the
+/// same package, ignoring case. None when Orbit can't keep them all, so
+/// that what it keeps is never taken for the whole list: more than
+/// `MAX_RANGES`, or one without a range, or too long to keep whole.
+fn ranges(v: &Value, package: &str) -> Vec<String> {
+    let ecosystem = [
+        &v["dependency"]["package"]["ecosystem"],
+        &v["security_vulnerability"]["package"]["ecosystem"],
+    ]
+    .iter()
+    .map(|e| str_of(e))
+    .find(|e| !e.is_empty())
+    .unwrap_or_default();
+    if package.is_empty() {
+        return vec![];
+    }
+    let mut ranges: Vec<String> = vec![];
+    let listed = v["security_advisory"]["vulnerabilities"].as_array();
+    for vulnerability in listed.into_iter().flatten() {
+        let p = &vulnerability["package"];
+        if !str_of(&p["name"]).eq_ignore_ascii_case(package)
+            || !str_of(&p["ecosystem"]).eq_ignore_ascii_case(&ecosystem)
+        {
+            continue;
+        }
+        let raw = vulnerability["vulnerable_version_range"]
+            .as_str()
+            .unwrap_or_default();
+        let range = str_of(&vulnerability["vulnerable_version_range"]);
+        if range.is_empty() || raw.chars().count() > MAX_TEXT {
+            return vec![];
+        }
+        if ranges.contains(&range) {
+            continue;
+        }
+        if ranges.len() == MAX_RANGES {
+            return vec![];
+        }
+        ranges.push(range);
+    }
+    ranges
+}
 fn str_of(v: &Value) -> String {
     v.as_str().map(plain).unwrap_or_default()
 }
@@ -496,6 +547,7 @@ pub fn alert(source: Source, v: &Value) -> Option<Alert> {
             a.title = str_of(&v["security_advisory"]["summary"]);
             a.path = str_of(&v["dependency"]["manifest_path"]);
             a.fixed_in = str_of(&vulnerability["first_patched_version"]["identifier"]);
+            a.ranges = ranges(v, &a.subject);
             a.severity = [
                 &vulnerability["severity"],
                 &v["security_advisory"]["severity"],

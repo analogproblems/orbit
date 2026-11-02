@@ -1271,9 +1271,9 @@ describe("Bit", () => {
     const lines = within(chat()).getByRole("list", { name: brief.text });
     const items = within(lines).getAllByRole("listitem");
     expect(items).toHaveLength(brief.lines.length);
-    expect(within(lines).getAllByText("New")).toHaveLength(2);
-    expect(within(items[1]).getByText("New")).toBeTruthy();
-    expect(within(items[0]).queryByText("New")).toBeNull();
+    expect(within(lines).getAllByText("New")).toHaveLength(3);
+    expect(within(items[0]).getByText("New")).toBeTruthy();
+    expect(within(items[1]).queryByText("New")).toBeNull();
     expect(
       within(chat()).queryAllByRole("button", { name: "Open settings" }),
     ).toHaveLength(0);

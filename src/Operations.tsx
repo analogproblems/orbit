@@ -36,6 +36,7 @@ import {
   type Broke,
   type CiFailure,
   type CiState,
+  type DependabotUpdate,
   type OpsAction,
   type OpsItem,
   type OpsThread,
@@ -1298,6 +1299,88 @@ function SecuritySettings() {
   );
 }
 
+/** The dot for one of Dependabot's pull requests. */
+export function updateDot(u: DependabotUpdate) {
+  if (u.ready) return { variant: "success" as const, label: "Ready" };
+  if (u.checks === "failing")
+    return { variant: "error" as const, label: "Checks failing" };
+  if (u.conflicts) return { variant: "warning" as const, label: "Conflicts" };
+  return { variant: "neutral" as const, label: "Not ready yet" };
+}
+/** How many of Dependabot's pull requests are open, and how many are
+ * ready. */
+export function updatesSummary(all: DependabotUpdate[]) {
+  const ready = all.filter((u) => u.ready).length;
+  const open =
+    all.length === 1
+      ? "1 pull request from Dependabot is open"
+      : `${all.length} pull requests from Dependabot are open`;
+  const some = ready === 0 ? "none is" : ready === 1 ? "1 is" : `${ready} are`;
+  return `${open}, and ${some} ready to merge.`;
+}
+/** Dependabot's open pull requests: what each updates, the alerts it
+ * fixes, its checks and whether GitHub says it can merge, fixes for the
+ * most severe alerts first. Listed only while there are some. */
+function DependabotUpdates() {
+  const { snapshot: s } = useOrbit();
+  const all = s.updates ?? [];
+  if (!all.length) return null;
+  return (
+    <VStack gap={3}>
+      <Heading level={3}>Dependabot updates</Heading>
+      <Text color="secondary">
+        {updatesSummary(all)} Fixes for the most severe alerts come first. Ready
+        means every check on its latest commit passed and GitHub says it can
+        merge. Orbit never merges them.
+      </Text>
+      <Card padding={0}>
+        <List hasDividers aria-label="Dependabot updates">
+          {all.map((u) => {
+            const dot = updateDot(u);
+            return (
+              <ListItem
+                key={u.prId}
+                startContent={
+                  <StatusDot variant={dot.variant} label={dot.label} />
+                }
+                label={
+                  <Text weight="medium" maxLines={2}>
+                    {u.repo}#{u.number} · {u.title}
+                  </Text>
+                }
+                description={
+                  <VStack gap={1}>
+                    <Text>{u.what}</Text>
+                    {u.fixes.map((f) => (
+                      <HStack key={f.number} gap={2} vAlign="start">
+                        <Token
+                          label={severityLabels[f.severity]}
+                          color={severityColours[f.severity]}
+                          size="sm"
+                        />
+                        <Text color="secondary">
+                          Fixes Dependabot alert {f.number}, {f.package}.
+                        </Text>
+                      </HStack>
+                    ))}
+                    <Text color="secondary">
+                      {u.checksText} {u.mergeText}
+                    </Text>
+                    {u.error && u.error !== u.mergeText && (
+                      <Text color="secondary">{u.error}</Text>
+                    )}
+                  </VStack>
+                }
+                onClick={() => openLink(u.url)}
+              />
+            );
+          })}
+        </List>
+      </Card>
+    </VStack>
+  );
+}
+
 /** The self-hosted runners Orbit sees for each repository, and for each
  * organization that owns one, and where it can't see them. Places with
  * none aren't listed. */
@@ -1669,6 +1752,7 @@ export function Operations(go: AttentionHandlers) {
           </VStack>
           {security && <Security />}
           {security && <SecuritySettings />}
+          {security && <DependabotUpdates />}
           <Runners />
           <StorageUse />
           <RecentlyFixed />

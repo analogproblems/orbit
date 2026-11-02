@@ -315,6 +315,7 @@ The sidebar's **Live** item shows a pulsing dot while reviews are running. Anima
 - **CI by repository**: where each default branch stands (passing, failing, running, or no checks), how many followed pull requests fail, whether CI runs on its pull requests (see [Repositories with no CI](#repositories-with-no-ci)), and when Orbit last read it. When GitHub doesn't answer, the row says why and keeps what Orbit read before; a problem never closes because a read failed;
 - **Security alerts**: each repository's open Dependabot, code scanning and secret scanning alerts, and what Orbit can't see (see [Security alerts](#security-alerts)). This shows while **Watch CI** is off too;
 - **Security settings**: whether each repository's security settings match its owner's baseline, what Orbit can't see, and **Fix** for each setting a repository drifts on (see [Security settings](#security-settings)). This shows while **Watch CI** is off too;
+- **Dependabot updates**: Dependabot's open pull requests, with what each updates, the alerts it fixes, its checks and whether GitHub says it can merge, fixes for the most severe alerts first (see [Dependabot updates](#dependabot-updates)). This needs **Watch CI** and **Watch security alerts** on;
 - **Self-hosted runners**: the runners Orbit sees for each repository and for each organization that owns one, and where it can't see them (see [Runners](#runners));
 - **Actions storage**: each repository's caches and the artifacts it keeps (see [Actions storage](#actions-storage));
 - **Recently closed**: problems from the last two weeks, with why each closed. A problem stays longer while Orbit's issue about it is still open, or while its pull request is, so the comment keeps its item numbers;
@@ -483,6 +484,17 @@ Each setting a repository drifts on has a **Fix** button. Changing a setting alw
 
 An owner whose baseline has every switch off isn't read at all. Turning off **Watch security alerts**, or disconnecting a repository, forgets what Orbit read. Branch protection, rulesets and required checks are never part of a baseline, as they guard pushes, and Orbit never adds any.
 
+#### Dependabot updates
+
+Dependabot's open pull requests in connected repositories, those it made from a branch in the repository itself, have their own list on **Operations**, under **Dependabot updates**, while **Watch CI** and **Watch security alerts** are both on. Each row says:
+
+- **What it updates**, from Dependabot's title and description: "Updates lodash from 4.17.20 to 4.17.21, a patch update.", or for a group, "Updates 3 packages in the npm_and_yarn group: …". An update is **patch**, **minor** or **major** by the first part of the version that changes; for versions such as `1.0.0-beta` Orbit doesn't say.
+- **The alerts it fixes**: each open Dependabot alert for the same package, in the same folder, where none of the versions its advisory affects (such as "< 4.17.21", and any other release line it lists) include the version it updates to. Where GitHub doesn't say which versions are affected, or lists more than Orbit keeps (20), only the version that fixes the alert counts. A group across several folders claims no fix, as Orbit can't tell which package changes in which folder. Orbit uses the alerts it last read, so a new alert shows here once Orbit has read it, within half an hour.
+- **Its checks** on its latest commit, from what Orbit reads of CI: "All 6 of its checks passed.", "CI / test failed on 8888888." or "Its checks are still running.".
+- **Whether GitHub says it can merge**, such as "GitHub says it can merge.", "It conflicts with main." or "GitHub says a rule blocks merging it, such as a required review.". Orbit asks GitHub about a few each sync, and again when its latest commit or its base's latest commit changes, or 10 minutes later. While GitHub is still working it out, or doesn't answer, Orbit asks again after a minute, then waits twice as long each time, up to an hour, and what GitHub said before stands meanwhile.
+
+It's **Ready** when every check on its latest commit passed and GitHub says it can merge. While Orbit's latest read of CI for its repository failed, none is ready, and the row says so. Fixes for the most severe alerts come first, and Bit's [morning brief](#morning-brief) lists each fix for a high or critical alert, such as "Dependabot's fix for lodash (critical) in acme/api#64 isn't ready yet. It conflicts with main." or "… is ready to merge.". Select a row to open the pull request on GitHub. Orbit never merges them: ready is what it tells you.
+
 #### Clear to merge
 
 Orbit reviews a pull request automatically when it is open, not a draft, from a source Autopilot trusts, in a repository with **Automatic reviews** on. For each one, Orbit works out whether it is clear to merge at its latest commit. It is clear only when all of these hold:
@@ -624,6 +636,7 @@ Bit is Orbit's buddy: a little character with a face, at the bottom of the sideb
 Once a day, at the time you choose under **Settings**, **Buddy**, **Brief time** (09:00 unless you change it), Bit sums up in one note:
 
 - the pull requests Orbit reviews automatically that are clear to merge, with the head and base they're clear at;
+- Dependabot's fixes for high or critical alerts, and whether each is ready to merge or what's in the way (see [Dependabot updates](#dependabot-updates)). These need **Watch CI** and **Watch security alerts** on;
 - the stuck ones, and whose move it is: those Orbit already reminded the author about, after 2 hours, or put on **Needs you** for a person, after a day (see [Clear to merge](#clear-to-merge));
 - the open CI problems: a failing default branch or pull request, checks that ran without the base's latest commit, a repository with no CI on its pull requests, and risky settings in a repository's workflow files;
 - the security alerts that need you: secrets GitHub found, and high or critical Dependabot and code scanning alerts. These need **Watch security alerts** on;
@@ -753,7 +766,7 @@ Settings has seven pages: **Connections**, **Reviewers** (Codex, Claude and Anti
 | Wait for pushes to settle              | On                                 | On/off.                                                                                                                    |
 | GitHub status check                    | On                                 | On/off; applies while automatic publication is on.                                                                         |
 | Watch CI                               | On                                 | On/off; off stops reading CI and closes the CI problems open on Operations.                                                |
-| Watch security alerts                  | On                                 | On/off; off stops reading security alerts and settings, and closes the problems about alerts.                              |
+| Watch security alerts                  | On                                 | On/off; off stops reading security alerts, settings and Dependabot's pull requests, and closes the problems about alerts.  |
 | Security settings baseline             | Orbit's, for each owner            | Each setting on or off, for each owner of a connected repository.                                                          |
 | Keep security scan working files       | Off                                | On/off; when off, a scan's `artifacts/` folder is deleted once its findings are imported.                                  |
 | Allow access from a browser            | Off                                | On/off and a port from 1024 to 65535; changed from the desktop app only.                                                   |

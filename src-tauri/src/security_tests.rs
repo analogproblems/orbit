@@ -32,7 +32,13 @@ pub(crate) fn dependabot(number: u64, package: &str, severity: &str) -> Value {
         "security_advisory": {
             "ghsa_id": "GHSA-xxxx-yyyy-zzzz",
             "summary": format!("Prototype pollution in {package}"),
-            "severity": severity
+            "severity": severity,
+            "vulnerabilities": [{
+                "package": { "ecosystem": "npm", "name": package },
+                "severity": severity,
+                "vulnerable_version_range": "< 4.17.21",
+                "first_patched_version": { "identifier": "4.17.21" }
+            }]
         },
         "security_vulnerability": {
             "package": { "ecosystem": "npm", "name": package },
@@ -108,6 +114,7 @@ fn a_dependabot_alert_names_its_package_file_and_the_version_that_fixes_it() {
     assert_eq!(a.title, "Prototype pollution in lodash");
     assert_eq!(a.path, "package-lock.json");
     assert_eq!(a.fixed_in, "4.17.21");
+    assert_eq!(a.ranges, ["< 4.17.21"]);
     assert_eq!(a.url, "https://github.com/a/b/security/dependabot/12");
     assert!(a.needs_you());
     assert_eq!(a.name(), "lodash (critical)");
@@ -118,6 +125,47 @@ fn a_dependabot_alert_names_its_package_file_and_the_version_that_fixes_it() {
     assert!(!a.needs_you());
     // Without a number it isn't an alert.
     assert!(alert(Source::Dependabot, &json!({"state": "open"})).is_none());
+}
+
+/// An advisory can affect more than one release line of a package: the
+/// alert keeps each, and only those of its own package and ecosystem.
+#[test]
+fn a_dependabot_alert_keeps_every_range_its_advisory_affects_for_its_package() {
+    let mut v = dependabot(3, "django", "high");
+    v["dependency"]["package"]["ecosystem"] = json!("pip");
+    v["security_vulnerability"]["package"]["ecosystem"] = json!("pip");
+    v["security_vulnerability"]["vulnerable_version_range"] = json!(">= 1.11.8, < 1.11.10");
+    let line = |ecosystem: &str, name: &str, range: &str| {
+        json!({
+            "package": { "ecosystem": ecosystem, "name": name },
+            "vulnerable_version_range": range,
+        })
+    };
+    v["security_advisory"]["vulnerabilities"] = json!([
+        line("pip", "Django", ">= 1.11.8, < 1.11.10"),
+        line("pip", "django", ">= 2.0.0, < 2.0.2"),
+        line("pip", "django", ">= 2.0.0, < 2.0.2"),
+        line("npm", "django", "< 9.0.0"),
+        line("pip", "flask", "< 1.0"),
+        line("pip", "flask", ""),
+    ]);
+    let a = alert(Source::Dependabot, &v).unwrap();
+    assert_eq!(a.ranges, [">= 1.11.8, < 1.11.10", ">= 2.0.0, < 2.0.2"]);
+    // One of its own without a range, or one too long to keep whole, and
+    // Orbit can't say what they cover, so it keeps none.
+    let mut blank = v.clone();
+    blank["security_advisory"]["vulnerabilities"][5] = line("pip", "django", "");
+    assert!(alert(Source::Dependabot, &blank).unwrap().ranges.is_empty());
+    let mut long = v.clone();
+    long["security_advisory"]["vulnerabilities"][5] =
+        line("pip", "django", &format!("< {}", "1.".repeat(150)));
+    assert!(alert(Source::Dependabot, &long).unwrap().ranges.is_empty());
+    // Without the advisory's list, Orbit knows none.
+    v["security_advisory"]
+        .as_object_mut()
+        .unwrap()
+        .remove("vulnerabilities");
+    assert!(alert(Source::Dependabot, &v).unwrap().ranges.is_empty());
 }
 
 #[test]

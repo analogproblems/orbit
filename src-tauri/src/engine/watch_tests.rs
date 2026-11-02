@@ -3172,3 +3172,165 @@ async fn a_tap_reads_github_first_and_says_why_a_change_failed() {
         .await
         .is_err());
 }
+
+/// One of Dependabot's pull requests in `a/b`, against main's latest
+/// commit in `dependabot_ci`.
+fn dependabot_pull(number: u64, title: &str, head: &str) -> PullRequest {
+    let mut p = crate::types::tests::pr();
+    p.id = crate::types::pr_id("a/b", number);
+    p.number = number;
+    p.title = title.into();
+    p.author = "dependabot[bot]".into();
+    p.head_repo = "a/b".into();
+    p.head_sha = head.into();
+    p.base_sha = "1".repeat(40);
+    p
+}
+/// GitHub's CI for `a/b`: main at commit `1`, and these pull requests by
+/// number, head and how their one check ended.
+fn dependabot_ci(dir: &Path, pulls: &[(u64, &str, &str)]) {
+    let rollup = |result: &str| {
+        json!({ "contexts": {
+            "pageInfo": { "hasNextPage": false, "endCursor": null },
+            "nodes": [{
+                "__typename": "CheckRun",
+                "name": "test",
+                "status": "COMPLETED",
+                "conclusion": result,
+                "detailsUrl": "https://github.com/a/b/actions/runs/1/job/2",
+                "checkSuite": { "workflowRun": { "workflow": { "name": "CI" } } }
+            }]
+        } })
+    };
+    let nodes: Vec<_> = pulls
+        .iter()
+        .map(|(number, head, result)| {
+            json!({
+                "number": number,
+                "isDraft": false,
+                "headRefOid": head,
+                "commits": { "nodes": [{ "commit": { "oid": head, "statusCheckRollup": rollup(result) } }] }
+            })
+        })
+        .collect();
+    let v = json!({ "data": { "repository": {
+        "defaultBranchRef": { "name": "main", "target": {
+            "oid": "1".repeat(40),
+            "messageHeadline": "Update the build",
+            "statusCheckRollup": rollup("SUCCESS")
+        } },
+        "pullRequests": { "pageInfo": { "hasNextPage": false }, "nodes": nodes }
+    } } });
+    std::fs::write(dir.join("answer.json"), v.to_string()).unwrap();
+}
+/// What GitHub says about whether pull request `number` merges.
+fn dependabot_merges(dir: &Path, number: u64, head: &str, mergeable: bool, state: &str) {
+    let v = json!({
+        "user": { "login": "dependabot[bot]" },
+        "head": { "sha": head },
+        "base": { "sha": "1".repeat(40), "ref": "main" },
+        "mergeable": mergeable,
+        "mergeable_state": state,
+    });
+    std::fs::write(dir.join(format!("pull-{number}.json")), v.to_string()).unwrap();
+}
+
+/// A green patch update, a failing major update and a security fix for a
+/// high alert that conflicts: each shows rightly, the fix first, and in
+/// the morning brief. GitHub is asked once about each and nothing is
+/// written; with Watch security alerts off, they go.
+#[cfg(unix)]
+#[tokio::test]
+async fn dependabots_pull_requests_show_what_they_fix_and_whether_theyre_ready() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    let (patch, major, fix) = ("4".repeat(40), "5".repeat(40), "6".repeat(40));
+    dependabot_ci(
+        d.path(),
+        &[
+            (10, &patch, "SUCCESS"),
+            (11, &major, "FAILURE"),
+            (12, &fix, "SUCCESS"),
+        ],
+    );
+    dependabot_merges(d.path(), 10, &patch, true, "clean");
+    dependabot_merges(d.path(), 11, &major, true, "unstable");
+    dependabot_merges(d.path(), 12, &fix, false, "dirty");
+    let mut qs = crate::security::tests::dependabot(7, "qs", "high");
+    qs["security_vulnerability"]["vulnerable_version_range"] = json!("< 6.10.3");
+    qs["security_advisory"]["vulnerabilities"][0]["vulnerable_version_range"] = json!("< 6.10.3");
+    qs["security_vulnerability"]["first_patched_version"]["identifier"] = json!("6.10.3");
+    alerts(d.path(), "dependabot", &[qs]);
+    let e = connected(d.path()).await;
+    e.update(|s| {
+        s.prs = vec![
+            dependabot_pull(10, "Bump vite from 5.4.10 to 5.4.11", &patch),
+            dependabot_pull(11, "Bump react from 18.3.1 to 19.0.0", &major),
+            dependabot_pull(12, "Bump qs from 6.10.1 to 6.10.3", &fix),
+        ];
+    })
+    .await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    for n in [10, 11, 12] {
+        assert_eq!(
+            sent(d.path(), &format!("GET repos/a/b/pulls/{n}")),
+            1,
+            "{n}"
+        );
+    }
+    assert!(writes(d.path()).is_empty());
+
+    let shown = e.shown_snapshot().await;
+    let rows: Vec<_> = shown
+        .updates
+        .iter()
+        .map(|u| (u.number, u.ready, u.conflicts, u.checks))
+        .collect();
+    use crate::ci::CiState;
+    assert_eq!(
+        rows,
+        [
+            (12, false, true, CiState::Passing),
+            (10, true, false, CiState::Passing),
+            (11, false, false, CiState::Failing),
+        ]
+    );
+    let fix = &shown.updates[0];
+    assert_eq!(
+        fix.what,
+        "Updates qs from 6.10.1 to 6.10.3, a patch update."
+    );
+    assert_eq!(fix.fixes[0].name, "qs (high)");
+    assert_eq!(fix.merge_text, "It conflicts with main.");
+    assert_eq!(
+        shown.updates[2].what,
+        "Updates react from 18.3.1 to 19.0.0, a major update."
+    );
+    assert_eq!(shown.updates[2].checks_text, "CI / test failed on 5555555.");
+    let brief: Vec<_> = crate::brief::lines(&shown)
+        .into_iter()
+        .filter(|l| l.key.starts_with("dependabot:"))
+        .map(|l| l.text)
+        .collect();
+    assert_eq!(
+        brief,
+        ["Dependabot's fix for qs (high) in a/b#12 isn't ready yet. It conflicts with main."]
+    );
+
+    // Its state is saved, and Watch security alerts off forgets it.
+    drop(e);
+    let e = connected(d.path()).await;
+    assert_eq!(e.snapshot().await.dependabot.len(), 3);
+    e.update_settings(crate::types::SettingsPatch {
+        watch_security: Some(false),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let shown = e.shown_snapshot().await;
+    assert!(shown.dependabot.is_empty());
+    assert!(shown.updates.is_empty());
+    assert_eq!(sent(d.path(), "GET repos/a/b/pulls/12"), 1);
+}
