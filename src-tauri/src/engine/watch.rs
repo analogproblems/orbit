@@ -422,6 +422,7 @@ impl Engine {
                     let setup = s.setups.iter().find(|w| same_repo(&w.repo, repo));
                     problems::see_tags(&mut s.problems, read, setup, now);
                     problems::close_old_builds(&mut s.problems, read, now);
+                    builds::keep_current(&mut s.builds, read);
                 }
             })
             .await;
@@ -458,14 +459,15 @@ impl Engine {
                 // Watch CI went off, the repository went, or a newer tag
                 // came, such as one Orbit pushed, meanwhile.
                 let connected = repos_of(s);
-                let newest = s
+                let known = s.builds.iter().find(|b| same_repo(&b.repo, repo));
+                let now_watched = s
                     .releases
                     .iter()
                     .find(|r| same_repo(&r.repo, repo))
-                    .and_then(builds::newest);
+                    .and_then(|r| builds::target(r, known));
                 if !s.settings.watch_ci
                     || !connected.iter().any(|c| same_repo(c, repo))
-                    || newest.is_none_or(|t| t.name != tag.name || t.sha != tag.sha)
+                    || now_watched.is_none_or(|t| t.name != tag.name || t.sha != tag.sha)
                 {
                     return;
                 }

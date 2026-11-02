@@ -64,7 +64,8 @@ fn listed(id: u64, workflow: u64, name: &str, status: &str, conclusion: Option<&
 
 /// Each repository's newest version tag is read once it is new or moved,
 /// again every few minutes while its build runs or fails, or while it has
-/// no runs yet for a day, and never once it passed; a failed read waits.
+/// no runs yet for a day, and every half hour once it passed; a failed
+/// read waits.
 /// Those not read for their tag come first, then those read longest ago.
 #[test]
 fn a_new_tag_is_read_and_then_again_until_its_build_passes() {
@@ -82,7 +83,7 @@ fn a_new_tag_is_read_and_then_again_until_its_build_passes() {
     let builds = vec![
         built("a/new", "v0.9.0", '9', CiState::Passing, 60, 60),
         built("a/moved", "v1.0.0", '1', CiState::Passing, 60, 60),
-        built("a/passed", "v1.0.0", '1', CiState::Passing, 60, 60),
+        built("a/passed", "v1.0.0", '1', CiState::Passing, 60, 20),
         built("a/running", "v1.0.0", '1', CiState::Running, 60, 6),
         built("a/failing", "v1.0.0", '1', CiState::Failing, 60, 10),
         built("a/fresh", "v1.0.0", '1', CiState::Failing, 60, 2),
@@ -126,6 +127,13 @@ fn a_new_tag_is_read_and_then_again_until_its_build_passes() {
             "a/running v1.0.0 1"
         ]
     );
+    // A passing build is read again every half hour, as a later run at the
+    // tag, such as one a published release starts, may fail.
+    let passed = built("a/passed", "v1.0.0", '1', CiState::Passing, 60, 31);
+    assert_eq!(
+        wanted(&repos(&["a/passed"]), &[passed]),
+        ["a/passed v1.0.0 1"]
+    );
     // A failed read waits for its time.
     let mut failed = built("a/passed", "v1.0.0", '1', CiState::None, 60, 60);
     failed.error = Some("Orbit couldn't read the release build yet".into());
@@ -138,6 +146,68 @@ fn a_new_tag_is_read_and_then_again_until_its_build_passes() {
     let mut unseen = tagged("a/new", &[("v1.0.0", '1')]);
     unseen.unseen = Some("Orbit's sign-in can't see this repository's tags.".into());
     assert!(super::wanted(&repos(&["a/new"]), &[unseen], &[], now()).is_empty());
+}
+
+/// Orbit reads only the tags of the newest commits, so a build it knows of
+/// a higher version than any it read, and missing from them, stays the
+/// one watched: only a higher version read, or a full list without its
+/// tag, takes its place. Its tag moving forgets it, to be read afresh.
+#[test]
+fn a_partial_list_of_tags_doesnt_replace_the_build_orbit_knows() {
+    let failing = built("a/b", "v2.0.0", '2', CiState::Failing, 60, 10);
+    let kept = |r: &RepoReleases| {
+        let mut builds = vec![failing.clone()];
+        keep_current(&mut builds, r);
+        !builds.is_empty()
+    };
+    let partial = |tags: &[(&str, char)]| RepoReleases {
+        more_tags: true,
+        ..tagged("a/b", tags)
+    };
+    // Backports newer by commit date, or no version tags at all, on the
+    // newest commits.
+    for r in [partial(&[("v1.9.1", '3'), ("v1.9.0", '4')]), partial(&[])] {
+        assert_eq!(target(&r, Some(&failing)), Some(tag("v2.0.0", '2')));
+        assert!(kept(&r));
+        assert_eq!(
+            super::wanted(
+                &repos(&["a/b"]),
+                &[r],
+                std::slice::from_ref(&failing),
+                now()
+            )
+            .into_iter()
+            .map(|(_, t)| t)
+            .collect::<Vec<_>>(),
+            [tag("v2.0.0", '2')]
+        );
+    }
+    // With no build known, the highest read is the one.
+    let r = partial(&[("v1.9.1", '3')]);
+    assert_eq!(target(&r, None), Some(tag("v1.9.1", '3')));
+    // A higher version read takes its place.
+    let r = partial(&[("v2.1.0", '5'), ("v1.9.1", '3')]);
+    assert_eq!(target(&r, Some(&failing)), Some(tag("v2.1.0", '5')));
+    assert!(!kept(&r));
+    // A full list without its tag: gone.
+    let r = tagged("a/b", &[("v1.9.1", '3')]);
+    assert_eq!(target(&r, Some(&failing)), Some(tag("v1.9.1", '3')));
+    assert!(!kept(&r));
+    let r = tagged("a/b", &[]);
+    assert_eq!(target(&r, Some(&failing)), None);
+    assert!(!kept(&r));
+    // The tag moved.
+    assert!(!kept(&tagged("a/b", &[("v2.0.0", '6')])));
+    // Still the same, or a read that didn't show the tags: kept.
+    assert!(kept(&tagged("a/b", &[("v2.0.0", '2'), ("v1.9.1", '3')])));
+    let mut unseen = tagged("a/b", &[]);
+    unseen.unseen = Some("Not found".into());
+    assert!(kept(&unseen));
+    let mut unread = tagged("a/b", &[]);
+    unread.read_at.clear();
+    assert!(kept(&unread));
+    // Another repository's read leaves it be.
+    assert!(kept(&tagged("a/c", &[])));
 }
 
 /// A run passes, fails, or still runs as GitHub says, as a check does.

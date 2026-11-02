@@ -13,7 +13,7 @@ use crate::{
     github::{Pages, PAGE},
     logs,
     problems::{stamp, time},
-    releases::{RepoReleases, Tag},
+    releases::{version, RepoReleases, Tag},
     types::*,
 };
 use chrono::{DateTime, Duration, Utc};
@@ -24,6 +24,9 @@ use serde_json::Value;
 pub const PER_PASS: usize = 4;
 /// How often Orbit reads a build again while it runs or fails.
 pub const EVERY: Duration = Duration::minutes(5);
+/// How often Orbit reads a passing build again, as a workflow may run at
+/// the same tag later, such as one a published release starts.
+pub const PASSED_EVERY: Duration = Duration::minutes(30);
 /// How long Orbit keeps looking for the runs of a tag that has none yet.
 pub const LOOK_FOR: Duration = Duration::days(1);
 /// The most pages of runs, and of a failed run's jobs, Orbit reads.
@@ -69,37 +72,70 @@ pub struct Build {
     pub tries: u32,
 }
 
-/// A repository's newest version tag, the highest version, once Orbit
-/// has read its tags.
-pub fn newest(r: &RepoReleases) -> Option<&Tag> {
+/// The tag whose build Orbit watches in a repository, once it has read its
+/// tags: the newest version tag, the highest version Orbit read. Orbit
+/// reads the tags of the newest commits only, so when there are more, the
+/// build it knows of (`known`) stays the one watched while its tag is a
+/// higher version than any Orbit read and isn't among them, as it may just
+/// be on an older commit. Only a higher version Orbit read, or a full list
+/// without it, replaces it.
+pub fn target(r: &RepoReleases, known: Option<&Build>) -> Option<Tag> {
     if r.read_at.is_empty() || r.unseen.is_some() {
         return None;
     }
-    r.tags.first().filter(|t| valid_sha(&t.sha))
+    let newest = r.tags.first().filter(|t| valid_sha(&t.sha));
+    let kept = known.filter(|b| {
+        r.more_tags
+            && same_repo(&b.repo, &r.repo)
+            && valid_sha(&b.sha)
+            && !r.tags.iter().any(|t| t.name == b.tag)
+            && version(&b.tag)
+                .is_some_and(|v| newest.and_then(|t| version(&t.name)).is_none_or(|n| v > n))
+    });
+    match kept {
+        Some(b) => Some(Tag {
+            name: b.tag.clone(),
+            sha: b.sha.clone(),
+        }),
+        None => newest.cloned(),
+    }
+}
+/// Forgets a repository's build once a read of its tags that worked shows
+/// its tag is no longer the one to watch (`target`): a higher version came,
+/// the tag moved, or, from a full list, it is gone. Its problem closes
+/// apart (`problems::close_old_builds`).
+pub fn keep_current(builds: &mut Vec<Build>, r: &RepoReleases) {
+    if r.read_at.is_empty() || r.unseen.is_some() {
+        return;
+    }
+    builds.retain(|b| {
+        !same_repo(&b.repo, &r.repo)
+            || target(r, Some(b)).is_some_and(|t| t.name == b.tag && t.sha == b.sha)
+    });
 }
 /// The repositories whose newest version tag's runs Orbit should read
-/// now, with that tag, at most `PER_PASS`: those it hasn't read for that
-/// tag at that commit first, then those read longest ago. A build is read
-/// again every `EVERY` while it runs or fails, or while it has no runs for
-/// up to `LOOK_FOR` after Orbit first read it, as its workflow may not have
-/// started yet; once it passes, only a newer or moved tag is read. A read
-/// that failed waits for its `retry_at`.
+/// now, with that tag (`target`), at most `PER_PASS`: those it hasn't read
+/// for that tag at that commit first, then those read longest ago. A build
+/// is read again every `EVERY` while it runs or fails, or while it has no
+/// runs for up to `LOOK_FOR` after Orbit first read it, as its workflow may
+/// not have started yet, and every `PASSED_EVERY` once it passes, as a
+/// later run at the tag, such as one a published release starts, may fail.
+/// A read that failed waits for its `retry_at`.
 pub fn wanted(
     repos: &[String],
     releases: &[RepoReleases],
     builds: &[Build],
     now: DateTime<Utc>,
 ) -> Vec<(String, Tag)> {
-    let since = |at: &str| time(at).is_none_or(|at| now - at >= EVERY);
+    let since = |at: &str, every: Duration| time(at).is_none_or(|at| now - at >= every);
     let mut due: Vec<(String, String, Tag)> = repos
         .iter()
         .filter(|r| validate_repo(r).is_ok())
         .filter_map(|repo| {
             let r = releases.iter().find(|r| same_repo(&r.repo, repo))?;
-            let tag = newest(r)?.clone();
-            let b = builds
-                .iter()
-                .find(|b| same_repo(&b.repo, repo) && b.tag == tag.name && b.sha == tag.sha);
+            let known = builds.iter().find(|b| same_repo(&b.repo, repo));
+            let tag = target(r, known)?;
+            let b = known.filter(|b| b.tag == tag.name && b.sha == tag.sha);
             let Some(b) = b else {
                 return Some((String::new(), repo.clone(), tag));
             };
@@ -110,12 +146,12 @@ pub fn wanted(
                     .and_then(time)
                     .is_none_or(|retry| now >= retry),
                 None => match b.ci.state {
-                    CiState::Running | CiState::Failing => since(&b.read_at),
+                    CiState::Running | CiState::Failing => since(&b.read_at, EVERY),
                     CiState::None => {
                         let new = time(&b.first_read_at).is_some_and(|at| now - at < LOOK_FOR);
-                        new && since(&b.read_at)
+                        new && since(&b.read_at, EVERY)
                     }
-                    CiState::Passing => false,
+                    CiState::Passing => since(&b.read_at, PASSED_EVERY),
                 },
             };
             ready.then(|| (b.read_at.clone(), repo.clone(), tag))

@@ -1052,8 +1052,11 @@ fn newest_now(tag: &str) -> String {
     format!("{tag} is the newest version tag now.")
 }
 /// Closes the problem about a repository's release build once its tag is
-/// no longer the newest, from a read of its tags that worked: once a newer
-/// version is tagged, or the tag is gone. The new tag's build is read next.
+/// no longer the one to watch (`builds::target`), from a read of its tags
+/// that worked: once a higher version is tagged, or, from a full list of
+/// the tags, its tag is gone. A list of only the newest commits' tags
+/// without it proves neither, so it stays. The new tag's build is read
+/// next.
 pub fn close_old_builds(
     problems: &mut [Problem],
     read: &crate::releases::RepoReleases,
@@ -1063,14 +1066,23 @@ pub fn close_old_builds(
         return;
     }
     let at = stamp(now);
-    let newest = read.tags.first();
     for p in problems.iter_mut().filter(|p| {
         p.is_open() && p.kind == ProblemKind::ReleaseBuild && same_repo(&p.repo, &read.repo)
     }) {
-        match newest {
+        let known = crate::builds::Build {
+            repo: p.repo.clone(),
+            tag: p.branch.clone(),
+            sha: p.sha.clone(),
+            ..Default::default()
+        };
+        let listed = read.tags.iter().any(|t| t.name == p.branch);
+        match crate::builds::target(read, Some(&known)) {
             Some(t) if t.name == p.branch => {}
+            _ if !listed && !read.more_tags => {
+                p.close(&at, format!("The tag {} is gone.", p.branch))
+            }
             Some(t) => p.close(&at, newest_now(&t.name)),
-            None => p.close(&at, format!("The tag {} is gone.", p.branch)),
+            None => {}
         }
     }
 }

@@ -2864,7 +2864,14 @@ pub fn event_text(
             }
         }
         Event::Closed(_) => {
-            if p.is_some_and(|p| p.passed()) {
+            // A release build's issue closes as soon as each run passes.
+            if p.is_some_and(|p| p.passed() && p.kind == ProblemKind::ReleaseBuild) {
+                format!(
+                    "Orbit closed {}: every run of the release build for {} passed.",
+                    issue(),
+                    place(t)
+                )
+            } else if p.is_some_and(|p| p.passed()) {
                 format!(
                     "Orbit closed {}: {} stayed green for an hour.",
                     issue(),

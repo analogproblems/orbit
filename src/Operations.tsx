@@ -357,7 +357,7 @@ export function movedText(p: Problem) {
 
 /** What an agent said about a failing item, and for a fix, what Orbit
  * found. The agent's words are shown as plain text. */
-export function answerText(t: OpsThread, item: OpsItem) {
+export function answerText(t: OpsThread, item: OpsItem, p?: Problem) {
   const a = item.answer;
   if (!a) return undefined;
   const who = a.author || "The agent";
@@ -387,6 +387,12 @@ export function answerText(t: OpsThread, item: OpsItem) {
       if (item.kind === "alert") {
         const where = a.commit ? ` in ${a.commit.slice(0, 7)}` : "";
         return `${about} ${who} says it’s fixed${where}. Orbit is waiting for GitHub to mark the alert fixed.`;
+      }
+      // Nor for a release build: its tag's commit doesn't change, so the
+      // fix comes with the next version's tag.
+      if (p?.kind === "release_build") {
+        const where = a.commit ? ` in ${a.commit.slice(0, 7)}` : "";
+        return `${about} ${who} says it’s fixed${where}. The next version’s tag builds with it.`;
       }
       if (!a.commit)
         return `${about} ${who} says it’s fixed. Orbit is waiting to see it pass.`;
@@ -918,7 +924,7 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
                     .filter((i) => i.failing && i.answer)
                     .map((i) => (
                       <Text key={i.number} color="secondary">
-                        {answerText(t, i)}
+                        {answerText(t, i, p)}
                       </Text>
                     ))}
                   <Timeline p={p} />

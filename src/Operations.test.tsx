@@ -2098,6 +2098,37 @@ describe("ci sentences", () => {
     expect(fixed("passes")).toContain("abc1234, and it passes there.");
     expect(fixed("not_on_branch")).toContain("abc1234, which isn’t on fix-it.");
     expect(fixed("not_found")).toContain("abc1234, which Orbit can’t find.");
+    // A release build's fix comes with the next version's tag, so Orbit
+    // doesn't wait for checks at the commit.
+    const release = (commit: string | null) =>
+      answerText(
+        { branch: "v0.3.0" } as OpsThread,
+        {
+          number: 1,
+          check: "Release / build (macos)",
+          url: "",
+          failing: true,
+          since: "",
+          at: "",
+          answer: {
+            kind: "fixed",
+            author: "agent",
+            at: "",
+            url: "",
+            replyId: 1,
+            head: "",
+            commit,
+            check: "waiting",
+          },
+        },
+        { kind: "release_build" } as Problem,
+      );
+    expect(release("abc1234def")).toBe(
+      "I1 · Release / build (macos): agent says it’s fixed in abc1234. The next version’s tag builds with it.",
+    );
+    expect(release(null)).toBe(
+      "I1 · Release / build (macos): agent says it’s fixed. The next version’s tag builds with it.",
+    );
     const proposal = answerText(t, {
       number: 1,
       kind: "no_ci",

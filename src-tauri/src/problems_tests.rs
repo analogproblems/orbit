@@ -2299,7 +2299,22 @@ fn a_release_build_closes_once_its_tag_is_no_longer_the_newest() {
     let mut unseen = tags(&[]);
     unseen.unseen = Some("Not found".into());
     close_old_builds(&mut problems, &unseen, at(3));
+    // Only the tags of the newest commits, more on GitHub: lower
+    // backports, or no version tags at all, prove nothing.
+    let partial = |names: &[(&str, &str)]| RepoReleases {
+        more_tags: true,
+        ..tags(names)
+    };
+    close_old_builds(&mut problems, &partial(&[("v0.9.1", B)]), at(3));
+    close_old_builds(&mut problems, &partial(&[]), at(3));
     assert_eq!(open(&problems).len(), 1);
+    // A higher version among them does.
+    let mut higher = problems.clone();
+    close_old_builds(&mut higher, &partial(&[("v1.2.0", C)]), at(3));
+    assert_eq!(
+        higher[0].closed_reason.as_deref(),
+        Some("v1.2.0 is the newest version tag now.")
+    );
 
     close_old_builds(&mut problems, &tags(&[("v1.1.0", B), ("v1.0.0", A)]), at(4));
     assert!(open(&problems).is_empty());

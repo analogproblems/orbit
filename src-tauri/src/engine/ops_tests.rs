@@ -3213,9 +3213,121 @@ async fn a_failing_release_build_needs_you_once_and_bad_luck_is_rerun() {
     assert!(notes[0]["body"].as_str().unwrap().starts_with(
         "Every run of the release build for `v0.3.0` passed at `3333333`, so Orbit is closing this issue."
     ));
-    // Once it passed, the build isn't read again.
+    // Once it passed, it is read again only every half hour.
     let asked = calls(d.path(), "GET repos/a/b/actions/runs");
-    builds_read_long_ago(&e).await;
     watch(&e, &gh).await;
     assert_eq!(calls(d.path(), "GET repos/a/b/actions/runs"), asked);
+    // Then a run the published release started fails at the same tag: it
+    // is failing again.
+    released(
+        d.path(),
+        &[
+            (7, "Release", "completed", Some("success")),
+            (8, "Docs", "completed", Some("success")),
+            (9, "Publish", "completed", Some("failure")),
+        ],
+    );
+    builds_read_long_ago(&e).await;
+    watch(&e, &gh).await;
+    assert!(calls(d.path(), "GET repos/a/b/actions/runs") > asked);
+    let shown = e.shown_snapshot().await;
+    let open: Vec<_> = shown.problems.iter().filter(|p| p.is_open()).collect();
+    assert_eq!(open.len(), 1);
+    assert_eq!(
+        crate::problems::build_text(open[0]),
+        "The release build for v0.3.0 in a/b is failing at 3333333: Publish."
+    );
+}
+
+/// A failing release build, read once, with a job that looks like bad
+/// luck: what Orbit knows after its first pass.
+#[cfg(unix)]
+async fn failed_by_bad_luck(dir: &Path) -> std::sync::Arc<Engine> {
+    answer(dir, '1', &[("Rust", "SUCCESS")], None);
+    released(dir, &[(7, "Release", "completed", Some("failure"))]);
+    in_run(
+        dir,
+        (7, '3'),
+        70,
+        "build (macos)",
+        1,
+        "Run actions/checkout@v4",
+        &[
+            "fatal: unable to access 'https://github.com/a/b/': Could not resolve host: github.com",
+            "##[error]Process completed with exit code 128.",
+        ],
+    );
+    let file = dir.join("job-70.json");
+    let mut job: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    job["html_url"] = json!("https://github.com/a/b/actions/runs/7/job/70");
+    std::fs::write(&file, job.to_string()).unwrap();
+    connected(dir).await
+}
+
+/// A job of a tag's build is rerun only while that tag is still the one
+/// Orbit watches at that commit: once Orbit knows of a newer tag, such as
+/// one it just pushed, or the tag moved, the old build's jobs are left.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_release_job_isnt_rerun_once_a_newer_tag_or_a_move_is_known() {
+    for change in ["newer", "moved"] {
+        let d = tempfile::tempdir().unwrap();
+        let gh = fake_gh(d.path());
+        let e = failed_by_bad_luck(d.path()).await;
+        watch(&e, &gh).await;
+        assert_eq!(e.shown_snapshot().await.builds[0].tag, "v0.3.0");
+        e.update(|s| {
+            let r = &mut s.releases[0];
+            match change {
+                // As pushing v0.4.0 keeps it.
+                "newer" => crate::tagging::seen(r, "v0.4.0", &sha('4')),
+                _ => r.tags[0].sha = sha('4'),
+            }
+        })
+        .await;
+        watch(&e, &gh).await;
+        watch(&e, &gh).await;
+        assert_eq!(calls(d.path(), "/rerun"), 0, "{change}");
+    }
+    // Unchanged, it is rerun.
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let e = failed_by_bad_luck(d.path()).await;
+    watch(&e, &gh).await;
+    watch(&e, &gh).await;
+    assert_eq!(calls(d.path(), "/rerun"), 1);
+}
+
+/// A version tag deleted after its build failed: once a full read of the
+/// tags shows it gone, its problem closes and Orbit forgets the build, so
+/// nothing says it still fails.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_deleted_tag_closes_its_build_and_forgets_it() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let e = failed_by_bad_luck(d.path()).await;
+    watch(&e, &gh).await;
+    assert_eq!(e.shown_snapshot().await.builds.len(), 1);
+    let tags = json!({ "data": { "repository": {
+        "viewerPermission": "ADMIN",
+        "defaultBranchRef": { "name": "main", "target": { "oid": sha('1') } },
+        "refs": { "totalCount": 0, "nodes": [] },
+    } } });
+    std::fs::write(d.path().join("tags.json"), tags.to_string()).unwrap();
+    e.update(|s| s.releases[0].read_at = "2020-01-01T00:00:00.000Z".into())
+        .await;
+    watch(&e, &gh).await;
+    let shown = e.shown_snapshot().await;
+    assert!(shown.builds.is_empty());
+    let p = shown
+        .problems
+        .iter()
+        .find(|p| p.kind == crate::problems::ProblemKind::ReleaseBuild)
+        .unwrap();
+    assert_eq!(p.closed_reason.as_deref(), Some("The tag v0.3.0 is gone."));
+    assert!(shown
+        .attention
+        .iter()
+        .all(|a| a.kind != AttentionKind::CiFailing));
 }
