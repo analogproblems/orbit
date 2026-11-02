@@ -1107,7 +1107,9 @@ fn releasing() -> Snapshot {
 /// milestone, with what stands in its way, each repository's drafts
 /// waiting, saying which one is ready, and each version waiting for its
 /// tag. A release's line keeps its key as the day nears, so it is new
-/// once. Only while Watch CI is on.
+/// once, while a draft becoming ready is new again. After a failed read of
+/// a repository's releases, its lines say they may be out of date. Only
+/// while Watch CI is on.
 #[test]
 fn releases_due_drafts_and_untagged_versions_are_in_the_brief() {
     let mut s = releasing();
@@ -1125,7 +1127,7 @@ fn releases_due_drafts_and_untagged_versions_are_in_the_brief() {
                 "v0.4.0 of a/b is due in 2 days. In its way: 1 open pull request (#12).".to_string()
             ),
             (
-                "release-drafts:a/b:v0.3.0,v0.2.1".into(),
+                "release-drafts:a/b:v0.3.0,v0.2.1:ready=v0.3.0".into(),
                 "a/b has 2 draft releases waiting to be published: v0.3.0 and v0.2.1. \
                  The one for v0.3.0 is ready: every run its tag started passed."
                     .into()
@@ -1142,6 +1144,32 @@ fn releases_due_drafts_and_untagged_versions_are_in_the_brief() {
     let lines = release_lines(&s, tomorrow);
     assert_eq!(lines[0].key, "release-due:a/b:4:2026-11-02");
     assert!(lines[0].text.starts_with("v0.4.0 of a/b is due tomorrow."));
+
+    // Orbit's latest read of a/b's releases failed: the same lines, from
+    // what it kept, each saying it may be out of date.
+    let mut failed = s.clone();
+    failed.releases[0].error =
+        Some("Orbit couldn't read the releases yet: HTTP 502. It tries again later.".into());
+    let fresh = release(&s);
+    let stale = release(&failed);
+    assert_eq!(stale.len(), fresh.len());
+    for ((key, text), (was_key, was_text)) in stale.into_iter().zip(fresh) {
+        assert_eq!(key, was_key);
+        assert_eq!(
+            text,
+            format!(
+                "{was_text} Orbit's latest read of its releases failed, so this may be out of date."
+            )
+        );
+    }
+    // Another repository's failed read says nothing about a/b.
+    let mut other = s.clone();
+    other.releases.push(crate::releases::RepoReleases {
+        repo: "a/c".into(),
+        error: Some("Orbit couldn't read the releases yet: HTTP 502.".into()),
+        ..Default::default()
+    });
+    assert_eq!(release(&other), release(&s));
 
     // In the brief: last, counted as notes about releases, each new once.
     look(&mut s, at("2026-10-31", "09:00"), now());
@@ -1162,13 +1190,25 @@ fn releases_due_drafts_and_untagged_versions_are_in_the_brief() {
     s.builds.clear();
     s.releases[0].milestones.clear();
     assert_eq!(
-        release(&s)
-            .into_iter()
-            .map(|(_, text)| text)
-            .take(1)
-            .collect::<Vec<_>>(),
-        ["a/b has a draft release, v0.3.0, waiting to be published."]
+        release(&s).into_iter().take(1).collect::<Vec<_>>(),
+        [(
+            "release-drafts:a/b:v0.3.0".to_string(),
+            "a/b has a draft release, v0.3.0, waiting to be published.".to_string()
+        )]
     );
+    // Its build passing makes it new in the next brief.
+    look(&mut s, at("2026-11-02", "09:00"), now());
+    let keys: Vec<&str> = latest(&s).lines.iter().map(|l| l.key.as_str()).collect();
+    assert!(keys.contains(&"release-drafts:a/b:v0.3.0"), "{keys:?}");
+    s.builds = releasing().builds;
+    look(&mut s, at("2026-11-03", "09:00"), now());
+    let ready: Vec<_> = latest(&s).lines.iter().filter(|l| l.new).collect();
+    assert_eq!(ready.len(), 1);
+    assert_eq!(ready[0].key, "release-drafts:a/b:v0.3.0:ready=v0.3.0");
+    assert!(ready[0]
+        .text
+        .ends_with("The one for v0.3.0 is ready: every run its tag started passed."));
+    s.builds.clear();
     s.releases[0].draft_count = 3;
     assert_eq!(
         release(&s)[0].1,

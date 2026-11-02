@@ -250,12 +250,26 @@ pub fn lines(s: &Snapshot) -> Vec<Line> {
 /// CI is on: each release due within a week, or late, by its milestone,
 /// with what stands in its way (`crate::milestones`); each repository's
 /// drafts waiting to be published, saying when one is ready
-/// (`crate::drafts`); and each version waiting for its tag
-/// (`crate::tagging`).
+/// (`crate::drafts`), which makes the line new again; and each version
+/// waiting for its tag (`crate::tagging`). Releases are read less often
+/// than the rest, so when a repository's latest read of them failed, its
+/// lines say so, as Orbit keeps what it read before.
 pub fn release_lines(s: &Snapshot, now: DateTime<Utc>) -> Vec<Line> {
     if !s.settings.watch_ci {
         return vec![];
     }
+    let said = |repo: &str, mut text: String| {
+        let failed = s
+            .releases
+            .iter()
+            .any(|r| same_repo(&r.repo, repo) && r.error.is_some());
+        if failed {
+            text.push_str(
+                " Orbit's latest read of its releases failed, so this may be out of date.",
+            );
+        }
+        text
+    };
     let mut out = vec![];
     for d in crate::milestones::waiting(s, now) {
         out.push(line(
@@ -265,7 +279,7 @@ pub fn release_lines(s: &Snapshot, now: DateTime<Utc>) -> Vec<Line> {
                 d.milestone.number,
                 d.milestone.due
             ),
-            crate::milestones::reason(&d),
+            said(&d.repo, crate::milestones::reason(&d)),
             None,
         ));
     }
@@ -292,26 +306,25 @@ pub fn release_lines(s: &Snapshot, now: DateTime<Utc>) -> Vec<Line> {
             ),
             (n, _) => format!("{} has {n} draft releases waiting to be published.", r.repo),
         };
+        let mut key = format!(
+            "release-drafts:{}:{}",
+            r.repo.to_ascii_lowercase(),
+            tags.join(",")
+        );
+        // One becoming ready to publish is news.
         if let Some(d) = ready.iter().find(|d| same_repo(&d.repo, &r.repo)) {
             text.push_str(&format!(
                 " The one for {} is ready: every run its tag started passed.",
                 d.tag
             ));
+            key.push_str(&format!(":ready={}", d.tag));
         }
-        out.push(line(
-            format!(
-                "release-drafts:{}:{}",
-                r.repo.to_ascii_lowercase(),
-                tags.join(",")
-            ),
-            text,
-            None,
-        ));
+        out.push(line(key, said(&r.repo, text), None));
     }
     for u in crate::tagging::waiting(s) {
         out.push(line(
             format!("release-untagged:{}:{}", u.repo.to_ascii_lowercase(), u.tag),
-            crate::tagging::reason(&u),
+            said(&u.repo, crate::tagging::reason(&u)),
             None,
         ));
     }
@@ -416,8 +429,8 @@ fn offline(s: &Snapshot) -> Vec<Line> {
 /// Whether a read the brief sums up failed last time, so what Orbit kept
 /// from before may no longer be true: syncing any repository's pull
 /// requests, reading a repository's CI, or asking GitHub whether a pull
-/// request merges. Runners and storage are read less often, so their lines say
-/// instead when their latest read failed.
+/// request merges. Runners, storage and releases are read less often, so
+/// their lines say instead when their latest read failed.
 fn unread(s: &Snapshot) -> bool {
     s.poll_failures > 0
         || s.github_error.is_some()
