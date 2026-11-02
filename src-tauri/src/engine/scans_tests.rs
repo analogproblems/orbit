@@ -154,7 +154,7 @@ async fn checks_and_installs_the_plugin_only_when_asked() {
         .iter()
         .any(|r| r["method"] == "plugin/install"));
     // Starting a scan never installs it.
-    let error = e.start_scan("a/b", "standard").await.unwrap_err();
+    let error = e.start_scan("a/b", "standard", None).await.unwrap_err();
     assert!(
         error.contains("Install the Codex Security plugin"),
         "{error}"
@@ -207,7 +207,10 @@ async fn uses_a_plugin_from_a_remote_marketplace_by_its_remote_id() {
             "plugin/read": {"plugin": {"skills": [{"name": "codex-security:security-scan", "path": null}]}}}}),
     )
     .await;
-    let id = e.start_scan("a/b", "standard").await.unwrap();
+    let id = e
+        .start_scan("a/b", "standard", Some(Provider::Codex))
+        .await
+        .unwrap();
     assert!(id.starts_with("scan-"));
     let list = requests(&rpc)
         .await
@@ -225,7 +228,7 @@ async fn uses_a_plugin_from_a_remote_marketplace_by_its_remote_id() {
         json!({"responses": {"plugin/list": remote(true), "skills/list": other}}),
     )
     .await;
-    let error = e.start_scan("a/b", "standard").await.unwrap_err();
+    let error = e.start_scan("a/b", "standard", None).await.unwrap_err();
     assert!(error.contains("scan skill"), "{error}");
     assert!(e.snapshot().await.scans.is_empty());
 }
@@ -238,14 +241,14 @@ async fn runs_one_scan_at_a_time_and_reports_a_checkout_problem() {
         json!({"responses": {"plugin/list": plugin_list(true), "skills/list": skills_list()}}),
     )
     .await;
-    assert!(e.start_scan("a/b", "diff").await.is_err());
-    assert!(e.start_scan("c/d", "standard").await.is_err());
+    assert!(e.start_scan("a/b", "diff", None).await.is_err());
+    assert!(e.start_scan("c/d", "standard", None).await.is_err());
     e.update(|s| s.scans.push(running("scan-0", None))).await;
-    let error = e.start_scan("a/b", "standard").await.unwrap_err();
+    let error = e.start_scan("a/b", "standard", None).await.unwrap_err();
     assert!(error.contains("already running"), "{error}");
     e.update(|s| s.scans.clear()).await;
     // The fixture's checkout is not a clone of a/b, so preparation fails.
-    let id = e.start_scan("A/B", "deep").await.unwrap();
+    let id = e.start_scan("A/B", "deep", None).await.unwrap();
     let s = e.snapshot().await;
     assert_eq!(
         (s.scans[0].repo.as_str(), s.scans[0].mode.as_str()),
@@ -571,7 +574,7 @@ async fn cancelling_waits_until_the_plugin_confirms_its_scan_stopped() {
     e.cancel_scan("scan-1").await.unwrap();
     assert_eq!(e.snapshot().await.scans[0].status, "cancelling");
     // While the plugin has not confirmed, the scan keeps its slot and files.
-    let error = e.start_scan("a/b", "standard").await.unwrap_err();
+    let error = e.start_scan("a/b", "standard", None).await.unwrap_err();
     assert!(error.contains("already running"), "{error}");
     let error = e.delete_scan("scan-1").await.unwrap_err();
     assert!(error.contains("still stopping"), "{error}");
@@ -815,7 +818,7 @@ async fn a_turn_that_ends_while_the_plugin_still_runs_keeps_the_copy_until_it_st
     let scan = e.snapshot().await.scans[0].clone();
     assert!(scan.stop_reason.unwrap().contains("deep-1 as running"));
     assert!(worktree.exists() && scan.worktree.is_some());
-    let error = e.start_scan("a/b", "standard").await.unwrap_err();
+    let error = e.start_scan("a/b", "standard", None).await.unwrap_err();
     assert!(error.contains("already running"), "{error}");
     assert!(e.delete_scan("scan-1").await.is_err());
     assert!(worktree.exists());

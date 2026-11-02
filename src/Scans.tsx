@@ -27,12 +27,18 @@ import {
 import { Bug, FileText, ShieldCheck, Square, Trash2 } from "lucide-react";
 import { useOrbit } from "./store";
 import {
+  catalogUnavailable,
+  providerLabels,
+  repoProvider,
+  reviewerSelectionUnavailable,
   scanActive,
+  type Provider,
   type ScanMode,
   type ScanPluginStatus,
   type ScanProgress,
   type ScanStatus,
   type SecurityScan,
+  type Snapshot,
 } from "./types";
 import { priorityColors } from "./Findings";
 import { formatBytes } from "./Storage";
@@ -66,6 +72,38 @@ export const scanModeLabels: Record<ScanMode, string> = {
   standard: "Standard",
   deep: "Deep",
 };
+/** Who can run a scan, in the order the dialog offers them. */
+const scanners: Provider[] = ["codex", "claude", "antigravity"];
+const scannerLabels: Record<Provider, string> = {
+  codex: "Codex Security",
+  claude: "Claude",
+  antigravity: "Antigravity",
+};
+const scannerDescriptions: Record<Provider, string> = {
+  codex: "OpenAI’s Codex Security plugin, in a standard or deep scan.",
+  claude:
+    "Claude reads the whole repository for security problems, set up as safely as its pull request reviews.",
+  antigravity:
+    "Antigravity reads the whole repository for security problems, in its sandbox, as it does pull requests.",
+};
+/** The scan's name in a few words: Standard or Deep for Codex Security, or
+ * the reviewer that ran it. */
+export function scanName(scan: SecurityScan): string {
+  const provider = scan.provider ?? "codex";
+  return provider === "codex"
+    ? scanModeLabels[scan.mode]
+    : providerLabels[provider];
+}
+/** Why `provider` can't run a scan now, if it can't. Codex Security's own
+ * plugin is checked when the dialog opens. */
+export function scannerUnavailable(
+  s: Snapshot,
+  provider: Provider,
+): string | null {
+  return provider === "codex"
+    ? catalogUnavailable(s)
+    : reviewerSelectionUnavailable(s, provider);
+}
 const phaseLabels: Record<string, string> = {
   preflight: "Checking the setup",
   threat_model: "Building a threat model",
@@ -84,6 +122,11 @@ export function progressLabel(scan: SecurityScan): string {
     return scan.error
       ? "Not confirmed stopped yet"
       : "Stopping the Codex Security scan";
+  const provider = scan.provider ?? "codex";
+  if (provider !== "codex")
+    return scan.progress?.phase === "writing_up"
+      ? `${providerLabels[provider]} is writing up its findings`
+      : `${providerLabels[provider]} is reading the repository`;
   const p: ScanProgress | null | undefined = scan.progress;
   if (!p?.phase) return "Starting the Codex Security scan";
   const phase = phaseLabels[p.phase] ?? p.phase.replaceAll("_", " ");
@@ -121,8 +164,9 @@ function daybreakWarning(scan: SecurityScan): string | null {
     : "Codex could not confirm Daybreak access, so some protected results may not be shown. The scan still runs.";
 }
 
-/** Starts a scan: picks the repository and type, and installs the plugin
- * only after the developer asks. */
+/** Starts a scan: picks the repository, who scans it and, for Codex
+ * Security, the type, and installs the plugin only after the developer
+ * asks. */
 export function ScanDialog({
   isOpen,
   onOpenChange,
@@ -142,29 +186,44 @@ export function ScanDialog({
   // disconnected, falls back to the first one there is.
   const chosen = repos.includes(picked) ? picked : (repos[0] ?? "");
   const [mode, setMode] = useState<ScanMode>("standard");
+  // Who scans: your choice while it can scan, or else the repository's own
+  // reviewer, or the first that can.
+  const [pickedScanner, setScanner] = useState<Provider | null>(null);
+  const usable = (p: Provider) => !scannerUnavailable(s, p);
+  const own = repoProvider(s, repo ?? chosen);
+  const scanner =
+    pickedScanner && usable(pickedScanner)
+      ? pickedScanner
+      : usable(own)
+        ? own
+        : (scanners.find(usable) ?? "codex");
+  const codex = scanner === "codex";
   const [plugin, setPlugin] = useState<ScanPluginStatus | null>(null);
+  const [pluginError, setPluginError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const running = (s.scans ?? []).find(scanActive);
+  const codexReady = s.codexReady;
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen || !codexReady) return;
     let current = true;
     void action<ScanPluginStatus>("get_scan_plugin", {}, { quiet: true }).then(
       (result) => {
         if (!current) return;
         if (result.ok) setPlugin(result.data);
-        else setError(result.error);
+        else setPluginError(result.error);
       },
     );
     return () => {
       current = false;
     };
-  }, [isOpen, action]);
+  }, [isOpen, codexReady, action]);
   const close = (open: boolean) => {
     if (busy) return;
     onOpenChange(open);
     if (!open) {
       setPlugin(null);
+      setPluginError(null);
       setError(null);
     }
   };
@@ -185,7 +244,11 @@ export function ScanDialog({
     setError(null);
     const result = await action<string>(
       "start_scan",
-      { repo: repo ?? chosen, mode },
+      {
+        repo: repo ?? chosen,
+        mode: codex ? mode : "standard",
+        provider: scanner,
+      },
       { quiet: true },
     );
     setBusy(false);
@@ -212,10 +275,10 @@ export function ScanDialog({
           <LayoutContent>
             <VStack gap={4}>
               <Text color="secondary">
-                OpenAI’s Codex Security plugin reads the whole repository at the
-                latest commit of its default branch, in a separate copy. Your
-                checkout and pull request reviews are not affected. The findings
-                appear on the Findings page.
+                The scan reads the whole repository at the latest commit of its
+                default branch, in a separate copy. Your checkout and pull
+                request reviews are not affected. The findings appear on the
+                Findings page.
               </Text>
               {error && <Banner status="error" title={error} />}
               {running && (
@@ -236,25 +299,53 @@ export function ScanDialog({
                 />
               )}
               <RadioList
-                label="Scan type"
-                value={mode}
-                onChange={(v) => setMode(v as ScanMode)}
+                label="Who scans"
+                value={scanner}
+                onChange={(v) => setScanner(v as Provider)}
               >
-                <RadioListItem
-                  value="standard"
-                  label="Standard"
-                  description="One complete pass over the repository. Expect it to take a while on a large codebase."
-                />
-                <RadioListItem
-                  value="deep"
-                  label="Deep"
-                  description="Several independent standard passes, combined. Can take many hours and use gigabytes of disk space while it runs."
-                />
+                {scanners.map((p) => {
+                  const unavailable = scannerUnavailable(s, p);
+                  return (
+                    <RadioListItem
+                      key={p}
+                      value={p}
+                      label={scannerLabels[p]}
+                      description={unavailable ?? scannerDescriptions[p]}
+                      isDisabled={!!unavailable}
+                    />
+                  );
+                })}
               </RadioList>
-              {!plugin && !error && (
+              {codex && (
+                <RadioList
+                  label="Scan type"
+                  value={mode}
+                  onChange={(v) => setMode(v as ScanMode)}
+                >
+                  <RadioListItem
+                    value="standard"
+                    label="Standard"
+                    description="One complete pass over the repository. Expect it to take a while on a large codebase."
+                  />
+                  <RadioListItem
+                    value="deep"
+                    label="Deep"
+                    description="Several independent standard passes, combined. Can take many hours and use gigabytes of disk space while it runs."
+                  />
+                </RadioList>
+              )}
+              {!codex && (
+                <Text color="secondary">
+                  {`${providerLabels[scanner]} uses the model and effort chosen for its reviews in Settings, and has an hour to answer, as a review does. It reads the riskiest code first and says what it didn’t get to.`}
+                </Text>
+              )}
+              {codex && pluginError && (
+                <Banner status="error" title={pluginError} />
+              )}
+              {codex && s.codexReady && !plugin && !pluginError && (
                 <Spinner label="Checking for the Codex Security plugin…" />
               )}
-              {plugin && !plugin.installed && (
+              {codex && plugin && !plugin.installed && (
                 <Banner
                   status="warning"
                   title="The Codex Security plugin is not installed"
@@ -277,7 +368,7 @@ export function ScanDialog({
                 isDisabled={busy}
                 onClick={() => close(false)}
               />
-              {plugin && !plugin.installed ? (
+              {codex && plugin && !plugin.installed ? (
                 <Button
                   label="Install Codex Security"
                   variant="primary"
@@ -292,7 +383,10 @@ export function ScanDialog({
                   icon={<ShieldCheck />}
                   isLoading={busy}
                   isDisabled={
-                    busy || !plugin?.installed || !!running || !(repo ?? chosen)
+                    busy ||
+                    (codex ? !plugin?.installed : !usable(scanner)) ||
+                    !!running ||
+                    !(repo ?? chosen)
                   }
                   onClick={() => void start()}
                 />
@@ -388,7 +482,7 @@ function ScanRow({
   const commit = scan.commit ? scan.commit.slice(0, 7) : null;
   return (
     <ListItem
-      label={`${scan.repo} · ${scanModeLabels[scan.mode]} scan`}
+      label={`${scan.repo} · ${scanName(scan)} scan`}
       startContent={
         <Token
           label={scanStatusLabels[scan.status]}
@@ -530,9 +624,10 @@ export function ScansPage({ onFindings }: { onFindings?: () => void }) {
         <VStack gap={2}>
           <Heading level={2}>Security scans</Heading>
           <Text color="secondary">
-            Whole-repository scans with OpenAI’s Codex Security plugin. Each
-            runs on its own copy of the default branch, apart from pull request
-            reviews. Their findings join the Findings page.
+            Whole-repository scans with OpenAI’s Codex Security plugin, or by
+            Claude or Antigravity. Each runs on its own copy of the default
+            branch, apart from pull request reviews. Their findings join the
+            Findings page.
           </Text>
         </VStack>
         <Button

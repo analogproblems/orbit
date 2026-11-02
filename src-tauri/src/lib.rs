@@ -398,8 +398,9 @@ mod desktop {
         engine: State<'_, AppState>,
         repo: String,
         mode: String,
+        provider: Option<types::Provider>,
     ) -> Result<String, String> {
-        engine.start_scan(&repo, &mode).await
+        engine.start_scan(&repo, &mode, provider).await
     }
     #[tauri::command]
     async fn cancel_scan(engine: State<'_, AppState>, scan_id: String) -> Result<(), String> {

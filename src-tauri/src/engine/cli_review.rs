@@ -23,7 +23,7 @@ use std::{
 use tokio::sync::mpsc;
 
 /// How long a CLI may take to start a conversation before Orbit gives up.
-const START_TIMEOUT: Duration = Duration::from_secs(120);
+pub(super) const START_TIMEOUT: Duration = Duration::from_secs(120);
 
 const EXTRACTION_PROMPT: &str = "Restate the findings from the review you just completed as JSON matching the output schema. \
     Do not run commands, read files, or review the code again. \
@@ -238,7 +238,7 @@ impl Engine {
         })
         .await
     }
-    /// Stops the review's running CLI turn, if any.
+    /// Stops the running CLI turn of a review or scan, if any.
     pub(super) async fn stop_cli_turn(&self, id: &str) {
         let running = self.cli_turns.lock().unwrap().remove(id);
         if let Some(running) = running {
@@ -252,7 +252,7 @@ impl Engine {
             running.kill().await;
         }
     }
-    fn start_turn(&self, provider: Provider, turn: &Turn) -> Result<Started, String> {
+    pub(super) fn start_turn(&self, provider: Provider, turn: &Turn) -> Result<Started, String> {
         match provider {
             Provider::Antigravity => {
                 let setup = self.antigravity.lock().unwrap().clone();
@@ -322,7 +322,7 @@ impl Engine {
         });
         Ok(())
     }
-    fn forget_cli_turn(&self, id: &str, running: &Arc<Running>) {
+    pub(super) fn forget_cli_turn(&self, id: &str, running: &Arc<Running>) {
         let mut turns = self.cli_turns.lock().unwrap();
         if turns.get(id).is_some_and(|r| Arc::ptr_eq(r, running)) {
             turns.remove(id);
@@ -394,7 +394,8 @@ impl Engine {
                                     });
                                 }
                             }
-                            TurnKind::FollowUp => {}
+                            // A scan's turns never belong to a review.
+                            TurnKind::FollowUp | TurnKind::Scan => {}
                         }
                         if continue_turn {
                             events.push(ReviewEvent::TurnDone(TurnEnd::Completed));
@@ -459,7 +460,7 @@ pub(super) fn status<T>(
 /// The conversation a turn runs in, once its start is checked: the model
 /// Orbit asked for and, for Antigravity, the conversation it asked to
 /// continue and a permission mode that refuses what nobody approved.
-fn confirmed(provider: Provider, turn: &Turn, init: &Init) -> Result<String, String> {
+pub(super) fn confirmed(provider: Provider, turn: &Turn, init: &Init) -> Result<String, String> {
     let name = provider.label();
     if init.model != turn.model {
         return Err(format!(
@@ -547,7 +548,7 @@ async fn change_prompt(worktree: &Path, base: &str) -> Result<String, String> {
 
 /// Files a review changed in its worktree, or None when it is unchanged or
 /// cannot be checked.
-async fn changed_files(worktree: &Path) -> Option<String> {
+pub(super) async fn changed_files(worktree: &Path) -> Option<String> {
     let status = git(
         worktree,
         &["status", "--porcelain", "--untracked-files=all"],

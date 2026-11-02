@@ -55,25 +55,27 @@ impl Engine {
         }
         self.scan_plugin().await
     }
-    /// Starts a scan of a repository's default branch. One scan runs at a time.
-    pub async fn start_scan(self: &Arc<Self>, repo: &str, mode: &str) -> Result<String, String> {
-        let skill = scans::skill_for(mode).ok_or("Choose a standard or deep scan.")?;
-        let plugin = self
-            .find_scan_plugin()
-            .await?
-            .filter(|p| p.status.installed)
-            .ok_or("Install the Codex Security plugin first.")?;
-        // Skills Codex loads for the plugin, wherever it was installed from.
-        // With no folder, Codex lists those of its own working folder; only
-        // the plugin's skills are used, so no other skill of the same name is.
-        let skills = self
-            .client()
-            .await?
-            .request("skills/list", json!({"cwds": [], "forceReload": true}))
-            .await?;
-        let (skill_name, skill_path) = scans::find_skill(&skills, &plugin.id, skill).ok_or(
-            "Codex has not loaded the Codex Security plugin's scan skill. Turn the plugin on, or update it.",
-        )?;
+    /// Starts a scan of a repository's default branch. One scan runs at a
+    /// time. Codex scans with its Codex Security plugin, in standard or deep
+    /// mode; Claude or Antigravity scans with Orbit's own instructions
+    /// (`engine/cli_scans.rs`), with no call to Codex. No provider is Codex.
+    pub async fn start_scan(
+        self: &Arc<Self>,
+        repo: &str,
+        mode: &str,
+        provider: Option<Provider>,
+    ) -> Result<String, String> {
+        let provider = provider.unwrap_or_default();
+        let skill = match provider {
+            Provider::Codex => Some(self.scan_skill(mode).await?),
+            _ if mode == "standard" => None,
+            _ => {
+                return Err(format!(
+                "{} runs standard scans. Choose a standard scan, or Codex Security for a deep one.",
+                provider.label()
+            ))
+            }
+        };
         let scan = {
             let mut s = self.state.lock().await;
             if s.scans.iter().any(|x| scan_active(&x.status)) {
@@ -87,11 +89,12 @@ impl Engine {
                 .ok_or("Connect this repository first.")?
                 .name
                 .clone();
-            let selection = ModelSelection::workspace(&s.settings);
-            selection.validate_execution(&s)?;
+            let selection = s.settings.selection(provider);
+            selection.validate_for(provider, &s)?;
             let scan = SecurityScan {
                 id: format!("scan-{}", id()),
                 repo: repository,
+                provider,
                 mode: mode.into(),
                 status: "preparing".into(),
                 created_at: now(),
@@ -106,7 +109,7 @@ impl Engine {
         let e = self.clone();
         let id = scan.id.clone();
         let task = tokio::spawn(async move {
-            let result = e.prepare_scan(&id, &skill_name, &skill_path).await;
+            let result = e.prepare_scan(&id, skill).await;
             e.preparing.lock().unwrap().remove(&id);
             if let Err(error) = result {
                 e.end_scan(&id, "failed", Some(error)).await;
@@ -118,7 +121,28 @@ impl Engine {
             .insert(scan.id.clone(), task.abort_handle());
         Ok(scan.id)
     }
-    async fn scan_live(&self, id: &str) -> Result<SecurityScan, String> {
+    /// The name and `SKILL.md` path of the Codex Security skill a scan mode
+    /// runs, once the plugin is installed and Codex has loaded it.
+    async fn scan_skill(&self, mode: &str) -> Result<(String, String), String> {
+        let skill = scans::skill_for(mode).ok_or("Choose a standard or deep scan.")?;
+        let plugin = self
+            .find_scan_plugin()
+            .await?
+            .filter(|p| p.status.installed)
+            .ok_or("Install the Codex Security plugin first.")?;
+        // Skills Codex loads for the plugin, wherever it was installed from.
+        // With no folder, Codex lists those of its own working folder; only
+        // the plugin's skills are used, so no other skill of the same name is.
+        let skills = self
+            .client()
+            .await?
+            .request("skills/list", json!({"cwds": [], "forceReload": true}))
+            .await?;
+        scans::find_skill(&skills, &plugin.id, skill).ok_or_else(|| {
+            "Codex has not loaded the Codex Security plugin's scan skill. Turn the plugin on, or update it.".into()
+        })
+    }
+    pub(super) async fn scan_live(&self, id: &str) -> Result<SecurityScan, String> {
         self.state
             .lock()
             .await
@@ -128,13 +152,13 @@ impl Engine {
             .cloned()
             .ok_or_else(|| "The scan was stopped.".into())
     }
-    /// Checks out the default branch's head in a detached worktree and starts
-    /// the scan skill in its own Codex thread.
+    /// Checks out the default branch's head in a detached worktree, then
+    /// starts the scan skill in its own Codex thread, or, with no skill, the
+    /// scan by Claude or Antigravity.
     async fn prepare_scan(
         self: &Arc<Self>,
         id: &str,
-        skill_name: &str,
-        skill_path: &str,
+        skill: Option<(String, String)>,
     ) -> Result<(), String> {
         let scan = self.scan_live(id).await?;
         let repo = self
@@ -213,8 +237,10 @@ impl Engine {
             }
         })
         .await;
-        self.start_scan_thread(id, &worktree, skill_name, skill_path)
-            .await
+        match skill {
+            Some((name, path)) => self.start_scan_thread(id, &worktree, &name, &path).await,
+            None => self.start_cli_scan(id, &worktree).await,
+        }
     }
     /// Starts the scan skill in its own Codex thread on the scan's copy.
     pub(super) async fn start_scan_thread(
@@ -335,7 +361,7 @@ impl Engine {
         Ok(())
     }
     /// Ends a scan that has not finished, and removes its worktree.
-    async fn end_scan(&self, id: &str, status: &str, error: Option<String>) {
+    pub(super) async fn end_scan(&self, id: &str, status: &str, error: Option<String>) {
         let mut ended = false;
         self.update(|s| {
             if let Some(x) = s
@@ -356,7 +382,7 @@ impl Engine {
             self.remove_scan_worktree(id).await;
         }
     }
-    async fn remove_scan_worktree(&self, id: &str) {
+    pub(super) async fn remove_scan_worktree(&self, id: &str) {
         let path = self.scan_worktree(id);
         let removed = {
             let _git = self.git_lock.lock().await;
@@ -374,34 +400,42 @@ impl Engine {
         })
         .await;
     }
-    /// Cancels a scan. A scan still being prepared stops at once. A running
-    /// scan is stopped like any other (see [`Engine::stop_scan`]); Cancel
-    /// on a stopping scan tries the stop again.
+    /// Cancels a scan. A scan still being prepared stops at once, and so
+    /// does one by Claude or Antigravity: their run is Orbit's own process.
+    /// A running Codex scan is stopped like any other (see
+    /// [`Engine::stop_scan`]); Cancel on a stopping scan tries the stop again.
     pub async fn cancel_scan(self: &Arc<Self>, id: &str) -> Result<(), String> {
-        let preparing = {
+        let (at_once, cli) = {
             let mut s = self.state.lock().await;
             let x = s
                 .scans
                 .iter_mut()
                 .find(|x| x.id == id)
                 .ok_or("Unknown scan")?;
-            match x.status.as_str() {
-                "preparing" => {
-                    x.status = "cancelled".into();
-                    x.finished_at = Some(now());
-                    true
-                }
-                "running" | "cancelling" => {
-                    begin_stop(x, None, None);
-                    false
-                }
+            let cli = x.provider != Provider::Codex;
+            let at_once = match x.status.as_str() {
+                "preparing" => true,
+                "running" if cli => true,
+                "running" | "cancelling" => false,
                 _ => return Err("This scan is not running.".into()),
+            };
+            if at_once {
+                x.status = "cancelled".into();
+                x.finished_at = Some(now());
+                x.progress = None;
+            } else {
+                begin_stop(x, None, None);
             }
+            (at_once, cli)
         };
         self.dirty.store(true, std::sync::atomic::Ordering::SeqCst);
-        if preparing {
+        if at_once {
             if let Some(task) = self.preparing.lock().unwrap().remove(id) {
                 task.abort();
+            }
+            // A turn may have started before its preparation was aborted.
+            if cli {
+                self.stop_cli_turn(id).await;
             }
             let e = self.clone();
             let id = id.to_string();
@@ -627,7 +661,8 @@ impl Engine {
             .scans
             .iter()
             .find(|x| {
-                x.thread_id.as_deref() == Some(thread)
+                x.provider == Provider::Codex
+                    && x.thread_id.as_deref() == Some(thread)
                     && matches!(x.status.as_str(), "running" | "cancelling")
             })
             .map(|x| x.id.clone())

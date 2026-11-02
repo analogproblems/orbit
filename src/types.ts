@@ -2149,7 +2149,8 @@ export interface LedgerStatus {
   /** Why write-ups stopped or are waiting. */
   writeError?: string | null;
 }
-/** How far a security scan has come, as the Codex Security plugin reports it. */
+/** How far a security scan has come, as the Codex Security plugin reports it,
+ * or, for Claude or Antigravity, "reading" or "writing_up". */
 export interface ScanProgress {
   phase?: string | null;
   completed?: number | null;
@@ -2164,17 +2165,22 @@ export type ScanMode = "standard" | "deep";
 export type ScanStatus =
   | "preparing"
   | "running"
-  /** Waiting for the Codex Security plugin to confirm its scan stopped. */
+  /** Waiting for the Codex Security plugin to confirm its scan stopped.
+   * Scans by Claude or Antigravity stop at once. */
   | "cancelling"
   | "importing"
   | "completed"
   | "failed"
   | "cancelled"
   | "interrupted";
-/** A whole-repository security scan with the Codex Security plugin. */
+/** A whole-repository security scan, by Codex with its Codex Security plugin
+ * or by Claude or Antigravity with Orbit's own instructions. */
 export interface SecurityScan {
   id: string;
   repo: string;
+  /** Who scans; Codex in scans from before there was a choice. */
+  provider?: Provider;
+  /** Only Codex Security runs deep scans. */
   mode: ScanMode;
   status: ScanStatus;
   /** While stopping, the reason the scan is being stopped, if not a cancel. */

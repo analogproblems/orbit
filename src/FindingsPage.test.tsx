@@ -174,4 +174,48 @@ describe("findings page", () => {
       useOrbit.setState({ action });
     }
   });
+  it("shows a Claude scan's finding in the form reviews give", () => {
+    const snapshot = freshDemo();
+    snapshot.reviews = [];
+    const scan = snapshot.scans![0];
+    snapshot.scans = [
+      {
+        ...scan,
+        provider: "claude",
+        findings: [
+          {
+            id: `${scan.id}-0`,
+            title: "SQL injection in find_user",
+            priority: 1,
+            path: "src/db.rs",
+            startLine: 12,
+            endLine: 14,
+            body: "The query is built from the user name.",
+            confidence: 0.8,
+            category: "security",
+            failureScenario: "A user name of ' OR 1=1 -- logs in as anyone.",
+            evidence: "Read src/db.rs:12 and the login handler.",
+            confirmed: true,
+            suggestedFix: "Use a bound parameter.",
+            doneWhen: "A test logs in with a quote in the name and fails.",
+          },
+        ],
+      },
+    ];
+    useOrbit.setState({ snapshot });
+    render(<Page onChoose={vi.fn()} />);
+    expect(screen.getByText(`Security scan · ${scan.repo} ·`)).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: (name) => name.includes("SQL injection in find_user"),
+      }),
+    );
+    expect(screen.getByText("Claude security scan ·")).toBeTruthy();
+    expect(screen.getByText("Breaks when")).toBeTruthy();
+    expect(screen.getByText("Use a bound parameter.")).toBeTruthy();
+    expect(
+      screen.getByText("Yes, by reading or running the code"),
+    ).toBeTruthy();
+    expect(screen.getByText("src/db.rs:12–14")).toBeTruthy();
+  });
 });

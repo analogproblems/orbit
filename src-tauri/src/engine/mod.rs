@@ -16,6 +16,7 @@ mod chat;
 mod checks;
 pub(crate) mod claims;
 mod cli_review;
+mod cli_scans;
 mod clones;
 mod connection;
 mod dependabot;
@@ -65,6 +66,8 @@ mod checks_tests;
 mod claims_tests;
 #[cfg(test)]
 mod cli_review_tests;
+#[cfg(test)]
+mod cli_scans_tests;
 #[cfg(test)]
 mod clones_tests;
 #[cfg(test)]
@@ -128,7 +131,8 @@ type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// `run` (preparing and running reviews, Codex events), `events` (what a
 /// reviewer reports, in Orbit's own terms), `chat` (follow-ups),
 /// `publish` (GitHub comments), `worktrees` (cleanup), `clones` (keeping
-/// users' clones up to date), `scans` (repository security scans),
+/// users' clones up to date), `scans` (repository security scans, with
+/// Codex Security), `cli_scans` (security scans by Claude or Antigravity),
 /// `fixes` (Bit's fixes and answers), `ask` (questions you type to Bit),
 /// `setup` (repositories Bit sets up), `ledger` (each repository's
 /// pull-request history, for the Decisions page), `writeup` (its
@@ -292,7 +296,8 @@ pub struct Engine {
     /// One dev container image is built at a time, so two reviews of a
     /// repository don't build the same image.
     building: Mutex<()>,
-    /// Each review's running Claude or Antigravity turn, so Stop can end it.
+    /// Each review's or scan's running Claude or Antigravity turn, so Stop
+    /// or Cancel can end it.
     cli_turns: std::sync::Mutex<HashMap<String, Arc<crate::cli::Running>>>,
     /// Items that just opened whose fix Bit does on its own; the next tick
     /// does them.
@@ -748,9 +753,12 @@ pub(crate) fn recover(state: &mut Snapshot) -> Result<Vec<String>, String> {
     for scan in &mut state.scans {
         const CLOSED: &str =
             "Orbit closed while this scan was running. Run a new scan to start over.";
+        // Nothing was started in Codex yet, and a scan by Claude or
+        // Antigravity ran in Orbit's own process, which ended with it.
+        let ended = scan.status == "preparing"
+            || (scan.provider != Provider::Codex && scan_active(&scan.status));
         match scan.status.as_str() {
-            // Nothing was started in Codex yet.
-            "preparing" => {
+            _ if ended => {
                 scan.status = "interrupted".into();
                 scan.finished_at = Some(now());
                 scan.error = Some(CLOSED.into());

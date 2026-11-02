@@ -39,6 +39,7 @@ import {
   type SecuritySetting,
   trustedSource,
   scanActive,
+  type Provider,
   type ScanMode,
   type ScanPluginStatus,
   type SecurityScan,
@@ -1071,21 +1072,33 @@ async function demoAction(
       throw Error(
         "A security scan is already running. Wait for it or cancel it.",
       );
+    const provider = (args.provider as Provider | undefined) ?? "codex";
+    if (provider !== "codex" && args.mode !== "standard")
+      throw Error(
+        `${providerLabels[provider]} runs standard scans. Choose a standard scan, or Codex Security for a deep one.`,
+      );
+    const cli = provider !== "codex";
     const scan: SecurityScan = {
       ...D.demoScan(args.repo as string, 0),
       id: `scan-${crypto.randomUUID()}`,
+      provider,
       mode: args.mode as ScanMode,
       status: "running",
       finishedAt: null,
       findings: [],
       hasReport: false,
       diskBytes: null,
-      progress: { phase: "preflight", updatedAt: new Date().toISOString() },
+      progress: {
+        phase: cli ? "reading" : "preflight",
+        updatedAt: new Date().toISOString(),
+      },
     };
     demo.scans.unshift(scan);
     commit();
     // A demo scan moves through its phases in seconds rather than hours.
-    const phases = ["threat_model", "discovery", "validation", "reporting"];
+    const phases = cli
+      ? ["writing_up"]
+      : ["threat_model", "discovery", "validation", "reporting"];
     const step = (index: number) => {
       const current = demo.scans?.find(
         (s) => s.id === scan.id && s.status === "running",
@@ -1127,6 +1140,16 @@ async function demoAction(
     if (!scan || !scanActive(scan)) throw Error("This scan is not running.");
     clearTimeout(timers.get(scan.id));
     timers.delete(scan.id);
+    // A scan by Claude or Antigravity stops at once.
+    if ((scan.provider ?? "codex") !== "codex") {
+      Object.assign(scan, {
+        status: "cancelled",
+        finishedAt: new Date().toISOString(),
+        progress: null,
+      });
+      commit();
+      return;
+    }
     // The app waits for the plugin to confirm its scan stopped.
     scan.status = "cancelling";
     scan.error = null;
