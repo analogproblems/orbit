@@ -31,7 +31,7 @@ use crate::{
 use chrono::{DateTime, Duration, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::{cmp::Ordering, sync::LazyLock};
+use std::{cmp::Ordering, collections::HashSet, sync::LazyLock};
 
 /// Pull requests Orbit asks GitHub about in one pass.
 pub const PER_PASS: usize = 4;
@@ -512,8 +512,14 @@ pub fn unsettled(journal: &mut [Write]) -> Vec<(String, String, u64, String)> {
 }
 const CUT_OFF: &str = "Orbit stopped before GitHub answered, so it looks on GitHub for its comment before it asks again.";
 /// The comment that asks Dependabot to rebase, from Orbit's sign-in
-/// (`login`), among a pull request's comments.
-pub fn find_rebase(comments: &[serde_json::Value], login: &str) -> Option<String> {
+/// (`login`), among a pull request's comments, leaving out those another
+/// journal entry already has (`taken`): an earlier ask's comment, made a
+/// few minutes before, isn't this one's.
+pub fn find_rebase(
+    comments: &[serde_json::Value],
+    login: &str,
+    taken: &HashSet<String>,
+) -> Option<String> {
     comments
         .iter()
         .find(|c| {
@@ -521,8 +527,20 @@ pub fn find_rebase(comments: &[serde_json::Value], login: &str) -> Option<String
                 .as_str()
                 .is_some_and(|by| !by.is_empty() && by.eq_ignore_ascii_case(login))
                 && c["body"].as_str().is_some_and(|b| b.trim() == REBASE)
+                && c["html_url"]
+                    .as_str()
+                    .is_some_and(|url| !url.is_empty() && !taken.contains(url))
         })
         .map(|c| c["html_url"].as_str().unwrap_or_default().to_string())
+}
+/// The links every journal entry but `id` has, which `find_rebase` leaves
+/// out.
+pub fn taken(journal: &[Write], id: &str) -> HashSet<String> {
+    journal
+        .iter()
+        .filter(|w| w.id != id && !w.url.is_empty())
+        .map(|w| w.url.clone())
+        .collect()
 }
 /// Records what Orbit found on GitHub for an unsettled ask to rebase: its
 /// comment, which makes it done, or, after looking through every comment

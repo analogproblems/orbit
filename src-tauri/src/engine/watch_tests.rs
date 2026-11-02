@@ -3609,10 +3609,38 @@ async fn an_ask_to_rebase_is_posted_only_on_what_github_says_just_now() {
     assert!(writes(d.path()).is_empty());
     assert!(e.shown_snapshot().await.journal.is_empty());
 
-    // It conflicts again, but Dependabot pushes while GitHub answers.
+    // It conflicts again, but Dependabot pushes while GitHub answers, and
+    // Orbit reads that the new commit conflicts too.
     dependabot_merges(d.path(), 12, &"6".repeat(40), false, "dirty");
+    let base = crate::dependabot::may_rebase(&e.snapshot().await, "a/b#12")
+        .unwrap()
+        .3;
     let asking = ask_while_held(&e, d.path(), &gh).await;
-    e.update(|s| s.prs[0].head_sha = "7".repeat(40)).await;
+    let moved = "7".repeat(40);
+    e.update(|s| {
+        s.prs[0].head_sha = moved.clone();
+        let conflicting = crate::readiness::Merge {
+            pr_id: "a/b#12".into(),
+            head_sha: moved.clone(),
+            base_sha: base.clone(),
+            read_at: "2026-11-02T12:00:00.000Z".into(),
+            mergeable: Some(false),
+            state: "dirty".into(),
+            ..Default::default()
+        };
+        crate::dependabot::record(
+            s,
+            "a/b",
+            12,
+            &moved,
+            &base,
+            Ok(conflicting),
+            chrono::Utc::now(),
+        );
+    })
+    .await;
+    let now = crate::dependabot::may_rebase(&e.snapshot().await, "a/b#12").unwrap();
+    assert_eq!(now.2, moved, "a tap at the new commit would be allowed");
     std::fs::remove_file(d.path().join("hold")).unwrap();
     assert_eq!(
         asking.await.unwrap().unwrap_err(),
@@ -3776,4 +3804,86 @@ async fn an_ask_to_rebase_github_may_have_kept_is_looked_for_not_sent_again() {
         s.updates[0].rebase_text.as_deref(),
         Some("Orbit asked Dependabot to rebase it. Dependabot answers on GitHub, and may take a few minutes.")
     );
+}
+
+/// An earlier ask's comment never settles a later one: here Orbit asked at
+/// one commit, Dependabot pushed another that still conflicts, and Orbit
+/// stopped before its ask at that one went. The only comment on GitHub is
+/// the first one's, so the second didn't go through, and a tap asks again.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_earlier_asks_comment_doesnt_settle_a_later_one() {
+    use crate::ops::WriteState;
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    let e = conflicting_fix(d.path(), &gh).await;
+    crate::github::GH
+        .scope(gh.clone(), e.ask_rebase("a/b#12"))
+        .await
+        .unwrap();
+    let first = e.shown_snapshot().await.journal[0].url.clone();
+    assert!(!first.is_empty());
+
+    let moved = "7".repeat(40);
+    dependabot_merges(d.path(), 12, &moved, false, "dirty");
+    dependabot_ci(d.path(), &[(12, &moved, "SUCCESS")]);
+    e.update(|s| s.prs[0].head_sha = moved.clone()).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert!(e.shown_snapshot().await.updates[0].can_rebase);
+    // Cut off before it was sent, a minute after the first, by the fake
+    // GitHub's clock.
+    e.update(|s| {
+        s.journal[0].at = "2026-10-29T12:00:00.000Z".into();
+        crate::dependabot::record_rebase(
+            &mut s.journal,
+            "a/b",
+            12,
+            &moved,
+            chrono::DateTime::parse_from_rfc3339("2026-10-29T12:01:00Z")
+                .unwrap()
+                .to_utc(),
+        );
+    })
+    .await;
+    e.flush().await.unwrap();
+    drop(e);
+    let e = connected(d.path()).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert!(sent(d.path(), "GET repos/a/b/issues/12/comments") >= 1);
+    let s = e.shown_snapshot().await;
+    let [done, lost] = &s.journal[..] else {
+        panic!("two asks: {:?}", s.journal);
+    };
+    assert_eq!(
+        (done.state, done.url.as_str(), done.head.as_deref()),
+        (
+            WriteState::Done,
+            first.as_str(),
+            Some("6".repeat(40).as_str())
+        )
+    );
+    assert_eq!(
+        (lost.state, lost.url.as_str(), lost.head.as_deref()),
+        (WriteState::Failed, "", Some(moved.as_str()))
+    );
+    assert_eq!(
+        lost.error.as_deref(),
+        Some("Orbit didn't find its comment on GitHub, so its ask didn't go through. Tap Ask to rebase again if it still conflicts.")
+    );
+    assert!(s.updates[0].can_rebase, "tap again");
+    crate::github::GH
+        .scope(gh.clone(), e.ask_rebase("a/b#12"))
+        .await
+        .unwrap();
+    assert_eq!(
+        writes(d.path()),
+        [
+            "POST repos/a/b/issues/12/comments",
+            "POST repos/a/b/issues/12/comments"
+        ]
+    );
+    let s = e.shown_snapshot().await;
+    let w = s.journal.last().unwrap();
+    assert_eq!(w.state, WriteState::Done);
+    assert!(!w.url.is_empty() && w.url != first, "{w:?}");
 }

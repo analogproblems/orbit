@@ -904,16 +904,39 @@ fn an_ask_to_rebase_cut_off_is_never_sent_again_and_is_looked_for() {
         comment("me", "Could you @dependabot rebase this?", 2),
         comment("ME", "@dependabot rebase\n", 3),
     ];
+    let none = std::collections::HashSet::new();
     assert_eq!(
-        find_rebase(&comments, "me").as_deref(),
+        find_rebase(&comments, "me", &none).as_deref(),
         Some("https://github.com/a/b/pull/12#issuecomment-3")
     );
-    assert_eq!(find_rebase(&comments[..2], "me"), None);
-    assert_eq!(find_rebase(&comments, ""), None);
+    assert_eq!(find_rebase(&comments[..2], "me", &none), None);
+    assert_eq!(find_rebase(&comments, "", &none), None);
+    // One an earlier ask already has isn't this one's.
+    let mut journal = s.journal.clone();
+    let mut earlier = journal[0].clone();
+    earlier.id = "earlier".into();
+    earlier.state = WriteState::Done;
+    earlier.url = "https://github.com/a/b/pull/12#issuecomment-3".into();
+    journal.insert(0, earlier);
+    let others = taken(&journal, &cut);
+    assert_eq!(others.len(), 1);
+    assert_eq!(find_rebase(&comments, "me", &others), None);
+    let mut more = comments.clone();
+    more.push(comment("me", "@dependabot rebase", 4));
+    assert_eq!(
+        find_rebase(&more, "me", &others).as_deref(),
+        Some("https://github.com/a/b/pull/12#issuecomment-4")
+    );
+    assert!(taken(&journal, "earlier").is_empty(), "not its own");
 
     // Found: it got there.
     let mut journal = s.journal.clone();
-    found_rebase(&mut journal, &cut, Ok(find_rebase(&comments, "me")), later);
+    found_rebase(
+        &mut journal,
+        &cut,
+        Ok(find_rebase(&comments, "me", &none)),
+        later,
+    );
     assert_eq!(journal[0].state, WriteState::Done);
     assert_eq!(journal[0].error, None);
     assert!(may_rebase(

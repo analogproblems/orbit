@@ -3,7 +3,7 @@
 //! (`crate::dependabot`).
 use super::{Engine, MOVING};
 use crate::{dependabot, github, logs};
-use std::sync::atomic::Ordering;
+use std::{collections::HashSet, sync::atomic::Ordering};
 
 /// The most times Orbit asks GitHub for more of a pull request's comments
 /// while it looks for its ask to rebase, each up to `github::replies`'s
@@ -129,6 +129,8 @@ impl Engine {
     }
     /// Looks on GitHub for each ask to rebase that GitHub may or may not
     /// have (`dependabot::unsettled`), and records whether it got there.
+    /// A comment another journal entry already has, such as an earlier
+    /// ask's at the commit before, isn't counted (`dependabot::taken`).
     /// None is sent again. Only while holding `rebasing`, so none is being
     /// sent.
     async fn look_for_cut_off_rebases(&self) {
@@ -142,10 +144,13 @@ impl Engine {
             (cut, s.github_user.clone().unwrap_or_default())
         };
         for (id, repo, number, since) in &cut {
+            // Read each time, as the one before may have just found its
+            // comment.
+            let taken = dependabot::taken(&self.state.lock().await.journal, id);
             let found = if login.is_empty() {
                 Err("Orbit doesn't know its GitHub sign-in yet".to_string())
             } else {
-                find_rebase(repo, *number, since, &login).await
+                find_rebase(repo, *number, since, &login, &taken).await
             };
             self.update(|s| {
                 dependabot::found_rebase(&mut s.journal, id, found, chrono::Utc::now());
@@ -164,11 +169,12 @@ async fn find_rebase(
     number: u64,
     since: &str,
     login: &str,
+    taken: &HashSet<String>,
 ) -> Result<Option<String>, String> {
     let mut from = 1;
     for _ in 0..LOOKS {
         let (comments, next) = github::replies(repo, number, since, from).await?;
-        if let Some(url) = dependabot::find_rebase(&comments, login) {
+        if let Some(url) = dependabot::find_rebase(&comments, login, taken) {
             return Ok(Some(url));
         }
         match next {
