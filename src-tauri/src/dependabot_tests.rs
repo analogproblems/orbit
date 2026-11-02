@@ -3,6 +3,7 @@ use crate::ci::{Check, CommitCi, PullCi, RepoCi};
 use crate::security::{Kind, RepoSecurity};
 use crate::types::tests::pr;
 use chrono::Duration;
+use serde_json::json;
 
 pub(crate) fn now() -> DateTime<Utc> {
     DateTime::parse_from_rfc3339("2026-11-02T12:00:00Z")
@@ -311,6 +312,37 @@ fn an_update_fixes_an_alert_when_its_new_version_is_outside_the_range() {
     assert_eq!(in_range("> 2.0.0", "2.0.1"), Some(true));
     assert_eq!(in_range("", "1.0.0"), None);
     assert_eq!(in_range("~> 1.0", "1.0.1"), None);
+}
+
+/// An advisory with more ranges than Orbit keeps: none is kept, so a
+/// version in one Orbit would have left out is never called a fix.
+#[test]
+fn an_advisory_with_more_ranges_than_orbit_keeps_claims_only_the_fixing_version() {
+    let mut v = crate::security::tests::dependabot(1, "lodash", "high");
+    v["security_vulnerability"]["vulnerable_version_range"] = json!(">= 1.0.0, < 1.0.2");
+    v["security_vulnerability"]["first_patched_version"]["identifier"] = json!("1.0.2");
+    let lines: Vec<_> = (1..=21)
+        .map(|n| {
+            json!({
+                "package": { "ecosystem": "npm", "name": "lodash" },
+                "vulnerable_version_range": format!(">= {n}.0.0, < {n}.0.2"),
+            })
+        })
+        .collect();
+    v["security_advisory"]["vulnerabilities"] = json!(lines);
+    let a = crate::security::alert(Source::Dependabot, &v).unwrap();
+    assert!(a.ranges.is_empty());
+    assert!(!fixes(&a, &bump("lodash", "1.0.1", "21.0.1"), Some("")));
+    assert!(fixes(&a, &bump("lodash", "1.0.1", "1.0.2"), Some("")));
+    // With 20, each is kept and checked.
+    v["security_advisory"]["vulnerabilities"]
+        .as_array_mut()
+        .unwrap()
+        .truncate(20);
+    let a = crate::security::alert(Source::Dependabot, &v).unwrap();
+    assert_eq!(a.ranges.len(), 20);
+    assert!(!fixes(&a, &bump("lodash", "1.0.1", "20.0.1"), Some("")));
+    assert!(fixes(&a, &bump("lodash", "1.0.1", "21.0.1"), Some("")));
 }
 
 /// The three in "done when": a green patch update, a failing major

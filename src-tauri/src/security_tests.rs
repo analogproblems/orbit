@@ -147,10 +147,19 @@ fn a_dependabot_alert_keeps_every_range_its_advisory_affects_for_its_package() {
         line("pip", "django", ">= 2.0.0, < 2.0.2"),
         line("npm", "django", "< 9.0.0"),
         line("pip", "flask", "< 1.0"),
-        line("pip", "django", ""),
+        line("pip", "flask", ""),
     ]);
     let a = alert(Source::Dependabot, &v).unwrap();
     assert_eq!(a.ranges, [">= 1.11.8, < 1.11.10", ">= 2.0.0, < 2.0.2"]);
+    // One of its own without a range, or one too long to keep whole, and
+    // Orbit can't say what they cover, so it keeps none.
+    let mut blank = v.clone();
+    blank["security_advisory"]["vulnerabilities"][5] = line("pip", "django", "");
+    assert!(alert(Source::Dependabot, &blank).unwrap().ranges.is_empty());
+    let mut long = v.clone();
+    long["security_advisory"]["vulnerabilities"][5] =
+        line("pip", "django", &format!("< {}", "1.".repeat(150)));
+    assert!(alert(Source::Dependabot, &long).unwrap().ranges.is_empty());
     // Without the advisory's list, Orbit knows none.
     v["security_advisory"]
         .as_object_mut()

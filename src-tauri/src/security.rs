@@ -149,7 +149,7 @@ pub struct Alert {
     /// Every range of versions its advisory affects, for a dependency's
     /// package, as GitHub writes them: "< 4.17.21" or ">= 2.0.0, < 2.0.5".
     /// An advisory can affect more than one release line. Empty when
-    /// GitHub didn't list them.
+    /// GitHub didn't list them, or Orbit couldn't keep them all.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub ranges: Vec<String>,
     pub url: String,
@@ -471,11 +471,13 @@ fn plain(text: &str) -> String {
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     shorten(&text, MAX_TEXT)
 }
-/// The most ranges Orbit keeps for one alert, which is GitHub's list.
+/// The most ranges Orbit keeps for one alert.
 const MAX_RANGES: usize = 20;
 /// Every range of versions a Dependabot alert's advisory affects for its
 /// package: the advisory's vulnerabilities in the same ecosystem for the
-/// same package, ignoring case.
+/// same package, ignoring case. None when Orbit can't keep them all, so
+/// that what it keeps is never taken for the whole list: more than
+/// `MAX_RANGES`, or one without a range, or too long to keep whole.
 fn ranges(v: &Value, package: &str) -> Vec<String> {
     let ecosystem = [
         &v["dependency"]["package"]["ecosystem"],
@@ -485,22 +487,32 @@ fn ranges(v: &Value, package: &str) -> Vec<String> {
     .map(|e| str_of(e))
     .find(|e| !e.is_empty())
     .unwrap_or_default();
+    if package.is_empty() {
+        return vec![];
+    }
     let mut ranges: Vec<String> = vec![];
     let listed = v["security_advisory"]["vulnerabilities"].as_array();
     for vulnerability in listed.into_iter().flatten() {
         let p = &vulnerability["package"];
-        let range = str_of(&vulnerability["vulnerable_version_range"]);
-        if !package.is_empty()
-            && str_of(&p["name"]).eq_ignore_ascii_case(package)
-            && str_of(&p["ecosystem"]).eq_ignore_ascii_case(&ecosystem)
-            && !range.is_empty()
-            && !ranges.contains(&range)
+        if !str_of(&p["name"]).eq_ignore_ascii_case(package)
+            || !str_of(&p["ecosystem"]).eq_ignore_ascii_case(&ecosystem)
         {
-            ranges.push(range);
+            continue;
+        }
+        let raw = vulnerability["vulnerable_version_range"]
+            .as_str()
+            .unwrap_or_default();
+        let range = str_of(&vulnerability["vulnerable_version_range"]);
+        if range.is_empty() || raw.chars().count() > MAX_TEXT {
+            return vec![];
+        }
+        if ranges.contains(&range) {
+            continue;
         }
         if ranges.len() == MAX_RANGES {
-            break;
+            return vec![];
         }
+        ranges.push(range);
     }
     ranges
 }
