@@ -2715,6 +2715,117 @@ async fn risky_workflow_settings_go_to_a_private_repositorys_agent_until_fixed()
     assert_eq!(writes(d.path()).len(), sent);
 }
 
+/// Gives the fake GitHub's files at `at` these version files, by their
+/// names in `workflows::query`.
+fn versions_at(dir: &Path, at: char, files: &[(&str, &str)]) {
+    let file = dir.join(format!("setup-{}.json", sha(at)));
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    for (name, text) in files {
+        v["data"]["repository"][*name] = json!({ "text": text, "isTruncated": false });
+    }
+    std::fs::write(file, v.to_string()).unwrap();
+}
+
+/// A Tauri app whose release was bumped everywhere but its Rust side gets
+/// an issue for its agent, public or not, with what to change in each
+/// file; the commit that makes them agree closes it.
+#[cfg(unix)]
+#[tokio::test]
+async fn version_files_that_disagree_go_to_the_agent_until_they_agree() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let e = connected(d.path()).await;
+    e.update(|s| s.settings.buddy.rules.open_issues = "do_it".into())
+        .await;
+    let ci = [("ci.yml", "on: pull_request\n")];
+    let cargo = |v: &str| format!("[package]\nname = \"app\"\nversion = \"{v}\"\n");
+    let lock = |v: &str| format!("version = 4\n\n[[package]]\nname = \"app\"\nversion = \"{v}\"\n");
+    let tauri = |v: &str| format!(r#"{{ "version": "{v}" }}"#);
+    let package = |v: &str| format!(r#"{{ "name": "app", "version": "{v}" }}"#);
+    answer(d.path(), '1', &[], None);
+    files(d.path(), '1', &ci, &[], None);
+    versions_at(
+        d.path(),
+        '1',
+        &[
+            ("package", &package("0.3.0")),
+            ("tauri", &tauri("0.3.0")),
+            ("tauriCargo", &cargo("0.2.0")),
+            ("tauriLock", &lock("0.2.0")),
+        ],
+    );
+    watch(&e, &gh).await;
+    let s = e.snapshot().await;
+    assert_eq!(s.setups[0].versions.len(), 4);
+    let p = s
+        .problems
+        .iter()
+        .find(|p| p.kind == crate::problems::ProblemKind::Versions)
+        .unwrap();
+    assert_eq!(p.mismatches.len(), 2);
+    assert_eq!(writes(d.path()), ["POST repos/a/b/issues"]);
+    let g = github(d.path());
+    let issue = &g["issues"][0];
+    assert_eq!(issue["title"], "Make the version files agree");
+    let body = issue["body"].as_str().unwrap();
+    for line in [
+        "## Orbit · Versions\n\nOn `main` at `1111111`, 2 version files say another version than the files they should agree with.",
+        &format!("- **I1** · `src-tauri/Cargo.toml` says `0.2.0`, but `package.json` and `src-tauri/tauri.conf.json` say `0.3.0` · [file](https://github.com/a/b/blob/{}/src-tauri/Cargo.toml) · change it to `0.3.0`", sha('1')),
+        "- **I2** · `src-tauri/Cargo.lock` records `0.2.0` for `src-tauri/Cargo.toml`, but `package.json` and `src-tauri/tauri.conf.json` say `0.3.0`",
+        "· once `src-tauri/Cargo.toml` says `0.3.0`, run `cargo update --workspace` in `src-tauri` to update it",
+        r#""kind":"versions""#,
+        r#""kind":"version","mismatch":1"#,
+        r#""mismatch":2,"of":"src-tauri/Cargo.toml","path":"src-tauri/Cargo.lock","says":"0.2.0""#,
+    ] {
+        assert!(body.contains(line), "{line}\n\n{body}");
+    }
+    let number = issue["number"].as_u64().unwrap();
+    let notes = e.snapshot().await.buddy_feed.notes;
+    assert!(notes.last().unwrap().text.starts_with(&format!(
+        "Orbit opened issue #{number} to tell the agent on a/b that 2 version files disagree."
+    )));
+
+    // The commit that makes them agree closes it, as completed.
+    answer(d.path(), '2', &[], None);
+    files(d.path(), '2', &ci, &[], None);
+    versions_at(
+        d.path(),
+        '2',
+        &[
+            ("package", &package("0.3.0")),
+            ("tauri", &tauri("0.3.0")),
+            ("tauriCargo", &cargo("0.3.0")),
+            ("tauriLock", &lock("0.3.0")),
+        ],
+    );
+    watch(&e, &gh).await;
+    let g = github(d.path());
+    assert_eq!(g["issues"][0]["state"], "closed");
+    assert_eq!(g["issues"][0]["state_reason"], "completed");
+    let note = g["comments"].as_array().unwrap().last().unwrap()["body"].clone();
+    assert!(note.as_str().unwrap().starts_with(
+        "The version files on `main` agree at `2222222`, so Orbit is closing this issue."
+    ));
+    let body = g["issues"][0]["body"].as_str().unwrap();
+    for line in [
+        "The version files on `main` agree at `2222222`. Nothing is left to do here.",
+        "- **I1** · src-tauri/Cargo.toml says 0.2.0 · agrees at `2222222`",
+    ] {
+        assert!(body.contains(line), "{line}\n\n{body}");
+    }
+    let s = e.snapshot().await;
+    assert!(s.problems.iter().all(|p| !p.is_open()));
+    assert!(s
+        .buddy_feed
+        .notes
+        .last()
+        .unwrap()
+        .text
+        .starts_with(&format!(
+            "Orbit closed issue #{number}: a/b's version files agree now."
+        )));
+}
+
 /// With actionlint and zizmor installed, what they find beyond Orbit's own
 /// checks joins the same problem and issue, from a folder Orbit removes.
 #[cfg(unix)]

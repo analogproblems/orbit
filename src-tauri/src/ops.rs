@@ -279,6 +279,9 @@ pub enum ItemKind {
     /// A risky workflow setting, open while Orbit finds it in the files on
     /// the default branch (see `ProblemKind::WorkflowRisks`).
     Risk,
+    /// A version file that disagrees, open while Orbit finds it so on the
+    /// default branch (see `ProblemKind::Versions`).
+    Version,
 }
 impl ItemKind {
     fn is_check(&self) -> bool {
@@ -328,6 +331,9 @@ pub struct Item {
     /// For a risky workflow setting: its number in its problem.
     #[serde(skip_serializing_if = "is_zero_u32")]
     pub risk: u32,
+    /// For a version file that disagrees: its number in its problem.
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub mismatch: u32,
 }
 fn is_zero(n: &u64) -> bool {
     *n == 0
@@ -341,7 +347,9 @@ impl Item {
     /// the alert, such as "Dependabot alert 12, lodash".
     pub fn name(&self) -> String {
         match self.kind {
-            ItemKind::Check | ItemKind::Alert | ItemKind::Risk => self.check.clone(),
+            ItemKind::Check | ItemKind::Alert | ItemKind::Risk | ItemKind::Version => {
+                self.check.clone()
+            }
             ItemKind::BaseMoved => format!("{} moved on", self.check),
             ItemKind::NoCi => "CI on pull requests".into(),
         }
@@ -647,7 +655,8 @@ pub fn refresh(threads: &mut Vec<Thread>, problems: &[Problem], now: DateTime<Ut
                         | ProblemKind::NoCi
                         | ProblemKind::Waiting
                         | ProblemKind::Security
-                        | ProblemKind::WorkflowRisks => ThreadKind::Issue,
+                        | ProblemKind::WorkflowRisks
+                        | ProblemKind::Versions => ThreadKind::Issue,
                         ProblemKind::PullRequest | ProblemKind::BaseMoved => ThreadKind::Comment,
                     },
                     repo: p.repo.clone(),
@@ -656,7 +665,8 @@ pub fn refresh(threads: &mut Vec<Thread>, problems: &[Problem], now: DateTime<Ut
                         | ProblemKind::NoCi
                         | ProblemKind::Waiting
                         | ProblemKind::Security
-                        | ProblemKind::WorkflowRisks => None,
+                        | ProblemKind::WorkflowRisks
+                        | ProblemKind::Versions => None,
                         ProblemKind::PullRequest | ProblemKind::BaseMoved => {
                             p.pr_id.as_deref().and_then(pr_number)
                         }
@@ -871,7 +881,8 @@ fn key_of(p: &Problem) -> String {
         | ProblemKind::NoCi
         | ProblemKind::Waiting
         | ProblemKind::Security
-        | ProblemKind::WorkflowRisks => format!("issue:{}", p.id),
+        | ProblemKind::WorkflowRisks
+        | ProblemKind::Versions => format!("issue:{}", p.id),
         // A pull request's problems share its one comment.
         ProblemKind::PullRequest | ProblemKind::BaseMoved => {
             format!("pr:{}", p.pr_id.as_deref().unwrap_or(&p.repo))
@@ -890,7 +901,18 @@ fn items_from(t: &mut Thread, p: &Problem) {
         return alert_items(t, p);
     }
     if p.kind == ProblemKind::WorkflowRisks {
-        return risk_items(t, p);
+        let open = p
+            .risks
+            .iter()
+            .map(|r| (r.number, r.name(), r.since.clone()));
+        return numbered_items(t, p, ItemKind::Risk, open.collect());
+    }
+    if p.kind == ProblemKind::Versions {
+        let open = p
+            .mismatches
+            .iter()
+            .map(|m| (m.number, m.name(), m.since.clone()));
+        return numbered_items(t, p, ItemKind::Version, open.collect());
     }
     // Only a passing commit says a check stopped failing; when Orbit stops
     // watching for another reason, items stay as it last saw them.
@@ -911,8 +933,9 @@ fn items_from(t: &mut Thread, p: &Problem) {
             ItemKind::BaseMoved => moved,
             ItemKind::NoCi => no_ci,
             // Only a security problem has alerts (`alert_items`), and only
-            // a workflows problem risks (`risk_items`).
-            ItemKind::Alert | ItemKind::Risk => false,
+            // a workflows or versions problem risks or files that disagree
+            // (`numbered_items`).
+            ItemKind::Alert | ItemKind::Risk | ItemKind::Version => false,
         };
         // Its branch follows a rename.
         if failing && item.kind == ItemKind::BaseMoved {
@@ -1007,42 +1030,47 @@ fn alert_items(t: &mut Thread, p: &Problem) {
         }
     }
 }
-/// Marks each risky setting's item open while its problem lists it, at the
-/// commit Orbit last read, adding one for each new one, the most severe
-/// first. A risk that comes back after it went has a new number, so a new
-/// item. When Orbit stopped watching instead of finding them fixed, items
-/// stay as it last saw them.
-fn risk_items(t: &mut Thread, p: &Problem) {
+/// Marks each risky setting's or version file's item open while its
+/// problem lists it in `open`, as `(number, name, since)`, at the commit
+/// Orbit last read, adding one for each new one in order. One that comes
+/// back after it went has a new number, so a new item. When Orbit stopped
+/// watching instead of finding them fixed, items stay as it last saw them.
+fn numbered_items(t: &mut Thread, p: &Problem, kind: ItemKind, open: Vec<(u32, String, String)>) {
     if (!p.is_open() && !p.passed()) || withheld(t, p) {
         return;
     }
+    let number = |i: &Item| match i.kind {
+        ItemKind::Risk => i.risk,
+        ItemKind::Version => i.mismatch,
+        _ => 0,
+    };
     let sha = if p.is_open() { &p.sha } else { &p.closed_sha };
-    for item in t.items.iter_mut().filter(|i| i.kind == ItemKind::Risk) {
-        let open = p.risks.iter().find(|r| r.number == item.risk);
-        if let Some(r) = open {
-            item.check = r.name();
-            item.since = r.since.clone();
+    for item in t.items.iter_mut().filter(|i| i.kind == kind) {
+        let found = open.iter().find(|(n, ..)| *n == number(item));
+        if let Some((_, name, since)) = found {
+            item.check = name.clone();
+            item.since = since.clone();
         }
-        item.failing = open.is_some();
+        item.failing = found.is_some();
         item.at = sha.clone();
     }
-    for r in &p.risks {
-        let known = t
-            .items
-            .iter()
-            .any(|i| i.kind == ItemKind::Risk && i.risk == r.number);
+    for (n, name, since) in open {
+        let known = t.items.iter().any(|i| i.kind == kind && number(i) == n);
         if !known {
-            let number = t.items.iter().map(|i| i.number).max().unwrap_or(0) + 1;
-            t.items.push(Item {
-                number,
-                kind: ItemKind::Risk,
-                risk: r.number,
-                check: r.name(),
+            let mut item = Item {
+                number: t.items.iter().map(|i| i.number).max().unwrap_or(0) + 1,
+                kind,
+                check: name,
                 failing: true,
-                since: r.since.clone(),
+                since,
                 at: sha.clone(),
                 ..Default::default()
-            });
+            };
+            match kind {
+                ItemKind::Version => item.mismatch = n,
+                _ => item.risk = n,
+            }
+            t.items.push(item);
         }
     }
 }
@@ -1411,7 +1439,10 @@ fn closes(p: &Problem, now: DateTime<Utc>) -> bool {
     };
     // A workflow file once changed doesn't flap like a failing check.
     !p.passed()
-        || matches!(p.kind, ProblemKind::NoCi | ProblemKind::WorkflowRisks)
+        || matches!(
+            p.kind,
+            ProblemKind::NoCi | ProblemKind::WorkflowRisks | ProblemKind::Versions
+        )
         || now - closed >= CLOSE_AFTER
 }
 
@@ -1484,9 +1515,9 @@ fn answer_text(item: &Item, t: &Thread) -> String {
                 branch(t)
             )
         }
-        // A risk is fixed once Orbit no longer finds it on the default
-        // branch.
-        (AnswerKind::Fixed, commit) if item.kind == ItemKind::Risk => {
+        // A risk, or a file that disagrees, is fixed once Orbit no longer
+        // finds it so on the default branch.
+        (AnswerKind::Fixed, commit) if matches!(item.kind, ItemKind::Risk | ItemKind::Version) => {
             let at = commit.as_ref().map(|c| format!(" in {}", code(short(c))));
             format!(
                 "said to be fixed{}; Orbit checks again at the next commit on {}",
@@ -1531,6 +1562,7 @@ fn item_line(item: &Item, t: &Thread, p: &Problem) -> String {
         ItemKind::NoCi => return setup_line(item, t, p),
         ItemKind::Alert => return alert_line(item, t, p),
         ItemKind::Risk => return risk_line(item, t, p),
+        ItemKind::Version => return version_line(item, t, p),
         ItemKind::Check => {}
     }
     let state = if item.failing && !p.is_open() {
@@ -1710,6 +1742,58 @@ fn risk_line(item: &Item, t: &Thread, p: &Problem) -> String {
 }
 /// A link to a line in a file at a commit, when the repository's name and
 /// commit are safe in a link.
+/// The line about a version file that disagrees, and how to make it agree:
+/// a manifest is changed, and a lockfile made again from its manifest.
+fn version_line(item: &Item, t: &Thread, p: &Problem) -> String {
+    let open = p
+        .mismatches
+        .iter()
+        .find(|m| m.number == item.mismatch)
+        .filter(|_| item.failing && p.is_open());
+    let Some(m) = open else {
+        let state = if item.failing {
+            "still disagrees when Orbit stopped watching".to_string()
+        } else {
+            format!("agrees at {}", code(short(&item.at)))
+        };
+        return format!("- **I{}** · {} · {state}", item.number, plain(&item.check));
+    };
+    let others: Vec<String> = m.others.iter().map(|o| code(o)).collect();
+    let say = if others.len() == 1 { "says" } else { "say" };
+    let what = if m.of.is_empty() {
+        format!("{} says {}", code(&m.path), code(&m.says))
+    } else {
+        format!(
+            "{} records {} for {}",
+            code(&m.path),
+            code(&m.says),
+            code(&m.of)
+        )
+    };
+    let fix = match m.fix() {
+        "" => format!("change it to {}", code(&m.want)),
+        command => {
+            let folder = match m.path.rsplit_once('/') {
+                Some((folder, _)) => format!(" in {}", code(folder)),
+                None => String::new(),
+            };
+            let run = format!("run {}{folder} to update it", code(command));
+            if m.others.contains(&m.of) {
+                run
+            } else {
+                format!("once {} says {}, {run}", code(&m.of), code(&m.want))
+            }
+        }
+    };
+    format!(
+        "- **I{}** · {what}, but {} {say} {}{} · {fix}{}",
+        item.number,
+        and(&others),
+        code(&m.want),
+        file_link(&t.repo, &p.sha, &m.path, 0),
+        answer_text(item, t)
+    )
+}
 fn file_link(repo: &str, sha: &str, path: &str, line: usize) -> String {
     let safe_part = |s: &str, extra: &str| {
         !s.is_empty()
@@ -1720,7 +1804,12 @@ fn file_link(repo: &str, sha: &str, path: &str, line: usize) -> String {
     {
         return String::new();
     }
-    format!(" · [file](https://github.com/{repo}/blob/{sha}/{path}#L{line})")
+    let line = if line == 0 {
+        String::new()
+    } else {
+        format!("#L{line}")
+    };
+    format!(" · [file](https://github.com/{repo}/blob/{sha}/{path}{line})")
 }
 /// Why an item's job failed, under its line: the step, and the end of its
 /// log in a code block that nothing in it can close. The log is someone
@@ -1827,10 +1916,28 @@ fn data(t: &Thread, p: Option<&Problem>) -> String {
                     o.remove("check");
                 }
             }
+            // A version file's number, path and versions, rather than a
+            // check.
+            if i.kind == ItemKind::Version {
+                item["kind"] = json!(i.kind);
+                item["mismatch"] = json!(i.mismatch);
+                let open = p.and_then(|p| p.mismatches.iter().find(|m| m.number == i.mismatch));
+                if let Some(m) = open {
+                    item["path"] = json!(m.path);
+                    if !m.of.is_empty() {
+                        item["of"] = json!(m.of);
+                    }
+                    item["says"] = json!(m.says);
+                    item["want"] = json!(m.want);
+                }
+                if let Some(o) = item.as_object_mut() {
+                    o.remove("check");
+                }
+            }
             // Only for a base that moved on or a repository with no CI, so
             // older bodies stay as they were: the branch, and no check.
             let branch = match i.kind {
-                ItemKind::Check | ItemKind::Alert | ItemKind::Risk => None,
+                ItemKind::Check | ItemKind::Alert | ItemKind::Risk | ItemKind::Version => None,
                 ItemKind::BaseMoved => Some("base"),
                 ItemKind::NoCi => Some("branch"),
             };
@@ -1863,6 +1970,7 @@ fn data(t: &Thread, p: Option<&Problem>) -> String {
             (_, Some(ProblemKind::NoCi)) => "no_ci",
             (_, Some(ProblemKind::Security)) => "security",
             (_, Some(ProblemKind::WorkflowRisks)) => "workflows",
+            (_, Some(ProblemKind::Versions)) => "versions",
             (ThreadKind::Comment, _) => "pull_request",
             (ThreadKind::Issue, _) => "default_branch",
         },
@@ -2003,6 +2111,9 @@ pub fn issue_title(t: &Thread, p: &Problem) -> String {
     if p.kind == ProblemKind::WorkflowRisks {
         return "Fix the risky workflow settings".into();
     }
+    if p.kind == ProblemKind::Versions {
+        return "Make the version files agree".into();
+    }
     if let Some(source) = p.source {
         return format!("Fix the open {}", source.many());
     }
@@ -2023,6 +2134,9 @@ pub fn issue_body(t: &Thread, p: &Problem, closing: bool) -> String {
     }
     if p.kind == ProblemKind::WorkflowRisks {
         return workflows_body(t, p);
+    }
+    if p.kind == ProblemKind::Versions {
+        return versions_body(t, p);
     }
     let on = branch(t);
     let status = if p.is_open() {
@@ -2177,6 +2291,36 @@ fn workflows_body(t: &Thread, p: &Problem) -> String {
         data(t, Some(p))
     )
 }
+/// Orbit's issue about a repository's version files disagreeing.
+fn versions_body(t: &Thread, p: &Problem) -> String {
+    let on = branch(t);
+    let status = if p.is_open() {
+        let n = p.mismatches.len();
+        let (what, they) = match n {
+            1 => ("one version file says".to_string(), "it"),
+            n => (format!("{n} version files say"), "they"),
+        };
+        format!(
+            "On {on} at {}, {what} another version than the files {they} should agree with. Each item says what to change.",
+            code(short(&p.sha))
+        )
+    } else if p.passed() {
+        format!(
+            "The version files on {on} agree at {}. Nothing is left to do here.",
+            code(short(&p.closed_sha))
+        )
+    } else {
+        format!(
+            "Orbit has stopped checking the version files here. {}",
+            p.closed_reason.as_deref().unwrap_or_default()
+        )
+    };
+    format!(
+        "## Orbit · Versions\n\n{status}\n\n{}\n\nOrbit opened this issue because these files should say the same version: a manifest and its lockfile, and a Tauri app's `tauri.conf.json` with its `Cargo.toml` and `package.json`. It takes the version most of them say as the one. If that is the old version, bring the others up to the new one instead: an item counts as fixed once its file agrees. Orbit reads the files again at each new commit on {on}, edits this issue as they change, and closes it once they agree.\n\n{}",
+        items_text(t, p),
+        data(t, Some(p))
+    )
+}
 /// "A", "A and B", "A, B and C".
 fn and(parts: &[String]) -> String {
     match parts {
@@ -2212,6 +2356,12 @@ pub fn closing_note(t: &Thread, p: &Problem) -> String {
     } else if p.passed() && p.kind == ProblemKind::WorkflowRisks {
         format!(
             "Orbit found no risky settings in the workflows on {} at {}, so it is closing this issue.",
+            branch(t),
+            code(short(&p.closed_sha))
+        )
+    } else if p.passed() && p.kind == ProblemKind::Versions {
+        format!(
+            "The version files on {} agree at {}, so Orbit is closing this issue.",
             branch(t),
             code(short(&p.closed_sha))
         )
@@ -2563,6 +2713,31 @@ pub fn event_text(
                 issue(),
                 t.repo
             )
+        }
+        Event::Posted(_) if p?.kind == ProblemKind::Versions => {
+            let n = p?.mismatches.len();
+            let disagree = if n == 1 { "disagrees" } else { "disagree" };
+            format!(
+                "Orbit opened {} to tell the agent on {} that {} {disagree}.",
+                issue(),
+                t.repo,
+                crate::versions::count(n)
+            )
+        }
+        Event::Closed(_) if p.is_some_and(|p| p.kind == ProblemKind::Versions) => {
+            match p.filter(|p| p.passed()) {
+                Some(_) => format!(
+                    "Orbit closed {}: {}'s version files agree now.",
+                    issue(),
+                    t.repo
+                ),
+                None => format!(
+                    "Orbit closed {} on {}. {}",
+                    issue(),
+                    t.repo,
+                    p?.closed_reason.as_deref().unwrap_or_default()
+                ),
+            }
         }
         Event::Closed(_) if p.is_some_and(|p| p.kind == ProblemKind::WorkflowRisks) => {
             match p.filter(|p| p.passed()) {

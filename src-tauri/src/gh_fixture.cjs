@@ -24,7 +24,9 @@
 // The releases of a/b are the list in <dir>/releases.json, or none, in
 // pages; while <dir>/releases-error exists, listing them fails with its
 // text. Its latest release is <dir>/latest.json, or the newest made in the
-// list that is neither a draft nor a pre-release, or none (HTTP 404). A query about its tags answers with <dir>/tags.json, or no tags on
+// list that is neither a draft nor a pre-release, or none (HTTP 404); while
+// <dir>/latest-error exists, reading it fails with its text. A query about
+// its tags answers with <dir>/tags.json, or no tags on
 // a default branch `main` that Orbit's sign-in can push to.
 // The cache usage of a/b is <dir>/cache.json, or none, and its artifacts the
 // list in <dir>/artifacts.json, or none, in pages; while <dir>/cache-error or
@@ -441,6 +443,11 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
   if (fs.existsSync(list)) process.stdout.write(fs.readFileSync(list, "utf8"));
   else answer({ total_count: 0, runners: [] });
 } else if (endpoint === "repos/a/b/releases/latest") {
+  const refused = path.join(dir, "latest-error");
+  if (fs.existsSync(refused)) {
+    process.stderr.write(fs.readFileSync(refused, "utf8"));
+    process.exit(1);
+  }
   const chosen = path.join(dir, "latest.json");
   const kept = path.join(dir, "releases.json");
   const list = fs.existsSync(kept)

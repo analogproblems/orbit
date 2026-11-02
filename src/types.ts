@@ -1336,7 +1336,8 @@ export type ProblemKind =
   | "no_ci"
   | "waiting"
   | "security"
-  | "workflow_risks";
+  | "workflow_risks"
+  | "versions";
 export interface ProblemEvent {
   at: string;
   text: string;
@@ -1349,7 +1350,8 @@ export interface ProblemEvent {
  * is listed with the repository. A repository's open security alerts of
  * one kind (`security`) are listed on their own, and need you while one of
  * them does (`alertNeedsYou`). Risky settings in a repository's workflow
- * files (`workflow_risks`) are listed with the other open problems. */
+ * files (`workflow_risks`), and version files that disagree (`versions`),
+ * are listed with the other open problems. */
 export interface Problem {
   id: string;
   key: string;
@@ -1398,6 +1400,46 @@ export interface Problem {
    * at `sha`, the most severe first, and how many it has numbered. */
   risks?: WorkflowRisk[];
   riskCount?: number;
+  /** For `versions`: the files that disagree when Orbit last read them at
+   * `sha`, and how many it has numbered. */
+  mismatches?: VersionMismatch[];
+  mismatchCount?: number;
+}
+/** What a version file is, as the engine has it (`versions.rs`). */
+export type VersionFileKind =
+  | "package"
+  | "package_lock"
+  | "cargo"
+  | "cargo_lock"
+  | "pyproject"
+  | "uv_lock"
+  | "tauri";
+/** A file that says a repository's version, such as `package.json`. */
+export interface VersionFile {
+  path: string;
+  kind: VersionFileKind;
+  version: string;
+  /** For a lockfile, the manifest whose package it records. */
+  of?: string;
+}
+/** A version file that says another version than the files it should
+ * agree with. Its paths and versions are the repository's words, shown as
+ * plain text. */
+export interface VersionMismatch {
+  /** Orbit's number for it within its problem. */
+  number?: number;
+  path: string;
+  kind: VersionFileKind;
+  of?: string;
+  /** What it says, and what the others say. */
+  says: string;
+  want: string;
+  /** The files that say `want`. */
+  others: string[];
+  /** Every other file it was compared with. */
+  group?: string[];
+  /** The commit Orbit first found it at. */
+  since?: string;
 }
 /** What a risky workflow setting is, as the engine has it (`risks.rs`). */
 export type RiskKind =
@@ -1961,6 +2003,10 @@ export interface CiSetup {
   tools?: { tool: "actionlint" | "zizmor"; error?: string }[];
   /** Which checks of its workflow files this read made. */
   checks?: number;
+  /** The files that say the repository's version, and those Orbit
+   * couldn't read or make out. */
+  versions?: VersionFile[];
+  unreadVersions?: string[];
 }
 /** Where a default branch broke: the commits after the last one whose
  * checks passed, up to the first that failed. */
@@ -1991,12 +2037,15 @@ export interface OpsItem {
   /** A failing check, a pull request's base moving on since its checks
    * began (then `check` is the base branch), or adding CI that runs on pull
    * requests (then it is the default branch), an open security alert
-   * (then `check` is its subject and `alert` its number), or a risky
-   * workflow setting (then `check` names it and `risk` is its number). */
-  kind?: "check" | "base_moved" | "no_ci" | "alert" | "risk";
+   * (then `check` is its subject and `alert` its number), a risky
+   * workflow setting (then `check` names it and `risk` is its number), or
+   * a version file that disagrees (then `check` names it and `mismatch` is
+   * its number). */
+  kind?: "check" | "base_moved" | "no_ci" | "alert" | "risk" | "version";
   check: string;
   alert?: number;
   risk?: number;
+  mismatch?: number;
   url: string;
   /** Whether it failed at `at`, the latest commit Orbit saw. */
   failing: boolean;

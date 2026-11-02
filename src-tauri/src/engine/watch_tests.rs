@@ -975,6 +975,35 @@ async fn releases_are_read_and_kept_when_github_fails() {
     );
     assert_eq!(sent(d.path(), "GET tags"), 1);
 
+    // The list comes back but the latest release fails: the same.
+    std::fs::remove_file(d.path().join("releases-error")).unwrap();
+    std::fs::write(
+        d.path().join("latest-error"),
+        "gh: Service Unavailable (HTTP 503)\n",
+    )
+    .unwrap();
+    e.update(|s| {
+        for r in &mut s.releases {
+            r.read_at = "2020-01-01T00:00:00.000Z".into();
+            r.retry_at = Some("2020-01-01T00:00:00.000Z".into());
+        }
+    })
+    .await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let r = e.shown_snapshot().await.releases[0].clone();
+    assert_eq!(r.latest.as_ref().map(|l| l.tag.as_str()), Some("v0.2.0"));
+    assert_eq!(r.since, Some(5));
+    assert_eq!(r.tries, 2);
+    assert!(r.retry_at.is_some());
+    assert_eq!(
+        r.error.as_deref(),
+        Some("Orbit couldn't read the releases yet: Service Unavailable (HTTP 503). It tries again later.")
+    );
+    assert_eq!(sent(d.path(), "GET repos/a/b/releases"), 3);
+    assert_eq!(sent(d.path(), "GET repos/a/b/releases/latest"), 2);
+    assert_eq!(sent(d.path(), "GET tags"), 1);
+    assert!(writes(d.path()).is_empty());
+
     e.update(|s| s.settings.watch_ci = false).await;
     crate::github::GH.scope(gh, e.watch_ci()).await;
     assert!(e.shown_snapshot().await.releases.is_empty());

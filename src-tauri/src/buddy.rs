@@ -1929,6 +1929,7 @@ fn answer(
                 }
                 text.push_str(&security_sentence(s, &repo.name));
                 text.push_str(&workflows_sentence(s, &repo.name));
+                text.push_str(&versions_sentence(s, &repo.name));
                 // A failing sync first: CI can't be read without one.
                 let about = |kind: AttentionKind| {
                     items.iter().find(|a| {
@@ -2002,6 +2003,18 @@ fn workflows_sentence(s: &Snapshot, repo: &str) -> String {
             let (many, high) = crate::risks::count(&p.risks);
             format!(" Its workflows have {many}{high}.")
         }
+        None => String::new(),
+    }
+}
+/// A repository's version files that disagree, as a sentence to follow
+/// its line in How are my repositories, or nothing when they agree.
+fn versions_sentence(s: &Snapshot, repo: &str) -> String {
+    let differ = s.problems.iter().find(|p| {
+        p.is_open() && p.kind == crate::problems::ProblemKind::Versions && same_repo(&p.repo, repo)
+    });
+    match differ.map(|p| p.mismatches.len()) {
+        Some(1) => " One of its version files says another version than the others.".into(),
+        Some(n) => format!(" {n} of its version files say another version than the others."),
         None => String::new(),
     }
 }

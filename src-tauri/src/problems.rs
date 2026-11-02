@@ -9,7 +9,8 @@
 //! can add or fix a runner. A repository's open security alerts of each
 //! kind are a problem too (`see_security`); those only a person should see
 //! to tell you once each. So are risky settings in a repository's workflow
-//! files (`see_risks`), which are only listed.
+//! files (`see_risks`), and version files that disagree (`see_versions`),
+//! which are only listed.
 //!
 //! Everything here is worked out from what Orbit read; nothing reaches
 //! GitHub.
@@ -57,6 +58,9 @@ pub enum ProblemKind {
     /// Risky settings in a repository's workflow files (see
     /// `crate::risks`).
     WorkflowRisks,
+    /// Version files in a repository that say another version than the
+    /// files they should agree with (see `crate::versions`).
+    Versions,
 }
 /// Something that happened to a problem.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,7 +79,8 @@ pub struct Problem {
     /// `setup:owner/name` for a repository with no CI on pull requests,
     /// `wait:owner/name` for its runs waiting for a runner,
     /// `security:owner/name:dependabot` for its security alerts of a kind,
-    /// and `workflows:owner/name` for risky settings in its workflows.
+    /// `workflows:owner/name` for risky settings in its workflows, and
+    /// `versions:owner/name` for its version files disagreeing.
     pub key: String,
     pub kind: ProblemKind,
     pub repo: String,
@@ -150,6 +155,13 @@ pub struct Problem {
     pub risks: Vec<crate::risks::Risk>,
     #[serde(skip_serializing_if = "is_zero")]
     pub risk_count: u32,
+    /// For version files that disagree: those Orbit found when it last
+    /// read the files at `sha`, and how many it has numbered, so a number
+    /// is never used twice.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mismatches: Vec<crate::versions::Mismatch>,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub mismatch_count: u32,
 }
 pub(crate) fn is_zero(n: &u32) -> bool {
     *n == 0
@@ -275,6 +287,9 @@ pub fn security_key(repo: &str, source: crate::security::Source) -> String {
 /// files.
 pub fn workflows_key(repo: &str) -> String {
     format!("workflows:{}", repo.to_ascii_lowercase())
+}
+pub fn versions_key(repo: &str) -> String {
+    format!("versions:{}", repo.to_ascii_lowercase())
 }
 /// Runs waiting for a runner in a sentence: "A run of CI in acme/api has
 /// waited more than 30 minutes for a runner."
@@ -718,6 +733,128 @@ pub fn see_risks(problems: &mut Vec<Problem>, setup: &Setup, now: DateTime<Utc>)
         p.risks.extend(new);
     }
     sort(&mut p.risks);
+}
+
+/// A versions problem in a sentence: "2 version files in acme/app say
+/// another version than the files they should agree with."
+pub fn versions_text(p: &Problem) -> String {
+    let n = p.mismatches.len();
+    let say = if n == 1 { "says" } else { "say" };
+    format!(
+        "{} in {} {say} another version than the files {} should agree with.",
+        crate::versions::count(n),
+        p.repo,
+        if n == 1 { "it" } else { "they" }
+    )
+}
+/// Opens, updates or closes the problem about version files that disagree
+/// in a repository, from what Orbit just read of them at its default
+/// branch's latest commit (see `crate::versions`). A file that disagrees
+/// is the same one while it does, whatever the versions, and keeps its
+/// number; one that agrees and then disagrees again is new. One Orbit
+/// couldn't read or make out now, a lockfile whose manifest it couldn't,
+/// and one any file it was compared with it couldn't, stays as it was, as
+/// Orbit can't say it was fixed: that file may be what joins it to the
+/// others. A file it was compared with stays in its group while Orbit
+/// can't read it, even when it is found again among fewer files. It
+/// closes, as passed at that commit, once nothing is left.
+pub fn see_versions(problems: &mut Vec<Problem>, setup: &Setup, now: DateTime<Utc>) {
+    use crate::versions::{mismatches, names};
+    let read = setup.checks >= crate::workflows::VERSIONS;
+    if setup.error.is_some() || setup.sha.is_empty() || !read {
+        return;
+    }
+    let at = stamp(now);
+    let short = ci::short(&setup.sha).to_string();
+    let key = versions_key(&setup.repo);
+    let found = mismatches(&setup.versions, &setup.sha);
+    let unread = |path: &str| setup.unread_versions.iter().any(|u| u == path);
+    let Some(p) = problems.iter_mut().find(|p| p.key == key && p.is_open()) else {
+        if found.is_empty() {
+            return;
+        }
+        let mut p = Problem {
+            id: id(),
+            key,
+            kind: ProblemKind::Versions,
+            repo: setup.repo.clone(),
+            branch: setup.branch.clone(),
+            sha: setup.sha.clone(),
+            since_sha: setup.sha.clone(),
+            opened_at: at.clone(),
+            ..Default::default()
+        };
+        for mut m in found {
+            p.mismatch_count += 1;
+            m.number = p.mismatch_count;
+            p.mismatches.push(m);
+        }
+        let text = format!(
+            "Version files disagree at {short}: {}.",
+            names(&p.mismatches)
+        );
+        p.note(&at, text);
+        problems.push(p);
+        return;
+    };
+    p.sha = setup.sha.clone();
+    p.branch = setup.branch.clone();
+    let mut gone = vec![];
+    p.mismatches.retain(|m| {
+        // A file it was compared with that Orbit can't read now may be
+        // what joins it to the others, so it can't be said to agree.
+        let stays = unread(&m.path)
+            || (!m.of.is_empty() && unread(&m.of))
+            || m.others.iter().chain(&m.group).any(|o| unread(o))
+            || found.iter().any(|f| f.same(m));
+        if !stays {
+            gone.push(m.clone());
+        }
+        stays
+    });
+    let mut new = vec![];
+    for f in found {
+        match p.mismatches.iter_mut().find(|m| m.same(&f)) {
+            Some(m) => {
+                // A file it was compared with before that Orbit can't read
+                // now stays in its group, so a smaller group read now can't
+                // make it agree until Orbit reads that file again.
+                let mut group = f.group;
+                for g in m.group.iter().chain(&m.others) {
+                    if unread(g) && !group.contains(g) {
+                        group.push(g.clone());
+                    }
+                }
+                m.kind = f.kind;
+                m.says = f.says;
+                m.want = f.want;
+                m.others = f.others;
+                m.group = group;
+            }
+            None => {
+                p.mismatch_count += 1;
+                new.push(crate::versions::Mismatch {
+                    number: p.mismatch_count,
+                    ..f
+                });
+            }
+        }
+    }
+    if !gone.is_empty() {
+        let fixed: Vec<String> = gone.iter().map(|m| m.path.clone()).collect();
+        let text = format!("Agree at {short}: {}.", fixed.join(", "));
+        if p.mismatches.is_empty() && new.is_empty() {
+            p.note(&at, text);
+            p.close(&at, format!("The version files agree at {short}."));
+            p.closed_sha = setup.sha.clone();
+            return;
+        }
+        p.note(&at, text);
+    }
+    if !new.is_empty() {
+        p.note(&at, format!("New at {short}: {}.", names(&new)));
+        p.mismatches.extend(new);
+    }
 }
 
 /// Opens, updates or closes the problem about a repository's runs waiting

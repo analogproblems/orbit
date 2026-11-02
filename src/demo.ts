@@ -1957,7 +1957,7 @@ function demoSecurity(): {
     riskCount: risks.length,
     private: repo === "acme/api",
   });
-  const problems = [
+  const problems: Problem[] = [
     problem(
       "demo-security-1",
       "acme/api",
@@ -2023,6 +2023,49 @@ function demoSecurity(): {
         subject: "missing",
       },
     ]),
+    // acme/orbit's release was bumped to 1.5.0 everywhere but its Rust
+    // side, so its agent was told in an issue.
+    {
+      id: "demo-versions-1",
+      key: "versions:acme/orbit",
+      kind: "versions",
+      repo: "acme/orbit",
+      branch: "main",
+      sha: sha("5a7d0c4"),
+      sinceSha: sha("5a7d0c4"),
+      failing: [],
+      openedAt: ago(150),
+      updatedAt: ago(150),
+      timeline: [
+        {
+          at: ago(150),
+          text: "Version files disagree at 5a7d0c4: src-tauri/Cargo.toml says 1.4.0 and src-tauri/Cargo.lock says 1.4.0.",
+        },
+      ],
+      alerts: 0,
+      mismatches: [
+        {
+          number: 1,
+          path: "src-tauri/Cargo.toml",
+          kind: "cargo",
+          says: "1.4.0",
+          want: "1.5.0",
+          others: ["package.json", "src-tauri/tauri.conf.json"],
+          since: sha("5a7d0c4"),
+        },
+        {
+          number: 2,
+          path: "src-tauri/Cargo.lock",
+          kind: "cargo_lock",
+          of: "src-tauri/Cargo.toml",
+          says: "1.4.0",
+          want: "1.5.0",
+          others: ["package.json", "src-tauri/tauri.conf.json"],
+          since: sha("5a7d0c4"),
+        },
+      ],
+      mismatchCount: 2,
+    },
   ];
   const item = (p: Problem, reason: string): Attention => ({
     key: `problem:${p.id}:${p.alerts}`,
@@ -2044,6 +2087,52 @@ function demoSecurity(): {
     at: a.createdAt,
   });
   const ops: OpsThread[] = [
+    {
+      key: "issue:demo-versions-1",
+      kind: "issue",
+      repo: "acme/orbit",
+      number: 214,
+      url: "https://github.com/acme/orbit/issues/214",
+      branch: "main",
+      problemId: "demo-versions-1",
+      items: [
+        {
+          number: 1,
+          kind: "version",
+          mismatch: 1,
+          check: "src-tauri/Cargo.toml says 1.4.0",
+          url: "",
+          failing: true,
+          since: sha("5a7d0c4"),
+          at: sha("5a7d0c4"),
+          answer: {
+            kind: "fixed",
+            author: "acme-bot",
+            at: ago(40),
+            url: "https://github.com/acme/orbit/issues/214#issuecomment-930",
+            replyId: 930,
+            head: "",
+            commit: sha("c41e7d9"),
+          },
+        },
+        {
+          number: 2,
+          kind: "version",
+          mismatch: 2,
+          check: "src-tauri/Cargo.lock says 1.4.0",
+          url: "",
+          failing: true,
+          since: sha("5a7d0c4"),
+          at: sha("5a7d0c4"),
+        },
+      ],
+      posted: "",
+      closed: false,
+      allowed: false,
+      gone: false,
+      tries: 0,
+      updatedAt: ago(140),
+    },
     {
       key: "issue:demo-workflows-1",
       kind: "issue",
