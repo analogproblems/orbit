@@ -634,7 +634,7 @@ pub fn refresh(threads: &mut Vec<Thread>, problems: &[Problem], now: DateTime<Ut
     let mut order: Vec<&Problem> = problems
         .iter()
         .filter(|p| match p.kind {
-            ProblemKind::Waiting => false,
+            ProblemKind::Waiting | ProblemKind::Tag => false,
             ProblemKind::Security | ProblemKind::WorkflowRisks => {
                 tells_agent(p) || threads.iter().any(|t| t.key == key_of(p))
             }
@@ -656,7 +656,8 @@ pub fn refresh(threads: &mut Vec<Thread>, problems: &[Problem], now: DateTime<Ut
                         | ProblemKind::Waiting
                         | ProblemKind::Security
                         | ProblemKind::WorkflowRisks
-                        | ProblemKind::Versions => ThreadKind::Issue,
+                        | ProblemKind::Versions
+                        | ProblemKind::Tag => ThreadKind::Issue,
                         ProblemKind::PullRequest | ProblemKind::BaseMoved => ThreadKind::Comment,
                     },
                     repo: p.repo.clone(),
@@ -666,7 +667,8 @@ pub fn refresh(threads: &mut Vec<Thread>, problems: &[Problem], now: DateTime<Ut
                         | ProblemKind::Waiting
                         | ProblemKind::Security
                         | ProblemKind::WorkflowRisks
-                        | ProblemKind::Versions => None,
+                        | ProblemKind::Versions
+                        | ProblemKind::Tag => None,
                         ProblemKind::PullRequest | ProblemKind::BaseMoved => {
                             p.pr_id.as_deref().and_then(pr_number)
                         }
@@ -832,7 +834,7 @@ fn answered(t: &Thread) -> bool {
 /// secret, as only a person can revoke one.
 pub fn tells_agent(p: &Problem) -> bool {
     match p.kind {
-        ProblemKind::Waiting => false,
+        ProblemKind::Waiting | ProblemKind::Tag => false,
         ProblemKind::Security => p.private && p.source != Some(Source::SecretScanning),
         ProblemKind::WorkflowRisks => p.private,
         _ => true,
@@ -882,7 +884,8 @@ fn key_of(p: &Problem) -> String {
         | ProblemKind::Waiting
         | ProblemKind::Security
         | ProblemKind::WorkflowRisks
-        | ProblemKind::Versions => format!("issue:{}", p.id),
+        | ProblemKind::Versions
+        | ProblemKind::Tag => format!("issue:{}", p.id),
         // A pull request's problems share its one comment.
         ProblemKind::PullRequest | ProblemKind::BaseMoved => {
             format!("pr:{}", p.pr_id.as_deref().unwrap_or(&p.repo))

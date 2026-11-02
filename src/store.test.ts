@@ -204,6 +204,16 @@ describe("demo ci", () => {
       reason:
         "A run of Release in acme/api has waited more than 30 minutes for a runner.",
     });
+    old.attention?.push({
+      key: "problem:tag:1",
+      kind: "release",
+      prId: null,
+      reviewId: null,
+      approvalId: null,
+      repo: "acme/api",
+      reason:
+        "The tag v2.3.2 in acme/api points at 4be81aa, whose version files say 2.3.1.",
+    });
     localStorage.setItem("orbit-demo-v3", JSON.stringify(old));
     await useOrbit.getState().init();
     expect(useOrbit.getState().snapshot.runners?.length).toBeGreaterThan(0);
@@ -232,6 +242,7 @@ describe("demo ci", () => {
     expect(s.attention?.some((a) => a.kind === "security_alert")).toBe(true);
     expect(s.attention?.some((a) => a.kind === "ci_failing")).toBe(false);
     expect(s.attention?.some((a) => a.kind === "runs_waiting")).toBe(false);
+    expect(s.attention?.some((a) => a.kind === "release")).toBe(false);
     expect(s.merges).toEqual([]);
     expect(s.readiness?.map((r) => r.waits.map((w) => w.text))).toEqual([
       [

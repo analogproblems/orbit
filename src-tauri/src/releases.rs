@@ -27,6 +27,10 @@ pub const EVERY: Duration = Duration::minutes(30);
 pub const TAGS: usize = 100;
 /// The most drafts, and tags with no release, Orbit keeps to show.
 pub const SHOWN: usize = 10;
+/// The most version tags Orbit checks against the version files in one
+/// read, and the most checks it keeps for a repository.
+pub const CHECKS_PER_READ: usize = 5;
+pub const CHECKS_KEPT: usize = 20;
 
 /// One of a repository's releases on GitHub.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,6 +56,59 @@ pub struct Tag {
     pub name: String,
     pub sha: String,
 }
+/// What the version files say at a version tag's commit (see `due`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TagCheck {
+    pub name: String,
+    pub sha: String,
+    /// When Orbit read the files there, by Orbit's clock.
+    pub at: String,
+    /// The versions the manifests there say, each once, in
+    /// `crate::versions::FILES` order. A lockfile only copies its
+    /// manifest, so it isn't asked.
+    pub says: Vec<String>,
+    /// Those a Python project's `pyproject.toml` says, which PEP 440
+    /// compares its own way, so `1.0a1` is `v1.0.0-alpha.1` there and
+    /// nowhere else.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub python: Vec<String>,
+    /// The files there Orbit couldn't read or make out.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unread: Vec<String>,
+    /// Why GitHub didn't answer, when it didn't. Orbit tries again at the
+    /// next read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+impl TagCheck {
+    /// Whether the tag is on the right commit: true when a manifest there
+    /// says its version, false when none does and Orbit read them all, and
+    /// None when Orbit can't say, as none says a version there, or Orbit
+    /// couldn't read one that may.
+    pub fn right(&self) -> Option<bool> {
+        if self.error.is_some() {
+            return None;
+        }
+        let wanted = version(&self.name)?;
+        // A Python project's own file may say it as PEP 440 writes it.
+        let python = crate::versions::pep440(&self.name);
+        let said = self
+            .says
+            .iter()
+            .any(|s| version(s).as_ref() == Some(&wanted))
+            || python.is_some()
+                && self
+                    .python
+                    .iter()
+                    .any(|s| crate::versions::pep440(s) == python);
+        if said {
+            return Some(true);
+        }
+        (self.unread.is_empty() && !self.says.is_empty()).then_some(false)
+    }
+}
+
 /// What Orbit read of one repository's releases and version tags.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -100,6 +157,21 @@ pub struct RepoReleases {
     pub error: Option<String>,
     pub tries: u32,
     pub retry_at: Option<String>,
+    /// The version tags Orbit read, the highest version first, so the next
+    /// read can tell which are new. Kept with Orbit: the app isn't sent
+    /// them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<Tag>,
+    /// Version tags that were due to be checked (`due`) but weren't, as
+    /// Orbit checks a few a read, or a rate limit stopped it, so the next
+    /// read checks them though they aren't new any more. Kept with Orbit
+    /// too.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub pending: Vec<Tag>,
+    /// What the version files say at the commits of the version tags Orbit
+    /// checked, the highest version first, at most `CHECKS_KEPT`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<TagCheck>,
 }
 
 /// A version, as a version tag names it: `1.2.0`, or `v1.2.0`, maybe with
@@ -342,10 +414,13 @@ pub fn understand(
     let draft_count = drafts.len() as u32;
     drafts.truncate(SHOWN);
 
-    let versioned: Vec<(&Tag, Version)> = tags
+    let mut versioned: Vec<(&Tag, Version)> = tags
         .iter()
         .filter_map(|t| Some((t, version(&t.name)?)))
         .collect();
+    // The highest first, and for one version named twice, such as `1.2.0`
+    // and `v1.2.0`, by name.
+    versioned.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.name.cmp(&b.0.name)));
     // Newer than what is out: the latest release, or with none, the newest
     // pre-release.
     let out = latest.as_ref().or(prerelease.as_ref());
@@ -385,9 +460,105 @@ pub fn understand(
         unreleased_count,
         since: None,
         drafts_hidden: !can_push,
+        tags: versioned.iter().map(|(t, _)| (*t).clone()).collect(),
         ..Default::default()
     };
     Ok((read, base))
+}
+
+/// The version tags Orbit should check against the version files, the
+/// highest version first: the newest version tag, each that is new since
+/// the read `before` or points at another commit, each that read left for
+/// later (`pending`), and each whose check GitHub didn't answer, unless
+/// Orbit checked it at that commit already. With no list from before, only
+/// the newest counts as new, as Orbit can't tell which others are. Orbit
+/// checks at most `CHECKS_PER_READ` of them a read and keeps the rest in
+/// `pending` (`check_due`).
+pub fn due(before: Option<&RepoReleases>, now: &RepoReleases) -> Vec<Tag> {
+    let listed = before.is_some_and(|b| {
+        !b.tags.is_empty() || (b.version_tags == 0 && !b.read_at.is_empty() && b.unseen.is_none())
+    });
+    let among = |list: &[Tag], t: &Tag| list.iter().any(|k| k.name == t.name && k.sha == t.sha);
+    let known = |t: &Tag| before.is_some_and(|b| among(&b.tags, t));
+    let left = |t: &Tag| before.is_some_and(|b| among(&b.pending, t));
+    let checked = |t: &Tag, failed: bool| {
+        now.checks
+            .iter()
+            .any(|c| c.name == t.name && c.sha == t.sha && c.error.is_some() == failed)
+    };
+    now.tags
+        .iter()
+        .enumerate()
+        .filter(|(i, t)| *i == 0 || (listed && !known(t)) || left(t) || checked(t, true))
+        .map(|(_, t)| t)
+        .filter(|t| !checked(t, false))
+        .cloned()
+        .collect()
+}
+/// Checks the tags due now (`due`), at most `CHECKS_PER_READ`, with
+/// `check`, and keeps the rest in `pending` for the next read. A rate limit
+/// stops it there, leaving the rest too, and is returned as true.
+pub async fn check_due<F, Fut>(
+    before: Option<&RepoReleases>,
+    now: &mut RepoReleases,
+    check: F,
+) -> bool
+where
+    F: Fn(Tag) -> Fut,
+    Fut: std::future::Future<Output = TagCheck>,
+{
+    let mut due = due(before, now).into_iter();
+    let mut limited = false;
+    for tag in due.by_ref().take(CHECKS_PER_READ) {
+        let c = check(tag).await;
+        limited = c.error.as_deref().is_some_and(logs::rate_limited);
+        add(now, c);
+        if limited {
+            break;
+        }
+    }
+    now.pending = due.collect();
+    limited
+}
+/// Keeps the checks of the read `before` whose tags still point at the
+/// same commits.
+pub fn carry(before: Option<&RepoReleases>, now: &mut RepoReleases) {
+    let Some(before) = before else {
+        return;
+    };
+    now.checks = before
+        .checks
+        .iter()
+        .filter(|c| now.tags.iter().any(|t| t.name == c.name && t.sha == c.sha))
+        .cloned()
+        .collect();
+}
+/// Adds a check, in place of an earlier one of its tag, keeping the
+/// highest versions, at most `CHECKS_KEPT`.
+pub fn add(now: &mut RepoReleases, check: TagCheck) {
+    now.checks.retain(|c| c.name != check.name);
+    now.checks.push(check);
+    now.checks
+        .sort_by_key(|c| std::cmp::Reverse(version(&c.name)));
+    now.checks.truncate(CHECKS_KEPT);
+}
+/// Reads what the version files say at a tag's commit.
+pub async fn check(repo: &str, tag: &Tag, now: DateTime<Utc>) -> TagCheck {
+    let mut c = TagCheck {
+        name: tag.name.clone(),
+        sha: tag.sha.clone(),
+        at: stamp(now),
+        ..Default::default()
+    };
+    match crate::versions::read_at(repo, &tag.sha).await {
+        Ok((files, unread)) => {
+            c.says = crate::versions::manifests_say(&files);
+            c.python = crate::versions::python_says(&files);
+            c.unread = unread;
+        }
+        Err(e) => c.error = Some(e),
+    }
+    c
 }
 /// A release from GitHub's list, or None when it isn't whole.
 fn release(v: &Value) -> Option<Release> {

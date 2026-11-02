@@ -974,3 +974,24 @@ fn security_alerts_that_need_you_are_in_the_brief() {
 fn at_day(day: &str) -> NaiveDateTime {
     at(day, "09:00")
 }
+
+#[test]
+fn a_tag_on_the_wrong_commit_is_in_it() {
+    let s = Snapshot {
+        problems: vec![Problem {
+            tag: "v0.3.0".into(),
+            tag_says: vec!["0.2.0".into()],
+            failing: vec![],
+            ..problem("tag", ProblemKind::Tag)
+        }],
+        ..Default::default()
+    };
+    let lines: Vec<(String, String)> = lines(&s).into_iter().map(|l| (l.key, l.text)).collect();
+    assert_eq!(
+        lines,
+        [(
+            "tag:tag".to_string(),
+            "The tag v0.3.0 in a/b points at 1111111, whose version files say 0.2.0.".to_string()
+        )]
+    );
+}

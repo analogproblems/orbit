@@ -94,6 +94,7 @@ export function mainAction(
     a.kind === "ci_failing" ||
     a.kind === "ci_question" ||
     a.kind === "runs_waiting" ||
+    a.kind === "release" ||
     a.kind === "security_alert"
   )
     return { label: "Open operations", onClick: go.onOperations };

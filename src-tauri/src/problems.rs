@@ -10,7 +10,9 @@
 //! kind are a problem too (`see_security`); those only a person should see
 //! to tell you once each. So are risky settings in a repository's workflow
 //! files (`see_risks`), and version files that disagree (`see_versions`),
-//! which are only listed.
+//! which are only listed. A version tag on a commit whose files say
+//! another version tells you once (`see_tags`), as only a person should
+//! move a tag.
 //!
 //! Everything here is worked out from what Orbit read; nothing reaches
 //! GitHub.
@@ -61,6 +63,9 @@ pub enum ProblemKind {
     /// Version files in a repository that say another version than the
     /// files they should agree with (see `crate::versions`).
     Versions,
+    /// A version tag on a commit whose version files say another version
+    /// (see `crate::releases::TagCheck`).
+    Tag,
 }
 /// Something that happened to a problem.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,8 +84,9 @@ pub struct Problem {
     /// `setup:owner/name` for a repository with no CI on pull requests,
     /// `wait:owner/name` for its runs waiting for a runner,
     /// `security:owner/name:dependabot` for its security alerts of a kind,
-    /// `workflows:owner/name` for risky settings in its workflows, and
-    /// `versions:owner/name` for its version files disagreeing.
+    /// `workflows:owner/name` for risky settings in its workflows,
+    /// `versions:owner/name` for its version files disagreeing, and
+    /// `tag:owner/name:v1.2.0` for a version tag on the wrong commit.
     pub key: String,
     pub kind: ProblemKind,
     pub repo: String,
@@ -162,6 +168,12 @@ pub struct Problem {
     pub mismatches: Vec<crate::versions::Mismatch>,
     #[serde(skip_serializing_if = "is_zero")]
     pub mismatch_count: u32,
+    /// For a version tag on the wrong commit: the tag, at `sha`, and the
+    /// versions the files there say.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub tag: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tag_says: Vec<String>,
 }
 pub(crate) fn is_zero(n: &u32) -> bool {
     *n == 0
@@ -178,7 +190,7 @@ impl Problem {
     /// author's to fix: security alerts only while one of them needs you.
     pub fn needs_you(&self) -> bool {
         match self.kind {
-            ProblemKind::DefaultBranch | ProblemKind::Waiting => true,
+            ProblemKind::DefaultBranch | ProblemKind::Waiting | ProblemKind::Tag => true,
             ProblemKind::Security => self
                 .security_alerts
                 .iter()
@@ -290,6 +302,10 @@ pub fn workflows_key(repo: &str) -> String {
 }
 pub fn versions_key(repo: &str) -> String {
     format!("versions:{}", repo.to_ascii_lowercase())
+}
+/// The key of the problem about a version tag on the wrong commit.
+pub fn tag_key(repo: &str, tag: &str) -> String {
+    format!("tag:{}:{tag}", repo.to_ascii_lowercase())
 }
 /// Runs waiting for a runner in a sentence: "A run of CI in acme/api has
 /// waited more than 30 minutes for a runner."
@@ -854,6 +870,157 @@ pub fn see_versions(problems: &mut Vec<Problem>, setup: &Setup, now: DateTime<Ut
     if !new.is_empty() {
         p.note(&at, format!("New at {short}: {}.", names(&new)));
         p.mismatches.extend(new);
+    }
+}
+
+/// Versions in a sentence: "0.2.0", "0.2.0 and 0.1.0".
+fn versions_said(says: &[String]) -> String {
+    match says {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+/// A version tag on the wrong commit in a sentence: "The tag v0.3.0 in
+/// acme/api points at 1a2b3c4, whose version files say 0.2.0."
+pub fn tag_text(p: &Problem) -> String {
+    format!(
+        "The tag {} in {} points at {}, whose version files say {}.",
+        p.tag,
+        p.repo,
+        ci::short(&p.sha),
+        versions_said(&p.tag_says)
+    )
+}
+/// What to do about a version tag on the wrong commit, as Orbit never
+/// moves or deletes a tag.
+pub fn tag_fix(p: &Problem) -> String {
+    format!(
+        "If nothing was released from it yet, move it to the commit that sets the version files to {}: \
+         git tag -f {} <commit>, then git push -f origin {}. If a release is out already, leave it and release the next version.",
+        p.tag.strip_prefix('v').unwrap_or(&p.tag),
+        p.tag,
+        p.tag
+    )
+}
+/// Opens, updates or closes the problems about a repository's version tags
+/// on the wrong commit, from what Orbit just read of its releases (see
+/// `crate::releases::due`): a tag Orbit checked whose files say another
+/// version tells you once, while the files on the default branch, read at
+/// `setup`, say that version or a newer one, so they keep the version at
+/// all. One closes once its tag points at a commit whose files say its
+/// version, once the tag is gone, or once a higher version came out on the
+/// right commit since, as Orbit stops raising an older one then.
+pub fn see_tags(
+    problems: &mut Vec<Problem>,
+    read: &crate::releases::RepoReleases,
+    setup: Option<&Setup>,
+    now: DateTime<Utc>,
+) {
+    use crate::releases::version;
+    if read.unseen.is_some() || read.error.is_some() || read.read_at.is_empty() {
+        return;
+    }
+    let at = stamp(now);
+    let setup = setup.filter(|s| {
+        s.error.is_none()
+            && s.checks >= crate::workflows::VERSIONS
+            && same_repo(&s.repo, &read.repo)
+    });
+    // A Python project's own file is read as PEP 440 orders versions.
+    let keeps = |tag: &str| {
+        setup.is_some_and(|s| {
+            s.versions
+                .iter()
+                .filter(|f| !f.kind.is_lock())
+                .any(|f| crate::versions::says_at_least(f, tag))
+        })
+    };
+    // A higher version on the right commit, checked after `since`.
+    let newer_right = |tag: &crate::releases::Version, since: &str| {
+        read.checks.iter().find(|c| {
+            c.right() == Some(true)
+                && version(&c.name).is_some_and(|v| v > *tag)
+                && c.at.as_str() > since
+        })
+    };
+    for c in &read.checks {
+        if c.right() != Some(false) {
+            continue;
+        }
+        let Some(v) = version(&c.name) else {
+            continue;
+        };
+        let key = tag_key(&read.repo, &c.name);
+        if let Some(p) = problems.iter_mut().find(|p| p.key == key && p.is_open()) {
+            if p.sha != c.sha || p.tag_says != c.says {
+                p.sha = c.sha.clone();
+                p.tag_says = c.says.clone();
+                let text = format!(
+                    "Now at {}, whose version files say {}.",
+                    ci::short(&c.sha),
+                    versions_said(&c.says)
+                );
+                p.note(&at, text);
+            }
+            continue;
+        }
+        if !keeps(&c.name) || newer_right(&v, "").is_some() {
+            continue;
+        }
+        let mut p = Problem {
+            id: id(),
+            key,
+            kind: ProblemKind::Tag,
+            repo: read.repo.clone(),
+            branch: read.branch.clone(),
+            sha: c.sha.clone(),
+            since_sha: c.sha.clone(),
+            opened_at: at.clone(),
+            tag: c.name.clone(),
+            tag_says: c.says.clone(),
+            ..Default::default()
+        };
+        let text = tag_text(&p);
+        p.note(&at, text);
+        p.alert(&at);
+        problems.push(p);
+    }
+    for p in problems
+        .iter_mut()
+        .filter(|p| p.is_open() && p.kind == ProblemKind::Tag && same_repo(&p.repo, &read.repo))
+    {
+        let Some(t) = read.tags.iter().find(|t| t.name == p.tag) else {
+            // A tag Orbit didn't read may still be there.
+            if !read.more_tags {
+                p.close(&at, format!("The tag {} is gone.", p.tag));
+            }
+            continue;
+        };
+        let check = read
+            .checks
+            .iter()
+            .find(|c| c.name == t.name && c.sha == t.sha);
+        if check.and_then(|c| c.right()) == Some(true) {
+            let reason = format!(
+                "{} now points at {}, whose version files say its version.",
+                p.tag,
+                ci::short(&t.sha)
+            );
+            p.close(&at, reason);
+            p.closed_sha = t.sha.clone();
+            continue;
+        }
+        let Some(v) = version(&p.tag) else {
+            continue;
+        };
+        if let Some(newer) = newer_right(&v, &p.opened_at) {
+            let reason = format!(
+                "{} came out on the right commit since, so Orbit stops raising {}.",
+                newer.name, p.tag
+            );
+            p.close(&at, reason);
+        }
     }
 }
 

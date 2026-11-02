@@ -156,6 +156,14 @@ pub fn lines(s: &Snapshot) -> Vec<Line> {
                 ));
                 continue;
             }
+            ProblemKind::Tag => {
+                notes.push(line(
+                    format!("tag:{}", p.id),
+                    crate::problems::tag_text(p),
+                    None,
+                ));
+                continue;
+            }
             ProblemKind::DefaultBranch => format!(
                 "CI is failing on {} in {} since {}: {}.",
                 if p.branch.is_empty() {

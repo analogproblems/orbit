@@ -1,5 +1,6 @@
 use super::Engine;
 use crate::buddy::NoteKind;
+use crate::problems;
 use crate::types::*;
 use serde_json::json;
 use std::path::Path;
@@ -1007,6 +1008,221 @@ async fn releases_are_read_and_kept_when_github_fails() {
     e.update(|s| s.settings.watch_ci = false).await;
     crate::github::GH.scope(gh, e.watch_ci()).await;
     assert!(e.shown_snapshot().await.releases.is_empty());
+}
+
+/// What the fake GitHub's files at commit `c` say: a workflow that runs on
+/// pull requests, and a `package.json` at `version`.
+fn files_say(dir: &Path, c: char, version: &str) {
+    let package = json!({ "name": "app", "version": version }).to_string();
+    let v = json!({ "data": { "repository": {
+        "workflows": { "entries": [{ "name": "ci.yml", "type": "blob",
+            "object": { "text": "on: pull_request\n", "isTruncated": false } }] },
+        "root": { "entries": [{ "name": ".github", "type": "tree" }] },
+        "package": { "text": package, "isTruncated": false },
+    } } });
+    std::fs::write(
+        dir.join(format!("setup-{}.json", c.to_string().repeat(40))),
+        v.to_string(),
+    )
+    .unwrap();
+}
+/// As `files_say`, for a Python project: its `pyproject.toml` alone.
+fn python_files_say(dir: &Path, c: char, version: &str) {
+    let pyproject = format!("[project]\nname = \"app\"\nversion = \"{version}\"\n");
+    let v = json!({ "data": { "repository": {
+        "workflows": { "entries": [{ "name": "ci.yml", "type": "blob",
+            "object": { "text": "on: pull_request\n", "isTruncated": false } }] },
+        "root": { "entries": [{ "name": ".github", "type": "tree" }] },
+        "pyproject": { "text": pyproject, "isTruncated": false },
+    } } });
+    std::fs::write(
+        dir.join(format!("setup-{}.json", c.to_string().repeat(40))),
+        v.to_string(),
+    )
+    .unwrap();
+}
+/// `a/b`'s version tags on GitHub, as `(tag, commit)`.
+fn tags_on_github(dir: &Path, tags: &[(&str, char)]) {
+    let nodes: Vec<_> = tags
+        .iter()
+        .map(|(name, c)| json!({ "name": name, "target": { "__typename": "Commit", "oid": c.to_string().repeat(40) } }))
+        .collect();
+    let v = json!({ "data": { "repository": {
+        "viewerPermission": "ADMIN",
+        "defaultBranchRef": { "name": "main", "target": { "oid": "1".repeat(40) } },
+        "refs": { "totalCount": nodes.len(), "nodes": nodes },
+    } } });
+    std::fs::write(dir.join("tags.json"), v.to_string()).unwrap();
+}
+
+/// The issue's example, through the fake GitHub: v0.3.0 tagged on a
+/// commit whose files still say 0.2.0, while main says 0.3.0, needs you
+/// once, with how to fix it by hand; Orbit reads the files there once, and
+/// writes nothing. Moving the tag to the commit that says 0.3.0 closes it.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_tag_on_the_wrong_commit_needs_you_once() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    let head = "1".repeat(40);
+    std::fs::write(d.path().join("answer.json"), answer(&head, "SUCCESS")).unwrap();
+    files_say(d.path(), '1', "0.3.0");
+    files_say(d.path(), 'c', "0.2.0");
+    files_say(d.path(), 'b', "0.2.0");
+    tags_on_github(d.path(), &[("v0.3.0", 'c'), ("v0.2.0", 'b')]);
+    let e = connected(d.path()).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let shown = e.shown_snapshot().await;
+    let p: Vec<_> = shown
+        .problems
+        .iter()
+        .filter(|p| p.kind == problems::ProblemKind::Tag)
+        .collect();
+    assert_eq!(p.len(), 1);
+    assert!(p[0].is_open() && p[0].alerts == 1);
+    let release: Vec<_> = shown
+        .attention
+        .iter()
+        .filter(|a| a.kind == AttentionKind::Release)
+        .collect();
+    assert_eq!(release.len(), 1);
+    assert_eq!(release[0].repo.as_deref(), Some("a/b"));
+    assert!(release[0].reason.starts_with(
+        "The tag v0.3.0 in a/b points at ccccccc, whose version files say 0.2.0. \
+         If nothing was released from it yet, move it to the commit that sets the version files to 0.3.0"
+    ));
+    // Only the newest tag, with no list from before.
+    assert_eq!(
+        sent(d.path(), &format!("GET versions/{}", "c".repeat(40))),
+        1
+    );
+    assert_eq!(
+        sent(d.path(), &format!("GET versions/{}", "b".repeat(40))),
+        0
+    );
+    assert!(writes(d.path()).is_empty());
+    // The app isn't sent the list of tags, but Orbit keeps it.
+    assert!(shown.releases[0].tags.is_empty());
+    assert_eq!(e.snapshot().await.releases[0].tags.len(), 2);
+
+    // Read again: nothing new is asked, and it told you already.
+    releases_read_long_ago(&e).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!(
+        sent(d.path(), &format!("GET versions/{}", "c".repeat(40))),
+        1
+    );
+    let s = e.snapshot().await;
+    let p = s
+        .problems
+        .iter()
+        .find(|p| p.kind == problems::ProblemKind::Tag)
+        .unwrap();
+    assert_eq!(p.alerts, 1);
+
+    // Moved to the commit that says 0.3.0: closed.
+    files_say(d.path(), 'd', "0.3.0");
+    tags_on_github(d.path(), &[("v0.3.0", 'd'), ("v0.2.0", 'b')]);
+    releases_read_long_ago(&e).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!(
+        sent(d.path(), &format!("GET versions/{}", "d".repeat(40))),
+        1
+    );
+    let s = e.shown_snapshot().await;
+    assert!(s
+        .problems
+        .iter()
+        .filter(|p| p.kind == problems::ProblemKind::Tag)
+        .all(|p| !p.is_open()));
+    assert!(s.attention.iter().all(|a| a.kind != AttentionKind::Release));
+    assert!(writes(d.path()).is_empty());
+
+    // A failed read of the files at a new tag is asked again next time.
+    std::fs::write(
+        d.path().join("versions-error"),
+        "gh: Bad Gateway (HTTP 502)\n",
+    )
+    .unwrap();
+    tags_on_github(
+        d.path(),
+        &[("v0.3.1", 'e'), ("v0.3.0", 'd'), ("v0.2.0", 'b')],
+    );
+    releases_read_long_ago(&e).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    std::fs::remove_file(d.path().join("versions-error")).unwrap();
+    files_say(d.path(), 'e', "0.3.1");
+    releases_read_long_ago(&e).await;
+    crate::github::GH.scope(gh, e.watch_ci()).await;
+    assert_eq!(
+        sent(d.path(), &format!("GET versions/{}", "e".repeat(40))),
+        2
+    );
+    let s = e.snapshot().await;
+    let check = s.releases[0]
+        .checks
+        .iter()
+        .find(|c| c.name == "v0.3.1")
+        .unwrap();
+    assert_eq!(check.right(), Some(true));
+}
+
+/// A Python project's tags, through the fake GitHub: its files say its
+/// version as PEP 440 writes it, `1.1` for `v1.1.0` and `1.2rc1` for
+/// `v1.2.0-rc.1`, and a tag pushed before the bump needs you as anywhere.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_python_projects_tag_on_the_wrong_commit_needs_you_too() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    std::fs::write(
+        d.path().join("answer.json"),
+        answer(&"1".repeat(40), "SUCCESS"),
+    )
+    .unwrap();
+    python_files_say(d.path(), '1', "1.1");
+    python_files_say(d.path(), 'c', "1.0");
+    tags_on_github(d.path(), &[("v1.1.0", 'c')]);
+    let e = connected(d.path()).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let reasons = |s: &Snapshot| -> Vec<String> {
+        s.attention
+            .iter()
+            .filter(|a| a.kind == AttentionKind::Release)
+            .map(|a| a.reason.clone())
+            .collect()
+    };
+    let shown = reasons(&e.shown_snapshot().await);
+    assert_eq!(shown.len(), 1);
+    assert!(shown[0]
+        .starts_with("The tag v1.1.0 in a/b points at ccccccc, whose version files say 1.0."));
+
+    // A release candidate: v1.2.0-rc.1 where the files say 1.2rc1 is
+    // right, and v1.2.0-rc.2, pushed before the bump to 1.2rc2, isn't.
+    std::fs::write(
+        d.path().join("answer.json"),
+        answer(&"2".repeat(40), "SUCCESS"),
+    )
+    .unwrap();
+    python_files_say(d.path(), '2', "1.2rc2");
+    python_files_say(d.path(), 'd', "1.2rc1");
+    python_files_say(d.path(), 'e', "1.2rc1");
+    tags_on_github(
+        d.path(),
+        &[("v1.2.0-rc.2", 'e'), ("v1.2.0-rc.1", 'd'), ("v1.1.0", 'c')],
+    );
+    releases_read_long_ago(&e).await;
+    crate::github::GH.scope(gh, e.watch_ci()).await;
+    let shown = reasons(&e.shown_snapshot().await);
+    assert_eq!(shown.len(), 1);
+    assert!(shown[0].starts_with(
+        "The tag v1.2.0-rc.2 in a/b points at eeeeeee, whose version files say 1.2rc1."
+    ));
+    // v1.1.0 closed once a higher version came out on the right commit.
+    let s = e.snapshot().await;
+    let old = s.problems.iter().find(|p| p.tag == "v1.1.0").unwrap();
+    assert!(!old.is_open());
+    assert!(writes(d.path()).is_empty());
 }
 
 /// Releases GitHub won't show are said so, with nothing more asked. After

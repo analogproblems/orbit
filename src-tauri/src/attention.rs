@@ -288,6 +288,18 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
             }
             continue;
         }
+        if p.kind == crate::problems::ProblemKind::Tag {
+            let reason = format!(
+                "{} {}",
+                crate::problems::tag_text(p),
+                crate::problems::tag_fix(p)
+            );
+            out.push(Attention {
+                repo: Some(p.repo.clone()),
+                ..item(p.item_key(), AttentionKind::Release, None, None, reason)
+            });
+            continue;
+        }
         if p.kind == crate::problems::ProblemKind::Waiting {
             let mut reason = crate::problems::waiting_text(&p.repo, &p.waiting);
             if let Some(seen) = crate::runners::seen_text(&s.runners, &p.repo) {
@@ -559,6 +571,7 @@ pub fn notice(s: &Snapshot, a: Attention) -> Notice {
         AttentionKind::CiFailing => "CI is failing",
         AttentionKind::CiQuestion => "An agent needs a person",
         AttentionKind::RunsWaiting => "Runs are waiting for a runner",
+        AttentionKind::Release => "A release needs you",
         AttentionKind::Stuck => "A pull request is stuck",
         AttentionKind::Brief => "Your morning brief",
         AttentionKind::AnotherOrbit => "Another Orbit posts here",
@@ -636,6 +649,11 @@ pub fn shown(s: &Snapshot) -> Snapshot {
         d.endpoint.clear();
         d.key_hash.clear();
         d.link.clear();
+    }
+    // The lists of version tags are only for telling new ones next time.
+    for r in &mut shown.releases {
+        r.tags.clear();
+        r.pending.clear();
     }
     shown
 }

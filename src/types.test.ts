@@ -547,7 +547,12 @@ describe("what needs you", () => {
       onOperations: () => {},
     };
     const open = (
-      kind: "ci_failing" | "ci_question" | "runs_waiting" | "security_alert",
+      kind:
+        | "ci_failing"
+        | "ci_question"
+        | "runs_waiting"
+        | "release"
+        | "security_alert",
     ) =>
       attentionAction(
         s,
@@ -565,6 +570,7 @@ describe("what needs you", () => {
     expect(open("ci_failing")).toBe(go.onOperations);
     expect(open("ci_question")).toBe(go.onOperations);
     expect(open("runs_waiting")).toBe(go.onOperations);
+    expect(open("release")).toBe(go.onOperations);
     expect(open("security_alert")).toBe(go.onOperations);
   });
 });
