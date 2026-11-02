@@ -25,8 +25,11 @@ pub const QUIET: Duration = Duration::minutes(10);
 pub const FOLDER: &str = ".github/workflows";
 /// Which checks of workflow files a read made, so a commit read before
 /// they were added, or changed, is read again: 1 is Orbit's own
-/// (`crate::risks`), 2 adds actionlint and zizmor (`crate::lint`).
-pub const CHECKS: u32 = 2;
+/// (`crate::risks`), 2 adds actionlint and zizmor (`crate::lint`), and 3
+/// the version files (`crate::versions`).
+pub const CHECKS: u32 = 3;
+/// The first `CHECKS` that read the version files.
+pub const VERSIONS: u32 = 3;
 /// Files and folders at the top of a repository that set up another CI
 /// service.
 pub const OTHER_CI: [&str; 22] = [
@@ -126,6 +129,12 @@ pub struct Setup {
     /// one couldn't check them (`crate::lint`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolRun>,
+    /// The files that say the repository's version, and those Orbit
+    /// couldn't read or make out (`crate::versions`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub versions: Vec<crate::versions::VersionFile>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unread_versions: Vec<String>,
 }
 /// A tool that ran on a commit's workflow files, and why it couldn't check
 /// them when it couldn't.
@@ -199,13 +208,24 @@ pub struct Found {
 }
 
 /// The GraphQL query for a commit's workflow files, the names at its top,
-/// and its `package.json`, by `<commit>:<path>` expressions.
+/// and its `package.json` and other version files (`crate::versions`), by
+/// `<commit>:<path>` expressions.
 pub fn query() -> &'static str {
-    "query($owner: String!, $name: String!, $workflows: String!, $root: String!, $package: String!) { \
+    "query($owner: String!, $name: String!, $workflows: String!, $root: String!, $package: String!, \
+$packageLock: String!, $cargo: String!, $cargoLock: String!, $pyproject: String!, $uvLock: String!, \
+$tauri: String!, $tauriCargo: String!, $tauriLock: String!) { \
 repository(owner: $owner, name: $name) { isPrivate visibility \
 workflows: object(expression: $workflows) { ... on Tree { entries { name type object { ... on Blob { text isTruncated isBinary } } } } } \
 root: object(expression: $root) { ... on Tree { entries { name type } } } \
-package: object(expression: $package) { ... on Blob { text isTruncated } } } }"
+package: object(expression: $package) { ... on Blob { text isTruncated } } \
+packageLock: object(expression: $packageLock) { ... on Blob { text isTruncated } } \
+cargo: object(expression: $cargo) { ... on Blob { text isTruncated } } \
+cargoLock: object(expression: $cargoLock) { ... on Blob { text isTruncated } } \
+pyproject: object(expression: $pyproject) { ... on Blob { text isTruncated } } \
+uvLock: object(expression: $uvLock) { ... on Blob { text isTruncated } } \
+tauri: object(expression: $tauri) { ... on Blob { text isTruncated } } \
+tauriCargo: object(expression: $tauriCargo) { ... on Blob { text isTruncated } } \
+tauriLock: object(expression: $tauriLock) { ... on Blob { text isTruncated } } } }"
 }
 
 /// The repositories whose files Orbit should read now, at most `PER_PASS`:
@@ -256,20 +276,17 @@ pub async fn read(
         return Err("Invalid commit".into());
     }
     let (owner, name) = repo.split_once('/').ok_or("Invalid repository")?;
-    let v = crate::github::api(
-        "graphql",
-        "POST",
-        &[
-            ("query", query().to_string()),
-            ("owner", owner.to_string()),
-            ("name", name.to_string()),
-            ("workflows", format!("{sha}:{FOLDER}")),
-            ("root", format!("{sha}:")),
-            ("package", format!("{sha}:package.json")),
-        ],
-        None,
-    )
-    .await?;
+    let mut fields = vec![
+        ("query", query().to_string()),
+        ("owner", owner.to_string()),
+        ("name", name.to_string()),
+        ("workflows", format!("{sha}:{FOLDER}")),
+        ("root", format!("{sha}:")),
+    ];
+    for (field, path) in crate::versions::FILES {
+        fields.push((field, format!("{sha}:{path}")));
+    }
+    let v = crate::github::api("graphql", "POST", &fields, None).await?;
     let setup = understand(repo, branch, sha, &v, Utc::now())?;
     let files = texts(&v)
         .filter(|(path, _)| setup.workflows.iter().any(|w| w.checked && w.path == *path))
@@ -368,6 +385,7 @@ pub fn understand(
     // Internal counts as not private, as more people than the repository's
     // own can read it.
     let private = r["isPrivate"] == true && r["visibility"].as_str().is_none_or(|v| v == "PRIVATE");
+    let (versions, unread_versions) = crate::versions::read(r);
     Ok(Setup {
         repo: repo.to_string(),
         branch: branch.to_string(),
@@ -379,6 +397,8 @@ pub fn understand(
         from,
         private,
         checks: CHECKS,
+        versions,
+        unread_versions,
         ..Default::default()
     })
 }

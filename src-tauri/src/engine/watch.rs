@@ -229,6 +229,7 @@ impl Engine {
                 workflows::record(&mut s.setups, repo, branch, sha, result, now);
                 if let Some(setup) = s.setups.iter().find(|w| same_repo(&w.repo, repo)) {
                     problems::see_risks(&mut s.problems, setup, now);
+                    problems::see_versions(&mut s.problems, setup, now);
                 }
                 let Some(ci) = s.ci.iter().find(|c| same_repo(&c.repo, repo)) else {
                     return;

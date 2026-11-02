@@ -1293,6 +1293,34 @@ fn a_security_alert_is_one_heads_up_and_counts_in_how_are_my_repositories() {
         ),
         "{lines:?}"
     );
+    // Then version files that disagree.
+    use crate::versions::{Kind as FileKind, VersionFile};
+    let file = |path: &str, kind, version: &str, of: &str| VersionFile {
+        path: path.into(),
+        kind,
+        version: version.into(),
+        of: of.into(),
+    };
+    let setup = crate::workflows::Setup {
+        versions: vec![
+            file("package.json", FileKind::Package, "1.0.0", ""),
+            file(
+                "package-lock.json",
+                FileKind::PackageLock,
+                "0.9.0",
+                "package.json",
+            ),
+        ],
+        ..setup
+    };
+    crate::problems::see_versions(&mut s.problems, &setup, chrono::Utc::now());
+    let (_, lines, _) = ask_and_read(&mut s, Question::Repositories);
+    assert!(
+        lines[0].ends_with(
+            "1 of them high. One of its version files says another version than the others."
+        ),
+        "{lines:?}"
+    );
 }
 #[test]
 fn a_failing_default_branch_is_one_heads_up_and_shows_in_how_are_my_repositories() {

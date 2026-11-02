@@ -27,6 +27,8 @@ import {
   releaseLines,
   riskText,
   risksText,
+  mismatchText,
+  versionsText,
   settingsLines,
   toolsText,
   updateDot,
@@ -79,9 +81,9 @@ describe("operations page", () => {
     const go = show(s);
     const open = screen.getByRole("list", { name: "Open problems" });
     const items = within(open).getAllByRole("listitem");
-    // Two pull requests and two repositories' risky workflow settings
-    // after the default branch.
-    expect(items).toHaveLength(5);
+    // Two pull requests, two repositories' risky workflow settings and one's
+    // version files after the default branch.
+    expect(items).toHaveLength(6);
     expect(items[0].textContent).toContain("acme/orbit: main");
     expect(items[0].textContent).toContain("Failing: CI / Rust tests.");
     expect(items[0].textContent).toContain("Still failing at 9f3c2a1.");
@@ -288,7 +290,7 @@ describe("operations page", () => {
     });
     // Nothing fails, so it isn't an open problem.
     const open = screen.getByRole("list", { name: "Open problems" });
-    expect(within(open).getAllByRole("listitem")).toHaveLength(5);
+    expect(within(open).getAllByRole("listitem")).toHaveLength(6);
     expect(open.textContent).not.toContain("acme/docs");
     cleanup();
     // Once posted, it links the issue.
@@ -669,7 +671,7 @@ describe("operations page", () => {
     const items = within(
       screen.getByRole("list", { name: "Open problems" }),
     ).getAllByRole("listitem");
-    expect(items).toHaveLength(6);
+    expect(items).toHaveLength(7);
     // With the default branch, before the pull requests.
     const row = items.find((i) => i.textContent?.includes("acme/api: runs"))!;
     expect(items.indexOf(row)).toBeLessThan(2);
@@ -941,6 +943,32 @@ describe("operations page", () => {
     expect(
       within(rows()[1]).queryByRole("button", { name: /issue/ }),
     ).toBeNull();
+  });
+
+  it("lists version files that disagree, with what to change and the agent's answer", () => {
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    show(freshDemo());
+    const row = within(screen.getByRole("list", { name: "Open problems" }))
+      .getAllByRole("listitem")
+      .find((i) => i.textContent?.includes("acme/orbit: version files"))!;
+    expect(within(row).getByLabelText("Versions disagree")).toBeTruthy();
+    for (const text of [
+      "On main at 5a7d0c4, 2 version files say another version than the files they should agree with.",
+      "src-tauri/Cargo.toml says 1.4.0, but package.json and src-tauri/tauri.conf.json say 1.5.0. Change it to 1.5.0.",
+      "src-tauri/Cargo.lock records 1.4.0 for src-tauri/Cargo.toml, but package.json and src-tauri/tauri.conf.json say 1.5.0. Update it from src-tauri/Cargo.toml.",
+      "Orbit told the repository’s agent in issue #214.",
+      "I1 · src-tauri/Cargo.toml says 1.4.0: acme-bot says it’s fixed in c41e7d9. Orbit checks again at the next commit on main.",
+    ])
+      expect(row.textContent).toContain(text);
+    fireEvent.click(
+      within(row).getByRole("button", { name: "Open on GitHub" }),
+    );
+    expect(open).toHaveBeenCalledWith(
+      "https://github.com/acme/orbit/issues/214",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    open.mockRestore();
   });
 
   it("lists risky workflow settings, telling only a private repository's agent", () => {
@@ -1426,6 +1454,38 @@ describe("workflow sentences", () => {
     };
     expect(answerText(t, item)).toBe(
       "I2 · codecov/codecov-action@v4 isn't pinned, in ci.yml: acme-bot says it’s fixed in abcdef1. Orbit checks again at the next commit on main.",
+    );
+  });
+});
+
+describe("version file sentences", () => {
+  it("say which files disagree and what to change", () => {
+    const p = {
+      ...freshDemo().problems!.find((p) => p.id === "demo-versions-1")!,
+    };
+    expect(versionsText(p)).toBe(
+      "On main at 5a7d0c4, 2 version files say another version than the files they should agree with.",
+    );
+    const [cargo, lock] = p.mismatches!;
+    p.mismatches = [lock];
+    p.branch = "";
+    expect(versionsText(p)).toBe(
+      "On the default branch at 5a7d0c4, 1 version file says another version than the files it should agree with.",
+    );
+    expect(mismatchText({ ...cargo, others: ["package.json"] })).toBe(
+      "src-tauri/Cargo.toml says 1.4.0, but package.json says 1.5.0. Change it to 1.5.0.",
+    );
+    expect(
+      mismatchText({
+        path: "uv.lock",
+        kind: "uv_lock",
+        of: "pyproject.toml",
+        says: "2.0.0",
+        want: "2.1.0",
+        others: ["pyproject.toml"],
+      }),
+    ).toBe(
+      "uv.lock records 2.0.0 for pyproject.toml, but pyproject.toml says 2.1.0. Update it from pyproject.toml.",
     );
   });
 });

@@ -48,6 +48,7 @@ pub mod storage;
 pub mod text;
 pub mod types;
 pub mod usage;
+pub mod versions;
 pub mod workflows;
 
 #[cfg(feature = "desktop")]

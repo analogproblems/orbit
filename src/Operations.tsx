@@ -50,6 +50,7 @@ import {
   type RunnerPlace,
   type SecurityAlert,
   type Snapshot,
+  type VersionMismatch,
   type WorkflowRisk,
 } from "./types";
 
@@ -125,6 +126,7 @@ function opensIssue(p: Problem) {
     p.kind === "default_branch" ||
     p.kind === "security" ||
     p.kind === "workflow_risks" ||
+    p.kind === "versions" ||
     p.kind === "no_ci"
   );
 }
@@ -365,9 +367,9 @@ export function answerText(t: OpsThread, item: OpsItem) {
         const where = a.commit ? ` in ${a.commit.slice(0, 7)}` : "";
         return `${about} ${who} says it’s added${where}. Orbit is waiting to see a workflow that runs on pull requests on ${t.branch || "the default branch"}.`;
       }
-      // Nor for a risky setting: Orbit reads the files again at the next
-      // commit on the default branch.
-      if (item.kind === "risk") {
+      // Nor for a risky setting or a version file: Orbit reads the files
+      // again at the next commit on the default branch.
+      if (item.kind === "risk" || item.kind === "version") {
         const where = a.commit ? ` in ${a.commit.slice(0, 7)}` : "";
         return `${about} ${who} says it’s fixed${where}. Orbit checks again at the next commit on ${t.branch || "the default branch"}.`;
       }
@@ -496,6 +498,7 @@ function title(s: Snapshot, p: Problem) {
   if (p.kind === "no_ci") return `${p.repo}: CI on pull requests`;
   if (p.kind === "waiting") return `${p.repo}: runs waiting for a runner`;
   if (p.kind === "workflow_risks") return `${p.repo}: workflow settings`;
+  if (p.kind === "versions") return `${p.repo}: version files`;
   if (p.kind === "default_branch")
     return `${p.repo}: ${p.branch || "default branch"}`;
   const pr = s.prs.find((pr) => pr.id === p.prId);
@@ -565,6 +568,29 @@ export function risksText(p: Problem) {
       ? ", and it is high"
       : `, ${high} of them high`;
   return `Its workflows on ${p.branch || "the default branch"} have ${many}${which}, at ${shortSha(p.sha)}.`;
+}
+/** A versions problem in a sentence. */
+export function versionsText(p: Problem) {
+  const n = p.mismatches?.length ?? 0;
+  const what =
+    n === 1
+      ? "1 version file says another version than the files it should agree with"
+      : `${n} version files say another version than the files they should agree with`;
+  return `On ${p.branch || "the default branch"} at ${shortSha(p.sha)}, ${what}.`;
+}
+/** A version file that disagrees on one line, and how to make it agree,
+ * in the words of Orbit's issue. */
+export function mismatchText(m: VersionMismatch) {
+  const others =
+    m.others.length > 1
+      ? `${m.others.slice(0, -1).join(", ")} and ${m.others.at(-1)}`
+      : (m.others[0] ?? "");
+  const say = m.others.length === 1 ? "says" : "say";
+  const what = m.of
+    ? `${m.path} records ${m.says} for ${m.of}`
+    : `${m.path} says ${m.says}`;
+  const fix = m.of ? `Update it from ${m.of}.` : `Change it to ${m.want}.`;
+  return `${what}, but ${others} ${say} ${m.want}. ${fix}`;
 }
 /** A link to a risky setting's line on GitHub, at the commit Orbit read. */
 function riskLink(p: Problem, r: WorkflowRisk) {
@@ -747,6 +773,8 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
           const waiting = p.kind === "waiting";
           const risky = p.kind === "workflow_risks";
           const risks = p.risks ?? [];
+          const versions = p.kind === "versions";
+          const mismatches = p.mismatches ?? [];
           const tools = risky ? toolsText(s, p) : "";
           const t = threadOf(s, p);
           const told = toldText(s, p, t);
@@ -774,7 +802,9 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
                       ? "Needs you"
                       : risky
                         ? "Risky settings"
-                        : "Author’s to fix"
+                        : versions
+                          ? "Versions disagree"
+                          : "Author’s to fix"
                   }
                 />
               }
@@ -790,11 +820,13 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
                       ? waitingText(p)
                       : risky
                         ? risksText(p)
-                        : yours
-                          ? `Failing: ${checkNames(p.failing)}.`
-                          : p.kind === "base_moved"
-                            ? movedText(p)
-                            : `Failing: ${checkNames(p.failing)}. Its author’s to fix.`}
+                        : versions
+                          ? versionsText(p)
+                          : yours
+                            ? `Failing: ${checkNames(p.failing)}.`
+                            : p.kind === "base_moved"
+                              ? movedText(p)
+                              : `Failing: ${checkNames(p.failing)}. Its author’s to fix.`}
                   </Text>
                   {risks.slice(0, ALERTS).map((r) => (
                     <HStack
@@ -818,6 +850,20 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
                     </Text>
                   )}
                   {tools && <Text color="secondary">{tools}</Text>}
+                  {mismatches.slice(0, ALERTS).map((m) => (
+                    <Text
+                      key={m.number ?? `${m.path}:${m.of ?? ""}`}
+                      color="secondary"
+                      maxLines={2}
+                    >
+                      {mismatchText(m)}
+                    </Text>
+                  ))}
+                  {mismatches.length > ALERTS && (
+                    <Text color="secondary">
+                      And {mismatches.length - ALERTS} more.
+                    </Text>
+                  )}
                   {waiting &&
                     p.waiting?.slice(0, RUNS).map((r) => (
                       <HStack key={r.id} gap={1} vAlign="center">
