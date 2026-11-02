@@ -44,7 +44,7 @@ pub enum Kind {
     Tauri,
 }
 impl Kind {
-    fn is_lock(&self) -> bool {
+    pub fn is_lock(&self) -> bool {
         matches!(self, Kind::PackageLock | Kind::CargoLock | Kind::UvLock)
     }
 }
@@ -226,6 +226,59 @@ pub fn read(repository: &Value) -> (Vec<VersionFile>, Vec<String>) {
         })
         .collect();
     found(&files)
+}
+/// The GraphQL query for the version files alone at a commit, by
+/// `<commit>:<path>` expressions named as in `FILES`.
+pub fn query() -> String {
+    let vars: Vec<String> = FILES
+        .iter()
+        .map(|(name, _)| format!("${name}: String!"))
+        .collect();
+    let fields: Vec<String> = FILES
+        .iter()
+        .map(|(name, _)| {
+            format!("{name}: object(expression: ${name}) {{ ... on Blob {{ text isTruncated isBinary }} }}")
+        })
+        .collect();
+    format!(
+        "query($owner: String!, $name: String!, {}) {{ repository(owner: $owner, name: $name) {{ {} }} }}",
+        vars.join(", "),
+        fields.join(" ")
+    )
+}
+/// Reads what the version files say at a commit, as `read` does.
+pub async fn read_at(repo: &str, sha: &str) -> Result<(Vec<VersionFile>, Vec<String>), String> {
+    crate::types::validate_repo(repo)?;
+    if !crate::types::valid_sha(sha) {
+        return Err("Invalid commit".into());
+    }
+    let (owner, name) = repo.split_once('/').ok_or("Invalid repository")?;
+    let mut fields = vec![
+        ("query", query()),
+        ("owner", owner.to_string()),
+        ("name", name.to_string()),
+    ];
+    for (field, path) in FILES {
+        fields.push((field, format!("{sha}:{path}")));
+    }
+    let v = crate::github::api("graphql", "POST", &fields, None).await?;
+    crate::ci::refused(&v)?;
+    let repository = &v["data"]["repository"];
+    if repository.is_null() {
+        return Err("GitHub didn't return the repository.".into());
+    }
+    Ok(read(repository))
+}
+/// The versions the manifests among `files` say, each once, in order: a
+/// lockfile only copies its manifest.
+pub fn manifests_say(files: &[VersionFile]) -> Vec<String> {
+    let mut says: Vec<String> = vec![];
+    for f in files.iter().filter(|f| !f.kind.is_lock()) {
+        if !says.contains(&f.version) {
+            says.push(f.version.clone());
+        }
+    }
+    says
 }
 /// Files that disagree in a sentence: "A says 1.0.0, B says 0.9.0 and 2
 /// more".

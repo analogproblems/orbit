@@ -811,7 +811,10 @@ async function demoAction(
             },
       );
       demo.attention = demo.attention?.filter(
-        (a) => a.kind !== "ci_failing" && a.kind !== "runs_waiting",
+        (a) =>
+          a.kind !== "ci_failing" &&
+          a.kind !== "runs_waiting" &&
+          a.kind !== "release",
       );
     }
     // Watching security alerts off forgets them and closes what was open.

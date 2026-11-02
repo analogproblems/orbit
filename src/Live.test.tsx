@@ -194,6 +194,28 @@ describe("live page", () => {
       within(waiting).getByRole("button", { name: "Open operations" }),
     );
     expect(again.onOperations).toHaveBeenCalled();
+    cleanup();
+    // And a release that needs you, such as a tag on the wrong commit.
+    s.attention = [
+      {
+        key: "problem:tag:1",
+        kind: "release",
+        prId: null,
+        reviewId: null,
+        approvalId: null,
+        repo: "acme/api",
+        reason:
+          "The tag v2.3.2 in acme/api points at 4be81aa, whose version files say 2.3.1.",
+      },
+    ];
+    const tag = show(s);
+    const release = screen.getByRole("region", { name: "Needs you" });
+    expect(release.textContent).toContain("Release");
+    expect(release.textContent).toContain("whose version files say 2.3.1");
+    fireEvent.click(
+      within(release).getByRole("button", { name: "Open operations" }),
+    );
+    expect(tag.onOperations).toHaveBeenCalled();
   });
   it("says all clear when nothing needs you", () => {
     const s = freshDemo();

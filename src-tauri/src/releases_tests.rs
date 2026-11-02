@@ -492,3 +492,160 @@ fn a_failed_read_keeps_what_was_read_and_waits_longer_each_time() {
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].repo, "a/c");
 }
+
+fn tag(name: &str, c: char) -> Tag {
+    Tag {
+        name: name.into(),
+        sha: sha(c),
+    }
+}
+fn checked(name: &str, c: char, says: &[&str]) -> TagCheck {
+    TagCheck {
+        name: name.into(),
+        sha: sha(c),
+        at: ago(0),
+        says: says.iter().map(|s| s.to_string()).collect(),
+        ..Default::default()
+    }
+}
+fn names(tags: &[Tag]) -> Vec<&str> {
+    tags.iter().map(|t| t.name.as_str()).collect()
+}
+
+#[test]
+fn version_tags_are_kept_highest_first_for_the_next_read() {
+    let list = json!([]);
+    let refs = tags(
+        &[
+            ("v1.2.0", 'a'),
+            ("latest", 'a'),
+            ("v1.10.0", 'b'),
+            ("1.2.0", 'c'),
+            ("v1.3.0-beta.1", 'd'),
+        ],
+        5,
+        "WRITE",
+    );
+    let (r, _) = understand("a/b", &list, &marked(&list), &refs, now()).unwrap();
+    assert_eq!(
+        names(&r.tags),
+        ["v1.10.0", "v1.3.0-beta.1", "1.2.0", "v1.2.0"]
+    );
+}
+
+/// The newest version tag is checked, then each that is new or moved,
+/// and each GitHub didn't answer for, a few a read; with no list from
+/// before, only the newest.
+#[test]
+fn the_newest_and_new_version_tags_are_checked_once() {
+    let mut now = read("a/b", 0);
+    now.tags = vec![tag("v0.3.0", 'c'), tag("v0.2.1", 'b'), tag("v0.2.0", 'a')];
+    // Never read: the newest alone.
+    assert_eq!(names(&due(None, &now)), ["v0.3.0"]);
+    // Read before Orbit kept a list, with version tags then.
+    let mut old = read("a/b", 30);
+    old.version_tags = 2;
+    assert_eq!(names(&due(Some(&old), &now)), ["v0.3.0"]);
+    // With no version tags then, each is new.
+    old.version_tags = 0;
+    assert_eq!(
+        names(&due(Some(&old), &now)),
+        ["v0.3.0", "v0.2.1", "v0.2.0"]
+    );
+    // A read GitHub refused, or one that failed, isn't a list.
+    old.unseen = Some(unseen("a/b"));
+    assert_eq!(names(&due(Some(&old), &now)), ["v0.3.0"]);
+    old.unseen = None;
+    old.read_at.clear();
+    assert_eq!(names(&due(Some(&old), &now)), ["v0.3.0"]);
+
+    // From a list: the new one and the newest, unless checked there.
+    let mut before = read("a/b", 30);
+    before.tags = vec![tag("v0.2.1", 'b'), tag("v0.2.0", 'a')];
+    before.checks = vec![checked("v0.2.1", 'b', &["0.2.1"])];
+    carry(Some(&before), &mut now);
+    assert_eq!(names(&due(Some(&before), &now)), ["v0.3.0"]);
+    let mut after = now.clone();
+    add(&mut after, checked("v0.3.0", 'c', &["0.3.0"]));
+    assert_eq!(
+        after
+            .checks
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect::<Vec<_>>(),
+        ["v0.3.0", "v0.2.1"]
+    );
+    let mut next = after.clone();
+    carry(Some(&after), &mut next);
+    assert!(due(Some(&after), &next).is_empty());
+    // A tag moved to another commit is new again, and its old check goes.
+    next.tags[1] = tag("v0.2.1", 'e');
+    carry(Some(&after), &mut next);
+    let kept: Vec<&str> = next.checks.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(kept, ["v0.3.0"]);
+    assert_eq!(names(&due(Some(&after), &next)), ["v0.2.1"]);
+    // One GitHub didn't answer for is asked again.
+    let mut failed = checked("v0.2.1", 'e', &[]);
+    failed.error = Some("gh: Bad Gateway (HTTP 502)".into());
+    add(&mut next, failed);
+    let mut again = next.clone();
+    carry(Some(&next), &mut again);
+    assert_eq!(names(&due(Some(&next), &again)), ["v0.2.1"]);
+
+    // A few a read, the highest first, and a few kept.
+    let mut many = read("a/b", 0);
+    many.tags = (0..30)
+        .rev()
+        .map(|i| tag(&format!("v1.{i}.0"), 'f'))
+        .collect();
+    let mut none = read("a/b", 30);
+    none.version_tags = 0;
+    let first = due(Some(&none), &many);
+    assert_eq!(first.len(), CHECKS_PER_READ);
+    assert_eq!(first[0].name, "v1.29.0");
+    for i in 0..30 {
+        add(&mut many, checked(&format!("v1.{i}.0"), 'f', &[]));
+    }
+    assert_eq!(many.checks.len(), CHECKS_KEPT);
+    assert_eq!(many.checks[0].name, "v1.29.0");
+    assert_eq!(many.checks[CHECKS_KEPT - 1].name, "v1.10.0");
+}
+
+#[test]
+fn a_tag_is_on_the_right_commit_when_a_manifest_there_says_its_version() {
+    assert_eq!(checked("v0.3.0", 'a', &["0.3.0"]).right(), Some(true));
+    assert_eq!(
+        checked("0.3.0", 'a', &["0.2.0", "0.3.0"]).right(),
+        Some(true)
+    );
+    assert_eq!(
+        checked("v1.0.0-beta.1", 'a', &["1.0.0-beta.1"]).right(),
+        Some(true)
+    );
+    // Build data isn't part of the version.
+    assert_eq!(
+        checked("v1.0.0+build.5", 'a', &["1.0.0"]).right(),
+        Some(true)
+    );
+    // A Python project's, as PEP 440 compares them.
+    assert_eq!(checked("v1.0.0", 'a', &["1.0"]).right(), Some(true));
+    assert_eq!(
+        checked("v1.0.0-alpha.1", 'a', &["1.0a1"]).right(),
+        Some(true)
+    );
+    assert_eq!(checked("v1.0.0", 'a', &["1.1"]).right(), Some(false));
+    assert_eq!(checked("v0.3.0", 'a', &["0.2.0"]).right(), Some(false));
+    assert_eq!(
+        checked("v0.3.0", 'a', &["0.3.0-beta.1"]).right(),
+        Some(false)
+    );
+    // Orbit can't say: no file says a version, one it couldn't read may,
+    // or GitHub didn't answer.
+    assert_eq!(checked("v0.3.0", 'a', &[]).right(), None);
+    let mut unread = checked("v0.3.0", 'a', &["0.2.0"]);
+    unread.unread = vec!["Cargo.toml".into()];
+    assert_eq!(unread.right(), None);
+    let mut failed = checked("v0.3.0", 'a', &["0.3.0"]);
+    failed.error = Some("down".into());
+    assert_eq!(failed.right(), None);
+}

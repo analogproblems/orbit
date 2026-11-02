@@ -969,6 +969,7 @@ export type AttentionKind =
   | "ci_failing"
   | "ci_question"
   | "runs_waiting"
+  | "release"
   | "stuck"
   | "brief"
   | "another_orbit"
@@ -998,6 +999,7 @@ export const attentionLabels: Record<AttentionKind, string> = {
   ci_failing: "CI failing",
   ci_question: "An agent needs a person",
   runs_waiting: "Runs waiting",
+  release: "Release",
   stuck: "Stuck",
   brief: "Morning brief",
   another_orbit: "Another Orbit posts here",
@@ -1026,6 +1028,7 @@ export function attentionAction(
     a.kind === "ci_failing" ||
     a.kind === "ci_question" ||
     a.kind === "runs_waiting" ||
+    a.kind === "release" ||
     a.kind === "security_alert"
   )
     return go.onOperations;
@@ -1337,7 +1340,8 @@ export type ProblemKind =
   | "waiting"
   | "security"
   | "workflow_risks"
-  | "versions";
+  | "versions"
+  | "tag";
 export interface ProblemEvent {
   at: string;
   text: string;
@@ -1404,6 +1408,10 @@ export interface Problem {
    * `sha`, and how many it has numbered. */
   mismatches?: VersionMismatch[];
   mismatchCount?: number;
+  /** For `tag`: the version tag on the wrong commit, at `sha`, and the
+   * versions the files there say. */
+  tag?: string;
+  tagSays?: string[];
 }
 /** What a version file is, as the engine has it (`versions.rs`). */
 export type VersionFileKind =
@@ -1824,6 +1832,21 @@ export interface RepoReleases {
   error?: string | null;
   tries: number;
   retryAt?: string | null;
+  /** What the version files say at the commits of the version tags Orbit
+   * checked, the highest version first. */
+  checks?: TagCheck[];
+}
+/** What the version files say at a version tag's commit. */
+export interface TagCheck {
+  name: string;
+  sha: string;
+  at: string;
+  /** The versions the manifests there say, each once. */
+  says: string[];
+  /** Files there Orbit couldn't read or make out. */
+  unread?: string[];
+  /** Why GitHub didn't answer; Orbit asks again at the next read. */
+  error?: string | null;
 }
 /** What is in the way of merging a pull request. */
 export type WaitKind =

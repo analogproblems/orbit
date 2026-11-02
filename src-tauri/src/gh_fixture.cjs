@@ -5,7 +5,8 @@
 // query about one commit, <dir>/history-<oid>.json for one about a
 // commit's history (or no such commit), <dir>/setup-<oid>.json for one
 // about a commit's workflow files (or a workflow that runs on pull
-// requests), or when a comment or issue was
+// requests) or its version files alone (or none; while <dir>/versions-error
+// exists, reading those fails with its text), or when a comment or issue was
 // made and last edited for a query about one by its node ID. Compare answers from <dir>/compare.json, keyed by
 // "base...head", or 404. A job is <dir>/job-<id>.json and its log
 // <dir>/log-<id>.txt, or 404; while <dir>/limit exists they answer as past
@@ -173,6 +174,20 @@ if (endpoint === "graphql" && fields.workflows) {
         },
       },
     });
+  process.exit(0);
+}
+if (endpoint === "graphql" && fields.package && !fields.workflows) {
+  const oid = fields.package.split(":")[0];
+  fs.appendFileSync(path.join(dir, "calls"), `GET versions/${oid}\n`);
+  const refused = path.join(dir, "versions-error");
+  if (fs.existsSync(refused)) {
+    process.stderr.write(fs.readFileSync(refused, "utf8"));
+    process.exit(1);
+  }
+  const setup = path.join(dir, `setup-${oid}.json`);
+  if (fs.existsSync(setup))
+    process.stdout.write(fs.readFileSync(setup, "utf8"));
+  else answer({ data: { repository: {} } });
   process.exit(0);
 }
 if (endpoint === "graphql" && (fields.query || "").includes("refs/tags/")) {

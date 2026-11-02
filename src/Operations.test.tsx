@@ -637,6 +637,59 @@ describe("operations page", () => {
     expect(row().textContent).not.toContain("asks before");
   });
 
+  it("lists a version tag on the wrong commit as yours, with how to fix it by hand", () => {
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    const s = freshDemo();
+    const at = new Date(Date.now() - 3 * 3600000).toISOString();
+    s.problems!.push({
+      id: "tag",
+      key: "tag:acme/api:v2.3.2",
+      kind: "tag",
+      repo: "acme/api",
+      branch: "main",
+      sha: "4be81aa".padEnd(40, "0"),
+      sinceSha: "4be81aa".padEnd(40, "0"),
+      failing: [],
+      openedAt: at,
+      updatedAt: at,
+      timeline: [
+        {
+          at,
+          text: "The tag v2.3.2 in acme/api points at 4be81aa, whose version files say 2.3.1.",
+        },
+      ],
+      alerts: 1,
+      tag: "v2.3.2",
+      tagSays: ["2.3.1"],
+    });
+    show(s);
+    const items = within(
+      screen.getByRole("list", { name: "Open problems" }),
+    ).getAllByRole("listitem");
+    expect(items).toHaveLength(7);
+    // With the default branch, before the pull requests.
+    const row = items.find((i) => i.textContent?.includes("acme/api: tag"))!;
+    expect(items.indexOf(row)).toBe(1);
+    expect(row.textContent).toContain("acme/api: tag v2.3.2");
+    expect(within(row).getByLabelText("Needs you")).toBeTruthy();
+    expect(row.textContent).toContain(
+      "v2.3.2 points at 4be81aa, whose version files say 2.3.1.",
+    );
+    expect(row.textContent).toContain(
+      "Orbit never moves or deletes a tag. If nothing was released from it yet, move it to the commit that sets the version files to 2.3.2: git tag -f v2.3.2 <commit>, then git push -f origin v2.3.2. If a release is out already, leave it and release the next version.",
+    );
+    expect(row.textContent).toContain(
+      "Only a person should move a tag, so Orbit doesn’t tell an agent.",
+    );
+    fireEvent.click(within(row).getByRole("button", { name: "Open tag" }));
+    expect(open).toHaveBeenCalledWith(
+      "https://github.com/acme/api/releases/tag/v2.3.2",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    open.mockRestore();
+  });
+
   it("lists runs waiting for a runner as yours, with the run to open", () => {
     const open = vi.spyOn(window, "open").mockImplementation(() => null);
     const s = freshDemo();

@@ -131,10 +131,12 @@ function opensIssue(p: Problem) {
   );
 }
 
-/** Whether a problem is yours to see to: a failing default branch, or runs
- * waiting for a runner. */
+/** Whether a problem is yours to see to: a failing default branch, runs
+ * waiting for a runner, or a version tag on the wrong commit. */
 function needsYou(p: Problem) {
-  return p.kind === "default_branch" || p.kind === "waiting";
+  return (
+    p.kind === "default_branch" || p.kind === "waiting" || p.kind === "tag"
+  );
 }
 
 /** Orbit's comment or issue about a problem. */
@@ -205,6 +207,8 @@ export function brokeText(b: Broke | null | undefined) {
 export function toldText(s: Snapshot, p: Problem, t: OpsThread | undefined) {
   if (p.kind === "waiting")
     return "Only a person can add or fix a runner, so Orbit doesn’t tell an agent.";
+  if (p.kind === "tag")
+    return "Only a person should move a tag, so Orbit doesn’t tell an agent.";
   if (p.kind === "security" && p.source === "secret_scanning")
     return "Only a person can revoke a secret, so Orbit doesn’t tell an agent.";
   if (withheld(p)) {
@@ -499,6 +503,7 @@ function title(s: Snapshot, p: Problem) {
   if (p.kind === "waiting") return `${p.repo}: runs waiting for a runner`;
   if (p.kind === "workflow_risks") return `${p.repo}: workflow settings`;
   if (p.kind === "versions") return `${p.repo}: version files`;
+  if (p.kind === "tag") return `${p.repo}: tag ${p.tag ?? ""}`;
   if (p.kind === "default_branch")
     return `${p.repo}: ${p.branch || "default branch"}`;
   const pr = s.prs.find((pr) => pr.id === p.prId);
@@ -577,6 +582,23 @@ export function versionsText(p: Problem) {
       ? "1 version file says another version than the files it should agree with"
       : `${n} version files say another version than the files they should agree with`;
   return `On ${p.branch || "the default branch"} at ${shortSha(p.sha)}, ${what}.`;
+}
+/** Versions in a sentence: "0.2.0", "0.2.0 and 0.1.0". */
+function versionsSaid(says: string[]) {
+  return says.length > 1
+    ? `${says.slice(0, -1).join(", ")} and ${says.at(-1)}`
+    : (says[0] ?? "");
+}
+/** A version tag on the wrong commit, as Bit says it
+ * (`problems::tag_text`). */
+export function tagText(p: Problem) {
+  return `${p.tag ?? ""} points at ${shortSha(p.sha)}, whose version files say ${versionsSaid(p.tagSays ?? [])}.`;
+}
+/** How to fix a version tag on the wrong commit by hand, as Orbit never
+ * moves or deletes one (`problems::tag_fix`). */
+export function tagFix(p: Problem) {
+  const tag = p.tag ?? "";
+  return `Orbit never moves or deletes a tag. If nothing was released from it yet, move it to the commit that sets the version files to ${tag.replace(/^v/, "")}: git tag -f ${tag} <commit>, then git push -f origin ${tag}. If a release is out already, leave it and release the next version.`;
 }
 /** A version file that disagrees on one line, and how to make it agree,
  * in the words of Orbit's issue. */
@@ -775,6 +797,7 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
           const risks = p.risks ?? [];
           const versions = p.kind === "versions";
           const mismatches = p.mismatches ?? [];
+          const tag = p.kind === "tag";
           const tools = risky ? toolsText(s, p) : "";
           const t = threadOf(s, p);
           const told = toldText(s, p, t);
@@ -818,15 +841,17 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
                   <Text>
                     {waiting
                       ? waitingText(p)
-                      : risky
-                        ? risksText(p)
-                        : versions
-                          ? versionsText(p)
-                          : yours
-                            ? `Failing: ${checkNames(p.failing)}.`
-                            : p.kind === "base_moved"
-                              ? movedText(p)
-                              : `Failing: ${checkNames(p.failing)}. Its author’s to fix.`}
+                      : tag
+                        ? tagText(p)
+                        : risky
+                          ? risksText(p)
+                          : versions
+                            ? versionsText(p)
+                            : yours
+                              ? `Failing: ${checkNames(p.failing)}.`
+                              : p.kind === "base_moved"
+                                ? movedText(p)
+                                : `Failing: ${checkNames(p.failing)}. Its author’s to fix.`}
                   </Text>
                   {risks.slice(0, ALERTS).map((r) => (
                     <HStack
@@ -850,6 +875,7 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
                     </Text>
                   )}
                   {tools && <Text color="secondary">{tools}</Text>}
+                  {tag && <Text color="secondary">{tagFix(p)}</Text>}
                   {mismatches.slice(0, ALERTS).map((m) => (
                     <Text
                       key={m.number ?? `${m.path}:${m.of ?? ""}`}
@@ -926,6 +952,17 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
                       size="sm"
                       variant="secondary"
                       onClick={() => openLink(t.url)}
+                    />
+                  ) : tag && p.tag ? (
+                    <Button
+                      label="Open tag"
+                      size="sm"
+                      variant="secondary"
+                      onClick={() =>
+                        openLink(
+                          `https://github.com/${p.repo}/releases/tag/${encodeURIComponent(p.tag ?? "")}`,
+                        )
+                      }
                     />
                   ) : longest ? (
                     <Button

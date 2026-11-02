@@ -1597,6 +1597,8 @@ pub enum AttentionKind {
     CiQuestion,
     /// A repository's runs have waited a long time for a runner.
     RunsWaiting,
+    /// A release needs you, such as a version tag on the wrong commit.
+    Release,
     /// A pull request has waited on a person, such as a reviewer, for a
     /// long time (`crate::ops::NUDGE_PERSON`).
     Stuck,

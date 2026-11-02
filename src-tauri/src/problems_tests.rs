@@ -1978,3 +1978,168 @@ mod versions {
         );
     }
 }
+
+mod tags {
+    use super::*;
+    use crate::releases::{RepoReleases, Tag, TagCheck};
+    use crate::versions::{Kind, VersionFile};
+
+    /// The default branch's files, saying `version`.
+    fn head(version: &str) -> Setup {
+        Setup {
+            repo: "a/b".into(),
+            branch: "main".into(),
+            sha: C.into(),
+            checks: crate::workflows::CHECKS,
+            versions: vec![VersionFile {
+                path: "package.json".into(),
+                kind: Kind::Package,
+                version: version.into(),
+                of: String::new(),
+            }],
+            ..Default::default()
+        }
+    }
+    /// A read of a/b's releases with these tags and checks, as
+    /// `(tag, commit, what the files there say)`.
+    fn read(checks: &[(&str, &str, &[&str])], when: i64) -> RepoReleases {
+        RepoReleases {
+            repo: "a/b".into(),
+            read_at: stamp(at(when)),
+            branch: "main".into(),
+            tags: checks
+                .iter()
+                .map(|(name, sha, _)| Tag {
+                    name: name.to_string(),
+                    sha: sha.to_string(),
+                })
+                .collect(),
+            checks: checks
+                .iter()
+                .map(|(name, sha, says)| TagCheck {
+                    name: name.to_string(),
+                    sha: sha.to_string(),
+                    at: stamp(at(when)),
+                    says: says.iter().map(|s| s.to_string()).collect(),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_tag_on_a_commit_whose_files_say_an_older_version_needs_you_once() {
+        let mut problems = vec![];
+        // On the right commit: nothing.
+        let right = read(&[("v0.2.0", A, &["0.2.0"])], 0);
+        see_tags(&mut problems, &right, Some(&head("0.2.0")), at(0));
+        assert!(problems.is_empty());
+        // Tagged before the bump.
+        let wrong = read(&[("v0.3.0", A, &["0.2.0"]), ("v0.2.0", B, &["0.2.0"])], 1);
+        see_tags(&mut problems, &wrong, Some(&head("0.3.0")), at(1));
+        assert_eq!(open(&problems).len(), 1);
+        let p = &problems[0];
+        assert_eq!(
+            (p.kind, p.key.as_str(), p.tag.as_str(), p.sha.as_str()),
+            (ProblemKind::Tag, "tag:a/b:v0.3.0", "v0.3.0", A)
+        );
+        assert!(p.needs_you() && !p.sensitive());
+        assert_eq!(p.alerts, 1);
+        assert_eq!(
+            tag_text(p),
+            "The tag v0.3.0 in a/b points at 1111111, whose version files say 0.2.0."
+        );
+        assert_eq!(
+            tag_fix(p),
+            "If nothing was released from it yet, move it to the commit that sets the version files to 0.3.0: \
+             git tag -f v0.3.0 <commit>, then git push -f origin v0.3.0. If a release is out already, leave it and release the next version."
+        );
+        // Read again: it told you already.
+        see_tags(&mut problems, &wrong, Some(&head("0.3.0")), at(2));
+        assert_eq!((problems.len(), problems[0].alerts), (1, 1));
+        assert_eq!(timeline(&problems[0]).len(), 1);
+        // Moved to another wrong commit: said, but no new alert.
+        let still = read(&[("v0.3.0", B, &["0.2.1"])], 3);
+        see_tags(&mut problems, &still, Some(&head("0.3.0")), at(3));
+        let p = &problems[0];
+        assert_eq!((p.sha.as_str(), p.alerts), (B, 1));
+        assert_eq!(
+            timeline(p)[1],
+            "Now at 2222222, whose version files say 0.2.1."
+        );
+        // Moved to the right commit: closed.
+        let moved = read(&[("v0.3.0", C, &["0.3.0"])], 4);
+        see_tags(&mut problems, &moved, Some(&head("0.3.0")), at(4));
+        let p = &problems[0];
+        assert!(!p.is_open() && p.passed());
+        assert_eq!(
+            p.closed_reason.as_deref(),
+            Some("v0.3.0 now points at 3333333, whose version files say its version.")
+        );
+    }
+
+    #[test]
+    fn files_that_dont_keep_the_version_open_nothing() {
+        let mut problems = vec![];
+        let wrong = read(&[("v1.4.0", A, &["1.0.0"])], 0);
+        // The default branch says an older version: its files don't keep it.
+        see_tags(&mut problems, &wrong, Some(&head("1.0.0")), at(0));
+        // Its files not read yet, or read before Orbit read version files.
+        see_tags(&mut problems, &wrong, None, at(0));
+        let older = Setup {
+            checks: 2,
+            ..head("1.4.0")
+        };
+        see_tags(&mut problems, &wrong, Some(&older), at(0));
+        // Nothing Orbit can tell at the tag.
+        let unknown = read(&[("v1.4.0", A, &[])], 0);
+        see_tags(&mut problems, &unknown, Some(&head("1.4.0")), at(0));
+        // A read that failed or that GitHub refused.
+        let failed = RepoReleases {
+            error: Some("down".into()),
+            ..wrong.clone()
+        };
+        see_tags(&mut problems, &failed, Some(&head("1.4.0")), at(0));
+        assert!(problems.is_empty());
+        // A higher version already on the right commit: an old tag isn't raised.
+        let old = read(&[("v1.5.0", B, &["1.5.0"]), ("v1.4.0", A, &["1.3.0"])], 0);
+        see_tags(&mut problems, &old, Some(&head("1.5.0")), at(0));
+        assert!(problems.is_empty());
+    }
+
+    #[test]
+    fn a_tag_that_goes_or_a_newer_one_on_the_right_commit_closes_it() {
+        let wrong = read(&[("v0.3.0", A, &["0.2.0"])], 0);
+        let mut problems = vec![];
+        see_tags(&mut problems, &wrong, Some(&head("0.3.0")), at(0));
+        // Gone, but Orbit didn't read every tag: it may still be there.
+        let mut gone = read(&[], 1);
+        gone.more_tags = true;
+        see_tags(&mut problems, &gone, Some(&head("0.3.0")), at(1));
+        assert!(problems[0].is_open());
+        gone.more_tags = false;
+        see_tags(&mut problems, &gone, Some(&head("0.3.0")), at(2));
+        assert_eq!(
+            problems[0].closed_reason.as_deref(),
+            Some("The tag v0.3.0 is gone.")
+        );
+        assert!(!problems[0].passed());
+
+        let mut problems = vec![];
+        see_tags(&mut problems, &wrong, Some(&head("0.3.0")), at(0));
+        let newer = read(&[("v0.4.0", B, &["0.4.0"]), ("v0.3.0", A, &["0.2.0"])], 5);
+        // The newer one is checked later than the problem opened.
+        see_tags(&mut problems, &newer, Some(&head("0.4.0")), at(5));
+        assert_eq!(problems.len(), 1);
+        assert_eq!(
+            problems[0].closed_reason.as_deref(),
+            Some("v0.4.0 came out on the right commit since, so Orbit stops raising v0.3.0.")
+        );
+        // Turning Watch CI off closes one still open, as for every CI problem.
+        let mut problems = vec![];
+        see_tags(&mut problems, &wrong, Some(&head("0.3.0")), at(0));
+        close_unwatched(&mut problems, &[], true, at(1));
+        assert!(!problems[0].is_open());
+    }
+}

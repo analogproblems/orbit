@@ -366,8 +366,11 @@ impl Engine {
         let _ = self.flush().await;
     }
     /// Reads each connected repository's releases and version tags, a few
-    /// repositories a pass. One GitHub didn't answer for keeps what was
-    /// read before and is tried again after a wait.
+    /// repositories a pass, and what the version files say at the commits
+    /// of its newest and new version tags (`releases::due`), then opens or
+    /// closes its problems about tags on the wrong commit. One GitHub
+    /// didn't answer for keeps what was read before and is tried again
+    /// after a wait.
     async fn read_releases(&self) {
         if self.reading_releases.swap(true, Ordering::SeqCst) {
             return;
@@ -381,17 +384,43 @@ impl Engine {
             }
         };
         for repo in &wanted {
-            let result = releases::read(repo).await;
+            let before = {
+                let s = self.state.lock().await;
+                s.releases
+                    .iter()
+                    .find(|r| same_repo(&r.repo, repo))
+                    .cloned()
+            };
+            let mut result = releases::read(repo).await;
             // After a rate limit, the rest wait for the next pass.
-            let limited = result.as_ref().is_err_and(|e| logs::rate_limited(e));
+            let mut limited = result.as_ref().is_err_and(|e| logs::rate_limited(e));
+            if let Ok(read) = &mut result {
+                releases::carry(before.as_ref(), read);
+                for tag in releases::due(before.as_ref(), read) {
+                    let check = releases::check(repo, &tag, chrono::Utc::now()).await;
+                    let stop = check.error.as_deref().is_some_and(logs::rate_limited);
+                    releases::add(read, check);
+                    if stop {
+                        limited = true;
+                        break;
+                    }
+                }
+            }
+            let fresh = result.is_ok();
             self.update(|s| {
                 // Watch CI went off, or the repository went, meanwhile.
                 if !s.settings.watch_ci {
                     return;
                 }
+                let now = chrono::Utc::now();
                 let connected = repos_of(s);
-                releases::record(&mut s.releases, repo, result, chrono::Utc::now());
+                releases::record(&mut s.releases, repo, result, now);
                 releases::prune(&mut s.releases, &connected);
+                let read = s.releases.iter().find(|r| same_repo(&r.repo, repo));
+                if let Some(read) = read.filter(|_| fresh) {
+                    let setup = s.setups.iter().find(|w| same_repo(&w.repo, repo));
+                    problems::see_tags(&mut s.problems, read, setup, now);
+                }
             })
             .await;
             if limited {

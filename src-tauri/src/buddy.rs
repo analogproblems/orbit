@@ -1940,7 +1940,8 @@ fn answer(
                 let item = about(AttentionKind::SyncFailing)
                     .or(about(AttentionKind::CiFailing))
                     .or(about(AttentionKind::RunsWaiting))
-                    .or(about(AttentionKind::SecurityAlert));
+                    .or(about(AttentionKind::SecurityAlert))
+                    .or(about(AttentionKind::Release));
                 lines.push(line(text, None, item));
             }
             let text = say::repositories_answer(tone, s.settings.repositories.len() as u32);
