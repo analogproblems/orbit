@@ -136,7 +136,9 @@ async fn a_claude_scan_runs_with_no_codex_and_its_findings_land_with_its_report(
     assert_eq!(f.confirmed, Some(true));
     assert_eq!(f.suggested_fix.as_deref(), Some("Use a bound parameter."));
     assert_eq!(f.number, None);
-    assert!(scan.has_report && scan.error.is_none() && scan.warnings.is_empty());
+    assert!(scan.has_report && scan.error.is_none());
+    // What it didn't get to shows on its row.
+    assert_eq!(scan.warnings, ["Not checked: The admin tools."]);
     assert!(scan.finished_at.is_some() && scan.progress.is_none());
     assert!(scan.disk_bytes.unwrap() > 0);
     let report = e.scan_report("scan-1").await.unwrap();
