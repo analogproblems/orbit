@@ -1,8 +1,9 @@
 //! Release dates: a GitHub milestone with a due date, named for a version
 //! such as `v0.3.0` or `Release 0.3.0`, is the day that release is due.
 //! Orbit reads each connected repository's open milestones with its
-//! releases (`crate::releases`), and from a week before the date until the
-//! release is out, or the milestone closes, it reminds you on Needs you of
+//! releases (`crate::releases`), leaving out those whose release is out,
+//! and from a week before the date until the release is out, or the
+//! milestone closes, it reminds you on Needs you of
 //! what stands in the release's way (`waiting`): the milestone's open
 //! issues and pull requests, version files that disagree, a failing default
 //! branch, and open high or critical security alerts. The reminder comes
@@ -29,7 +30,8 @@ pub const LISTED: usize = 5;
 /// How many days before its date a release's reminders start.
 pub const WEEK: i64 = 7;
 
-/// An open milestone named for a version, with a due date.
+/// An open milestone named for a version, with a due date, whose release
+/// isn't out.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Milestone {
@@ -46,9 +48,6 @@ pub struct Milestone {
     pub issue_count: u32,
     pub prs: Vec<u64>,
     pub pr_count: u32,
-    /// A release of its version is out: one published on GitHub, or, in a
-    /// repository with no releases, a tag for it.
-    pub released: bool,
 }
 
 /// The version a milestone's title names, as written there: the whole
@@ -60,14 +59,25 @@ pub fn version_of(title: &str) -> Option<&str> {
 }
 
 /// The milestones in GitHub's answer to the releases query (its
-/// `milestones` field), named for a version and with a due date, those due
-/// soonest first, at most `KEPT`. `releases` and `tags` are what Orbit read
-/// with them, to tell which are out already.
-pub fn understand(nodes: &Value, releases: &[Release], tags: &[Tag]) -> Vec<Milestone> {
+/// `milestones` field), named for a version and with a due date, whose
+/// release isn't out, those due soonest first, at most `KEPT`. `releases`,
+/// `latest` (the latest release, which may not be among them) and `tags`
+/// are what Orbit read with them, to tell which are out: a version is out
+/// once a release of it is published, or, in a repository with no
+/// releases, once it has a tag. Those are left out before the `KEPT`
+/// soonest are taken, so old milestones left open can't crowd out one
+/// still to come.
+pub fn understand(
+    nodes: &Value,
+    releases: &[Release],
+    latest: Option<&Release>,
+    tags: &[Tag],
+) -> Vec<Milestone> {
     let Some(nodes) = nodes["nodes"].as_array() else {
         return vec![];
     };
-    let published: Vec<&Release> = releases.iter().filter(|r| !r.draft).collect();
+    let published: Vec<&Release> = releases.iter().chain(latest).filter(|r| !r.draft).collect();
+    let none = published.is_empty() && releases.is_empty();
     let mut kept: Vec<Milestone> = nodes
         .iter()
         .filter_map(|m| {
@@ -78,8 +88,11 @@ pub fn understand(nodes: &Value, releases: &[Release], tags: &[Tag]) -> Vec<Mile
             let due = m["dueOn"].as_str()?.get(..10)?;
             NaiveDate::parse_from_str(due, "%Y-%m-%d").ok()?;
             let same = |tag: &str| version(tag).is_some_and(|t| t == v);
-            let released = published.iter().any(|r| same(&r.tag))
-                || (releases.is_empty() && tags.iter().any(|t| same(&t.name)));
+            let out = published.iter().any(|r| same(&r.tag))
+                || (none && tags.iter().any(|t| same(&t.name)));
+            if out {
+                return None;
+            }
             let numbers = |field: &str| -> (Vec<u64>, u32) {
                 let list = &m[field];
                 let numbers = list["nodes"]
@@ -110,13 +123,23 @@ pub fn understand(nodes: &Value, releases: &[Release], tags: &[Tag]) -> Vec<Mile
                 issue_count,
                 prs,
                 pr_count,
-                released,
             })
         })
         .collect();
     kept.sort_by(|a, b| a.due.cmp(&b.due).then(a.number.cmp(&b.number)));
     kept.truncate(KEPT);
     kept
+}
+
+/// A release of `tag` is out: Orbit published it, found it published, or,
+/// in a repository with no releases, saw the tag. Its milestones are done
+/// with until the next read, which leaves them out too.
+pub fn out(r: &mut RepoReleases, tag: &str) {
+    let Some(v) = version(tag) else {
+        return;
+    };
+    r.milestones
+        .retain(|m| version(&m.version).is_none_or(|mv| mv != v));
 }
 
 /// How near a release's date is, on a day: the reminders' steps.
@@ -213,7 +236,7 @@ pub fn waiting(s: &Snapshot, now: DateTime<Utc>) -> Vec<Due> {
         if r.read_at.is_empty() || r.unseen.is_some() || !connected(&r.repo) {
             continue;
         }
-        for m in r.milestones.iter().filter(|m| !m.released) {
+        for m in &r.milestones {
             let Some(when) = when(&m.due, today) else {
                 continue;
             };

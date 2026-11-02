@@ -1960,7 +1960,6 @@ describe("ci sentences", () => {
       issueCount: 0,
       prs: [],
       prCount: 0,
-      released: false,
       ...over,
     });
     const due = dueDay("2026-11-04");
@@ -1978,7 +1977,6 @@ describe("ci sentences", () => {
             }),
             milestone({ number: 4, version: "v1.2.0", issueCount: 1 }),
             milestone({ number: 5, version: "v1.3.0" }),
-            milestone({ number: 6, version: "v1.0.0", released: true }),
           ],
         }),
       ),

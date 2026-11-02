@@ -359,8 +359,9 @@ pub fn changed(r: &mut RepoReleases, release: Release) {
 /// Keeps a release Orbit published, or found published, with the
 /// repository's releases until the next read: it is no longer a draft,
 /// and, as GitHub marks a newly published release that isn't a
-/// pre-release, the latest.
+/// pre-release, the latest. Its version's milestones are done with.
 pub fn published(r: &mut RepoReleases, release: Release) {
+    crate::milestones::out(r, &release.tag);
     let before = r.drafts.len();
     r.drafts.retain(|d| d.id != release.id);
     if r.drafts.len() < before {

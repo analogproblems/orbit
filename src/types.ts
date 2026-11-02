@@ -1877,8 +1877,8 @@ export interface RepoReleases {
   /** What the version files say at the commits of the version tags Orbit
    * checked, the highest version first. */
   checks?: TagCheck[];
-  /** Its open milestones named for a version, with a due date, those due
-   * soonest first. */
+  /** Its open milestones named for a version, with a due date, whose
+   * release isn't out, those due soonest first. */
   milestones?: Milestone[];
 }
 /** An open milestone named for a version, such as v0.3.0, with a due
@@ -1897,8 +1897,6 @@ export interface Milestone {
   issueCount: number;
   prs: number[];
   prCount: number;
-  /** A release of its version is out already. */
-  released: boolean;
 }
 /** One workflow's newest run for a tag. */
 export interface BuildRun {

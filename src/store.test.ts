@@ -444,10 +444,7 @@ describe("demo buddy", () => {
     expect(orbit.drafts).toEqual([]);
     expect(orbit.draftCount).toBe(0);
     expect(orbit.latest?.tag).toBe("v1.5.0");
-    expect(orbit.milestones?.[0]).toMatchObject({
-      version: "v1.5.0",
-      released: true,
-    });
+    expect(orbit.milestones).toEqual([]);
   });
   it("walks through setup and taps each step", async () => {
     const store = useOrbit.getState();

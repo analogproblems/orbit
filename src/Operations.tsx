@@ -1567,7 +1567,6 @@ export function releaseLines(r: RepoReleases, now = Date.now()) {
     );
   }
   for (const m of r.milestones ?? []) {
-    if (m.released) continue;
     const open = [
       m.prCount > 0 &&
         `${m.prCount} open ${m.prCount === 1 ? "pull request" : "pull requests"}`,

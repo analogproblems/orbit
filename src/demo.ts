@@ -1363,7 +1363,6 @@ export function demoCi(
           issueCount: 0,
           prs: [7],
           prCount: 1,
-          released: false,
         },
       ],
     }),
@@ -2346,9 +2345,7 @@ export function demoPublished(releases: RepoReleases[], key: string) {
       published: r.published + 1,
       ...(draft.prerelease ? { prerelease: out } : { latest: out, since: 0 }),
       ...(r.milestones && {
-        milestones: r.milestones.map((m) =>
-          bare(m.version) === bare(tag) ? { ...m, released: true } : m,
-        ),
+        milestones: r.milestones.filter((m) => bare(m.version) !== bare(tag)),
       }),
     };
   });
