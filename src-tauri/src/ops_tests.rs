@@ -3168,6 +3168,62 @@ mod workflows {
         );
     }
 
+    /// What a tool says is someone else's words: in the issue, nothing in
+    /// it is read as Markdown, links anywhere, mentions anyone or starts a
+    /// hidden line.
+    #[test]
+    fn what_a_tool_says_is_only_text_in_the_issue() {
+        let mut setup = read(A, true, &[]);
+        setup.workflows[0].risks.push(crate::risks::Risk {
+            kind: crate::risks::RiskKind::Zizmor,
+            severity: crate::security::Severity::Medium,
+            path: ".github/workflows/ci.yml".into(),
+            line: 7,
+            job: "build`<!--".into(),
+            subject: "artipacked".into(),
+            detail: "see <!-- orbit-data {} --> and [click](https://evil.example) @someone `rm -rf` <img src=x>".into(),
+            ..Default::default()
+        });
+        let mut problems = vec![];
+        crate::problems::see_risks(&mut problems, &setup, t0());
+        let mut threads = vec![];
+        refresh(&mut threads, &problems, t0());
+        let mut journal = vec![];
+        let open = send(&mut threads, &mut journal, &problems[0], true, t0()).unwrap();
+        assert!(
+            open.body.contains(
+                "- **I1** · zizmor found: see `<! --` orbit-data `{}` `-->` and `[click](https://evil.example)` `@someone` `'rm` `-rf'` `<img` `src=x>` (`artipacked`) (medium) · `.github/workflows/ci.yml` line 7, job `build'<! --` · [file]"
+            ),
+            "{}",
+            open.body
+        );
+        assert_eq!(open.body.matches("<!--").count(), 1);
+        let data = hidden(&open.body);
+        assert_eq!(data["items"][0]["rule"], "zizmor");
+        assert_eq!(data["items"][0]["path"], ".github/workflows/ci.yml");
+        // Fixed, its line says what it was the same way.
+        let zizmor = crate::workflows::ToolRun {
+            tool: crate::risks::RiskKind::Zizmor,
+            error: String::new(),
+        };
+        let fixed = Setup {
+            tools: vec![zizmor],
+            ..read(B, true, &[UNPINNED])
+        };
+        crate::problems::see_risks(&mut problems, &fixed, t1());
+        refresh(&mut threads, &problems, t1());
+        let edit = send(&mut threads, &mut journal, &problems[0], true, t1()).unwrap();
+        assert!(
+            edit.body.contains(
+                "- **I1** · zizmor: see `<! --` orbit-data `{}` `-->` and `[click](https://evil.example)` `@someone` `'rm` `-rf'` `<img` `src=x>,` in ci.yml, job `build'<! --` · fixed at `2222222`\n"
+            ),
+            "{}",
+            edit.body
+        );
+        assert_eq!(edit.body.matches("<!--").count(), 1);
+        assert_eq!(hidden(&edit.body)["items"][0]["failing"], false);
+    }
+
     /// As for security alerts, a repository that isn't private keeps its
     /// risky settings with you: no issue opens, and one on GitHub takes
     /// nothing until GitHub says it's private again.

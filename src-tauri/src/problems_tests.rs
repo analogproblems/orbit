@@ -1444,6 +1444,205 @@ mod risks {
     }
 
     #[test]
+    fn what_a_tool_found_stays_while_it_doesnt_run() {
+        use crate::workflows::ToolRun;
+        let zizmor = |line: usize| Risk {
+            kind: RiskKind::Zizmor,
+            severity: crate::security::Severity::Medium,
+            path: ".github/workflows/ci.yml".into(),
+            line,
+            job: "build".into(),
+            subject: "artipacked".into(),
+            detail: "credential persistence through GitHub Actions artifacts".into(),
+            ..Default::default()
+        };
+        let ran = |error: &str| ToolRun {
+            tool: RiskKind::Zizmor,
+            error: error.into(),
+        };
+        let with = |sha: &str, found: Vec<Risk>, tools: Vec<ToolRun>| {
+            let mut s = read(sha, vec![workflow("ci.yml", &ci(&[UNPINNED]))]);
+            s.workflows[0].risks.extend(found);
+            s.tools = tools;
+            s
+        };
+        let mut problems = vec![];
+        see_risks(
+            &mut problems,
+            &with(A, vec![zizmor(8)], vec![ran("")]),
+            at(0),
+        );
+        assert_eq!(
+            risks(&problems[0]),
+            [(1, RiskKind::Unpinned), (2, RiskKind::Zizmor)]
+        );
+        assert_eq!(
+            timeline(&problems[0]),
+            ["2 risky workflow settings at 1111111: other/tool@v1 isn't pinned, in ci.yml and zizmor: credential persistence through GitHub Actions artifacts, in ci.yml, job build."]
+        );
+        // zizmor failed, then wasn't installed: what it found stays.
+        see_risks(
+            &mut problems,
+            &with(B, vec![], vec![ran("it failed")]),
+            at(1),
+        );
+        see_risks(&mut problems, &with(C, vec![], vec![]), at(2));
+        let p = &problems[0];
+        assert_eq!(risks(p).len(), 2);
+        assert_eq!(p.timeline.len(), 1);
+        // Moved, it is the same one.
+        see_risks(
+            &mut problems,
+            &with(A, vec![zizmor(9)], vec![ran("")]),
+            at(3),
+        );
+        let p = &problems[0];
+        assert_eq!(risks(p).len(), 2);
+        assert_eq!(p.risks[1].line, 9);
+        // Once it runs and doesn't find it, it's fixed.
+        see_risks(&mut problems, &with(B, vec![], vec![ran("")]), at(4));
+        let p = &problems[0];
+        assert_eq!(risks(p), [(1, RiskKind::Unpinned)]);
+        assert_eq!(
+            timeline(p)[1..],
+            ["Fixed at 2222222: zizmor: credential persistence through GitHub Actions artifacts, in ci.yml, job build."]
+        );
+    }
+
+    /// What zizmor found in a file, as `what_a_tool_found_stays_while_it_doesnt_run`.
+    fn zizmor_in(file: &str) -> Risk {
+        Risk {
+            kind: RiskKind::Zizmor,
+            severity: crate::security::Severity::Medium,
+            path: format!(".github/workflows/{file}"),
+            line: 8,
+            job: "build".into(),
+            subject: "artipacked".into(),
+            detail: "credential persistence through GitHub Actions artifacts".into(),
+            ..Default::default()
+        }
+    }
+    /// A setup with these files, each with what zizmor found in it, and
+    /// these tools run.
+    fn with_tools(
+        sha: &str,
+        files: &[(&str, bool)],
+        tools: Vec<crate::workflows::ToolRun>,
+    ) -> Setup {
+        let workflows = files
+            .iter()
+            .map(|&(file, found)| {
+                let mut w = workflow(file, &ci(&[]));
+                if found {
+                    w.risks.push(zizmor_in(file));
+                }
+                w
+            })
+            .collect();
+        Setup {
+            tools,
+            ..read(sha, workflows)
+        }
+    }
+    fn zizmor(error: &str) -> crate::workflows::ToolRun {
+        crate::workflows::ToolRun {
+            tool: RiskKind::Zizmor,
+            error: error.into(),
+        }
+    }
+    fn paths(p: &Problem) -> Vec<&str> {
+        p.risks.iter().map(|r| r.path.as_str()).collect()
+    }
+
+    #[test]
+    fn a_file_a_tool_couldnt_check_keeps_what_it_found_there() {
+        let mut problems = vec![];
+        see_risks(
+            &mut problems,
+            &with_tools(
+                A,
+                &[("ci.yml", true), ("other.yml", true)],
+                vec![zizmor("")],
+            ),
+            at(0),
+        );
+        assert_eq!(
+            paths(&problems[0]),
+            [".github/workflows/ci.yml", ".github/workflows/other.yml"]
+        );
+        // zizmor ran, but couldn't read ci.yml: what it found there isn't
+        // fixed, while other.yml, which it checked, is.
+        let mut setup = with_tools(
+            B,
+            &[("ci.yml", false), ("other.yml", false)],
+            vec![zizmor("")],
+        );
+        setup.workflows[0].missed = vec![zizmor("it failed")];
+        see_risks(&mut problems, &setup, at(1));
+        let p = &problems[0];
+        assert!(p.is_open());
+        assert_eq!(paths(p), [".github/workflows/ci.yml"]);
+        assert_eq!(
+            timeline(p)[1..],
+            ["Fixed at 2222222: zizmor: credential persistence through GitHub Actions artifacts, in other.yml, job build."]
+        );
+        // Once it reads ci.yml and finds nothing, that's fixed too.
+        see_risks(
+            &mut problems,
+            &with_tools(
+                C,
+                &[("ci.yml", false), ("other.yml", false)],
+                vec![zizmor("")],
+            ),
+            at(2),
+        );
+        assert!(!problems[0].is_open() && problems[0].passed());
+    }
+
+    #[test]
+    fn a_deleted_file_takes_what_the_tools_found_with_it() {
+        let mut problems = vec![];
+        see_risks(
+            &mut problems,
+            &with_tools(
+                A,
+                &[("ci.yml", true), ("other.yml", true)],
+                vec![zizmor("")],
+            ),
+            at(0),
+        );
+        // other.yml went while zizmor wasn't installed: what it found
+        // there goes with it, while ci.yml's stays.
+        see_risks(
+            &mut problems,
+            &with_tools(B, &[("ci.yml", false)], vec![]),
+            at(1),
+        );
+        let p = &problems[0];
+        assert_eq!(paths(p), [".github/workflows/ci.yml"]);
+        assert_eq!(
+            timeline(p)[1..],
+            ["Fixed at 2222222: zizmor: credential persistence through GitHub Actions artifacts, in other.yml, job build."]
+        );
+        // So does the last one, while zizmor fails: nothing is left.
+        see_risks(
+            &mut problems,
+            &with_tools(C, &[], vec![zizmor("it failed")]),
+            at(2),
+        );
+        let p = &problems[0];
+        assert!(!p.is_open() && p.passed());
+        assert_eq!(p.closed_sha, C);
+        assert_eq!(
+            timeline(p)[2..],
+            [
+                "Fixed at 3333333: zizmor: credential persistence through GitHub Actions artifacts, in ci.yml, job build.",
+                "No risky workflow settings at 3333333."
+            ]
+        );
+    }
+
+    #[test]
     fn whether_the_repository_is_private_follows_github() {
         let mut problems = vec![];
         let public = Setup {

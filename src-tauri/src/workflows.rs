@@ -23,9 +23,10 @@ pub const PER_PASS: usize = 2;
 pub const QUIET: Duration = Duration::minutes(10);
 /// Where GitHub runs workflows from.
 pub const FOLDER: &str = ".github/workflows";
-/// Which checks of workflow files a read made (`crate::risks`), so a
-/// commit read before they were added, or changed, is read again.
-pub const CHECKS: u32 = 1;
+/// Which checks of workflow files a read made, so a commit read before
+/// they were added, or changed, is read again: 1 is Orbit's own
+/// (`crate::risks`), 2 adds actionlint and zizmor (`crate::lint`).
+pub const CHECKS: u32 = 2;
 /// Files and folders at the top of a repository that set up another CI
 /// service.
 pub const OTHER_CI: [&str; 22] = [
@@ -84,6 +85,10 @@ pub struct Workflow {
     pub more: u32,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub why: String,
+    /// The tools that checked other files but couldn't check this one, and
+    /// why (`crate::lint`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub missed: Vec<ToolRun>,
 }
 /// What Orbit read about a repository's CI at its default branch's latest
 /// commit.
@@ -117,6 +122,20 @@ pub struct Setup {
     pub private: bool,
     /// Which checks of its workflow files this read made (`CHECKS`).
     pub checks: u32,
+    /// The tools that are installed and ran on its workflow files, and why
+    /// one couldn't check them (`crate::lint`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolRun>,
+}
+/// A tool that ran on a commit's workflow files, and why it couldn't check
+/// them when it couldn't.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ToolRun {
+    /// `actionlint` or `zizmor`.
+    pub tool: crate::risks::RiskKind,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub error: String,
 }
 /// What a repository's files say about its CI.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -225,7 +244,13 @@ pub fn wanted(
 }
 
 /// Reads what a repository's files at `sha` say about its CI.
-pub async fn read(repo: &str, branch: &str, sha: &str) -> Result<Setup, String> {
+/// Reads what `query` asks at a commit, with the text of each workflow file
+/// Orbit checked, for `crate::lint`.
+pub async fn read(
+    repo: &str,
+    branch: &str,
+    sha: &str,
+) -> Result<(Setup, Vec<crate::lint::File>), String> {
     validate_repo(repo)?;
     if !valid_sha(sha) {
         return Err("Invalid commit".into());
@@ -245,7 +270,29 @@ pub async fn read(repo: &str, branch: &str, sha: &str) -> Result<Setup, String> 
         None,
     )
     .await?;
-    understand(repo, branch, sha, &v, Utc::now())
+    let setup = understand(repo, branch, sha, &v, Utc::now())?;
+    let files = texts(&v)
+        .filter(|(path, _)| setup.workflows.iter().any(|w| w.checked && w.path == *path))
+        .collect();
+    Ok((setup, files))
+}
+/// Each workflow file's path and text in GitHub's answer to `query`, when
+/// GitHub sent all of it.
+fn texts(v: &Value) -> impl Iterator<Item = crate::lint::File> + '_ {
+    v["data"]["repository"]["workflows"]["entries"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|e| e["type"] == "blob")
+        .filter_map(|e| {
+            let blob = &e["object"];
+            let complete = blob["isTruncated"] != true && blob["isBinary"] != true;
+            let text = blob["text"].as_str().filter(|_| complete)?;
+            Some((
+                format!("{FOLDER}/{}", e["name"].as_str()?),
+                text.to_string(),
+            ))
+        })
 }
 
 /// What GitHub's answer to `query` says.
@@ -304,6 +351,7 @@ pub fn understand(
                 risks: found.risks,
                 more: found.more,
                 why,
+                missed: vec![],
             })
         })
         .collect();

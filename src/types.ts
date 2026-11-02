@@ -1386,7 +1386,13 @@ export interface Problem {
 }
 /** What a risky workflow setting is, as the engine has it (`risks.rs`). */
 export type RiskKind =
-  "unpinned" | "permissions" | "pull_checkout" | "injection";
+  | "unpinned"
+  | "permissions"
+  | "pull_checkout"
+  | "injection"
+  /** Found by actionlint or zizmor, when installed. */
+  | "actionlint"
+  | "zizmor";
 /** One risky setting in a workflow file. Its text is the file's words,
  * shown as plain text. */
 export interface WorkflowRisk {
@@ -1400,8 +1406,11 @@ export interface WorkflowRisk {
   /** The job's ID, or none for the whole workflow. */
   job?: string;
   /** The action as written, `missing` or `write-all` for permissions,
-   * what a checkout takes, or the text put in a script. */
+   * what a checkout takes, or the text put in a script. For a tool's, the
+   * rule, such as `artipacked`. */
   subject: string;
+  /** For a tool's, what it says. */
+  detail?: string;
   /** The commit Orbit first saw it at. */
   since?: string;
 }
@@ -1646,6 +1655,8 @@ export interface CiSetup {
     risks?: WorkflowRisk[];
     more?: number;
     why?: string;
+    /** The tools that ran but couldn't check this file, and why. */
+    missed?: { tool: "actionlint" | "zizmor"; error?: string }[];
   }[];
   /** Another CI service's files at the top, such as `.circleci`. */
   others: string[];
@@ -1658,6 +1669,9 @@ export interface CiSetup {
   ran?: string | null;
   /** GitHub says the repository is private, read with its files. */
   private?: boolean;
+  /** The tools that are installed and ran on its workflow files, and why
+   * one couldn't check them. */
+  tools?: { tool: "actionlint" | "zizmor"; error?: string }[];
   /** Which checks of its workflow files this read made. */
   checks?: number;
 }

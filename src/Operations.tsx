@@ -512,7 +512,34 @@ export function riskText(r: WorkflowRisk) {
       return `It checks out a pull request’s code (${r.subject}) where secrets are exposed, in ${at}.`;
     case "injection":
       return `${r.subject} goes straight into a script, in ${at}.`;
+    case "actionlint":
+    case "zizmor":
+      return `${r.kind} found: ${r.detail ?? r.subject}, in ${at}.`;
   }
+}
+/** Which of actionlint and zizmor checked a repository's workflows too,
+ * and why one couldn't check them, or one of them, from Orbit's latest
+ * read of them. */
+export function toolsText(s: Snapshot, p: Problem) {
+  const setup = s.setups?.find((x) => sameRepo(x.repo, p.repo));
+  const tools = setup?.tools ?? [];
+  const ran = tools.filter((t) => !t.error).map((t) => t.tool);
+  const failed = tools.filter((t) => t.error);
+  const lines = [];
+  if (ran.length) lines.push(`${ran.join(" and ")} checked them too.`);
+  for (const t of failed)
+    lines.push(
+      `${t.tool} couldn’t check them: ${t.error}. What it found before stays.`,
+    );
+  for (const w of setup?.workflows ?? [])
+    for (const m of w.missed ?? []) {
+      const file = w.path.split("/").at(-1) || w.path;
+      const why = m.error ? `: ${m.error}` : "";
+      lines.push(
+        `${m.tool} couldn’t check ${file}${why}. What it found there before stays.`,
+      );
+    }
+  return lines.join(" ");
 }
 /** A workflows problem in a sentence, as the engine has it
  * (`risks_text`). */
@@ -711,6 +738,7 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
           const waiting = p.kind === "waiting";
           const risky = p.kind === "workflow_risks";
           const risks = p.risks ?? [];
+          const tools = risky ? toolsText(s, p) : "";
           const t = threadOf(s, p);
           const told = toldText(s, p, t);
           const broke =
@@ -780,6 +808,7 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
                       And {risks.length - ALERTS} more.
                     </Text>
                   )}
+                  {tools && <Text color="secondary">{tools}</Text>}
                   {waiting &&
                     p.waiting?.slice(0, RUNS).map((r) => (
                       <HStack key={r.id} gap={1} vAlign="center">
