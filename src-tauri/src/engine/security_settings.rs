@@ -23,22 +23,25 @@ impl Engine {
     }
     /// Notes your tap on Fix, and saves it. Only with Watch security alerts
     /// on, for a connected repository whose owner's baseline asks for the
-    /// setting, and where Orbit last read it off.
+    /// setting, and where Orbit last read it off. A tap is noted only once
+    /// it is saved, so one Orbit couldn't save is never made later.
     pub(super) async fn ask_to_fix(&self, repo: &str, setting: Setting) -> Result<(), String> {
-        let mut asked = Ok(());
-        self.update(|s| {
-            asked = if watched_settings(s).iter().any(|r| same_repo(r, repo)) {
+        let mut s = self.state.lock().await;
+        self.save(
+            &mut s,
+            |s| {
+                if !watched_settings(s).iter().any(|r| same_repo(r, repo)) {
+                    return Err(format!(
+                        "Orbit doesn't watch {repo}'s security settings now. Watch security alerts is off, or the repository isn't connected."
+                    ));
+                }
                 let baselines = &s.settings.security_baselines;
                 baseline::ask(&mut s.repo_settings, &s.journal, baselines, repo, setting)
-            } else {
-                Err(format!(
-                    "Orbit doesn't watch {repo}'s security settings now. Watch security alerts is off, or the repository isn't connected."
-                ))
-            };
-        })
-        .await;
-        asked?;
-        self.flush().await
+            },
+            |e| format!("Orbit couldn't save your tap, so it won't change this: {e}"),
+        )?;
+        (self.emit)(&s);
+        Ok(())
     }
     /// Makes the changes you asked for, then reads the security settings
     /// of a few repositories that are due, unless that is already running.

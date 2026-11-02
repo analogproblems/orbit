@@ -3021,6 +3021,54 @@ async fn a_tap_turns_a_setting_on_once_even_across_a_restart() {
     );
 }
 
+/// A tap Orbit can't save isn't noted, so it isn't made later once
+/// saving works again; a tap that saves is.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_tap_that_cant_be_saved_is_never_made() {
+    use crate::baseline::Setting;
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    std::fs::write(
+        d.path().join("answer.json"),
+        answer(&"1".repeat(40), "SUCCESS"),
+    )
+    .unwrap();
+    admin_of(d.path(), true);
+    set_settings(d.path(), json!({"vulnerability-alerts": false}));
+    let e = connected(d.path()).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+
+    // Saving fails: the tap says so and leaves nothing waiting.
+    let blocker = d.path().join("state").join("state.json.tmp");
+    std::fs::create_dir(&blocker).unwrap();
+    let error = e
+        .ask_to_fix("a/b", Setting::DependabotAlerts)
+        .await
+        .unwrap_err();
+    assert!(
+        error.starts_with("Orbit couldn't save your tap, so it won't change this: "),
+        "{error}"
+    );
+    assert!(e.shown_snapshot().await.repo_settings[0].asked.is_empty());
+
+    // Saving works again: later passes change nothing.
+    std::fs::remove_dir(&blocker).unwrap();
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    crate::github::GH.scope(gh.clone(), e.read_settings()).await;
+    assert!(setting_changes(d.path()).is_empty());
+
+    // A new tap that saves is made, once.
+    e.ask_to_fix("a/b", Setting::DependabotAlerts)
+        .await
+        .unwrap();
+    crate::github::GH.scope(gh.clone(), e.read_settings()).await;
+    assert_eq!(
+        setting_changes(d.path()),
+        ["PUT repos/a/b/vulnerability-alerts"]
+    );
+}
+
 /// A tap reads GitHub first: a setting someone turned on meanwhile isn't
 /// changed. A change GitHub refuses says why, and the token's change keeps
 /// whether Actions can approve pull requests as it was. Turning Watch

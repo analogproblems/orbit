@@ -1,6 +1,5 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { useOrbit } from "./store";
-import { freshDemo } from "./demo";
 import { canPublish, publishTarget, trustedSource } from "./types";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -270,8 +269,6 @@ describe("demo agents", () => {
 
 describe("demo security settings", () => {
   it("fixes a setting a repository drifts on, once", async () => {
-    localStorage.setItem("orbit-demo-v3", JSON.stringify(freshDemo()));
-    await useOrbit.getState().init();
     const args = { repo: "acme/docs", setting: "dependabot_alerts" };
     const result = await useOrbit.getState().action("fix_setting", args);
     expect(result.ok).toBe(true);
