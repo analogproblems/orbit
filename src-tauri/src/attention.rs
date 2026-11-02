@@ -300,6 +300,19 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
             });
             continue;
         }
+        if p.kind == crate::problems::ProblemKind::ReleaseBuild {
+            out.push(Attention {
+                repo: Some(p.repo.clone()),
+                ..item(
+                    p.item_key(),
+                    AttentionKind::CiFailing,
+                    None,
+                    None,
+                    crate::problems::build_text(p),
+                )
+            });
+            continue;
+        }
         if p.kind == crate::problems::ProblemKind::Waiting {
             let mut reason = crate::problems::waiting_text(&p.repo, &p.waiting);
             if let Some(seen) = crate::runners::seen_text(&s.runners, &p.repo) {

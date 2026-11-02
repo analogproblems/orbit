@@ -1949,6 +1949,15 @@ fn answer(
                 if let Some(releases) = releases {
                     text.push_str(&crate::releases::sentence(releases));
                 }
+                let build = s
+                    .builds
+                    .iter()
+                    .find(|b| same_repo(&b.repo, &repo.name))
+                    .filter(|_| s.settings.watch_ci)
+                    .and_then(|b| crate::builds::sentence(b, chrono::Utc::now()));
+                if let Some(build) = build {
+                    text.push_str(&format!(" {build}"));
+                }
                 text.push_str(&security_sentence(s, &repo.name));
                 text.push_str(&workflows_sentence(s, &repo.name));
                 text.push_str(&versions_sentence(s, &repo.name));

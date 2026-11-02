@@ -101,14 +101,29 @@ fn rule(rules: &crate::buddy::Rules, done: usize) -> &str {
         &rules.rerun_again
     }
 }
-/// Whether the problem is about the latest commit Orbit knows of: a rerun
-/// of an older one's job would test code that is gone.
+/// Whether the problem is about the latest commit Orbit knows of (for a
+/// release build, the commit its tag is at now): a rerun of an older one's
+/// job would test code that is gone.
 fn current(s: &Snapshot, t: &Thread, p: &Problem) -> bool {
     match t.kind {
         ThreadKind::Comment => s
             .prs
             .iter()
             .any(|pr| t.pr_id.as_deref() == Some(pr.id.as_str()) && pr.head_sha == p.sha),
+        // A release build of the tag Orbit watches now, still at the
+        // commit its runs ran at, as the tags Orbit knows of say: not one a
+        // newer tag, such as one Orbit just pushed, took the place of.
+        ThreadKind::Issue if p.kind == crate::problems::ProblemKind::ReleaseBuild => {
+            let build = s.builds.iter().find(|b| same_repo(&b.repo, &t.repo));
+            let watched = s
+                .releases
+                .iter()
+                .find(|r| same_repo(&r.repo, &t.repo))
+                .and_then(|r| crate::builds::target(r, build));
+            let same = |tag: &str, sha: &str| tag == p.branch && sha == p.sha;
+            build.is_some_and(|b| same(&b.tag, &b.sha))
+                && watched.is_some_and(|w| same(&w.name, &w.sha))
+        }
         ThreadKind::Issue => {
             s.ci.iter()
                 .any(|c| same_repo(&c.repo, &t.repo) && c.head.sha == p.sha)

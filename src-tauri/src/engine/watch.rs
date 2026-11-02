@@ -4,15 +4,16 @@
 //! repository's pull requests (`crate::workflows`), the self-hosted
 //! runners its runs wait for (`crate::runners`), its Actions storage
 //! (`crate::actions_storage`), its releases and version tags
-//! (`crate::releases`), and whether GitHub says each pull request
+//! (`crate::releases`) and the runs its newest tag started
+//! (`crate::builds`), and whether GitHub says each pull request
 //! Orbit reviews can merge (`crate::readiness`), and whether Dependabot's
 //! can (`crate::dependabot`); each repository's security alerts and
 //! settings, with a switch of their own (`crate::security`,
 //! `crate::baseline`); then Bit's morning brief once a day (`crate::brief`).
 use super::Engine;
 use crate::{
-    actions_storage as storage, broke, ci, logs, problems, readiness, releases, runners, security,
-    types::*, workflows,
+    actions_storage as storage, broke, builds, ci, logs, problems, readiness, releases, runners,
+    security, types::*, workflows,
 };
 use std::sync::atomic::Ordering;
 
@@ -131,6 +132,7 @@ impl Engine {
             runners::prune(&mut s.runners, &connected);
             storage::prune(&mut s.actions_storage, &connected);
             releases::prune(&mut s.releases, &connected);
+            builds::prune(&mut s.builds, &connected);
             readiness::prune(s);
             problems::close_unwatched(&mut s.problems, &connected, false, now);
         })
@@ -371,7 +373,8 @@ impl Engine {
     /// closes its problems about tags on the wrong commit. One GitHub
     /// didn't answer for keeps what was read before and is tried again
     /// after a wait. First, unless a release tag is being pushed now, it
-    /// looks on GitHub for any push GitHub may or may not have taken.
+    /// looks on GitHub for any push GitHub may or may not have taken; last,
+    /// it reads release builds (`read_builds`).
     async fn read_releases(&self) {
         if self.reading_releases.swap(true, Ordering::SeqCst) {
             return;
@@ -418,6 +421,8 @@ impl Engine {
                 if let Some(read) = read.filter(|_| fresh) {
                     let setup = s.setups.iter().find(|w| same_repo(&w.repo, repo));
                     problems::see_tags(&mut s.problems, read, setup, now);
+                    problems::close_old_builds(&mut s.problems, read, now);
+                    builds::keep_current(&mut s.builds, read);
                 }
             })
             .await;
@@ -425,8 +430,60 @@ impl Engine {
                 break;
             }
         }
+        // After the tags, so a new one's runs are read in the same pass.
+        self.read_builds().await;
         self.reading_releases.store(false, Ordering::SeqCst);
         let _ = self.flush().await;
+    }
+    /// Reads the runs each connected repository's newest version tag
+    /// started, a few repositories a pass (`builds::wanted`), and opens,
+    /// updates or closes its release build's problem from each read that
+    /// worked. A read GitHub didn't answer keeps what Orbit read before,
+    /// and its problem stays as it was, until Orbit tries again after a
+    /// wait. Part of `read_releases`, under its flag.
+    async fn read_builds(&self) {
+        let wanted = {
+            let s = self.state.lock().await;
+            if s.settings.watch_ci {
+                builds::wanted(&repos_of(&s), &s.releases, &s.builds, chrono::Utc::now())
+            } else {
+                vec![]
+            }
+        };
+        for (repo, tag) in &wanted {
+            let result = builds::read(repo, tag, chrono::Utc::now()).await;
+            // After a rate limit, the rest wait for the next pass.
+            let limited = result.as_ref().is_err_and(|e| logs::rate_limited(e));
+            let fresh = result.is_ok();
+            self.update(|s| {
+                // Watch CI went off, the repository went, or a newer tag
+                // came, such as one Orbit pushed, meanwhile.
+                let connected = repos_of(s);
+                let known = s.builds.iter().find(|b| same_repo(&b.repo, repo));
+                let now_watched = s
+                    .releases
+                    .iter()
+                    .find(|r| same_repo(&r.repo, repo))
+                    .and_then(|r| builds::target(r, known));
+                if !s.settings.watch_ci
+                    || !connected.iter().any(|c| same_repo(c, repo))
+                    || now_watched.is_none_or(|t| t.name != tag.name || t.sha != tag.sha)
+                {
+                    return;
+                }
+                let now = chrono::Utc::now();
+                builds::record(&mut s.builds, repo, tag, result, now);
+                builds::prune(&mut s.builds, &connected);
+                let read = s.builds.iter().find(|b| same_repo(&b.repo, repo));
+                if let Some(b) = read.filter(|_| fresh) {
+                    problems::see_build(&mut s.problems, b, now);
+                }
+            })
+            .await;
+            if limited {
+                break;
+            }
+        }
     }
 }
 impl Engine {
@@ -582,6 +639,7 @@ fn stop_watching(s: &mut Snapshot) {
     s.runners.clear();
     s.actions_storage.clear();
     s.releases.clear();
+    s.builds.clear();
     s.merges.clear();
     problems::close_unwatched(&mut s.problems, &[], true, chrono::Utc::now());
 }

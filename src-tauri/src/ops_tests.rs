@@ -984,8 +984,16 @@ fn bit_hears_what_matters() {
     );
     p.closed_sha.clear();
     assert_eq!(
-        text(&Event::Closed(key), &threads, &p).as_deref(),
+        text(&Event::Closed(key.clone()), &threads, &p).as_deref(),
         Some("Orbit closed issue #45, as it stopped watching main in a/b.")
+    );
+    // A release build's issue closes as soon as each run passes.
+    pass(&mut p, '2', t0());
+    p.kind = ProblemKind::ReleaseBuild;
+    threads[0].branch = "v0.3.0".into();
+    assert_eq!(
+        text(&Event::Closed(key), &threads, &p).as_deref(),
+        Some("Orbit closed issue #45: every run of the release build for v0.3.0 in a/b passed.")
     );
 }
 

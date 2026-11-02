@@ -23,6 +23,7 @@ import {
   cachesText,
   artifactsText,
   quotaText,
+  buildLine,
   releaseDot,
   releaseLines,
   riskText,
@@ -42,6 +43,8 @@ import { useOrbit } from "./store";
 import {
   checkNames,
   type Broke,
+  type Build,
+  type CiState,
   type CiFailure,
   type OpsAnswer,
   type OpsItem,
@@ -520,10 +523,10 @@ describe("operations page", () => {
         "acme/orbitLatest release: v1.4.0 (Orbit 1.4). 23 commits on main since.Draft v1.5.0 (Orbit 1.5) waits to be published, with 6 files.",
       ),
       expect.stringContaining(
-        "acme/apiLatest release: v2.3.1. 4 commits on main since.The tag v2.3.2 has no release.",
+        "acme/apiLatest release: v2.3.1. 4 commits on main since.The tag v2.3.2 has no release.The release build for v2.3.2 passed (2 runs).",
       ),
       expect.stringContaining(
-        "acme/dashboardLatest release: v0.9.0. 11 commits on main since.A newer pre-release is out: v1.0.0-beta.1.GitHub shows drafts only to accounts that can push here, and Orbit’s sign-in can’t, so any drafts aren’t listed.",
+        "acme/dashboardLatest release: v0.9.0. 11 commits on main since.A newer pre-release is out: v1.0.0-beta.1.GitHub shows drafts only to accounts that can push here, and Orbit’s sign-in can’t, so any drafts aren’t listed.The release build for v1.0.0-beta.1 is still running.",
       ),
       expect.stringContaining("acme/docsNo releases or version tags yet."),
     ]);
@@ -556,7 +559,7 @@ describe("operations page", () => {
     };
     show(s);
     expect(rows()[1].textContent).toContain(
-      "The tag v2.3.2 has no release.Orbit couldn't read the releases yet",
+      "The tag v2.3.2 has no release.The release build for v2.3.2 passed (2 runs).Orbit couldn't read the releases yet",
     );
     expect(within(rows()[1]).getByLabelText("Not read")).toBeTruthy();
     expect(rows()[3].textContent).toBe(
@@ -1888,6 +1891,74 @@ describe("ci sentences", () => {
     ]);
   });
 
+  it("say how the build of the newest tag went, and a failing one first", () => {
+    const now = Date.parse("2026-11-02T12:00:00Z");
+    const build = (
+      state: CiState,
+      over: Partial<Build["ci"]> = {},
+      firstReadAt = "2026-11-02T11:00:00Z",
+    ): Build => ({
+      repo: "a/b",
+      tag: "v1.0.0",
+      sha: "1".repeat(40),
+      runs: [],
+      ci: {
+        sha: "1".repeat(40),
+        state,
+        failing: [],
+        running: 0,
+        passing: 0,
+        ...over,
+      },
+      firstReadAt,
+      readAt: "2026-11-02T11:55:00Z",
+      tries: 0,
+    });
+    const failing = build("failing", {
+      failing: [
+        { name: "Release / build (macos)", url: "" },
+        { name: "Release / sign", url: "" },
+      ],
+    });
+    expect(buildLine(failing, now)).toBe(
+      "The release build for v1.0.0 is failing: Release / build (macos) and Release / sign.",
+    );
+    expect(buildLine(build("running"), now)).toBe(
+      "The release build for v1.0.0 is still running.",
+    );
+    expect(buildLine(build("passing", { passing: 1 }), now)).toBe(
+      "The release build for v1.0.0 passed (1 run).",
+    );
+    expect(buildLine(build("none"), now)).toBe(
+      "Nothing has run for v1.0.0 yet.",
+    );
+    // A day on, its runs may be long gone.
+    expect(
+      buildLine(build("none", {}, "2026-11-01T12:00:00Z"), now),
+    ).toBeUndefined();
+    expect(buildLine({ ...build("passing"), readAt: "" }, now)).toBeUndefined();
+    expect(buildLine(undefined, now)).toBeUndefined();
+    const read: RepoReleases = {
+      repo: "a/b",
+      readAt: "2026-11-02T11:55:00Z",
+      branch: "main",
+      head: "",
+      drafts: [],
+      draftCount: 1,
+      published: 0,
+      versionTags: 1,
+      unreleased: [],
+      unreleasedCount: 0,
+      tries: 0,
+    };
+    expect(releaseDot(read, failing)).toEqual({
+      variant: "error",
+      label: "Build failing",
+    });
+    expect(releaseDot(read, build("passing")).label).toBe("Draft waiting");
+    expect(releaseDot({ ...read, readAt: "" }, failing).label).toBe("Not seen");
+  });
+
   it("say how a place's runners stand", () => {
     const runner = (online: boolean, busy = false) => ({
       name: "r",
@@ -2027,6 +2098,37 @@ describe("ci sentences", () => {
     expect(fixed("passes")).toContain("abc1234, and it passes there.");
     expect(fixed("not_on_branch")).toContain("abc1234, which isn’t on fix-it.");
     expect(fixed("not_found")).toContain("abc1234, which Orbit can’t find.");
+    // A release build's fix comes with the next version's tag, so Orbit
+    // doesn't wait for checks at the commit.
+    const release = (commit: string | null) =>
+      answerText(
+        { branch: "v0.3.0" } as OpsThread,
+        {
+          number: 1,
+          check: "Release / build (macos)",
+          url: "",
+          failing: true,
+          since: "",
+          at: "",
+          answer: {
+            kind: "fixed",
+            author: "agent",
+            at: "",
+            url: "",
+            replyId: 1,
+            head: "",
+            commit,
+            check: "waiting",
+          },
+        },
+        { kind: "release_build" } as Problem,
+      );
+    expect(release("abc1234def")).toBe(
+      "I1 · Release / build (macos): agent says it’s fixed in abc1234. The next version’s tag builds with it.",
+    );
+    expect(release(null)).toBe(
+      "I1 · Release / build (macos): agent says it’s fixed. The next version’s tag builds with it.",
+    );
     const proposal = answerText(t, {
       number: 1,
       kind: "no_ci",

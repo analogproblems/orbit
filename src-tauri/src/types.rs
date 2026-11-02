@@ -1402,6 +1402,9 @@ pub struct Snapshot {
     /// Each connected repository's releases and version tags, as Orbit
     /// last read them (see `crate::releases`).
     pub releases: Vec<crate::releases::RepoReleases>,
+    /// The runs each connected repository's newest version tag started, as
+    /// Orbit last read them (see `crate::builds`).
+    pub builds: Vec<crate::builds::Build>,
     /// Each connected repository's open security alerts, as Orbit last read
     /// them (see `crate::security`).
     pub security: Vec<crate::security::RepoSecurity>,

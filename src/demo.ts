@@ -32,6 +32,7 @@ import {
   type RunnerPlace,
   type ActionsStorage,
   type Release,
+  type Build,
   type RepoReleases,
   type Attention,
   type RepoSecurity,
@@ -1051,6 +1052,7 @@ export function demoCi(
   | "runners"
   | "actionsStorage"
   | "releases"
+  | "builds"
 > {
   const failingPr = prs[2];
   const behindPr = prs[4];
@@ -1365,6 +1367,39 @@ export function demoCi(
       draftsHidden: true,
     }),
     releasesOf("acme/docs", {}),
+  ];
+  // The build api's newest tag started passed; dashboard's still runs.
+  const built = (
+    repo: string,
+    tag: string,
+    at: string,
+    state: Build["ci"]["state"],
+    runs: number,
+  ): Build => ({
+    repo,
+    tag,
+    sha: sha(at),
+    runs: Array.from({ length: runs }, (_, i) => ({
+      id: 900 + i,
+      name: i ? "Docs" : "Release",
+      url: `https://github.com/${repo}/actions/runs/${900 + i}`,
+      event: "push",
+      state,
+    })),
+    ci: {
+      sha: sha(at),
+      state,
+      failing: [],
+      running: state === "running" ? runs : 0,
+      passing: state === "passing" ? runs : 0,
+    },
+    firstReadAt: ago(90),
+    readAt: ago(3),
+    tries: 0,
+  });
+  const builds: Build[] = [
+    built("acme/api", "v2.3.2", "4be81aa", "passing", 2),
+    built("acme/dashboard", "v1.0.0-beta.1", "c0ffee1", "running", 1),
   ];
   const problems: Problem[] = [
     {
@@ -1742,6 +1777,7 @@ export function demoCi(
     runners,
     actionsStorage,
     releases,
+    builds,
   };
 }
 /** Security alerts in the demo: a critical Dependabot alert and a found

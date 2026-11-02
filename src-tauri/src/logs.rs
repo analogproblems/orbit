@@ -98,7 +98,13 @@ pub fn wanted(
         return vec![];
     }
     let mut open: Vec<&Problem> = problems.iter().filter(|p| p.is_open()).collect();
-    open.sort_by_key(|p| p.kind != ProblemKind::DefaultBranch);
+    // What needs you first: default branches and release builds.
+    open.sort_by_key(|p| {
+        !matches!(
+            p.kind,
+            ProblemKind::DefaultBranch | ProblemKind::ReleaseBuild
+        )
+    });
     let mut fresh: Vec<(String, String, String)> = vec![];
     let mut due: Vec<(DateTime<Utc>, (String, String, String))> = vec![];
     for p in open {
