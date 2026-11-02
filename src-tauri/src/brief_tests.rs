@@ -995,3 +995,248 @@ fn a_tag_on_the_wrong_commit_is_in_it() {
         )]
     );
 }
+
+/// `a/b`, whose newest version tag v0.3.0 at `1…` has a draft release, and
+/// another for v0.2.1, and whose `main` says 0.4.0 at `2…`, where CI
+/// passed, with no tag for it yet. Its milestone v0.4.0 is due on
+/// 2026-11-02, with one open pull request.
+fn releasing() -> Snapshot {
+    use crate::{
+        builds::{Build, Run},
+        ci::{CiState, CommitCi, RepoCi},
+        milestones::Milestone,
+        releases::{Release, RepoReleases, Tag},
+        versions::{Kind, VersionFile},
+    };
+    let (a, b) = ("1".repeat(40), "2".repeat(40));
+    let mut s = Snapshot::default();
+    s.settings.watch_ci = true;
+    s.settings.buddy.time_zone = "Etc/UTC".into();
+    s.settings.repositories.push(Repository {
+        name: "a/b".into(),
+        path: "/tmp/a-b".into(),
+        automatic: true,
+        setup_command: String::new(),
+        network_access: false,
+        round_limit: 4,
+        approval_minutes: 0,
+        keep_updated: false,
+        provider: Default::default(),
+        dev_container: Default::default(),
+    });
+    let draft = |id: u64, tag: &str| Release {
+        id,
+        tag: tag.into(),
+        name: tag.into(),
+        draft: true,
+        ..Default::default()
+    };
+    s.releases.push(RepoReleases {
+        repo: "a/b".into(),
+        read_at: "2026-10-31T08:00:00.000Z".into(),
+        branch: "main".into(),
+        head: b.clone(),
+        drafts: vec![draft(7, "v0.3.0"), draft(6, "v0.2.1")],
+        draft_count: 2,
+        tags: vec![Tag {
+            name: "v0.3.0".into(),
+            sha: a.clone(),
+        }],
+        version_tags: 1,
+        milestones: vec![Milestone {
+            number: 4,
+            title: "v0.4.0".into(),
+            version: "v0.4.0".into(),
+            due: "2026-11-02".into(),
+            prs: vec![12],
+            pr_count: 1,
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    s.builds.push(Build {
+        repo: "a/b".into(),
+        tag: "v0.3.0".into(),
+        sha: a.clone(),
+        runs: vec![Run {
+            id: 9,
+            name: "Release".into(),
+            state: CiState::Passing,
+            conclusion: "success".into(),
+            ..Default::default()
+        }],
+        ci: CommitCi {
+            sha: a,
+            state: CiState::Passing,
+            ..Default::default()
+        },
+        read_at: "2026-10-31T08:00:00.000Z".into(),
+        ..Default::default()
+    });
+    let file = |path: &str, kind| VersionFile {
+        path: path.into(),
+        kind,
+        version: "0.4.0".into(),
+        of: String::new(),
+    };
+    s.setups.push(crate::workflows::Setup {
+        repo: "a/b".into(),
+        branch: "main".into(),
+        sha: b.clone(),
+        checks: crate::workflows::CHECKS,
+        versions: vec![
+            file("package.json", Kind::Package),
+            file("Cargo.toml", Kind::Cargo),
+        ],
+        ..Default::default()
+    });
+    s.ci.push(RepoCi {
+        repo: "a/b".into(),
+        branch: "main".into(),
+        head: CommitCi {
+            sha: b,
+            state: CiState::Passing,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    s
+}
+
+/// Releases come after the rest: each release due within a week by its
+/// milestone, with what stands in its way, each repository's drafts
+/// waiting, saying which one is ready, and each version waiting for its
+/// tag. A release's line keeps its key as the day nears, so it is new
+/// once, while a draft becoming ready is new again. After a failed read of
+/// a repository's releases, its lines say they may be out of date. Only
+/// while Watch CI is on.
+#[test]
+fn releases_due_drafts_and_untagged_versions_are_in_the_brief() {
+    let mut s = releasing();
+    let release = |s: &Snapshot| -> Vec<(String, String)> {
+        release_lines(s, now())
+            .into_iter()
+            .map(|l| (l.key, l.text))
+            .collect()
+    };
+    assert_eq!(
+        release(&s),
+        [
+            (
+                "release-due:a/b:4:2026-11-02".to_string(),
+                "v0.4.0 of a/b is due in 2 days. In its way: 1 open pull request (#12).".to_string()
+            ),
+            (
+                "release-drafts:a/b:v0.3.0,v0.2.1:ready=v0.3.0".into(),
+                "a/b has 2 draft releases waiting to be published: v0.3.0 and v0.2.1. \
+                 The one for v0.3.0 is ready: every run its tag started passed."
+                    .into()
+            ),
+            (
+                "release-untagged:a/b:v0.4.0".into(),
+                "a/b says 0.4.0 on main at 2222222, where CI passed, and there's no tag v0.4.0 yet."
+                    .into()
+            ),
+        ]
+    );
+    // The day after, the same line, a day nearer.
+    let tomorrow = now() + chrono::Duration::days(1);
+    let lines = release_lines(&s, tomorrow);
+    assert_eq!(lines[0].key, "release-due:a/b:4:2026-11-02");
+    assert!(lines[0].text.starts_with("v0.4.0 of a/b is due tomorrow."));
+
+    // Orbit's latest read of a/b's releases failed: the same lines, from
+    // what it kept, each saying it may be out of date.
+    let mut failed = s.clone();
+    failed.releases[0].error =
+        Some("Orbit couldn't read the releases yet: HTTP 502. It tries again later.".into());
+    let fresh = release(&s);
+    let stale = release(&failed);
+    assert_eq!(stale.len(), fresh.len());
+    for ((key, text), (was_key, was_text)) in stale.into_iter().zip(fresh) {
+        assert_eq!(key, was_key);
+        assert_eq!(
+            text,
+            format!(
+                "{was_text} Orbit's latest read of its releases failed, so this may be out of date."
+            )
+        );
+    }
+    // Another repository's failed read says nothing about a/b.
+    let mut other = s.clone();
+    other.releases.push(crate::releases::RepoReleases {
+        repo: "a/c".into(),
+        error: Some("Orbit couldn't read the releases yet: HTTP 502.".into()),
+        ..Default::default()
+    });
+    assert_eq!(release(&other), release(&s));
+
+    // In the brief: last, counted as notes about releases, each new once.
+    look(&mut s, at("2026-10-31", "09:00"), now());
+    let b = latest(&s);
+    assert_eq!(b.lines.len(), 3);
+    assert!(b.lines.iter().all(|l| l.new));
+    assert_eq!(
+        b.text,
+        "Here's your morning brief! 3 notes are about releases."
+    );
+    look(&mut s, at("2026-11-01", "09:00"), tomorrow);
+    assert_eq!(latest(&s).day, "2026-10-31", "nothing new, nothing settled");
+
+    // One draft, not ready; the release out, so its milestone is left
+    // out; Watch CI off.
+    s.releases[0].drafts.truncate(1);
+    s.releases[0].draft_count = 1;
+    s.builds.clear();
+    s.releases[0].milestones.clear();
+    assert_eq!(
+        release(&s).into_iter().take(1).collect::<Vec<_>>(),
+        [(
+            "release-drafts:a/b:v0.3.0".to_string(),
+            "a/b has a draft release, v0.3.0, waiting to be published.".to_string()
+        )]
+    );
+    // In the next brief, v0.4.0's release and v0.2.1's draft have settled.
+    look(&mut s, at("2026-11-02", "09:00"), now());
+    let keys: Vec<&str> = latest(&s).lines.iter().map(|l| l.key.as_str()).collect();
+    assert!(keys.contains(&"release-drafts:a/b:v0.3.0"), "{keys:?}");
+    assert_eq!(latest(&s).settled, 2);
+    // Its build passing makes it new in the next brief, and so does it
+    // failing again, while the draft itself hasn't settled.
+    let new = |s: &Snapshot| -> Vec<String> {
+        latest(s)
+            .lines
+            .iter()
+            .filter(|l| l.new)
+            .map(|l| l.key.clone())
+            .collect()
+    };
+    s.builds = releasing().builds;
+    look(&mut s, at("2026-11-03", "09:00"), now());
+    assert_eq!(new(&s), ["release-drafts:a/b:v0.3.0:ready=v0.3.0"]);
+    assert!(latest(&s).lines[0]
+        .text
+        .ends_with("The one for v0.3.0 is ready: every run its tag started passed."));
+    assert_eq!(latest(&s).settled, 0);
+    s.builds.clear();
+    look(&mut s, at("2026-11-04", "09:00"), now());
+    assert_eq!(new(&s), ["release-drafts:a/b:v0.3.0"]);
+    assert_eq!(latest(&s).settled, 0);
+    // Published: it has settled.
+    let draft = s.releases[0].drafts.remove(0);
+    s.releases[0].draft_count = 0;
+    look(&mut s, at("2026-11-05", "09:00"), now());
+    assert_eq!(
+        (latest(&s).day.as_str(), latest(&s).settled),
+        ("2026-11-05", 1)
+    );
+    s.releases[0].drafts.push(draft);
+    s.releases[0].draft_count = 1;
+    s.releases[0].draft_count = 3;
+    assert_eq!(
+        release(&s)[0].1,
+        "a/b has 3 draft releases waiting to be published."
+    );
+    s.settings.watch_ci = false;
+    assert!(release(&s).is_empty());
+}
