@@ -2614,6 +2614,107 @@ fn files(dir: &Path, at: char, workflows: &[(&str, &str)], top: &[&str], package
     std::fs::write(dir.join(format!("setup-{}.json", sha(at))), v.to_string()).unwrap();
 }
 
+/// Says the fake GitHub's files at `at` are in a private repository.
+fn private_at(dir: &Path, at: char) {
+    let file = dir.join(format!("setup-{}.json", sha(at)));
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    v["data"]["repository"]["isPrivate"] = json!(true);
+    v["data"]["repository"]["visibility"] = json!("PRIVATE");
+    std::fs::write(file, v.to_string()).unwrap();
+}
+
+/// The issue's example, through the fake GitHub: a private repository's
+/// workflow with an unpinned action, a `pull_request_target` job that
+/// checks out the pull request, and an issue title in a script gets an
+/// issue with three items, once GitHub says just before that it's still
+/// private; the commit that fixes them closes it once Orbit reads it.
+#[cfg(unix)]
+#[tokio::test]
+async fn risky_workflow_settings_go_to_a_private_repositorys_agent_until_fixed() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let e = connected(d.path()).await;
+    e.update(|s| s.settings.buddy.rules.open_issues = "do_it".into())
+        .await;
+    let risky = "on: [pull_request_target, issues]\npermissions: {}\njobs:\n  build:\n    runs-on: x\n    steps:\n      - uses: other/tool@v1\n      - uses: actions/checkout@v5\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n      - run: echo \"${{ github.event.issue.title }}\"\n";
+    answer(d.path(), '1', &[], None);
+    files(d.path(), '1', &[("ci.yml", risky)], &[], None);
+    private_at(d.path(), '1');
+    // GitHub says it's public when Orbit asks just before writing.
+    watch(&e, &gh).await;
+    let s = e.snapshot().await;
+    let p = s
+        .problems
+        .iter()
+        .find(|p| p.kind == crate::problems::ProblemKind::WorkflowRisks)
+        .unwrap();
+    assert_eq!(p.risks.len(), 3);
+    assert!(!p.private, "what GitHub said last counts");
+    assert!(writes(d.path()).is_empty());
+    assert!(std::fs::read_to_string(d.path().join("calls"))
+        .unwrap()
+        .contains("GET repos/a/b\n"));
+
+    // Private, at the next commit: the issue goes.
+    std::fs::write(
+        d.path().join("repo.json"),
+        json!({ "full_name": "a/b", "private": true, "visibility": "private" }).to_string(),
+    )
+    .unwrap();
+    answer(d.path(), '2', &[], None);
+    files(d.path(), '2', &[("ci.yml", risky)], &[], None);
+    private_at(d.path(), '2');
+    watch(&e, &gh).await;
+    assert_eq!(writes(d.path()), ["POST repos/a/b/issues"]);
+    let g = github(d.path());
+    let issue = &g["issues"][0];
+    assert_eq!(issue["title"], "Fix the risky workflow settings");
+    let body = issue["body"].as_str().unwrap();
+    for item in [
+        "- **I1** · checks out the pull request's code",
+        "- **I2** · `github.event.issue.title` goes straight into a script",
+        "- **I3** · `other/tool@v1` isn't pinned",
+    ] {
+        assert!(body.contains(item), "{body}");
+    }
+    let number = issue["number"].as_u64().unwrap();
+    assert!(e
+        .snapshot()
+        .await
+        .buddy_feed
+        .notes
+        .last()
+        .unwrap()
+        .text
+        .starts_with(&format!(
+        "Orbit opened issue #{number} to tell the agent on a/b about 3 risky workflow settings."
+    )));
+
+    // The commit that fixes them closes it, as completed.
+    let fixed = "on: [pull_request, issues]\npermissions: {}\njobs:\n  build:\n    runs-on: x\n    steps:\n      - uses: other/tool@0123456789abcdef0123456789abcdef01234567 # v1\n      - uses: actions/checkout@v5\n      - run: echo \"$TITLE\"\n        env:\n          TITLE: ${{ github.event.issue.title }}\n";
+    answer(d.path(), '3', &[], None);
+    files(d.path(), '3', &[("ci.yml", fixed)], &[], None);
+    private_at(d.path(), '3');
+    watch(&e, &gh).await;
+    let g = github(d.path());
+    assert_eq!(g["issues"][0]["state"], "closed");
+    assert_eq!(g["issues"][0]["state_reason"], "completed");
+    let note = g["comments"].as_array().unwrap().last().unwrap()["body"].clone();
+    assert!(note.as_str().unwrap().starts_with(
+        "Orbit found no risky settings in the workflows on `main` at `3333333`, so it is closing this issue."
+    ));
+    let body = g["issues"][0]["body"].as_str().unwrap();
+    assert!(
+        body.contains("- **I3** · `other/tool@v1` isn't pinned, in ci.yml · fixed at `3333333`"),
+        "{body}"
+    );
+    let s = e.snapshot().await;
+    assert!(s.problems.iter().all(|p| !p.is_open()));
+    let sent = writes(d.path()).len();
+    watch(&e, &gh).await;
+    assert_eq!(writes(d.path()).len(), sent);
+}
+
 /// A repository with no CI on pull requests: once Orbit is sure, Bit
 /// offers an issue with a workflow to start from, opens it when you say
 /// yes, and closes it as done once a workflow there runs on pull

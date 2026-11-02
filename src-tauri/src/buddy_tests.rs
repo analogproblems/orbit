@@ -1270,6 +1270,29 @@ fn a_security_alert_is_one_heads_up_and_counts_in_how_are_my_repositories() {
         "{lines:?}"
     );
     assert_eq!(keys, [None]);
+    // Risky workflow settings follow.
+    let text = "on: issues\njobs:\n  a:\n    runs-on: x\n    steps:\n      - run: echo ${{ github.event.issue.title }}\n";
+    let path = ".github/workflows/ci.yml".to_string();
+    let setup = crate::workflows::Setup {
+        repo: "a/b".into(),
+        sha: "1".repeat(40),
+        checks: crate::workflows::CHECKS,
+        workflows: vec![crate::workflows::Workflow {
+            risks: crate::risks::check(&path, text, "a").unwrap().risks,
+            path,
+            checked: true,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    crate::problems::see_risks(&mut s.problems, &setup, chrono::Utc::now());
+    let (_, lines, _) = ask_and_read(&mut s, Question::Repositories);
+    assert!(
+        lines[0].ends_with(
+            "none high or critical. Its workflows have 2 risky settings, 1 of them high."
+        ),
+        "{lines:?}"
+    );
 }
 #[test]
 fn a_failing_default_branch_is_one_heads_up_and_shows_in_how_are_my_repositories() {

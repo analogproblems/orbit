@@ -23,6 +23,9 @@ pub const PER_PASS: usize = 2;
 pub const QUIET: Duration = Duration::minutes(10);
 /// Where GitHub runs workflows from.
 pub const FOLDER: &str = ".github/workflows";
+/// Which checks of workflow files a read made (`crate::risks`), so a
+/// commit read before they were added, or changed, is read again.
+pub const CHECKS: u32 = 1;
 /// Files and folders at the top of a repository that set up another CI
 /// service.
 pub const OTHER_CI: [&str; 22] = [
@@ -70,6 +73,17 @@ pub struct Workflow {
     /// Such as `.github/workflows/ci.yml`.
     pub path: String,
     pub on_pulls: OnPulls,
+    /// Whether Orbit checked it for risky settings, the most severe it
+    /// found, how many more there are, and why it couldn't check it when it
+    /// couldn't (see `crate::risks`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub checked: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub risks: Vec<crate::risks::Risk>,
+    #[serde(skip_serializing_if = "crate::problems::is_zero")]
+    pub more: u32,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub why: String,
 }
 /// What Orbit read about a repository's CI at its default branch's latest
 /// commit.
@@ -98,6 +112,11 @@ pub struct Setup {
     /// as on a pull request. Kept as Orbit reads newer commits, so it
     /// never says nothing runs them once it has seen otherwise.
     pub ran: Option<String>,
+    /// Whether GitHub said the repository is private, read with its files.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub private: bool,
+    /// Which checks of its workflow files this read made (`CHECKS`).
+    pub checks: u32,
 }
 /// What a repository's files say about its CI.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -164,7 +183,7 @@ pub struct Found {
 /// and its `package.json`, by `<commit>:<path>` expressions.
 pub fn query() -> &'static str {
     "query($owner: String!, $name: String!, $workflows: String!, $root: String!, $package: String!) { \
-repository(owner: $owner, name: $name) { \
+repository(owner: $owner, name: $name) { isPrivate visibility \
 workflows: object(expression: $workflows) { ... on Tree { entries { name type object { ... on Blob { text isTruncated isBinary } } } } } \
 root: object(expression: $root) { ... on Tree { entries { name type } } } \
 package: object(expression: $package) { ... on Blob { text isTruncated } } } }"
@@ -190,7 +209,9 @@ pub fn wanted(
                             .as_deref()
                             .and_then(time)
                             .is_none_or(|at| now >= at);
-                    due.then_some((s.tries, c))
+                    // Read before today's checks of its files.
+                    let older = s.error.is_none() && s.checks < CHECKS;
+                    (due || older).then_some((s.tries, c))
                 }
                 _ => Some((0, c)),
             },
@@ -251,6 +272,7 @@ pub fn understand(
         .filter_map(|e| e["name"].as_str())
         .map(str::to_string)
         .collect();
+    let owner = repo.split_once('/').map_or(repo, |(owner, _)| owner);
     // Only files directly in the folder are workflows; GitHub runs no other.
     let workflows = r["workflows"]["entries"]
         .as_array()
@@ -266,9 +288,22 @@ pub fn understand(
             let text = blob["text"]
                 .as_str()
                 .filter(|_| blob["isTruncated"] != true && blob["isBinary"] != true);
+            let path = format!("{FOLDER}/{file}");
+            let checked = match text {
+                Some(text) => crate::risks::check(&path, text, owner),
+                None => Err("GitHub didn't send all of it".into()),
+            };
+            let (checked, found, why) = match checked {
+                Ok(found) => (true, found, String::new()),
+                Err(why) => (false, Default::default(), why),
+            };
             Some(Workflow {
-                path: format!("{FOLDER}/{file}"),
                 on_pulls: text.map_or(OnPulls::Unknown, on_pulls),
+                path,
+                checked,
+                risks: found.risks,
+                more: found.more,
+                why,
             })
         })
         .collect();
@@ -282,6 +317,9 @@ pub fn understand(
         .as_str()
         .filter(|_| package["isTruncated"] != true);
     let (proposal, from) = propose(&names, package, branch);
+    // Internal counts as not private, as more people than the repository's
+    // own can read it.
+    let private = r["isPrivate"] == true && r["visibility"].as_str().is_none_or(|v| v == "PRIVATE");
     Ok(Setup {
         repo: repo.to_string(),
         branch: branch.to_string(),
@@ -291,6 +329,8 @@ pub fn understand(
         others,
         proposal,
         from,
+        private,
+        checks: CHECKS,
         ..Default::default()
     })
 }

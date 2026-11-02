@@ -276,6 +276,9 @@ pub enum ItemKind {
     /// A security alert, open while GitHub has it open (see
     /// `ProblemKind::Security`).
     Alert,
+    /// A risky workflow setting, open while Orbit finds it in the files on
+    /// the default branch (see `ProblemKind::WorkflowRisks`).
+    Risk,
 }
 impl ItemKind {
     fn is_check(&self) -> bool {
@@ -322,8 +325,14 @@ pub struct Item {
     /// For a security alert: its number on GitHub.
     #[serde(skip_serializing_if = "is_zero")]
     pub alert: u64,
+    /// For a risky workflow setting: its number in its problem.
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub risk: u32,
 }
 fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+fn is_zero_u32(n: &u32) -> bool {
     *n == 0
 }
 
@@ -332,7 +341,7 @@ impl Item {
     /// the alert, such as "Dependabot alert 12, lodash".
     pub fn name(&self) -> String {
         match self.kind {
-            ItemKind::Check | ItemKind::Alert => self.check.clone(),
+            ItemKind::Check | ItemKind::Alert | ItemKind::Risk => self.check.clone(),
             ItemKind::BaseMoved => format!("{} moved on", self.check),
             ItemKind::NoCi => "CI on pull requests".into(),
         }
@@ -606,7 +615,9 @@ pub fn refresh(threads: &mut Vec<Thread>, problems: &[Problem], now: DateTime<Ut
         .iter()
         .filter(|p| match p.kind {
             ProblemKind::Waiting => false,
-            ProblemKind::Security => tells_agent(p) || threads.iter().any(|t| t.key == key_of(p)),
+            ProblemKind::Security | ProblemKind::WorkflowRisks => {
+                tells_agent(p) || threads.iter().any(|t| t.key == key_of(p))
+            }
             _ => true,
         })
         .collect();
@@ -623,7 +634,8 @@ pub fn refresh(threads: &mut Vec<Thread>, problems: &[Problem], now: DateTime<Ut
                         ProblemKind::DefaultBranch
                         | ProblemKind::NoCi
                         | ProblemKind::Waiting
-                        | ProblemKind::Security => ThreadKind::Issue,
+                        | ProblemKind::Security
+                        | ProblemKind::WorkflowRisks => ThreadKind::Issue,
                         ProblemKind::PullRequest | ProblemKind::BaseMoved => ThreadKind::Comment,
                     },
                     repo: p.repo.clone(),
@@ -631,7 +643,8 @@ pub fn refresh(threads: &mut Vec<Thread>, problems: &[Problem], now: DateTime<Ut
                         ProblemKind::DefaultBranch
                         | ProblemKind::NoCi
                         | ProblemKind::Waiting
-                        | ProblemKind::Security => None,
+                        | ProblemKind::Security
+                        | ProblemKind::WorkflowRisks => None,
                         ProblemKind::PullRequest | ProblemKind::BaseMoved => {
                             p.pr_id.as_deref().and_then(pr_number)
                         }
@@ -790,37 +803,63 @@ fn answered(t: &Thread) -> bool {
                 .is_some_and(|a| matches!(a.kind, AnswerKind::Declined | AnswerKind::Question))
         })
 }
-/// Whether a problem's agent hears of it: always but for security alerts,
-/// which it hears of only in a private repository, as an issue in a public
-/// one would show everyone where the weakness is before it is fixed, and
-/// never for a secret, as only a person can revoke one.
+/// Whether a problem's agent hears of it: always but for security alerts
+/// and risky workflow settings (`Problem::sensitive`), which it hears of
+/// only in a private repository, as an issue in a public one would show
+/// everyone where the weakness is before it is fixed, and never for a
+/// secret, as only a person can revoke one.
 pub fn tells_agent(p: &Problem) -> bool {
     match p.kind {
         ProblemKind::Waiting => false,
         ProblemKind::Security => p.private && p.source != Some(Source::SecretScanning),
+        ProblemKind::WorkflowRisks => p.private,
         _ => true,
     }
 }
-/// Whether a thread about security alerts takes nothing now: GitHub last
-/// said its repository isn't private, so anything Orbit writes there could
-/// show more people where a weakness is than when Orbit told the agent,
-/// even closing, whose text may hold an alert GitHub never had from
-/// Orbit. Its issue stays as it is on GitHub until GitHub says the
-/// repository is private again. Each write is also held until GitHub says
-/// so just before it (`Engine::tell_agents`).
+/// Whether a thread about security alerts or risky workflow settings
+/// takes nothing now: GitHub last said its repository isn't private, so
+/// anything Orbit writes there could show more people where a weakness is
+/// than when Orbit told the agent, even closing, whose text may hold one
+/// GitHub never had from Orbit. Its issue stays as it is on GitHub until
+/// GitHub says the repository is private again. Each write is also held
+/// until GitHub says so just before it (`Engine::tell_agents`).
 pub fn withheld(t: &Thread, p: &Problem) -> bool {
-    t.source.is_some() && !tells_agent(p)
+    (t.source.is_some() || p.sensitive()) && !tells_agent(p)
 }
-/// Whether a thread is about security alerts.
-pub fn about_security(s: &Snapshot, key: &str) -> bool {
-    s.ops.iter().any(|t| t.key == key && t.source.is_some())
+/// Whether a thread is about something only the repository's own people
+/// may hear of: security alerts or risky workflow settings.
+pub fn sensitive(s: &Snapshot, key: &str) -> bool {
+    s.ops.iter().any(|t| {
+        t.key == key
+            && (t.source.is_some()
+                || s.problems
+                    .iter()
+                    .any(|p| p.id == t.problem_id && p.sensitive()))
+    })
+}
+/// Whether only a person may leave an item open when its agent declines
+/// it: a high or critical security alert, or a high risky workflow
+/// setting.
+pub fn yours_to_decide(i: &Item, p: &Problem) -> bool {
+    match i.kind {
+        ItemKind::Alert => p
+            .security_alerts
+            .iter()
+            .any(|a| a.number == i.alert && a.needs_you()),
+        ItemKind::Risk => p
+            .risks
+            .iter()
+            .any(|r| r.number == i.risk && r.severity >= crate::security::Severity::High),
+        _ => false,
+    }
 }
 fn key_of(p: &Problem) -> String {
     match p.kind {
         ProblemKind::DefaultBranch
         | ProblemKind::NoCi
         | ProblemKind::Waiting
-        | ProblemKind::Security => format!("issue:{}", p.id),
+        | ProblemKind::Security
+        | ProblemKind::WorkflowRisks => format!("issue:{}", p.id),
         // A pull request's problems share its one comment.
         ProblemKind::PullRequest | ProblemKind::BaseMoved => {
             format!("pr:{}", p.pr_id.as_deref().unwrap_or(&p.repo))
@@ -837,6 +876,9 @@ fn pr_number(id: &str) -> Option<u64> {
 fn items_from(t: &mut Thread, p: &Problem) {
     if p.kind == ProblemKind::Security {
         return alert_items(t, p);
+    }
+    if p.kind == ProblemKind::WorkflowRisks {
+        return risk_items(t, p);
     }
     // Only a passing commit says a check stopped failing; when Orbit stops
     // watching for another reason, items stay as it last saw them.
@@ -856,8 +898,9 @@ fn items_from(t: &mut Thread, p: &Problem) {
             ItemKind::Check => p.failing.iter().any(|c| c.name == item.check),
             ItemKind::BaseMoved => moved,
             ItemKind::NoCi => no_ci,
-            // Only a security problem has alerts (`alert_items`).
-            ItemKind::Alert => false,
+            // Only a security problem has alerts (`alert_items`), and only
+            // a workflows problem risks (`risk_items`).
+            ItemKind::Alert | ItemKind::Risk => false,
         };
         // Its branch follows a rename.
         if failing && item.kind == ItemKind::BaseMoved {
@@ -947,6 +990,45 @@ fn alert_items(t: &mut Thread, p: &Problem) {
                 failing: true,
                 since: a.created_at.clone(),
                 at: a.created_at.clone(),
+                ..Default::default()
+            });
+        }
+    }
+}
+/// Marks each risky setting's item open while its problem lists it, at the
+/// commit Orbit last read, adding one for each new one, the most severe
+/// first. A risk that comes back after it went has a new number, so a new
+/// item. When Orbit stopped watching instead of finding them fixed, items
+/// stay as it last saw them.
+fn risk_items(t: &mut Thread, p: &Problem) {
+    if (!p.is_open() && !p.passed()) || withheld(t, p) {
+        return;
+    }
+    let sha = if p.is_open() { &p.sha } else { &p.closed_sha };
+    for item in t.items.iter_mut().filter(|i| i.kind == ItemKind::Risk) {
+        let open = p.risks.iter().find(|r| r.number == item.risk);
+        if let Some(r) = open {
+            item.check = r.name();
+            item.since = r.since.clone();
+        }
+        item.failing = open.is_some();
+        item.at = sha.clone();
+    }
+    for r in &p.risks {
+        let known = t
+            .items
+            .iter()
+            .any(|i| i.kind == ItemKind::Risk && i.risk == r.number);
+        if !known {
+            let number = t.items.iter().map(|i| i.number).max().unwrap_or(0) + 1;
+            t.items.push(Item {
+                number,
+                kind: ItemKind::Risk,
+                risk: r.number,
+                check: r.name(),
+                failing: true,
+                since: r.since.clone(),
+                at: sha.clone(),
                 ..Default::default()
             });
         }
@@ -1315,8 +1397,10 @@ fn closes(p: &Problem, now: DateTime<Utc>) -> bool {
     let Some(closed) = p.closed_at.as_deref().and_then(time) else {
         return false;
     };
-    // A workflow once added doesn't flap like a failing check.
-    !p.passed() || p.kind == ProblemKind::NoCi || now - closed >= CLOSE_AFTER
+    // A workflow file once changed doesn't flap like a failing check.
+    !p.passed()
+        || matches!(p.kind, ProblemKind::NoCi | ProblemKind::WorkflowRisks)
+        || now - closed >= CLOSE_AFTER
 }
 
 /// A check's name as code, so nothing in it is read as Markdown or
@@ -1388,6 +1472,16 @@ fn answer_text(item: &Item, t: &Thread) -> String {
                 branch(t)
             )
         }
+        // A risk is fixed once Orbit no longer finds it on the default
+        // branch.
+        (AnswerKind::Fixed, commit) if item.kind == ItemKind::Risk => {
+            let at = commit.as_ref().map(|c| format!(" in {}", code(short(c))));
+            format!(
+                "said to be fixed{}; Orbit checks again at the next commit on {}",
+                at.unwrap_or_default(),
+                branch(t)
+            )
+        }
         // An alert is fixed once GitHub says so, whatever the commit.
         (AnswerKind::Fixed, commit) if item.kind == ItemKind::Alert => {
             let at = commit.as_ref().map(|c| format!(" in {}", code(short(c))));
@@ -1424,6 +1518,7 @@ fn item_line(item: &Item, t: &Thread, p: &Problem) -> String {
         ItemKind::BaseMoved => return base_line(item, t, p),
         ItemKind::NoCi => return setup_line(item, t, p),
         ItemKind::Alert => return alert_line(item, t, p),
+        ItemKind::Risk => return risk_line(item, t, p),
         ItemKind::Check => {}
     }
     let state = if item.failing && !p.is_open() {
@@ -1549,6 +1644,66 @@ fn alert_line(item: &Item, t: &Thread, p: &Problem) -> String {
         parts.join(" · ")
     )
 }
+/// The line about a risky workflow setting: what and where it is, and
+/// what to change, while Orbit still finds it. The file's words are only
+/// ever code.
+fn risk_line(item: &Item, t: &Thread, p: &Problem) -> String {
+    let open = p
+        .risks
+        .iter()
+        .find(|r| r.number == item.risk)
+        .filter(|_| item.failing && p.is_open());
+    let Some(r) = open else {
+        let state = if item.failing {
+            "still there when Orbit stopped watching".to_string()
+        } else {
+            format!("fixed at {}", code(short(&item.at)))
+        };
+        return format!("- **I{}** · {} · {state}", item.number, plain(&item.check));
+    };
+    use crate::risks::RiskKind;
+    let what = match r.kind {
+        RiskKind::Unpinned => format!("{} isn't pinned", code(&r.subject)),
+        RiskKind::Permissions if r.subject == "missing" => {
+            "no `permissions`, so jobs get the token's default".to_string()
+        }
+        RiskKind::Permissions => format!("{} permissions", code(&r.subject)),
+        RiskKind::PullCheckout => format!(
+            "checks out the pull request's code ({}) where secrets are exposed",
+            code(&r.subject)
+        ),
+        RiskKind::Injection => format!("{} goes straight into a script", code(&r.subject)),
+    };
+    let job = if r.job.is_empty() {
+        String::new()
+    } else {
+        format!(", job {}", code(&r.job))
+    };
+    let link = file_link(&t.repo, &p.sha, &r.path, r.line);
+    format!(
+        "- **I{}** · {what} ({}) · {} line {}{job}{link} · {}{}",
+        item.number,
+        r.severity.word(),
+        code(&r.path),
+        r.line,
+        r.advice(),
+        answer_text(item, t)
+    )
+}
+/// A link to a line in a file at a commit, when the repository's name and
+/// commit are safe in a link.
+fn file_link(repo: &str, sha: &str, path: &str, line: usize) -> String {
+    let safe_part = |s: &str, extra: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c) || extra.contains(c))
+    };
+    if !safe_part(repo, "/") || !safe_part(path, "/") || !sha.chars().all(|c| c.is_ascii_hexdigit())
+    {
+        return String::new();
+    }
+    format!(" · [file](https://github.com/{repo}/blob/{sha}/{path}#L{line})")
+}
 /// Why an item's job failed, under its line: the step, and the end of its
 /// log in a code block that nothing in it can close. The log is someone
 /// else's words, so it is only ever code, and anything that reads like
@@ -1638,10 +1793,26 @@ fn data(t: &Thread, p: Option<&Problem>) -> String {
                     o.remove("check");
                 }
             }
+            // A risk's number, kind, severity and place, rather than a
+            // check.
+            if i.kind == ItemKind::Risk {
+                item["kind"] = json!(i.kind);
+                item["risk"] = json!(i.risk);
+                let open = p.and_then(|p| p.risks.iter().find(|r| r.number == i.risk));
+                if let Some(r) = open {
+                    item["severity"] = json!(r.severity);
+                    item["rule"] = json!(r.kind.key());
+                    item["path"] = json!(r.path);
+                    item["line"] = json!(r.line);
+                }
+                if let Some(o) = item.as_object_mut() {
+                    o.remove("check");
+                }
+            }
             // Only for a base that moved on or a repository with no CI, so
             // older bodies stay as they were: the branch, and no check.
             let branch = match i.kind {
-                ItemKind::Check | ItemKind::Alert => None,
+                ItemKind::Check | ItemKind::Alert | ItemKind::Risk => None,
                 ItemKind::BaseMoved => Some("base"),
                 ItemKind::NoCi => Some("branch"),
             };
@@ -1673,6 +1844,7 @@ fn data(t: &Thread, p: Option<&Problem>) -> String {
         "kind": match (t.kind, p.map(|p| p.kind)) {
             (_, Some(ProblemKind::NoCi)) => "no_ci",
             (_, Some(ProblemKind::Security)) => "security",
+            (_, Some(ProblemKind::WorkflowRisks)) => "workflows",
             (ThreadKind::Comment, _) => "pull_request",
             (ThreadKind::Issue, _) => "default_branch",
         },
@@ -1810,6 +1982,9 @@ pub fn issue_title(t: &Thread, p: &Problem) -> String {
     if p.kind == ProblemKind::NoCi {
         return "Add CI that runs on pull requests".into();
     }
+    if p.kind == ProblemKind::WorkflowRisks {
+        return "Fix the risky workflow settings".into();
+    }
     if let Some(source) = p.source {
         return format!("Fix the open {}", source.many());
     }
@@ -1827,6 +2002,9 @@ pub fn issue_body(t: &Thread, p: &Problem, closing: bool) -> String {
     }
     if p.kind == ProblemKind::Security {
         return security_body(t, p);
+    }
+    if p.kind == ProblemKind::WorkflowRisks {
+        return workflows_body(t, p);
     }
     let on = branch(t);
     let status = if p.is_open() {
@@ -1954,6 +2132,33 @@ fn security_body(t: &Thread, p: &Problem) -> String {
         data(t, Some(p))
     )
 }
+/// Orbit's issue about risky settings in a private repository's workflow
+/// files.
+fn workflows_body(t: &Thread, p: &Problem) -> String {
+    let on = branch(t);
+    let status = if p.is_open() {
+        let (many, high) = crate::risks::count(&p.risks);
+        format!(
+            "Orbit found {many} in the workflows on {on} at {}{high}. Each item says what to change.",
+            code(short(&p.sha))
+        )
+    } else if p.passed() {
+        format!(
+            "Orbit found no risky settings in the workflows on {on} at {}. Nothing is left to do here.",
+            code(short(&p.closed_sha))
+        )
+    } else {
+        format!(
+            "Orbit has stopped checking the workflows here. {}",
+            p.closed_reason.as_deref().unwrap_or_default()
+        )
+    };
+    format!(
+        "## Orbit · Workflows\n\n{status}\n\n{}\n\nOrbit opened this issue because it found these settings in `.github/workflows` in this private repository. Each lets someone else's code or words run with this repository's token or secrets. Orbit checks the files again at each new commit on {on}, edits this issue as they change, and closes it once none is left.\n\n{}",
+        items_text(t, p),
+        data(t, Some(p))
+    )
+}
 /// "A", "A and B", "A, B and C".
 fn and(parts: &[String]) -> String {
     match parts {
@@ -1985,6 +2190,12 @@ pub fn closing_note(t: &Thread, p: &Problem) -> String {
             "No {} are open here now, so Orbit is closing this issue. {}",
             p.source.unwrap_or_default().many(),
             vanished_text(p)
+        )
+    } else if p.passed() && p.kind == ProblemKind::WorkflowRisks {
+        format!(
+            "Orbit found no risky settings in the workflows on {} at {}, so it is closing this issue.",
+            branch(t),
+            code(short(&p.closed_sha))
         )
     } else if p.passed() && p.kind == ProblemKind::NoCi {
         format!(
@@ -2317,6 +2528,32 @@ pub fn event_text(
                 t.repo
             )
         }
+        Event::Posted(_) if p?.kind == ProblemKind::WorkflowRisks => {
+            let what = match p?.risks.len() {
+                1 => "1 risky workflow setting".to_string(),
+                n => format!("{n} risky workflow settings"),
+            };
+            format!(
+                "Orbit opened {} to tell the agent on {} about {what}.",
+                issue(),
+                t.repo
+            )
+        }
+        Event::Closed(_) if p.is_some_and(|p| p.kind == ProblemKind::WorkflowRisks) => {
+            match p.filter(|p| p.passed()) {
+                Some(_) => format!(
+                    "Orbit closed {}: {}'s workflows have no risky settings now.",
+                    issue(),
+                    t.repo
+                ),
+                None => format!(
+                    "Orbit closed {} on {}. {}",
+                    issue(),
+                    t.repo,
+                    p?.closed_reason.as_deref().unwrap_or_default()
+                ),
+            }
+        }
         Event::Closed(_) if p.is_some_and(|p| p.resolved()) => format!(
             "Orbit closed {}: GitHub says {}'s {} are fixed or dismissed.",
             issue(),
@@ -2368,15 +2605,10 @@ pub fn event_text(
             let a = &h.answer;
             // A high or critical alert declined is in Needs you, which
             // tells you of it.
-            let urgent = t.items.iter().any(|i| {
-                i.number == h.number
-                    && i.kind == ItemKind::Alert
-                    && p.is_some_and(|p| {
-                        p.security_alerts
-                            .iter()
-                            .any(|x| x.number == i.alert && x.needs_you())
-                    })
-            });
+            let urgent = t
+                .items
+                .iter()
+                .any(|i| i.number == h.number && p.is_some_and(|p| yours_to_decide(i, p)));
             if a.kind == AnswerKind::Declined && urgent {
                 return None;
             }

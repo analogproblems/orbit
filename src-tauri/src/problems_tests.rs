@@ -561,6 +561,7 @@ fn setup(sha: &str, read: i64, workflows: &[(&str, crate::workflows::OnPulls)]) 
             .map(|(path, on)| crate::workflows::Workflow {
                 path: path.to_string(),
                 on_pulls: *on,
+                ..Default::default()
             })
             .collect(),
         proposal: "name: CI\n".into(),
@@ -1203,5 +1204,273 @@ mod security {
         let three = to_look_up(&problems, &now);
         assert!(three.iter().all(|&(_, n)| n <= 12));
         assert!(three.contains(&(Source::Dependabot, 3)));
+    }
+}
+
+mod risks {
+    use super::*;
+    use crate::risks::{check, Risk, RiskKind};
+    use crate::workflows::Workflow;
+
+    const UNPINNED: &str = "      - uses: other/tool@v1\n";
+    const CHECKOUT: &str = "      - uses: actions/checkout@v5\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n";
+    const TITLE: &str = "      - run: echo \"${{ github.event.issue.title }}\"\n";
+
+    /// The workflow the issue describes, with these steps.
+    fn ci(steps: &[&str]) -> String {
+        format!(
+            "on: [pull_request_target, issues]\npermissions: {{}}\njobs:\n  build:\n    runs-on: x\n    steps:\n{}",
+            steps.concat()
+        )
+    }
+    fn workflow(path: &str, text: &str) -> Workflow {
+        let path = format!(".github/workflows/{path}");
+        match check(&path, text, "a") {
+            Ok(found) => Workflow {
+                path,
+                checked: true,
+                risks: found.risks,
+                more: found.more,
+                ..Default::default()
+            },
+            Err(why) => Workflow {
+                path,
+                why,
+                ..Default::default()
+            },
+        }
+    }
+    fn read(sha: &str, workflows: Vec<Workflow>) -> Setup {
+        Setup {
+            repo: "a/b".into(),
+            branch: "main".into(),
+            sha: sha.into(),
+            workflows,
+            checks: crate::workflows::CHECKS,
+            private: true,
+            ..Default::default()
+        }
+    }
+    fn risks(p: &Problem) -> Vec<(u32, RiskKind)> {
+        p.risks.iter().map(|r| (r.number, r.kind)).collect()
+    }
+
+    #[test]
+    fn three_risks_are_three_numbered_ones_and_a_commit_that_fixes_them_closes_it() {
+        let mut problems = vec![];
+        let first = read(
+            A,
+            vec![workflow("ci.yml", &ci(&[UNPINNED, CHECKOUT, TITLE]))],
+        );
+        see_risks(&mut problems, &first, at(0));
+        assert_eq!(problems.len(), 1);
+        let p = &problems[0];
+        assert_eq!(
+            (p.kind, p.key.as_str(), p.sha.as_str(), p.private),
+            (ProblemKind::WorkflowRisks, "workflows:a/b", A, true)
+        );
+        // The most severe first, numbered so.
+        assert_eq!(
+            risks(p),
+            [
+                (1, RiskKind::PullCheckout),
+                (2, RiskKind::Injection),
+                (3, RiskKind::Unpinned)
+            ]
+        );
+        assert!(p.risks.iter().all(|r| r.since == A));
+        assert_eq!(p.risk_count, 3);
+        // Only listed: nothing here needs you.
+        assert!(!p.needs_you() && p.alerts == 0);
+        assert_eq!(
+            timeline(p),
+            ["3 risky workflow settings at 1111111: Pull request code checked out, in ci.yml, job build, github.event.issue.title in a script, in ci.yml, job build and 1 more."]
+        );
+        assert_eq!(
+            risks_text(p),
+            "The workflows in a/b have 3 risky settings, 2 of them high."
+        );
+
+        // The same again, moved down a line, keeps its numbers.
+        let moved = read(
+            B,
+            vec![workflow(
+                "ci.yml",
+                &ci(&["      - run: echo hi\n", UNPINNED, CHECKOUT, TITLE]),
+            )],
+        );
+        see_risks(&mut problems, &moved, at(1));
+        let p = &problems[0];
+        assert_eq!(risks(p).len(), 3);
+        assert_eq!(p.risks[2].line, 8);
+        assert_eq!(p.sha, B);
+        assert_eq!(p.timeline.len(), 1);
+
+        // Two fixed, and a new one.
+        let fewer = read(
+            C,
+            vec![workflow(
+                "ci.yml",
+                &ci(&["      - uses: more/tool@main\n", TITLE]),
+            )],
+        );
+        see_risks(&mut problems, &fewer, at(2));
+        let p = &problems[0];
+        assert_eq!(
+            risks(p),
+            [(2, RiskKind::Injection), (4, RiskKind::Unpinned)]
+        );
+        assert_eq!(
+            timeline(p)[1..],
+            [
+                "Fixed at 3333333: Pull request code checked out, in ci.yml, job build and other/tool@v1 isn't pinned, in ci.yml.",
+                "New at 3333333: more/tool@main isn't pinned, in ci.yml."
+            ]
+        );
+
+        // A commit that fixes them closes it, as passed there.
+        let clean = read(A, vec![workflow("ci.yml", &ci(&[]))]);
+        see_risks(&mut problems, &clean, at(3));
+        let p = &problems[0];
+        assert!(!p.is_open() && p.passed());
+        assert_eq!(p.closed_sha, A);
+        assert_eq!(
+            p.closed_reason.as_deref(),
+            Some("No risky workflow settings at 1111111.")
+        );
+        // Nothing found opens nothing.
+        see_risks(&mut problems, &clean, at(4));
+        assert_eq!(problems.len(), 1);
+        // One back later is a new problem, numbered afresh.
+        see_risks(&mut problems, &first, at(5));
+        assert_eq!(problems.len(), 2);
+        assert_eq!(problems[1].risk_count, 3);
+    }
+
+    #[test]
+    fn a_risk_isnt_fixed_because_one_more_severe_pushed_it_past_the_limit() {
+        use crate::risks::MAX_PER_FILE;
+        let tools: Vec<String> = (1..=MAX_PER_FILE)
+            .map(|i| format!("      - uses: other/tool{i:02}@v1\n"))
+            .collect();
+        let tools: Vec<&str> = tools.iter().map(String::as_str).collect();
+        let mut problems = vec![];
+        let all = read(A, vec![workflow("ci.yml", &ci(&tools))]);
+        assert_eq!(all.workflows[0].more, 0);
+        see_risks(&mut problems, &all, at(0));
+        assert_eq!(problems[0].risks.len(), MAX_PER_FILE);
+        let last = |p: &Problem| {
+            p.risks
+                .iter()
+                .find(|r| r.subject == "other/tool50@v1")
+                .map(|r| r.number)
+        };
+        assert_eq!(last(&problems[0]), Some(MAX_PER_FILE as u32));
+
+        // A high one comes first, so the last action is no longer among
+        // the 50 Orbit keeps; it is still there, so it stays open.
+        let more = read(
+            B,
+            vec![workflow("ci.yml", &ci(&[&tools[..], &[TITLE]].concat()))],
+        );
+        assert_eq!(more.workflows[0].more, 1);
+        assert!(more.workflows[0]
+            .risks
+            .iter()
+            .all(|r| r.subject != "other/tool50@v1"));
+        see_risks(&mut problems, &more, at(1));
+        let p = &problems[0];
+        assert!(p.is_open());
+        assert_eq!(p.risks.len(), MAX_PER_FILE + 1);
+        assert_eq!(last(p), Some(MAX_PER_FILE as u32));
+        assert_eq!(
+            timeline(p)[1..],
+            ["New at 2222222: github.event.issue.title in a script, in ci.yml, job build."]
+        );
+
+        // Once the file has no more than Orbit keeps, what's gone is fixed.
+        let fixed = read(C, vec![workflow("ci.yml", &ci(&tools[1..]))]);
+        see_risks(&mut problems, &fixed, at(2));
+        let p = &problems[0];
+        assert_eq!(p.risks.len(), MAX_PER_FILE - 1);
+        assert_eq!(last(p), Some(MAX_PER_FILE as u32));
+        assert_eq!(
+            timeline(p)[2..],
+            ["Fixed at 3333333: github.event.issue.title in a script, in ci.yml, job build and other/tool01@v1 isn't pinned, in ci.yml."]
+        );
+    }
+
+    #[test]
+    fn what_orbit_couldnt_check_stays_and_what_it_couldnt_read_changes_nothing() {
+        let mut problems = vec![];
+        let first = read(
+            A,
+            vec![
+                workflow("ci.yml", &ci(&[UNPINNED])),
+                workflow("other.yml", &ci(&[TITLE])),
+            ],
+        );
+        see_risks(&mut problems, &first, at(0));
+        assert_eq!(problems[0].risks.len(), 2);
+        // ci.yml is broken now, so Orbit can't say its risk is fixed;
+        // other.yml was fixed.
+        let broken = read(
+            B,
+            vec![
+                workflow("ci.yml", "on: [push"),
+                workflow("other.yml", &ci(&[])),
+            ],
+        );
+        assert!(!broken.workflows[0].checked);
+        see_risks(&mut problems, &broken, at(1));
+        let p = &problems[0];
+        assert!(p.is_open());
+        assert_eq!(risks(p), [(1, RiskKind::Unpinned)]);
+        // A read that failed, or one from before the checks, changes nothing.
+        let failed = Setup {
+            error: Some("down".into()),
+            ..read(C, vec![])
+        };
+        see_risks(&mut problems, &failed, at(2));
+        let older = Setup {
+            checks: 0,
+            ..read(C, vec![])
+        };
+        see_risks(&mut problems, &older, at(2));
+        assert!(problems[0].is_open() && problems[0].sha == B);
+        // A file that went is fixed with it.
+        see_risks(&mut problems, &read(C, vec![]), at(3));
+        assert!(problems[0].passed());
+    }
+
+    #[test]
+    fn whether_the_repository_is_private_follows_github() {
+        let mut problems = vec![];
+        let public = Setup {
+            private: false,
+            ..read(A, vec![workflow("ci.yml", &ci(&[UNPINNED]))])
+        };
+        see_risks(&mut problems, &public, at(0));
+        assert!(!problems[0].private && problems[0].sensitive());
+        let mut setups = vec![public];
+        see_private(&mut problems, &mut [], &mut setups, "A/B", true);
+        assert!(problems[0].private && setups[0].private);
+        // Watching CI off closes it, as Orbit stopped checking.
+        close_unwatched(&mut problems, &["a/b".into()], true, at(1));
+        assert!(!problems[0].is_open() && !problems[0].passed());
+    }
+
+    #[test]
+    fn a_risk_is_the_same_wherever_it_moves() {
+        let risk = |line, job: &str| Risk {
+            kind: RiskKind::Injection,
+            path: "p".into(),
+            line,
+            job: job.into(),
+            subject: "github.head_ref".into(),
+            ..Default::default()
+        };
+        assert!(risk(1, "a").same(&risk(9, "a")));
+        assert!(!risk(1, "a").same(&risk(1, "b")));
     }
 }

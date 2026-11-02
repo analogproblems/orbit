@@ -363,13 +363,13 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
             });
         }
     }
-    // An agent that declined a security alert only a person may leave
-    // open: a high or critical one.
-    for t in s.ops.iter().filter(|t| !t.gone && t.source.is_some()) {
+    // An agent that declined what only a person may leave open: a high or
+    // critical security alert, or a high risky workflow setting.
+    for t in s.ops.iter().filter(|t| !t.gone) {
         let Some(p) = s
             .problems
             .iter()
-            .find(|p| p.id == t.problem_id && p.is_open())
+            .find(|p| p.id == t.problem_id && p.is_open() && p.sensitive())
         else {
             continue;
         };
@@ -378,10 +378,7 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
                 .answer
                 .as_ref()
                 .filter(|a| a.kind == crate::ops::AnswerKind::Declined);
-            let urgent = p
-                .security_alerts
-                .iter()
-                .any(|a| a.number == i.alert && a.needs_you());
+            let urgent = crate::ops::yours_to_decide(i, p);
             let Some(a) = declined.filter(|_| urgent) else {
                 continue;
             };
@@ -406,9 +403,15 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
                     AttentionKind::SecurityAlert,
                     None,
                     None,
-                    format!(
-                        "{said} It's high or critical, so it's yours to decide: have it fixed, or dismiss its alert on GitHub."
-                    ),
+                    if i.kind == crate::ops::ItemKind::Risk {
+                        format!(
+                            "{said} It's high, so it's yours to decide: have it fixed, or leave the workflow as it is."
+                        )
+                    } else {
+                        format!(
+                            "{said} It's high or critical, so it's yours to decide: have it fixed, or dismiss its alert on GitHub."
+                        )
+                    },
                 )
             });
         }

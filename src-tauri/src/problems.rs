@@ -8,7 +8,8 @@
 //! for a runner tell you like a failing default branch, as only a person
 //! can add or fix a runner. A repository's open security alerts of each
 //! kind are a problem too (`see_security`); those only a person should see
-//! to tell you once each.
+//! to tell you once each. So are risky settings in a repository's workflow
+//! files (`see_risks`), which are only listed.
 //!
 //! Everything here is worked out from what Orbit read; nothing reaches
 //! GitHub.
@@ -53,6 +54,9 @@ pub enum ProblemKind {
     /// A repository's open security alerts of one kind (see
     /// `crate::security`).
     Security,
+    /// Risky settings in a repository's workflow files (see
+    /// `crate::risks`).
+    WorkflowRisks,
 }
 /// Something that happened to a problem.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,8 +73,9 @@ pub struct Problem {
     /// `ci:owner/name` for a default branch, `ci:owner/name#12` for a pull
     /// request, `base:owner/name#12` for its base moving on,
     /// `setup:owner/name` for a repository with no CI on pull requests,
-    /// `wait:owner/name` for its runs waiting for a runner, and
-    /// `security:owner/name:dependabot` for its security alerts of a kind.
+    /// `wait:owner/name` for its runs waiting for a runner,
+    /// `security:owner/name:dependabot` for its security alerts of a kind,
+    /// and `workflows:owner/name` for risky settings in its workflows.
     pub key: String,
     pub kind: ProblemKind,
     pub repo: String,
@@ -138,6 +143,16 @@ pub struct Problem {
     /// them, by number.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub vanished: Vec<u64>,
+    /// For risky workflow settings: those Orbit found when it last read the
+    /// files at `sha`, the most severe first, and how many it has numbered,
+    /// so a number is never used twice.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub risks: Vec<crate::risks::Risk>,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub risk_count: u32,
+}
+pub(crate) fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 impl Problem {
     pub fn is_open(&self) -> bool {
@@ -189,6 +204,15 @@ impl Problem {
     /// Whether it closed because its commit passed.
     pub fn passed(&self) -> bool {
         !self.is_open() && !self.closed_sha.is_empty()
+    }
+    /// Whether only the repository's own people may hear of it, as it
+    /// shows where a weakness is: security alerts and risky workflow
+    /// settings.
+    pub fn sensitive(&self) -> bool {
+        matches!(
+            self.kind,
+            ProblemKind::Security | ProblemKind::WorkflowRisks
+        )
     }
     /// Whether it closed with none of its security alerts left open,
     /// rather than as Orbit stopped watching them.
@@ -246,6 +270,11 @@ pub fn waiting_key(repo: &str) -> String {
 /// The key of a repository's problem about its security alerts of a kind.
 pub fn security_key(repo: &str, source: crate::security::Source) -> String {
     format!("security:{}:{}", repo.to_ascii_lowercase(), source.key())
+}
+/// The key of a repository's problem about risky settings in its workflow
+/// files.
+pub fn workflows_key(repo: &str) -> String {
+    format!("workflows:{}", repo.to_ascii_lowercase())
 }
 /// Runs waiting for a runner in a sentence: "A run of CI in acme/api has
 /// waited more than 30 minutes for a runner."
@@ -565,6 +594,114 @@ pub fn see_setup(
     }
 }
 
+/// A workflows problem in a sentence: "The workflows in acme/api have 3
+/// risky settings, 1 of them high."
+pub fn risks_text(p: &Problem) -> String {
+    let (many, high) = crate::risks::count(&p.risks);
+    format!("The workflows in {} have {many}{high}.", p.repo)
+}
+/// Opens, updates or closes the problem about risky settings in a
+/// repository's workflow files, from what Orbit just read of them at its
+/// default branch's latest commit (see `crate::risks`). A risk is the same
+/// one wherever it moves in its file, and keeps its number; one that comes
+/// back after it went is new. What Orbit found before in a file it
+/// couldn't check now, or in one with more risks than it keeps
+/// (`crate::risks::MAX_PER_FILE`), stays, as Orbit can't say it was
+/// fixed. It closes,
+/// as passed at that commit, once nothing is left.
+pub fn see_risks(problems: &mut Vec<Problem>, setup: &Setup, now: DateTime<Utc>) {
+    use crate::risks::{names, sort};
+    if setup.error.is_some() || setup.sha.is_empty() || setup.checks == 0 {
+        return;
+    }
+    let at = stamp(now);
+    let short = ci::short(&setup.sha).to_string();
+    let key = workflows_key(&setup.repo);
+    // Files where a risk Orbit found before but not now may still be
+    // there: ones it couldn't check, and ones with more than it keeps.
+    let unseen: Vec<&str> = setup
+        .workflows
+        .iter()
+        .filter(|w| !w.checked || w.more > 0)
+        .map(|w| w.path.as_str())
+        .collect();
+    let found: Vec<&crate::risks::Risk> = setup.workflows.iter().flat_map(|w| &w.risks).collect();
+    let fresh = |p: &mut Problem, r: &crate::risks::Risk| {
+        p.risk_count += 1;
+        let mut r = r.clone();
+        r.number = p.risk_count;
+        r.since = setup.sha.clone();
+        r
+    };
+    let Some(p) = problems.iter_mut().find(|p| p.key == key && p.is_open()) else {
+        if found.is_empty() {
+            return;
+        }
+        let mut p = Problem {
+            id: id(),
+            key,
+            kind: ProblemKind::WorkflowRisks,
+            repo: setup.repo.clone(),
+            branch: setup.branch.clone(),
+            sha: setup.sha.clone(),
+            since_sha: setup.sha.clone(),
+            opened_at: at.clone(),
+            private: setup.private,
+            ..Default::default()
+        };
+        for r in found {
+            let r = fresh(&mut p, r);
+            p.risks.push(r);
+        }
+        sort(&mut p.risks);
+        let many = match p.risks.len() {
+            1 => "A risky workflow setting".to_string(),
+            n => format!("{n} risky workflow settings"),
+        };
+        let text = format!("{many} at {short}: {}.", names(&p.risks));
+        p.note(&at, text);
+        problems.push(p);
+        return;
+    };
+    p.sha = setup.sha.clone();
+    p.branch = setup.branch.clone();
+    p.private = setup.private;
+    let mut gone = vec![];
+    p.risks.retain(|r| {
+        let stays = unseen.contains(&r.path.as_str()) || found.iter().any(|f| f.same(r));
+        if !stays {
+            gone.push(r.clone());
+        }
+        stays
+    });
+    let mut new = vec![];
+    for f in found {
+        match p.risks.iter_mut().find(|r| r.same(f)) {
+            Some(r) => {
+                r.line = f.line;
+                r.severity = f.severity;
+            }
+            None => new.push(fresh(p, f)),
+        }
+    }
+    if !gone.is_empty() {
+        let text = format!("Fixed at {short}: {}.", names(&gone));
+        if p.risks.is_empty() && new.is_empty() {
+            p.note(&at, text);
+            p.close(&at, format!("No risky workflow settings at {short}."));
+            p.closed_sha = setup.sha.clone();
+            return;
+        }
+        p.note(&at, text);
+    }
+    if !new.is_empty() {
+        sort(&mut new);
+        p.note(&at, format!("New at {short}: {}.", names(&new)));
+        p.risks.extend(new);
+    }
+    sort(&mut p.risks);
+}
+
 /// Opens, updates or closes the problem about a repository's runs waiting
 /// for a runner, from what Orbit just read of them (see `crate::runners`):
 /// `all` says whether it read every queued run, as it closes the problem
@@ -768,22 +905,27 @@ pub fn see_security(
     }
 }
 /// Records what GitHub said just now about whether a repository is
-/// private, on each of its security problems, open or closed, and on what
-/// Orbit read of its alerts.
+/// private, on each of its problems that only its own people may hear of
+/// (`Problem::sensitive`), open or closed, and on what Orbit read of its
+/// alerts and workflows.
 pub fn see_private(
     problems: &mut [Problem],
     security: &mut [crate::security::RepoSecurity],
+    setups: &mut [Setup],
     repo: &str,
     private: bool,
 ) {
     let theirs = problems
         .iter_mut()
-        .filter(|p| p.kind == ProblemKind::Security && same_repo(&p.repo, repo));
+        .filter(|p| p.sensitive() && same_repo(&p.repo, repo));
     for p in theirs {
         p.private = private;
     }
     for r in security.iter_mut().filter(|r| same_repo(&r.repo, repo)) {
         r.private = private;
+    }
+    for s in setups.iter_mut().filter(|s| same_repo(&s.repo, repo)) {
+        s.private = private;
     }
 }
 /// Notes when Orbit asked GitHub about each of a repository's alerts in

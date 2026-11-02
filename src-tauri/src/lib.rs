@@ -32,6 +32,7 @@ pub mod remote;
 pub mod reruns;
 pub mod review_instructions;
 pub mod review_loop;
+pub mod risks;
 pub mod rpc;
 pub mod runners;
 pub mod scans;

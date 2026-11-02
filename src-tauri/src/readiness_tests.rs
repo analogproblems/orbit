@@ -436,6 +436,7 @@ fn no_checks_wait_only_where_ci_runs() {
     not_on_pulls.workflows = vec![workflows::Workflow {
         path: ".github/workflows/release.yml".into(),
         on_pulls: workflows::OnPulls::No,
+        ..Default::default()
     }];
     s.setups = vec![not_on_pulls];
     assert!(of(&s, &s.prs[0]).clear);

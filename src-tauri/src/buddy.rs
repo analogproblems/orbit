@@ -1920,6 +1920,7 @@ fn answer(
                     text.push_str(&crate::actions_storage::sentence(storage));
                 }
                 text.push_str(&security_sentence(s, &repo.name));
+                text.push_str(&workflows_sentence(s, &repo.name));
                 // A failing sync first: CI can't be read without one.
                 let about = |kind: AttentionKind| {
                     items.iter().find(|a| {
@@ -1978,6 +1979,22 @@ fn security_sentence(s: &Snapshot, repo: &str) -> String {
             plural(n as u32, "security alert needs", "security alerts need"),
             if more == 1 { "is" } else { "are" }
         ),
+    }
+}
+/// A repository's risky workflow settings, as a sentence to follow its
+/// line in How are my repositories, or nothing when it has none.
+fn workflows_sentence(s: &Snapshot, repo: &str) -> String {
+    let risky = s.problems.iter().find(|p| {
+        p.is_open()
+            && p.kind == crate::problems::ProblemKind::WorkflowRisks
+            && same_repo(&p.repo, repo)
+    });
+    match risky {
+        Some(p) => {
+            let (many, high) = crate::risks::count(&p.risks);
+            format!(" Its workflows have {many}{high}.")
+        }
+        None => String::new(),
     }
 }
 /// How a repository's default branch's CI stands, as a sentence to follow

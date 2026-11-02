@@ -210,6 +210,57 @@ fn a_branch_that_would_need_quoting_is_left_out() {
     assert!(workflow.contains("      - release/v1.2_x\n"));
 }
 
+#[test]
+fn checks_each_workflow_for_risky_settings_and_reads_whether_the_repository_is_private() {
+    let mut v = answer(
+        json!({ "entries": [
+            file("ci.yml", "on: pull_request\npermissions: {}\njobs:\n  a:\n    runs-on: x\n    steps:\n      - uses: other/tool@v1\n      - uses: a/own@v1\n"),
+            file("safe.yml", "on: pull_request\npermissions: {}\njobs:\n  a:\n    runs-on: x\n"),
+            file("broken.yml", "on: [pull_request"),
+            { "name": "cut.yml", "type": "blob", "object": { "text": "on: push", "isTruncated": true, "isBinary": false } },
+        ] }),
+        &[],
+        Value::Null,
+    );
+    let setup = understand("a/b", "main", SHA, &v, now()).unwrap();
+    let checks: Vec<(&str, bool, usize)> = setup
+        .workflows
+        .iter()
+        .map(|w| (w.path.as_str(), w.checked, w.risks.len()))
+        .collect();
+    assert_eq!(
+        checks,
+        [
+            (".github/workflows/ci.yml", true, 1),
+            (".github/workflows/safe.yml", true, 0),
+            (".github/workflows/broken.yml", false, 0),
+            (".github/workflows/cut.yml", false, 0),
+        ]
+    );
+    let why: Vec<&str> = setup.workflows.iter().map(|w| w.why.as_str()).collect();
+    assert_eq!(
+        (why[0], why[1], why[3]),
+        ("", "", "GitHub didn't send all of it")
+    );
+    assert!(why[2].starts_with("it isn't valid YAML"), "{}", why[2]);
+    // The owner's own actions aren't a third party's.
+    assert_eq!(setup.workflows[0].risks[0].subject, "other/tool@v1");
+    assert_eq!(setup.checks, CHECKS);
+    // Private only when GitHub says so, and not internal.
+    assert!(!setup.private);
+    for (private, visibility, says) in [
+        (true, "PRIVATE", true),
+        (true, "INTERNAL", false),
+        (false, "PUBLIC", false),
+    ] {
+        v["data"]["repository"]["isPrivate"] = json!(private);
+        v["data"]["repository"]["visibility"] = json!(visibility);
+        let setup = understand("a/b", "main", SHA, &v, now()).unwrap();
+        assert_eq!(setup.private, says, "{visibility}");
+    }
+    assert!(query().contains("isPrivate visibility"));
+}
+
 fn answer(workflows: Value, root: &[&str], package: Value) -> Value {
     let entries: Vec<Value> = root
         .iter()
@@ -305,6 +356,7 @@ fn says_what_the_files_mean_for_ci_on_pull_requests() {
             .map(|(p, o)| Workflow {
                 path: p.to_string(),
                 on_pulls: *o,
+                ..Default::default()
             })
             .collect(),
         others: names(others),
@@ -366,6 +418,7 @@ fn reads_each_new_commit_once_and_tries_again_after_an_error() {
         repo: repo.into(),
         branch: "main".into(),
         sha: sha.into(),
+        checks: CHECKS,
         ..Default::default()
     };
     let ran = Some("Checks ran on #7, so something runs them.".to_string());
@@ -445,6 +498,20 @@ fn reads_each_new_commit_once_and_tries_again_after_an_error() {
         wanted(&renamed, &setups, later),
         [("c/d".into(), "trunk".into(), SHA.into())]
     );
+    // A commit read before today's checks of workflow files is read
+    // again, but one that failed waits for its turn as before.
+    let older = Setup {
+        checks: 0,
+        ..read("c/d", SHA)
+    };
+    let same = [repo_ci("c/d", "main", SHA)];
+    assert_eq!(wanted(&same, std::slice::from_ref(&older), later).len(), 1);
+    let failed = Setup {
+        error: Some("down".into()),
+        retry_at: Some(stamp(later + Duration::minutes(5))),
+        ..older
+    };
+    assert!(wanted(&same, &[failed], later).is_empty());
     // Those tried least go first.
     let tried = Setup {
         error: Some("down".into()),

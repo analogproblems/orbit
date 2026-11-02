@@ -2783,7 +2783,7 @@ mod security {
 
         // GitHub says it's private again: it closes, without the new one.
         let mut security = vec![];
-        crate::problems::see_private(&mut problems, &mut security, "a/b", true);
+        crate::problems::see_private(&mut problems, &mut security, &mut [], "a/b", true);
         assert!(!withheld(&threads[0], &problems[0]));
         refresh(&mut threads, &problems, t0());
         let note = send(&mut threads, &mut journal, &problems[0], true, t0()).unwrap();
@@ -3024,6 +3024,213 @@ mod security {
             [(
                 crate::types::AttentionKind::SecurityAlert,
                 "The agent on a/b declined I1 (Dependabot alert 1, lodash): only in dev tools. It's high or critical, so it's yours to decide: have it fixed, or dismiss its alert on GitHub."
+            )]
+        );
+    }
+}
+
+mod workflows {
+    use super::*;
+    use crate::risks::check;
+    use crate::workflows::{Setup, Workflow, CHECKS};
+
+    const A: &str = "1111111111111111111111111111111111111111";
+    const B: &str = "2222222222222222222222222222222222222222";
+    const UNPINNED: &str = "      - uses: other/tool@v1\n";
+    const CHECKOUT: &str = "      - uses: actions/checkout@v5\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n";
+    const TITLE: &str = "      - run: echo \"${{ github.event.issue.title }}\"\n";
+
+    fn read(sha: &str, private: bool, steps: &[&str]) -> Setup {
+        let path = ".github/workflows/ci.yml".to_string();
+        let text = format!(
+            "on: [pull_request_target, issues]\npermissions: {{}}\njobs:\n  build:\n    runs-on: x\n    steps:\n{}",
+            steps.concat()
+        );
+        Setup {
+            repo: "a/b".into(),
+            branch: "main".into(),
+            sha: sha.into(),
+            workflows: vec![Workflow {
+                risks: check(&path, &text, "a").unwrap().risks,
+                path,
+                checked: true,
+                ..Default::default()
+            }],
+            checks: CHECKS,
+            private,
+            ..Default::default()
+        }
+    }
+    fn hidden(body: &str) -> serde_json::Value {
+        let line = body.lines().last().unwrap();
+        let json = &line[line.find('{').unwrap()..];
+        serde_json::from_str(json.strip_suffix(" -->").unwrap()).unwrap()
+    }
+    fn t1() -> DateTime<Utc> {
+        t0() + Duration::minutes(10)
+    }
+
+    /// The issue's example: three risks are three items, each saying what
+    /// to change; a fix waits for Orbit to read the files again, and the
+    /// commit that fixes them closes the issue at once.
+    #[test]
+    fn three_risks_are_three_items_and_the_commit_that_fixes_them_closes_the_issue() {
+        let mut problems = vec![];
+        crate::problems::see_risks(
+            &mut problems,
+            &read(A, true, &[UNPINNED, CHECKOUT, TITLE]),
+            t0(),
+        );
+        let mut threads = vec![];
+        assert!(refresh(&mut threads, &problems, t0()));
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].source, None);
+        let items: Vec<(u32, ItemKind, u32, bool)> = threads[0]
+            .items
+            .iter()
+            .map(|i| (i.number, i.kind, i.risk, i.failing))
+            .collect();
+        assert_eq!(
+            items,
+            [
+                (1, ItemKind::Risk, 1, true),
+                (2, ItemKind::Risk, 2, true),
+                (3, ItemKind::Risk, 3, true)
+            ]
+        );
+        let mut journal = vec![];
+        let open = send(&mut threads, &mut journal, &problems[0], true, t0()).unwrap();
+        assert_eq!(open.action, Action::OpenIssue);
+        assert_eq!(open.title, "Fix the risky workflow settings");
+        assert!(open.body.starts_with("## Orbit · Workflows\n\nOrbit found 3 risky settings in the workflows on `main` at `1111111`, 2 of them high. Each item says what to change."), "{}", open.body);
+        assert!(open.body.contains("- **I1** · checks out the pull request's code (`github.event.pull_request.head.sha`) where secrets are exposed (high) · `.github/workflows/ci.yml` line 10, job `build` · [file](https://github.com/a/b/blob/1111111111111111111111111111111111111111/.github/workflows/ci.yml#L10) · don't check out the pull request's code here"), "{}", open.body);
+        assert!(open.body.contains("- **I2** · `github.event.issue.title` goes straight into a script (high) · `.github/workflows/ci.yml` line 11, job `build`"));
+        assert!(open
+            .body
+            .contains("· pass it in through `env:` and use the variable in the script, quoted"));
+        assert!(open.body.contains("- **I3** · `other/tool@v1` isn't pinned (medium) · `.github/workflows/ci.yml` line 7 · [file]"));
+        let data = hidden(&open.body);
+        assert_eq!(data["kind"], "workflows");
+        assert_eq!(
+            data["items"][2],
+            json!({"id": "I3", "kind": "risk", "risk": 3, "severity": "medium", "rule": "unpinned", "path": ".github/workflows/ci.yml", "line": 7, "failing": true, "since": A, "at": A})
+        );
+        assert_eq!(
+            event_text(&threads, &problems, &Event::Posted(threads[0].key.clone()))
+                .unwrap()
+                .2,
+            "Orbit opened issue #45 to tell the agent on a/b about 3 risky workflow settings."
+        );
+
+        // The agent says it fixed one: Orbit waits to read the files again,
+        // and checks no commit against CI.
+        let t = &mut threads[0];
+        t.read_to = 10;
+        on_github(t);
+        hear(t, &[reply(11, "Fixed I3 in abc1234")], None);
+        assert!(to_verify(&threads, &problems).is_empty());
+        let edit = send(&mut threads, &mut journal, &problems[0], true, t0()).unwrap();
+        assert_eq!(edit.action, Action::EditIssue);
+        assert!(edit.body.contains("· said to be fixed in `abc1234`; Orbit checks again at the next commit on `main` ([reply]"), "{}", edit.body);
+
+        // The next commit fixes two: they read fixed, and the issue stays.
+        crate::problems::see_risks(&mut problems, &read(B, true, &[CHECKOUT]), t1());
+        refresh(&mut threads, &problems, t1());
+        let edit = send(&mut threads, &mut journal, &problems[0], true, t1()).unwrap();
+        assert!(edit.body.contains(
+            "Orbit found 1 risky setting in the workflows on `main` at `2222222`, and it is high."
+        ));
+        assert!(
+            edit.body.contains(
+                "- **I3** · `other/tool@v1` isn't pinned, in ci.yml · fixed at `2222222`"
+            ),
+            "{}",
+            edit.body
+        );
+
+        // The commit that fixes the last closes it at once, with a note.
+        crate::problems::see_risks(&mut problems, &read(A, true, &[]), t1());
+        assert!(problems[0].passed());
+        refresh(&mut threads, &problems, t1());
+        assert!(threads[0].items.iter().all(|i| !i.failing && i.at == A));
+        let note = send(&mut threads, &mut journal, &problems[0], true, t1()).unwrap();
+        assert_eq!(note.action, Action::NoteOnIssue);
+        assert!(note.body.starts_with("Orbit found no risky settings in the workflows on `main` at `1111111`, so it is closing this issue."));
+        let close = send(&mut threads, &mut journal, &problems[0], true, t1()).unwrap();
+        assert_eq!(close.action, Action::CloseIssue);
+        assert!(close.completed);
+        assert!(close.body.contains("Orbit found no risky settings in the workflows on `main` at `1111111`. Nothing is left to do here."));
+        assert_eq!(
+            event_text(&threads, &problems, &Event::Closed(threads[0].key.clone()))
+                .unwrap()
+                .2,
+            "Orbit closed issue #45: a/b's workflows have no risky settings now."
+        );
+    }
+
+    /// As for security alerts, a repository that isn't private keeps its
+    /// risky settings with you: no issue opens, and one on GitHub takes
+    /// nothing until GitHub says it's private again.
+    #[test]
+    fn a_repository_that_isnt_private_keeps_them_with_you() {
+        let mut problems = vec![];
+        crate::problems::see_risks(&mut problems, &read(A, false, &[UNPINNED]), t0());
+        let mut threads = vec![];
+        refresh(&mut threads, &problems, t0());
+        assert!(threads.is_empty());
+
+        // Private: told. Public again: withheld, even closing.
+        crate::problems::see_private(&mut problems, &mut [], &mut [], "a/b", true);
+        refresh(&mut threads, &problems, t0());
+        let mut journal = vec![];
+        assert!(send(&mut threads, &mut journal, &problems[0], true, t0()).is_some());
+        crate::problems::see_risks(&mut problems, &read(B, false, &[]), t1());
+        assert!(problems[0].passed());
+        assert!(withheld(&threads[0], &problems[0]));
+        refresh(&mut threads, &problems, t1());
+        assert!(send(&mut threads, &mut journal, &problems[0], true, t1()).is_none());
+        // What Orbit wrote stays as it last saw it.
+        assert!(threads[0].items[0].failing);
+    }
+
+    /// A declined high risk is yours to decide; a declined lower one is
+    /// only noted by Bit.
+    #[test]
+    fn a_declined_high_risk_is_yours_to_decide() {
+        let mut s = Snapshot::default();
+        crate::problems::see_risks(&mut s.problems, &read(A, true, &[UNPINNED, TITLE]), t0());
+        refresh(&mut s.ops, &s.problems, t0());
+        let p = &s.problems[0];
+        assert!(yours_to_decide(&s.ops[0].items[0], p));
+        assert!(!yours_to_decide(&s.ops[0].items[1], p));
+        let t = &mut s.ops[0];
+        t.read_to = 10;
+        on_github(t);
+        let heard = hear(
+            t,
+            &[reply(11, "Declined I1: it's fine\nDeclined I2: later")],
+            None,
+        );
+        let said: Vec<_> = heard
+            .into_iter()
+            .filter_map(|h| event_text(&s.ops, &s.problems, &Event::Heard(Box::new(h))))
+            .map(|e| e.2)
+            .collect();
+        assert_eq!(
+            said,
+            ["The agent on main in a/b declined I2 (other/tool@v1 isn't pinned, in ci.yml): later"]
+        );
+        let items = crate::attention::items(&s);
+        let declined: Vec<_> = items
+            .iter()
+            .filter(|a| a.key.contains(":declined:"))
+            .map(|a| (a.kind, a.reason.as_str()))
+            .collect();
+        assert_eq!(
+            declined,
+            [(
+                crate::types::AttentionKind::SecurityAlert,
+                "The agent on main in a/b declined I1 (github.event.issue.title in a script, in ci.yml, job build): it's fine. It's high, so it's yours to decide: have it fixed, or leave the workflow as it is."
             )]
         );
     }

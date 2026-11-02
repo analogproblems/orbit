@@ -23,6 +23,8 @@ import {
   cachesText,
   artifactsText,
   quotaText,
+  riskText,
+  risksText,
   waitingText,
   whyText,
 } from "./Operations";
@@ -43,6 +45,7 @@ import {
   type SecurityAlert,
   type Snapshot,
   type WaitingRun,
+  type WorkflowRisk,
 } from "./types";
 
 afterEach(cleanup);
@@ -67,14 +70,17 @@ describe("operations page", () => {
     const go = show(s);
     const open = screen.getByRole("list", { name: "Open problems" });
     const items = within(open).getAllByRole("listitem");
-    expect(items).toHaveLength(3);
+    // Two pull requests and two repositories' risky workflow settings
+    // after the default branch.
+    expect(items).toHaveLength(5);
     expect(items[0].textContent).toContain("acme/orbit: main");
     expect(items[0].textContent).toContain("Failing: CI / Rust tests.");
     expect(items[0].textContent).toContain("Still failing at 9f3c2a1.");
     expect(within(items[0]).getByLabelText("Needs you")).toBeTruthy();
-    expect(items[1].textContent).toContain("Its author’s to fix");
+    const pull = items.find((i) => i.textContent?.includes(s.prs[2].id))!;
+    expect(pull.textContent).toContain("Its author’s to fix");
     // A pull request's problem opens the pull request.
-    fireEvent.click(within(items[1]).getByText(new RegExp(`^${s.prs[2].id}`)));
+    fireEvent.click(within(pull).getByText(new RegExp(`^${s.prs[2].id}`)));
     expect(go.onChoose).toHaveBeenCalledWith(s.prs[2]);
   });
 
@@ -273,7 +279,7 @@ describe("operations page", () => {
     });
     // Nothing fails, so it isn't an open problem.
     const open = screen.getByRole("list", { name: "Open problems" });
-    expect(within(open).getAllByRole("listitem")).toHaveLength(3);
+    expect(within(open).getAllByRole("listitem")).toHaveLength(5);
     expect(open.textContent).not.toContain("acme/docs");
     cleanup();
     // Once posted, it links the issue.
@@ -592,7 +598,7 @@ describe("operations page", () => {
     const items = within(
       screen.getByRole("list", { name: "Open problems" }),
     ).getAllByRole("listitem");
-    expect(items).toHaveLength(4);
+    expect(items).toHaveLength(6);
     // With the default branch, before the pull requests.
     const row = items.find((i) => i.textContent?.includes("acme/api: runs"))!;
     expect(items.indexOf(row)).toBeLessThan(2);
@@ -866,6 +872,96 @@ describe("operations page", () => {
     ).toBeNull();
   });
 
+  it("lists risky workflow settings, telling only a private repository's agent", () => {
+    const action = vi.fn().mockResolvedValue({ ok: true });
+    useOrbit.setState({ action });
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    const s = freshDemo();
+    show(s);
+    const row = (repo: string) =>
+      within(screen.getByRole("list", { name: "Open problems" }))
+        .getAllByRole("listitem")
+        .find((i) => i.textContent?.includes(`${repo}: workflow settings`))!;
+    const api = row("acme/api");
+    expect(api.textContent).toContain(
+      "Its workflows on main have 2 risky settings, 1 of them high, at 9e1f3b2.",
+    );
+    expect(api.textContent).toContain(
+      "github.event.issue.title goes straight into a script, in triage.yml line 18, job label.",
+    );
+    expect(api.textContent).toContain(
+      "codecov/codecov-action@v4 isn’t pinned to a full commit, in ci.yml line 24.",
+    );
+    expect(within(api).getByLabelText("Risky settings")).toBeTruthy();
+    expect(within(api).getByText("High")).toBeTruthy();
+    expect(api.textContent).toContain(
+      "Orbit told the repository’s agent in issue #58.",
+    );
+    expect(api.textContent).toContain(
+      "I1 · github.event.issue.title in a script, in triage.yml, job label: acme-bot is on it.",
+    );
+    fireEvent.click(
+      within(api).getByRole("button", { name: "Open on GitHub" }),
+    );
+    expect(open).toHaveBeenCalledWith(
+      "https://github.com/acme/api/issues/58",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    // acme/orbit isn't private, so they stay with you, with the file to
+    // open.
+    const orbit = row("acme/orbit");
+    expect(orbit.textContent).toContain(
+      "No permissions are set, so its jobs get the token’s default, in release.yml line 6.",
+    );
+    expect(orbit.textContent).toContain(
+      "Orbit keeps these settings with you, as the repository isn’t private and an issue would show others where the weakness is.",
+    );
+    fireEvent.click(within(orbit).getByRole("button", { name: "Open file" }));
+    expect(open).toHaveBeenLastCalledWith(
+      `https://github.com/acme/orbit/blob/${"5a7d0c4".padEnd(40, "0")}/.github/workflows/release.yml#L6`,
+      "_blank",
+      "noopener,noreferrer",
+    );
+    cleanup();
+    // A file name a link can't hold as it is still opens that file.
+    const release = s.problems!.find((p) => p.id === "demo-workflows-2")!;
+    release.risks![0].path = ".github/workflows/re lease#1.yml";
+    show(s);
+    fireEvent.click(
+      within(row("acme/orbit")).getByRole("button", { name: "Open file" }),
+    );
+    expect(open).toHaveBeenLastCalledWith(
+      `https://github.com/acme/orbit/blob/${"5a7d0c4".padEnd(40, "0")}/.github/workflows/re%20lease%231.yml#L6`,
+      "_blank",
+      "noopener,noreferrer",
+    );
+    cleanup();
+    // Bit asks first: a tap opens the issue.
+    const issue = s.ops!.find((t) => t.key === "issue:demo-workflows-1")!;
+    issue.url = "";
+    issue.number = null;
+    s.settings.buddy!.rules.open_issues = "ask_first";
+    show(s);
+    expect(row("acme/api").textContent).toContain(
+      "Bit asks before opening an issue for the repository’s agent.",
+    );
+    fireEvent.click(
+      within(row("acme/api")).getByRole("button", { name: "Open issue" }),
+    );
+    expect(action).toHaveBeenCalledWith("tell_agent", {
+      key: "issue:demo-workflows-1",
+    });
+    cleanup();
+    // Not private now: no tap opens it.
+    s.problems!.find((p) => p.id === "demo-workflows-1")!.private = false;
+    show(s);
+    expect(
+      within(row("acme/api")).queryByRole("button", { name: "Open issue" }),
+    ).toBeNull();
+    open.mockRestore();
+  });
+
   it("keeps showing security alerts with Watch CI off, and hides them with their own switch off", () => {
     const s = freshDemo();
     s.settings.watchCi = false;
@@ -908,6 +1004,70 @@ describe("operations page", () => {
     const go = show(s);
     fireEvent.click(screen.getByRole("button", { name: "Open repositories" }));
     expect(go.onRepositories).toHaveBeenCalled();
+  });
+});
+
+describe("workflow sentences", () => {
+  const risk = (r: Partial<WorkflowRisk>): WorkflowRisk => ({
+    kind: "unpinned",
+    severity: "medium",
+    path: ".github/workflows/ci.yml",
+    line: 7,
+    subject: "other/tool@v1",
+    ...r,
+  });
+  it("say what each risky setting is and where", () => {
+    expect(riskText(risk({}))).toBe(
+      "other/tool@v1 isn’t pinned to a full commit, in ci.yml line 7.",
+    );
+    expect(
+      riskText(risk({ kind: "permissions", subject: "write-all", job: "a" })),
+    ).toBe("It asks for write-all permissions, in ci.yml line 7, job a.");
+    expect(
+      riskText(
+        risk({
+          kind: "pull_checkout",
+          subject: "github.head_ref",
+          job: "a",
+        }),
+      ),
+    ).toBe(
+      "It checks out a pull request’s code (github.head_ref) where secrets are exposed, in ci.yml line 7, job a.",
+    );
+  });
+  it("count them as the engine does", () => {
+    const p = {
+      ...freshDemo().problems!.find((p) => p.id === "demo-workflows-1")!,
+    };
+    expect(risksText(p)).toBe(
+      "Its workflows on main have 2 risky settings, 1 of them high, at 9e1f3b2.",
+    );
+    p.risks = [risk({ severity: "high" })];
+    expect(risksText(p)).toBe(
+      "Its workflows on main have 1 risky setting, and it is high, at 9e1f3b2.",
+    );
+    p.risks = [risk({}), risk({})];
+    expect(risksText(p)).toBe(
+      "Its workflows on main have 2 risky settings, at 9e1f3b2.",
+    );
+  });
+  it("say a fix waits for the next commit", () => {
+    const t = freshDemo().ops!.find((t) => t.key === "issue:demo-workflows-1")!;
+    const item: OpsItem = {
+      ...t.items[1],
+      answer: {
+        kind: "fixed",
+        author: "acme-bot",
+        at: "",
+        url: "",
+        replyId: 1,
+        commit: "abcdef1234",
+        head: "",
+      },
+    };
+    expect(answerText(t, item)).toBe(
+      "I2 · codecov/codecov-action@v4 isn't pinned, in ci.yml: acme-bot says it’s fixed in abcdef1. Orbit checks again at the next commit on main.",
+    );
   });
 });
 

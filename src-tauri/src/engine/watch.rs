@@ -213,6 +213,9 @@ impl Engine {
                 }
                 let now = chrono::Utc::now();
                 workflows::record(&mut s.setups, repo, branch, sha, result, now);
+                if let Some(setup) = s.setups.iter().find(|w| same_repo(&w.repo, repo)) {
+                    problems::see_risks(&mut s.problems, setup, now);
+                }
                 let Some(ci) = s.ci.iter().find(|c| same_repo(&c.repo, repo)) else {
                     return;
                 };
@@ -425,7 +428,13 @@ impl Engine {
                 }
                 let now = chrono::Utc::now();
                 if let Ok(private) = visible {
-                    problems::see_private(&mut s.problems, &mut s.security, repo, private);
+                    problems::see_private(
+                        &mut s.problems,
+                        &mut s.security,
+                        &mut s.setups,
+                        repo,
+                        private,
+                    );
                 }
                 if let Ok(read) = &result {
                     problems::looked_up(&mut s.problems, repo, &asked, now);

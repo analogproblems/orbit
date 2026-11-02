@@ -34,6 +34,7 @@ import {
   type RepoSecurity,
   type SecurityAlert,
   type SecurityScan,
+  type WorkflowRisk,
 } from "./types";
 
 // Simulated config/read values, independent of the demo workspace's settings.
@@ -1708,6 +1709,36 @@ function demoSecurity(): {
     toldAlerts: told,
     private: repo === "acme/api",
   });
+  const workflows = (
+    id: string,
+    repo: string,
+    at: string,
+    risks: WorkflowRisk[],
+  ): Problem => ({
+    id,
+    key: `workflows:${repo}`,
+    kind: "workflow_risks",
+    repo,
+    branch: "main",
+    sha: at,
+    sinceSha: at,
+    failing: [],
+    openedAt: ago(200),
+    updatedAt: ago(200),
+    timeline: [
+      {
+        at: ago(200),
+        text:
+          risks.length === 1
+            ? `A risky workflow setting at ${at.slice(0, 7)}.`
+            : `${risks.length} risky workflow settings at ${at.slice(0, 7)}.`,
+      },
+    ],
+    alerts: 0,
+    risks: risks.map((r) => ({ ...r, since: at })),
+    riskCount: risks.length,
+    private: repo === "acme/api",
+  });
   const problems = [
     problem(
       "demo-security-1",
@@ -1733,6 +1764,37 @@ function demoSecurity(): {
       "1 open code scanning alert: Inefficient regular expression in src/search.ts line 42 (low).",
       [],
     ),
+    // Risky workflow settings: acme/api's agent was told; acme/orbit's
+    // stay with you, as it isn't private.
+    workflows("demo-workflows-1", "acme/api", sha("9e1f3b2"), [
+      {
+        number: 1,
+        kind: "injection",
+        severity: "high",
+        path: ".github/workflows/triage.yml",
+        line: 18,
+        job: "label",
+        subject: "github.event.issue.title",
+      },
+      {
+        number: 2,
+        kind: "unpinned",
+        severity: "medium",
+        path: ".github/workflows/ci.yml",
+        line: 24,
+        subject: "codecov/codecov-action@v4",
+      },
+    ]),
+    workflows("demo-workflows-2", "acme/orbit", sha("5a7d0c4"), [
+      {
+        number: 1,
+        kind: "permissions",
+        severity: "low",
+        path: ".github/workflows/release.yml",
+        line: 6,
+        subject: "missing",
+      },
+    ]),
   ];
   const item = (p: Problem, reason: string): Attention => ({
     key: `problem:${p.id}:${p.alerts}`,
@@ -1754,6 +1816,52 @@ function demoSecurity(): {
     at: a.createdAt,
   });
   const ops: OpsThread[] = [
+    {
+      key: "issue:demo-workflows-1",
+      kind: "issue",
+      repo: "acme/api",
+      number: 58,
+      url: "https://github.com/acme/api/issues/58",
+      branch: "main",
+      problemId: "demo-workflows-1",
+      items: [
+        {
+          number: 1,
+          kind: "risk",
+          risk: 1,
+          check:
+            "github.event.issue.title in a script, in triage.yml, job label",
+          url: "",
+          failing: true,
+          since: sha("9e1f3b2"),
+          at: sha("9e1f3b2"),
+          answer: {
+            kind: "taking",
+            author: "acme-bot",
+            at: ago(120),
+            url: "https://github.com/acme/api/issues/58#issuecomment-911",
+            replyId: 911,
+            head: "",
+          },
+        },
+        {
+          number: 2,
+          kind: "risk",
+          risk: 2,
+          check: "codecov/codecov-action@v4 isn't pinned, in ci.yml",
+          url: "",
+          failing: true,
+          since: sha("9e1f3b2"),
+          at: sha("9e1f3b2"),
+        },
+      ],
+      posted: "",
+      closed: false,
+      allowed: false,
+      gone: false,
+      tries: 0,
+      updatedAt: ago(190),
+    },
     {
       key: "issue:demo-security-1",
       kind: "issue",
