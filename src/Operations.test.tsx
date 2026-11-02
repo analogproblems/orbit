@@ -23,6 +23,8 @@ import {
   cachesText,
   artifactsText,
   quotaText,
+  releaseDot,
+  releaseLines,
   riskText,
   risksText,
   settingsLines,
@@ -46,6 +48,7 @@ import {
   type OpsWrite,
   type Problem,
   type RepoCi,
+  type RepoReleases,
   type RunnerPlace,
   type ActionsStorage,
   type SecurityAlert,
@@ -501,6 +504,68 @@ describe("operations page", () => {
     s.actionsStorage = [];
     show(s);
     expect(screen.queryByText("Actions storage")).toBe(null);
+  });
+
+  it("lists each repository's releases, drafts and tags with no release", () => {
+    const s = freshDemo();
+    const go = show(s);
+    const rows = () =>
+      within(screen.getByRole("list", { name: "Releases" })).getAllByRole(
+        "listitem",
+      );
+    expect(rows().map((i) => i.textContent)).toEqual([
+      expect.stringContaining(
+        "acme/orbitLatest release: v1.4.0 (Orbit 1.4). 23 commits on main since.Draft v1.5.0 (Orbit 1.5) waits to be published, with 6 files.",
+      ),
+      expect.stringContaining(
+        "acme/apiLatest release: v2.3.1. 4 commits on main since.The tag v2.3.2 has no release.",
+      ),
+      expect.stringContaining(
+        "acme/dashboardLatest release: v0.9.0. 11 commits on main since.A newer pre-release is out: v1.0.0-beta.1.GitHub shows drafts only to accounts that can push here, and Orbit’s sign-in can’t, so any drafts aren’t listed.",
+      ),
+      expect.stringContaining("acme/docsNo releases or version tags yet."),
+    ]);
+    expect(within(rows()[0]).getByLabelText("Draft waiting")).toBeTruthy();
+    expect(
+      within(rows()[1]).getByLabelText("Tag with no release"),
+    ).toBeTruthy();
+    expect(within(rows()[2]).getByLabelText("Released")).toBeTruthy();
+    expect(within(rows()[3]).getByLabelText("No releases")).toBeTruthy();
+    // A row opens the repository's releases on GitHub.
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    fireEvent.click(rows()[1]);
+    expect(open).toHaveBeenCalledWith(
+      "https://github.com/acme/api/releases",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    open.mockRestore();
+    expect(go.onOperations).not.toHaveBeenCalled();
+    cleanup();
+
+    // A read that failed says so, keeping what was read before; releases
+    // Orbit can't see say only that.
+    s.releases![1].error =
+      "Orbit couldn't read the releases yet: Bad Gateway (HTTP 502). It tries again later.";
+    s.releases![3] = {
+      ...s.releases![3],
+      unseen:
+        "Orbit can't see the releases of acme/docs: GitHub doesn't show them to Orbit's sign-in.",
+    };
+    show(s);
+    expect(rows()[1].textContent).toContain(
+      "The tag v2.3.2 has no release.Orbit couldn't read the releases yet",
+    );
+    expect(within(rows()[1]).getByLabelText("Not read")).toBeTruthy();
+    expect(rows()[3].textContent).toBe(
+      "acme/docsOrbit can't see the releases of acme/docs: GitHub doesn't show them to Orbit's sign-in.",
+    );
+    expect(within(rows()[3]).getByLabelText("Not seen")).toBeTruthy();
+    cleanup();
+    // Nothing read yet: no section.
+    s.releases = [];
+    show(s);
+    expect(screen.queryByRole("list", { name: "Releases" })).toBe(null);
   });
 
   it("says when a job failed as the account's artifact storage is full", () => {
@@ -1581,6 +1646,91 @@ describe("ci sentences", () => {
     );
     expect(artifactsText(stored({ artifacts: 1, artifactBytes: GB }))).toBe(
       "1 artifact kept, holding 1.0 GB.",
+    );
+  });
+
+  it("say how a repository's releases stand", () => {
+    const tag = (name: string) => ({ name, sha: "a".repeat(40) });
+    const release = (t: string, name = t) => ({
+      id: 1,
+      tag: t,
+      name,
+      prerelease: false,
+      draft: false,
+      createdAt: "",
+      url: "",
+      assets: 1,
+    });
+    const r = (over: Partial<RepoReleases>): RepoReleases => ({
+      repo: "a/b",
+      readAt: "2026-10-30T12:00:00.000Z",
+      branch: "main",
+      head: "",
+      drafts: [],
+      draftCount: 0,
+      published: 0,
+      versionTags: 0,
+      unreleased: [],
+      unreleasedCount: 0,
+      tries: 0,
+      ...over,
+    });
+    expect(releaseLines(r({}))).toEqual(["No releases or version tags yet."]);
+    expect(
+      releaseLines(
+        r({
+          unreleased: [tag("v1.4.0"), tag("v1.2.0")],
+          unreleasedCount: 2,
+          moreTags: true,
+        }),
+      ),
+    ).toEqual([
+      "No releases on GitHub. Its newest version tag is v1.4.0.",
+      "Orbit read only the tags on the newest commits, so there may be more.",
+    ]);
+    const latest = release("v1.0.0");
+    expect(releaseLines(r({ latest, since: 0 }))).toEqual([
+      "Latest release: v1.0.0. No commits on main since.",
+    ]);
+    expect(releaseLines(r({ latest, since: 1 }))).toEqual([
+      "Latest release: v1.0.0. 1 commit on main since.",
+    ]);
+    // Orbit couldn't tell how many commits came since.
+    expect(releaseLines(r({ latest }))).toEqual(["Latest release: v1.0.0."]);
+    const drafts = [
+      { ...release("v1.2.0", "Big one"), draft: true, assets: 1 },
+      { ...release("v1.1.0"), draft: true, assets: 0 },
+    ];
+    expect(
+      releaseLines(
+        r({
+          latest,
+          drafts,
+          draftCount: 3,
+          unreleased: [tag("v1.0.2"), tag("v1.0.1")],
+          unreleasedCount: 3,
+        }),
+      ),
+    ).toEqual([
+      "Latest release: v1.0.0.",
+      "Draft v1.2.0 (Big one) waits to be published, with 1 file.",
+      "Draft v1.1.0 waits to be published, with 0 files.",
+      "1 more draft waits to be published.",
+      "3 newer version tags have no release: v1.0.2, v1.0.1 and more.",
+    ]);
+    expect(
+      releaseLines(r({ latest, drafts, draftCount: 4 })).slice(-1),
+    ).toEqual(["2 more drafts wait to be published."]);
+    expect(releaseDot(r({})).label).toBe("No releases");
+    expect(releaseDot(r({ latest })).label).toBe("Released");
+    expect(releaseDot(r({ readAt: "" })).label).toBe("Not seen");
+    expect(releaseDot(r({ latest, unreleasedCount: 1 })).label).toBe(
+      "Tag with no release",
+    );
+    // With no release yet, tags with none are the usual way, not a worry.
+    expect(releaseDot(r({ unreleasedCount: 1 })).label).toBe("No releases");
+    expect(releaseDot(r({ latest, draftCount: 1 })).label).toBe(
+      "Draft waiting",
     );
   });
 

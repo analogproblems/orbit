@@ -210,6 +210,7 @@ describe("demo ci", () => {
     expect(useOrbit.getState().snapshot.actionsStorage?.length).toBeGreaterThan(
       0,
     );
+    expect(useOrbit.getState().snapshot.releases?.length).toBeGreaterThan(0);
     const result = await useOrbit.getState().updateSettings({ watchCi: false });
     expect(result.ok).toBe(true);
     const s = useOrbit.getState().snapshot;
@@ -217,6 +218,7 @@ describe("demo ci", () => {
     expect(s.ci).toEqual([]);
     expect(s.runners).toEqual([]);
     expect(s.actionsStorage).toEqual([]);
+    expect(s.releases).toEqual([]);
     // Security alerts have a switch of their own.
     const ci = s.problems?.filter((p) => p.kind !== "security");
     expect(ci?.length).toBeGreaterThan(0);

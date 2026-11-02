@@ -1399,6 +1399,9 @@ pub struct Snapshot {
     /// Each connected repository's GitHub Actions caches and artifacts, as
     /// Orbit last read them (see `crate::actions_storage`).
     pub actions_storage: Vec<crate::actions_storage::Storage>,
+    /// Each connected repository's releases and version tags, as Orbit
+    /// last read them (see `crate::releases`).
+    pub releases: Vec<crate::releases::RepoReleases>,
     /// Each connected repository's open security alerts, as Orbit last read
     /// them (see `crate::security`).
     pub security: Vec<crate::security::RepoSecurity>,

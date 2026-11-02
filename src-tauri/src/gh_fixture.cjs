@@ -21,6 +21,10 @@
 // runs of a/b are the list in <dir>/queued.json, or none, listed newest
 // first in pages, those with the status asked for made before `created`
 // ("<time") when it is given.
+// The releases of a/b are the list in <dir>/releases.json, or none, in
+// pages; while <dir>/releases-error exists, listing them fails with its
+// text. A query about its tags answers with <dir>/tags.json, or no tags on
+// a default branch `main` that Orbit's sign-in can push to.
 // The cache usage of a/b is <dir>/cache.json, or none, and its artifacts the
 // list in <dir>/artifacts.json, or none, in pages; while <dir>/cache-error or
 // <dir>/artifacts-error exists, reading them fails with its text.
@@ -163,6 +167,22 @@ if (endpoint === "graphql" && fields.workflows) {
           },
           root: { entries: [{ name: ".github", type: "tree" }] },
           package: null,
+        },
+      },
+    });
+  process.exit(0);
+}
+if (endpoint === "graphql" && (fields.query || "").includes("refs/tags/")) {
+  fs.appendFileSync(path.join(dir, "calls"), `GET tags\n`);
+  const tags = path.join(dir, "tags.json");
+  if (fs.existsSync(tags)) process.stdout.write(fs.readFileSync(tags, "utf8"));
+  else
+    answer({
+      data: {
+        repository: {
+          viewerPermission: "ADMIN",
+          defaultBranchRef: { name: "main", target: { oid: "f".repeat(40) } },
+          refs: { totalCount: 0, nodes: [] },
         },
       },
     });
@@ -419,6 +439,16 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
   const list = path.join(dir, `runners-${which}.json`);
   if (fs.existsSync(list)) process.stdout.write(fs.readFileSync(list, "utf8"));
   else answer({ total_count: 0, runners: [] });
+} else if (endpoint === "repos/a/b/releases") {
+  const refused = path.join(dir, "releases-error");
+  if (fs.existsSync(refused)) {
+    process.stderr.write(fs.readFileSync(refused, "utf8"));
+    process.exit(1);
+  }
+  const kept = path.join(dir, "releases.json");
+  answer(
+    page(fs.existsSync(kept) ? JSON.parse(fs.readFileSync(kept, "utf8")) : []),
+  );
 } else if (
   (m = endpoint.match(/^repos\/a\/b\/actions\/(cache\/usage|artifacts)$/))
 ) {

@@ -863,6 +863,228 @@ async fn storage_read_after_a_change_is_dropped() {
     }
 }
 
+/// `a/b`'s releases on GitHub: v0.2.0 published at commit `b`, a draft of
+/// v0.3.0, and a tag v0.2.1 at commit `c` with no release; main at `f` is
+/// 5 commits on from v0.2.0.
+fn releases_on_github(dir: &Path) {
+    let release = |id: u64, tag: &str, draft: bool| {
+        json!({
+            "id": id,
+            "tag_name": tag,
+            "name": format!("App {tag}"),
+            "draft": draft,
+            "prerelease": false,
+            "created_at": format!("2026-10-{:02}T12:00:00Z", 10 + id),
+            "published_at": (!draft).then_some("2026-10-11T12:00:00Z"),
+            "html_url": format!("https://github.com/a/b/releases/tag/{tag}"),
+            "assets": [],
+        })
+    };
+    let list = json!([release(2, "v0.3.0", true), release(1, "v0.2.0", false)]);
+    std::fs::write(dir.join("releases.json"), list.to_string()).unwrap();
+    let tag = |name: &str, c: &str| json!({ "name": name, "target": { "__typename": "Commit", "oid": c.repeat(40) } });
+    let tags = json!({ "data": { "repository": {
+        "viewerPermission": "ADMIN",
+        "defaultBranchRef": { "name": "main", "target": { "oid": "f".repeat(40) } },
+        "refs": { "totalCount": 2, "nodes": [tag("v0.2.1", "c"), tag("v0.2.0", "b")] },
+    } } });
+    std::fs::write(dir.join("tags.json"), tags.to_string()).unwrap();
+    let compare = json!({
+        format!("{}...{}", "b".repeat(40), "f".repeat(40)): { "status": "ahead", "ahead_by": 5 },
+    });
+    std::fs::write(dir.join("compare.json"), compare.to_string()).unwrap();
+}
+/// Makes every repository's releases due to be read again.
+async fn releases_read_long_ago(e: &Engine) {
+    e.update(|s| {
+        for r in &mut s.releases {
+            r.read_at = "2020-01-01T00:00:00.000Z".into();
+        }
+    })
+    .await;
+}
+
+/// Orbit reads a repository's releases and tags, and counts the commits
+/// since its latest release, then again only half an hour later. A read
+/// GitHub doesn't answer keeps what Orbit saw, and turning Watch CI off
+/// forgets it. Nothing is written on GitHub.
+#[cfg(unix)]
+#[tokio::test]
+async fn releases_are_read_and_kept_when_github_fails() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    std::fs::write(
+        d.path().join("answer.json"),
+        answer(&"1".repeat(40), "SUCCESS"),
+    )
+    .unwrap();
+    releases_on_github(d.path());
+    let e = connected(d.path()).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let shown = e.shown_snapshot().await;
+    let r = &shown.releases[0];
+    assert_eq!(r.repo, "a/b");
+    assert_eq!(r.latest.as_ref().map(|l| l.tag.as_str()), Some("v0.2.0"));
+    assert_eq!(
+        r.drafts.iter().map(|d| d.tag.as_str()).collect::<Vec<_>>(),
+        ["v0.3.0"]
+    );
+    let unreleased: Vec<&str> = r.unreleased.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(unreleased, ["v0.2.1"]);
+    assert_eq!(r.since, Some(5));
+    assert!(r.unseen.is_none() && r.error.is_none() && !r.drafts_hidden);
+    assert_eq!(sent(d.path(), "GET repos/a/b/releases"), 1);
+    assert_eq!(sent(d.path(), "GET tags"), 1);
+    assert!(writes(d.path()).is_empty());
+    // Bit's answer about repositories says it.
+    let mut shown = shown;
+    crate::buddy::ask(
+        &mut shown,
+        crate::buddy::Question::Repositories,
+        &crate::ask::Lookups::default(),
+    );
+    let answer = shown.buddy_feed.notes.last().unwrap();
+    assert!(
+        answer.lines.iter().any(|l| l.text.contains(
+            "Its latest release is v0.2.0, and main has had 5 commits since. \
+             A draft, v0.3.0, waits to be published. Its tag v0.2.1 has no release."
+        )),
+        "{:?}",
+        answer.lines
+    );
+
+    // A moment later, nothing is due.
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!(sent(d.path(), "GET repos/a/b/releases"), 1);
+
+    // GitHub fails: what was read is kept.
+    std::fs::write(
+        d.path().join("releases-error"),
+        "gh: Bad Gateway (HTTP 502)\n",
+    )
+    .unwrap();
+    releases_read_long_ago(&e).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let r = e.shown_snapshot().await.releases[0].clone();
+    assert_eq!(r.latest.as_ref().map(|l| l.tag.as_str()), Some("v0.2.0"));
+    assert_eq!(r.tries, 1);
+    assert_eq!(
+        r.error.as_deref(),
+        Some("Orbit couldn't read the releases yet: Bad Gateway (HTTP 502). It tries again later.")
+    );
+    assert_eq!(sent(d.path(), "GET tags"), 1);
+
+    e.update(|s| s.settings.watch_ci = false).await;
+    crate::github::GH.scope(gh, e.watch_ci()).await;
+    assert!(e.shown_snapshot().await.releases.is_empty());
+}
+
+/// Releases GitHub won't show are said so, with nothing more asked. After
+/// GitHub's rate limit, the other repositories wait for the next pass, and
+/// disconnected, a repository's releases are forgotten.
+#[cfg(unix)]
+#[tokio::test]
+async fn releases_orbit_cant_see_are_said_so() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    std::fs::write(
+        d.path().join("answer.json"),
+        answer(&"1".repeat(40), "SUCCESS"),
+    )
+    .unwrap();
+    std::fs::write(
+        d.path().join("releases-error"),
+        "gh: Not Found (HTTP 404)\n",
+    )
+    .unwrap();
+    let e = connected(d.path()).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let r = e.shown_snapshot().await.releases[0].clone();
+    assert_eq!(
+        r.unseen.as_deref(),
+        Some("Orbit can't see the releases of a/b: GitHub doesn't show them to Orbit's sign-in.")
+    );
+    assert!(r.error.is_none());
+    assert_eq!(sent(d.path(), "GET tags"), 0);
+
+    // A rate limit stops the pass.
+    std::fs::write(
+        d.path().join("releases-error"),
+        "gh: API rate limit exceeded for user ID 1. (HTTP 403)\n",
+    )
+    .unwrap();
+    e.update(|s| {
+        let mut other = s.settings.repositories[0].clone();
+        other.name = "a/c".into();
+        s.settings.repositories.push(other);
+        // a/b is due first, having waited longest.
+        s.releases[0].read_at = "2019-01-01T00:00:00.000Z".into();
+        s.releases.push(crate::releases::RepoReleases {
+            repo: "a/c".into(),
+            read_at: "2020-01-01T00:00:00.000Z".into(),
+            ..Default::default()
+        });
+    })
+    .await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let shown = e.shown_snapshot().await;
+    assert!(shown.releases[0].error.is_some());
+    assert_eq!(shown.releases[1].read_at, "2020-01-01T00:00:00.000Z");
+    assert_eq!(sent(d.path(), "GET repos/a/c/releases"), 0);
+
+    e.update(|s| s.settings.repositories.clear()).await;
+    crate::github::GH.scope(gh, e.watch_ci()).await;
+    assert!(e.shown_snapshot().await.releases.is_empty());
+
+    // With Watch CI off, nothing is asked.
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    let e = connected(d.path()).await;
+    e.update(|s| s.settings.watch_ci = false).await;
+    crate::github::GH.scope(gh, e.watch_ci()).await;
+    assert_eq!(sent(d.path(), "GET repos/a/b/releases"), 0);
+}
+
+/// Releases read while the repository is disconnected, or Watch CI turned
+/// off, are dropped.
+#[cfg(unix)]
+#[tokio::test]
+async fn releases_read_after_a_change_are_dropped() {
+    for change in ["disconnect", "watch off"] {
+        let d = tempfile::tempdir().unwrap();
+        let gh = fixture_gh(d.path());
+        std::fs::write(
+            d.path().join("answer.json"),
+            answer(&"1".repeat(40), "SUCCESS"),
+        )
+        .unwrap();
+        releases_on_github(d.path());
+        // GitHub takes its time over the releases.
+        std::fs::write(d.path().join("hold"), "repos/a/b/releases").unwrap();
+        let e = connected(d.path()).await;
+        let reading = tokio::spawn(crate::github::GH.scope(gh.clone(), {
+            let e = e.clone();
+            async move { e.watch_ci().await }
+        }));
+        let held = d.path().join("held");
+        for _ in 0..500 {
+            if held.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(held.exists(), "{change}");
+        e.update(|s| match change {
+            "disconnect" => s.settings.repositories.clear(),
+            _ => s.settings.watch_ci = false,
+        })
+        .await;
+        std::fs::remove_file(d.path().join("hold")).unwrap();
+        reading.await.unwrap();
+        assert!(e.shown_snapshot().await.releases.is_empty(), "{change}");
+    }
+}
+
 /// GitHub's CI for `a/b`: main at commit `1`, made an hour ago, and pull
 /// request 1 at `head`, whose one check passed, begun half an hour ago.
 fn passing_pull(dir: &Path, head: &str) {

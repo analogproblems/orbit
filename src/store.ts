@@ -783,6 +783,7 @@ async function demoAction(
       demo.ci = [];
       demo.runners = [];
       demo.actionsStorage = [];
+      demo.releases = [];
       demo.merges = [];
       demo.readiness = demo.readiness?.map((r) => ({
         ...r,

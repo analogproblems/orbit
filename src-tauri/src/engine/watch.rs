@@ -3,15 +3,16 @@
 //! close (see `crate::ci` and `crate::problems`), whether CI runs on each
 //! repository's pull requests (`crate::workflows`), the self-hosted
 //! runners its runs wait for (`crate::runners`), its Actions storage
-//! (`crate::actions_storage`), and whether GitHub says each pull request
+//! (`crate::actions_storage`), its releases and version tags
+//! (`crate::releases`), and whether GitHub says each pull request
 //! Orbit reviews can merge (`crate::readiness`), and whether Dependabot's
 //! can (`crate::dependabot`); each repository's security alerts and
 //! settings, with a switch of their own (`crate::security`,
 //! `crate::baseline`); then Bit's morning brief once a day (`crate::brief`).
 use super::Engine;
 use crate::{
-    actions_storage as storage, broke, ci, logs, problems, readiness, runners, security, types::*,
-    workflows,
+    actions_storage as storage, broke, ci, logs, problems, readiness, releases, runners, security,
+    types::*, workflows,
 };
 use std::sync::atomic::Ordering;
 
@@ -42,6 +43,7 @@ impl Engine {
         // Last, so telling agents never waits for runners or storage.
         self.read_runners().await;
         self.read_storage().await;
+        self.read_releases().await;
         // Agents hear of security alerts that changed now, not a sync
         // later.
         if self.read_security().await {
@@ -128,6 +130,7 @@ impl Engine {
             workflows::prune(&mut s.setups, &connected);
             runners::prune(&mut s.runners, &connected);
             storage::prune(&mut s.actions_storage, &connected);
+            releases::prune(&mut s.releases, &connected);
             readiness::prune(s);
             problems::close_unwatched(&mut s.problems, &connected, false, now);
         })
@@ -361,6 +364,42 @@ impl Engine {
         self.reading_storage.store(false, Ordering::SeqCst);
         let _ = self.flush().await;
     }
+    /// Reads each connected repository's releases and version tags, a few
+    /// repositories a pass. One GitHub didn't answer for keeps what was
+    /// read before and is tried again after a wait.
+    async fn read_releases(&self) {
+        if self.reading_releases.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let wanted = {
+            let s = self.state.lock().await;
+            if s.settings.watch_ci {
+                releases::wanted(&repos_of(&s), &s.releases, chrono::Utc::now())
+            } else {
+                vec![]
+            }
+        };
+        for repo in &wanted {
+            let result = releases::read(repo).await;
+            // After a rate limit, the rest wait for the next pass.
+            let limited = result.as_ref().is_err_and(|e| logs::rate_limited(e));
+            self.update(|s| {
+                // Watch CI went off, or the repository went, meanwhile.
+                if !s.settings.watch_ci {
+                    return;
+                }
+                let connected = repos_of(s);
+                releases::record(&mut s.releases, repo, result, chrono::Utc::now());
+                releases::prune(&mut s.releases, &connected);
+            })
+            .await;
+            if limited {
+                break;
+            }
+        }
+        self.reading_releases.store(false, Ordering::SeqCst);
+        let _ = self.flush().await;
+    }
 }
 impl Engine {
     /// Reads each connected repository's security alerts, a few
@@ -514,6 +553,7 @@ fn stop_watching(s: &mut Snapshot) {
     s.setups.clear();
     s.runners.clear();
     s.actions_storage.clear();
+    s.releases.clear();
     s.merges.clear();
     problems::close_unwatched(&mut s.problems, &[], true, chrono::Utc::now());
 }
