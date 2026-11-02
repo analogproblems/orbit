@@ -381,6 +381,7 @@ impl Engine {
         }
         if let Ok(_one) = self.tagging.try_lock() {
             self.look_for_cut_off_tags().await;
+            self.look_for_cut_off_publishes().await;
         }
         let wanted = {
             let s = self.state.lock().await;

@@ -1278,6 +1278,267 @@ async fn no_tag_is_pushed_on_old_ci_or_beside_its_other_spelling() {
     assert!(s.attention.iter().all(|a| a.kind != AttentionKind::Release));
 }
 
+/// `a/b` with v0.3.0 tagged at `3…` and v0.2.0 out, a draft release for
+/// v0.3.0 (id 7), and the one run the tag started, passed. Main is green.
+fn drafted(dir: &Path) {
+    std::fs::write(dir.join("answer.json"), answer(&"1".repeat(40), "SUCCESS")).unwrap();
+    tags_on_github(dir, &[("v0.3.0", '3'), ("v0.2.0", 'b')]);
+    std::fs::write(dir.join("tag-v0.3.0.txt"), "3".repeat(40)).unwrap();
+    let release = |id: u64, tag: &str, draft: bool, made: &str| {
+        json!({
+            "id": id,
+            "tag_name": tag,
+            "name": tag,
+            "draft": draft,
+            "prerelease": false,
+            "created_at": made,
+            "published_at": if draft { serde_json::Value::Null } else { json!(made) },
+            "html_url": format!("https://github.com/a/b/releases/tag/{tag}"),
+            "assets": [],
+        })
+    };
+    let releases = json!([
+        release(7, "v0.3.0", true, "2026-11-02T11:00:00Z"),
+        release(5, "v0.2.0", false, "2026-10-01T00:00:00Z"),
+    ]);
+    std::fs::write(dir.join("releases.json"), releases.to_string()).unwrap();
+    let run = json!({
+        "id": 9,
+        "workflow_id": 9,
+        "name": "Release",
+        "head_branch": "v0.3.0",
+        "head_sha": "3".repeat(40),
+        "event": "push",
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": "2026-11-02T11:00:00Z",
+        "html_url": "https://github.com/a/b/actions/runs/9",
+    });
+    std::fs::write(dir.join("queued.json"), json!([run]).to_string()).unwrap();
+}
+fn publish_of(s: &Snapshot) -> Option<&crate::ops::Write> {
+    s.journal
+        .iter()
+        .find(|w| w.action == crate::ops::Action::PublishRelease)
+}
+/// The drafts `releases.json` holds now, by tag.
+fn drafts_on_github(dir: &Path) -> Vec<String> {
+    let text = std::fs::read_to_string(dir.join("releases.json")).unwrap();
+    let list: Vec<serde_json::Value> = serde_json::from_str(&text).unwrap();
+    list.iter()
+        .filter(|r| r["draft"] == true)
+        .map(|r| r["tag_name"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// The issue's example, through the fake GitHub: a draft for the newest
+/// tag, whose build passed, is offered, and your tap publishes it once,
+/// even when GitHub's answer is lost and Orbit restarts: it looks the
+/// release up first. A tag that moved since its build passed holds it back.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_draft_whose_build_passed_is_published_on_one_tap_and_only_once() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    drafted(d.path());
+    let e = connected(d.path()).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let shown = e.shown_snapshot().await;
+    let offer: Vec<_> = shown
+        .attention
+        .iter()
+        .filter(|a| a.kind == AttentionKind::Release)
+        .collect();
+    assert_eq!(offer.len(), 1);
+    assert_eq!(offer[0].key, "release:a/b:v0.3.0");
+    assert_eq!(offer[0].fix, Some(crate::buddy::Fix::PublishRelease));
+    assert_eq!(
+        offer[0].reason,
+        "a/b has a draft release for v0.3.0, and every run the tag started passed at 3333333."
+    );
+    // Ask first: nothing is published until you tap.
+    assert!(writes(d.path()).is_empty());
+
+    // The tag moved just before: nothing is published.
+    std::fs::write(d.path().join("tag-v0.3.0.txt"), "4".repeat(40)).unwrap();
+    let error = crate::github::GH
+        .scope(gh.clone(), e.fix("release:a/b:v0.3.0"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error,
+        "v0.3.0 points at 4444444 now, not 3333333, where its build passed, so Orbit didn't publish it."
+    );
+    // Gone, publishing would make it again.
+    std::fs::remove_file(d.path().join("tag-v0.3.0.txt")).unwrap();
+    let error = crate::github::GH
+        .scope(gh.clone(), e.fix("release:a/b:v0.3.0"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error,
+        "v0.3.0 is gone from GitHub, and publishing the draft would make it again, so Orbit didn't."
+    );
+    assert!(writes(d.path()).is_empty() && publish_of(&e.snapshot().await).is_none());
+    std::fs::write(d.path().join("tag-v0.3.0.txt"), "3".repeat(40)).unwrap();
+
+    // GitHub publishes it, but its answer is lost.
+    std::fs::write(d.path().join("release-lost"), "").unwrap();
+    let error = crate::github::GH
+        .scope(gh.clone(), e.fix("release:a/b:v0.3.0"))
+        .await
+        .unwrap_err();
+    assert!(error.contains("didn't answer clearly"), "{error}");
+    std::fs::remove_file(d.path().join("release-lost")).unwrap();
+    assert!(drafts_on_github(d.path()).is_empty());
+    let s = e.shown_snapshot().await;
+    assert_eq!(
+        publish_of(&s).unwrap().state,
+        crate::ops::WriteState::Sending
+    );
+    // While Orbit doesn't know, there's nothing to tap.
+    assert!(s.attention.iter().all(|a| a.kind != AttentionKind::Release));
+
+    // Orbit restarts, looks the release up first, finds it out, and
+    // doesn't publish it again.
+    drop(e);
+    let e = connected(d.path()).await;
+    releases_read_long_ago(&e).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let s = e.shown_snapshot().await;
+    let w = publish_of(&s).unwrap();
+    assert_eq!(w.state, crate::ops::WriteState::Done);
+    assert_eq!(w.url, "https://github.com/a/b/releases/tag/v0.3.0");
+    assert_eq!(w.release, Some(7));
+    assert!(s.attention.iter().all(|a| a.kind != AttentionKind::Release));
+    let latest = s.releases[0].latest.as_ref().map(|l| l.tag.as_str());
+    assert_eq!(latest, Some("v0.3.0"));
+    assert_eq!(writes(d.path()), ["PATCH repos/a/b/releases/7"]);
+    let error = crate::github::GH
+        .scope(gh.clone(), e.fix("release:a/b:v0.3.0"))
+        .await
+        .unwrap_err();
+    assert_eq!(error, "This doesn't need you any more.");
+    assert_eq!(writes(d.path()).len(), 1);
+}
+
+/// With Publish a draft release on Do it, Bit publishes it on its own and
+/// says so, once; with Leave it to me, it only tells you.
+#[cfg(unix)]
+#[tokio::test]
+async fn bit_publishes_a_draft_itself_only_on_do_it() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    drafted(d.path());
+    let e = connected(d.path()).await;
+    e.update(|s| s.settings.buddy.rules.publish_release = "do_it".into())
+        .await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let queued = std::mem::take(&mut *e.fixing.lock().unwrap());
+    assert_eq!(queued.len(), 1);
+    for (item, fix) in queued {
+        crate::github::GH
+            .scope(gh.clone(), e.do_fix(item, fix))
+            .await;
+    }
+    assert!(drafts_on_github(d.path()).is_empty());
+    let s = e.shown_snapshot().await;
+    assert_eq!(publish_of(&s).unwrap().state, crate::ops::WriteState::Done);
+    assert!(s.attention.iter().all(|a| a.kind != AttentionKind::Release));
+    assert!(s
+        .buddy_feed
+        .notes
+        .iter()
+        .any(|n| n.kind == NoteKind::Fixed && n.text == "Published v0.3.0 in a/b! 🚀"));
+    // The next pass has nothing more to publish.
+    releases_read_long_ago(&e).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert!(e.fixing.lock().unwrap().is_empty());
+    assert_eq!(writes(d.path()), ["PATCH repos/a/b/releases/7"]);
+
+    // Leave it to me: told, with nothing done.
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    drafted(d.path());
+    let e = connected(d.path()).await;
+    e.update(|s| s.settings.buddy.rules.publish_release = "leave_it".into())
+        .await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert!(e.fixing.lock().unwrap().is_empty());
+    let s = e.shown_snapshot().await;
+    assert!(s.attention.iter().any(|a| a.key == "release:a/b:v0.3.0"));
+    assert!(writes(d.path()).is_empty());
+}
+
+/// A draft someone published or deleted since Orbit read it is left as it
+/// is, and only a draft whose build passed is offered.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_draft_published_or_deleted_meanwhile_is_left() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    drafted(d.path());
+    let e = connected(d.path()).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let offered = |s: &Snapshot| s.attention.iter().any(|a| a.key == "release:a/b:v0.3.0");
+    assert!(offered(&e.shown_snapshot().await));
+    let text = std::fs::read_to_string(d.path().join("releases.json")).unwrap();
+
+    // Someone published it on GitHub meanwhile.
+    std::fs::write(
+        d.path().join("releases.json"),
+        text.replacen("\"draft\":true", "\"draft\":false", 1),
+    )
+    .unwrap();
+    let error = crate::github::GH
+        .scope(gh.clone(), e.fix("release:a/b:v0.3.0"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error,
+        "GitHub says v0.3.0 is published already, so Orbit didn't publish it again."
+    );
+    let s = e.shown_snapshot().await;
+    assert!(!offered(&s));
+    assert!(writes(d.path()).is_empty() && publish_of(&s).is_none());
+
+    // Deleted meanwhile.
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    drafted(d.path());
+    let e = connected(d.path()).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    std::fs::write(d.path().join("releases.json"), "[]").unwrap();
+    let error = crate::github::GH
+        .scope(gh.clone(), e.fix("release:a/b:v0.3.0"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error,
+        "The draft for v0.3.0 is gone from GitHub, so Orbit didn't publish it."
+    );
+    assert!(writes(d.path()).is_empty());
+
+    // A build that failed offers nothing.
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    drafted(d.path());
+    let runs = std::fs::read_to_string(d.path().join("queued.json")).unwrap();
+    std::fs::write(
+        d.path().join("queued.json"),
+        runs.replace("\"success\"", "\"failure\""),
+    )
+    .unwrap();
+    let e = connected(d.path()).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let s = e.shown_snapshot().await;
+    assert!(!offered(&s));
+    assert!(s
+        .attention
+        .iter()
+        .any(|a| a.kind == AttentionKind::CiFailing));
+}
+
 /// The issue's example, through the fake GitHub: v0.3.0 tagged on a
 /// commit whose files still say 0.2.0, while main says 0.3.0, needs you
 /// once, with how to fix it by hand; Orbit reads the files there once, and

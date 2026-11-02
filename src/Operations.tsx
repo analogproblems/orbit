@@ -1499,10 +1499,21 @@ function DependabotUpdates() {
 function files(n: number) {
   return n === 1 ? "1 file" : `${n} files`;
 }
+/** How long since a time, in whole hours or days: "under an hour",
+ * "5 hours", "1 day". Nothing for a time that can't be read. */
+function waited(at: string, now: number) {
+  const ms = now - Date.parse(at);
+  if (!(ms >= 0)) return undefined;
+  const hours = Math.floor(ms / 3_600_000);
+  if (hours < 1) return "under an hour";
+  if (hours < 24) return hours === 1 ? "1 hour" : `${hours} hours`;
+  const days = Math.floor(hours / 24);
+  return days === 1 ? "1 day" : `${days} days`;
+}
 /** What Orbit read of a repository's releases, a sentence a line: the
  * latest release and the commits since, a newer pre-release, the drafts
- * waiting, and the version tags with no release. */
-export function releaseLines(r: RepoReleases) {
+ * waiting and for how long, and the version tags with no release. */
+export function releaseLines(r: RepoReleases, now = Date.now()) {
   const lines: string[] = [];
   const titled = (tag: string, name: string) =>
     name && name !== tag ? `${tag} (${name})` : tag;
@@ -1536,10 +1547,12 @@ export function releaseLines(r: RepoReleases) {
         ? `A newer pre-release is out: ${titled(r.prerelease.tag, r.prerelease.name)}.`
         : `Newest pre-release: ${titled(r.prerelease.tag, r.prerelease.name)}.`,
     );
-  for (const d of r.drafts)
+  for (const d of r.drafts) {
+    const long = waited(d.createdAt, now);
     lines.push(
-      `Draft ${titled(d.tag, d.name)} waits to be published, with ${files(d.assets)}.`,
+      `Draft ${titled(d.tag, d.name)} ${long ? `has waited ${long}` : "waits"} to be published, with ${files(d.assets)}.`,
     );
+  }
   const moreDrafts = r.draftCount - r.drafts.length;
   if (moreDrafts > 0)
     lines.push(
@@ -1945,14 +1958,20 @@ const writeText: Record<OpsAction, string> = {
   rerun_job: "Reran a job on",
   change_setting: "Changed a security setting in",
   ask_rebase: "Asked Dependabot to rebase",
+  push_tag: "Pushed a release tag to",
+  publish_release: "Published a release in",
 };
-/** A write in words, such as "Opened an issue on acme/api #45", or
- * "Turned on Dependabot alerts in acme/api". */
+/** A write in words, such as "Opened an issue on acme/api #45",
+ * "Turned on Dependabot alerts in acme/api" or "Pushed v0.3.0 to
+ * acme/api". */
 export function writeSummary(w: OpsWrite) {
   const target = w.number ? `${w.repo} #${w.number}` : w.repo;
   const setting = securitySettings.find((x) => x.key === w.setting);
   if (w.action === "change_setting" && setting)
     return `${setting.fixedText} in ${target}.`;
+  if (w.action === "push_tag" && w.tag) return `Pushed ${w.tag} to ${target}.`;
+  if (w.action === "publish_release" && w.tag)
+    return `Published the release for ${w.tag} in ${target}.`;
   return `${writeText[w.action]} ${target}.`;
 }
 

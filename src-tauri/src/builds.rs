@@ -76,9 +76,10 @@ pub struct Build {
 /// tags: the newest version tag, the highest version Orbit read. Orbit
 /// reads the tags of the newest commits only, so when there are more, the
 /// build it knows of (`known`) stays the one watched while its tag is a
-/// higher version than any Orbit read and isn't among them, as it may just
-/// be on an older commit. Only a higher version Orbit read, or a full list
-/// without it, replaces it.
+/// higher version than any Orbit read, or the same one spelled another way
+/// (`2.0.0` or `v2.0.0+build` for `v2.0.0`), and isn't among them, as it
+/// may just be on an older commit. Only a higher version Orbit read, or a
+/// full list without it, replaces it.
 pub fn target(r: &RepoReleases, known: Option<&Build>) -> Option<Tag> {
     if r.read_at.is_empty() || r.unseen.is_some() {
         return None;
@@ -90,7 +91,7 @@ pub fn target(r: &RepoReleases, known: Option<&Build>) -> Option<Tag> {
             && valid_sha(&b.sha)
             && !r.tags.iter().any(|t| t.name == b.tag)
             && version(&b.tag)
-                .is_some_and(|v| newest.and_then(|t| version(&t.name)).is_none_or(|n| v > n))
+                .is_some_and(|v| newest.and_then(|t| version(&t.name)).is_none_or(|n| v >= n))
     });
     match kept {
         Some(b) => Some(Tag {

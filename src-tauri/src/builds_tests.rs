@@ -182,6 +182,14 @@ fn a_partial_list_of_tags_doesnt_replace_the_build_orbit_knows() {
             [tag("v2.0.0", '2')]
         );
     }
+    // The same version spelled another way doesn't replace it either.
+    for r in [
+        partial(&[("2.0.0", '3'), ("v1.9.1", '4')]),
+        partial(&[("v2.0.0+build.7", '3')]),
+    ] {
+        assert_eq!(target(&r, Some(&failing)), Some(tag("v2.0.0", '2')));
+        assert!(kept(&r));
+    }
     // With no build known, the highest read is the one.
     let r = partial(&[("v1.9.1", '3')]);
     assert_eq!(target(&r, None), Some(tag("v1.9.1", '3')));

@@ -20,6 +20,7 @@ mod cli_scans;
 mod clones;
 mod connection;
 mod dependabot;
+mod drafts;
 mod events;
 mod extras;
 mod findings;
@@ -155,7 +156,8 @@ type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// | `cleanup_lock` | One worktree removal at a time.                                   |
 /// | `cloning`      | One download of a repository for Bit at a time.                   |
 /// | `rebasing`     | One ask for Dependabot to rebase at a time, held while it sends.  |
-/// | `tagging`      | One release tag pushed at a time, held while it sends.            |
+/// | `tagging`      | One release tag pushed, or draft release published, at a time,  |
+/// |                | held while it sends.                                              |
 /// | `git_lock`     | Git commands against users' clones (fetch, worktree add/remove,   |
 /// |                | fast-forward).                                                    |
 /// | `rpc`          | The current Codex connection.                                     |
@@ -170,7 +172,7 @@ type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// `items` via `retire_dead_connection` → `disconnected`); `poll_lock` →
 /// `state` and `synced_repos` (one at a time); `publish_lock` → `state`;
 /// `containers` → `git_lock`; `cleanup_lock` → `git_lock` → `state`; `cloning` → `state`
-/// (`set_up_repository`); `rebasing` → `state` (`ask_rebase`, `read_updates`); `tagging` → `state` (`push_tag`, `read_releases`); `poll_lock` → `publish_lock` → `cloning` → `rebasing` → `tagging`, the last two let go at once (`fence`); `poll_lock` → `cloning` → `state` (`take_in`); `poll_lock` →
+/// (`set_up_repository`); `rebasing` → `state` (`ask_rebase`, `read_updates`); `tagging` → `state` (`push_tag`, `publish_release`, `read_releases`); `poll_lock` → `publish_lock` → `cloning` → `rebasing` → `tagging`, the last two let go at once (`fence`); `poll_lock` → `cloning` → `state` (`take_in`); `poll_lock` →
 /// `publish_lock` → `state`, held for good once the Orbit moves (`fence`); `state` → `synced_repos`
 /// (`schedule`); `state` → `taking_in` (`take_in`, `move_status`); `state` → `fixing` (`flush`); `state` → `wake_retry` (`wake_devices`, `woken`, `push_notices`, `remove_push_device`); `state` → `asking`
 /// (`ask_buddy_anything`); `state` → `using` (`use_proposal`). `preparing`,
@@ -231,9 +233,9 @@ pub struct Engine {
     /// one still marked as sending when this is free was cut off by Orbit
     /// stopping (`ask_rebase`).
     rebasing: Mutex<()>,
-    /// A release tag is being pushed: one at a time, so one still marked as
-    /// sending when this is free was cut off by Orbit stopping
-    /// (`push_tag`).
+    /// A release tag is being pushed, or a draft release published: one at
+    /// a time, so one still marked as sending when this is free was cut off
+    /// by Orbit stopping (`push_tag`, `publish_release`).
     tagging: Mutex<()>,
     /// The pull-request history is being read; another read skips rather
     /// than waits.

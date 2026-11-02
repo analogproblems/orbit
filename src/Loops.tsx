@@ -92,9 +92,12 @@ export function mainAction(
     return { label: "Approve or deny", onClick: open };
   if (a.kind === "sync_failing" && a.repo)
     return { label: "Open repositories", onClick: go.onRepositories };
-  // A version waiting for its tag: one tap pushes it, unless you asked
-  // Bit to leave it to you.
-  if (a.fix === "push_tag" && offeredFix(s, a.key))
+  // A version waiting for its tag, or a draft release ready to publish:
+  // one tap does it, unless you asked Bit to leave it to you.
+  if (
+    (a.fix === "push_tag" || a.fix === "publish_release") &&
+    offeredFix(s, a.key)
+  )
     return {
       label: fixLabel(a.fix, a.key),
       onClick: () => run("use_fix", { key: a.key }),

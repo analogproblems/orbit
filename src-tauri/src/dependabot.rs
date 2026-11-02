@@ -424,6 +424,7 @@ pub fn record_rebase(
         setting: None,
         head: Some(head.to_string()),
         tag: None,
+        release: None,
     });
     id
 }

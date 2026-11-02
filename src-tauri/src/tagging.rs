@@ -232,6 +232,7 @@ pub fn record(journal: &mut Vec<Write>, u: &Untagged, now: DateTime<Utc>) -> Str
         setting: None,
         head: Some(u.sha.clone()),
         tag: Some(u.tag.clone()),
+        release: None,
     });
     id
 }

@@ -504,6 +504,9 @@ async fn send(p: &Planned, me: &str) -> Result<Posted, String> {
         Action::ChangeSetting => Err("Orbit changes a setting only on your tap.".into()),
         Action::AskRebase => Err("Orbit asks Dependabot to rebase only on your tap.".into()),
         Action::PushTag => Err("Orbit pushes a release tag only through its own check.".into()),
+        Action::PublishRelease => {
+            Err("Orbit publishes a release only through its own check.".into())
+        }
         Action::RerunJob => reruns::send(p).await,
         Action::PostComment => {
             let body = crate::orbits::signed(&p.body, me);

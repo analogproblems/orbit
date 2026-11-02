@@ -520,7 +520,7 @@ describe("operations page", () => {
       );
     expect(rows().map((i) => i.textContent)).toEqual([
       expect.stringContaining(
-        "acme/orbitLatest release: v1.4.0 (Orbit 1.4). 23 commits on main since.Draft v1.5.0 (Orbit 1.5) waits to be published, with 6 files.",
+        "acme/orbitLatest release: v1.4.0 (Orbit 1.4). 23 commits on main since.Draft v1.5.0 (Orbit 1.5) has waited 1 day to be published, with 6 files.",
       ),
       expect.stringContaining(
         "acme/apiLatest release: v2.3.1. 4 commits on main since.The tag v2.3.2 has no release.The release build for v2.3.2 passed (2 runs).",
@@ -1648,6 +1648,35 @@ describe("security settings sentences", () => {
     );
   });
 
+  it("say which tag Orbit pushed and which release it published", () => {
+    const w: OpsWrite = {
+      id: "w",
+      thread: "tag:acme/api:v0.3.0",
+      action: "push_tag",
+      repo: "acme/api",
+      state: "done",
+      at: "",
+      url: "",
+      tag: "v0.3.0",
+    };
+    expect(writeSummary(w)).toBe("Pushed v0.3.0 to acme/api.");
+    expect(writeSummary({ ...w, tag: undefined })).toBe(
+      "Pushed a release tag to acme/api.",
+    );
+    const published: OpsWrite = {
+      ...w,
+      thread: "release:acme/api:v0.3.0",
+      action: "publish_release",
+      release: 7,
+    };
+    expect(writeSummary(published)).toBe(
+      "Published the release for v0.3.0 in acme/api.",
+    );
+    expect(writeSummary({ ...published, tag: undefined })).toBe(
+      "Published a release in acme/api.",
+    );
+  });
+
   it("say where each repository drifts from its owner's baseline", () => {
     const s = freshDemo();
     const lines = (repo: string) =>
@@ -1837,6 +1866,34 @@ describe("ci sentences", () => {
     expect(
       releaseLines(r({ latest, drafts, draftCount: 4 })).slice(-1),
     ).toEqual(["2 more drafts wait to be published."]);
+    // How long each draft has waited, from when it was made.
+    const made = Date.parse("2026-10-30T12:00:00.000Z");
+    const waiting = (hours: number) =>
+      releaseLines(
+        r({
+          drafts: [
+            {
+              ...release("v1.2.0"),
+              draft: true,
+              createdAt: "2026-10-30T12:00:00.000Z",
+            },
+          ],
+          draftCount: 1,
+        }),
+        made + hours * 3_600_000,
+      ).slice(-1);
+    expect(waiting(0.5)).toEqual([
+      "Draft v1.2.0 has waited under an hour to be published, with 1 file.",
+    ]);
+    expect(waiting(1)).toEqual([
+      "Draft v1.2.0 has waited 1 hour to be published, with 1 file.",
+    ]);
+    expect(waiting(23)).toEqual([
+      "Draft v1.2.0 has waited 23 hours to be published, with 1 file.",
+    ]);
+    expect(waiting(24 * 3 + 5)).toEqual([
+      "Draft v1.2.0 has waited 3 days to be published, with 1 file.",
+    ]);
     expect(releaseDot(r({})).label).toBe("No releases");
     expect(releaseDot(r({ latest })).label).toBe("Released");
     expect(releaseDot(r({ readAt: "" })).label).toBe("Not seen");

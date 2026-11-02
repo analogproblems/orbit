@@ -475,6 +475,9 @@ pub enum Action {
     /// Makes a release tag, on your tap or Bit's (see `crate::tagging`). It
     /// belongs to no thread.
     PushTag,
+    /// Publishes a draft release, on your tap or Bit's (see
+    /// `crate::drafts`). It belongs to no thread.
+    PublishRelease,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -510,12 +513,15 @@ pub struct Write {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setting: Option<crate::baseline::Setting>,
     /// For an ask to rebase, the commit the pull request was at; for a
-    /// tag, the commit it points at.
+    /// tag, or a release, the commit the tag points at.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head: Option<String>,
-    /// For a tag, its name.
+    /// For a tag, or a release, the tag's name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
+    /// For a release, its id on GitHub.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release: Option<u64>,
 }
 
 /// A write a thread needs, ready to send.
@@ -2469,7 +2475,10 @@ pub fn interrupted(journal: &mut [Write], threads: &mut [Thread], now: DateTime<
         w.state == WriteState::Sending
             && !matches!(
                 w.action,
-                Action::ChangeSetting | Action::AskRebase | Action::PushTag
+                Action::ChangeSetting
+                    | Action::AskRebase
+                    | Action::PushTag
+                    | Action::PublishRelease
             )
     }) {
         w.state = WriteState::Failed;
@@ -2584,6 +2593,7 @@ pub fn record(journal: &mut Vec<Write>, planned: &Planned, now: DateTime<Utc>) -
         setting: None,
         head: None,
         tag: None,
+        release: None,
     });
     id
 }
@@ -2651,9 +2661,12 @@ pub fn settle(
                 // Settled by `crate::reruns::settle`.
                 Action::RerunJob => {}
                 // Settled by `crate::baseline::settle`,
-                // `crate::dependabot::settle_rebase` and
-                // `crate::tagging::settle`.
-                Action::ChangeSetting | Action::AskRebase | Action::PushTag => {}
+                // `crate::dependabot::settle_rebase`, `crate::tagging::settle`
+                // and `crate::drafts::settle`.
+                Action::ChangeSetting
+                | Action::AskRebase
+                | Action::PushTag
+                | Action::PublishRelease => {}
             }
         }
         Err(error) => {

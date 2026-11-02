@@ -512,6 +512,7 @@ async fn turning_autopilot_back_on_is_a_button() {
             rerun_again: "do_it".into(),
             propose_ci: "do_it".into(),
             push_tag: "do_it".into(),
+            publish_release: "do_it".into(),
         };
     })
     .await;

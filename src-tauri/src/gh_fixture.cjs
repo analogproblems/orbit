@@ -29,7 +29,11 @@
 // pages; while <dir>/releases-error exists, listing them fails with its
 // text. Its latest release is <dir>/latest.json, or the newest made in the
 // list that is neither a draft nor a pre-release, or none (HTTP 404); while
-// <dir>/latest-error exists, reading it fails with its text. A query about
+// <dir>/latest-error exists, reading it fails with its text. One release
+// is read from that list by its id, or 404, and publishing one (`draft`
+// false) changes it there; while <dir>/release-error exists, either fails
+// with its text, and while <dir>/release-lost exists, publishing changes it
+// but its answer is lost (HTTP 502). A query about
 // its tags answers with <dir>/tags.json, or no tags on
 // a default branch `main` that Orbit's sign-in can push to. Its tag <t> is
 // at the commit in <dir>/tag-<t>.txt, and its branch <b> at the one in
@@ -521,6 +525,33 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
     process.exit(1);
   }
   answer(latest);
+} else if ((m = endpoint.match(/^repos\/a\/b\/releases\/(\d+)$/))) {
+  const refused = path.join(dir, "release-error");
+  if (fs.existsSync(refused)) {
+    process.stderr.write(fs.readFileSync(refused, "utf8"));
+    process.exit(1);
+  }
+  const kept = path.join(dir, "releases.json");
+  const list = fs.existsSync(kept)
+    ? JSON.parse(fs.readFileSync(kept, "utf8"))
+    : [];
+  const release = list.find((r) => r.id === Number(m[1]));
+  if (!release) {
+    process.stderr.write("gh: Not Found (HTTP 404)\n");
+    process.exit(1);
+  }
+  if (method === "PATCH") {
+    if (input.draft === false && release.draft) {
+      release.draft = false;
+      release.published_at = "2026-11-02T12:00:00Z";
+    }
+    fs.writeFileSync(kept, JSON.stringify(list));
+    if (fs.existsSync(path.join(dir, "release-lost"))) {
+      process.stderr.write("gh: Bad Gateway (HTTP 502)\n");
+      process.exit(1);
+    }
+  }
+  answer(release);
 } else if (endpoint === "repos/a/b/releases") {
   const refused = path.join(dir, "releases-error");
   if (fs.existsSync(refused)) {

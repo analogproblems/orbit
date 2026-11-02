@@ -360,6 +360,20 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
             )
         });
     }
+    // A draft release for the newest tag, whose build passed.
+    for d in crate::drafts::waiting(s) {
+        out.push(Attention {
+            repo: Some(d.repo.clone()),
+            fix: Some(Fix::PublishRelease),
+            ..item(
+                crate::drafts::key(&d),
+                AttentionKind::Release,
+                None,
+                None,
+                crate::drafts::reason(&d),
+            )
+        });
+    }
     // An agent that needs a person, about an item still failing.
     for t in s.ops.iter().filter(|t| !t.gone) {
         if !s
