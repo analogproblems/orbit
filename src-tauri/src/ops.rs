@@ -664,7 +664,8 @@ pub fn refresh(threads: &mut Vec<Thread>, problems: &[Problem], now: DateTime<Ut
                         | ProblemKind::Security
                         | ProblemKind::WorkflowRisks
                         | ProblemKind::Versions
-                        | ProblemKind::Tag => ThreadKind::Issue,
+                        | ProblemKind::Tag
+                        | ProblemKind::ReleaseBuild => ThreadKind::Issue,
                         ProblemKind::PullRequest | ProblemKind::BaseMoved => ThreadKind::Comment,
                     },
                     repo: p.repo.clone(),
@@ -675,7 +676,8 @@ pub fn refresh(threads: &mut Vec<Thread>, problems: &[Problem], now: DateTime<Ut
                         | ProblemKind::Security
                         | ProblemKind::WorkflowRisks
                         | ProblemKind::Versions
-                        | ProblemKind::Tag => None,
+                        | ProblemKind::Tag
+                        | ProblemKind::ReleaseBuild => None,
                         ProblemKind::PullRequest | ProblemKind::BaseMoved => {
                             p.pr_id.as_deref().and_then(pr_number)
                         }
@@ -892,7 +894,8 @@ fn key_of(p: &Problem) -> String {
         | ProblemKind::Security
         | ProblemKind::WorkflowRisks
         | ProblemKind::Versions
-        | ProblemKind::Tag => format!("issue:{}", p.id),
+        | ProblemKind::Tag
+        | ProblemKind::ReleaseBuild => format!("issue:{}", p.id),
         // A pull request's problems share its one comment.
         ProblemKind::PullRequest | ProblemKind::BaseMoved => {
             format!("pr:{}", p.pr_id.as_deref().unwrap_or(&p.repo))
@@ -1257,10 +1260,14 @@ pub fn hear(t: &mut Thread, replies: &[Reply], more: Option<u32>) -> Vec<Heard> 
 pub fn to_verify(threads: &[Thread], problems: &[Problem]) -> Vec<Verify> {
     let mut out = vec![];
     for t in threads.iter().filter(|t| !t.gone) {
-        let Some(p) = problems
-            .iter()
-            .find(|p| p.id == t.problem_id && p.is_open() && !p.sha.is_empty())
-        else {
+        // A release build's fix is for the next version's tag, so there is
+        // nothing at its commit to check.
+        let Some(p) = problems.iter().find(|p| {
+            p.id == t.problem_id
+                && p.is_open()
+                && !p.sha.is_empty()
+                && p.kind != ProblemKind::ReleaseBuild
+        }) else {
             continue;
         };
         // A base that moved on settles itself once CI runs again.
@@ -1447,11 +1454,15 @@ fn closes(p: &Problem, now: DateTime<Utc>) -> bool {
     let Some(closed) = p.closed_at.as_deref().and_then(time) else {
         return false;
     };
-    // A workflow file once changed doesn't flap like a failing check.
+    // A workflow file once changed doesn't flap like a failing check, nor
+    // does a tag's build once each of its runs passed.
     !p.passed()
         || matches!(
             p.kind,
-            ProblemKind::NoCi | ProblemKind::WorkflowRisks | ProblemKind::Versions
+            ProblemKind::NoCi
+                | ProblemKind::WorkflowRisks
+                | ProblemKind::Versions
+                | ProblemKind::ReleaseBuild
         )
         || now - closed >= CLOSE_AFTER
 }
@@ -1506,7 +1517,7 @@ fn plain(text: &str) -> String {
 }
 /// What an agent said about a failing item, and for a fix, what Orbit
 /// found. A reason or question is linked, never repeated.
-fn answer_text(item: &Item, t: &Thread) -> String {
+fn answer_text(item: &Item, t: &Thread, p: &Problem) -> String {
     let Some(a) = &item.answer else {
         return String::new();
     };
@@ -1533,6 +1544,15 @@ fn answer_text(item: &Item, t: &Thread) -> String {
                 "said to be fixed{}; Orbit checks again at the next commit on {}",
                 at.unwrap_or_default(),
                 branch(t)
+            )
+        }
+        // A tag's build passes only once its own runs do, so a fix on the
+        // default branch is for the next version's tag.
+        (AnswerKind::Fixed, commit) if p.kind == ProblemKind::ReleaseBuild => {
+            let at = commit.as_ref().map(|c| format!(" in {}", code(short(c))));
+            format!(
+                "said to be fixed{}; the next version's tag builds with it",
+                at.unwrap_or_default()
             )
         }
         // An alert is fixed once GitHub says so, whatever the commit.
@@ -1602,7 +1622,7 @@ fn item_line(item: &Item, t: &Thread, p: &Problem) -> String {
         format!("{state} at {}{rerun}", code(short(&item.at)))
     };
     let (link, answer) = if item.failing && p.is_open() {
-        (details(&item.url), answer_text(item, t))
+        (details(&item.url), answer_text(item, t, p))
     } else if item.failing {
         (details(&item.url), String::new())
     } else {
@@ -1621,7 +1641,7 @@ fn base_line(item: &Item, t: &Thread, p: &Problem) -> String {
     let state = if item.failing && p.is_open() {
         format!(
             "{base} moved on since the checks at {ran} began · merge it in and let CI run again{}",
-            answer_text(item, t)
+            answer_text(item, t, p)
         )
     } else if item.failing {
         format!("{base} moved on since the checks at {ran} began, when Orbit stopped watching")
@@ -1635,7 +1655,7 @@ fn setup_line(item: &Item, t: &Thread, p: &Problem) -> String {
     let state = if item.failing && p.is_open() {
         format!(
             "add a workflow that runs on pull requests{}",
-            answer_text(item, t)
+            answer_text(item, t, p)
         )
     } else if item.failing {
         "add a workflow that runs on pull requests, when Orbit stopped watching".to_string()
@@ -1688,7 +1708,7 @@ fn alert_line(item: &Item, t: &Thread, p: &Problem) -> String {
     }
     let link = safe(&a.url).map_or_else(String::new, |url| format!(" · [alert]({url})"));
     let answer = if p.is_open() {
-        answer_text(item, t)
+        answer_text(item, t, p)
     } else {
         String::new()
     };
@@ -1747,7 +1767,7 @@ fn risk_line(item: &Item, t: &Thread, p: &Problem) -> String {
         code(&r.path),
         r.line,
         r.advice(),
-        answer_text(item, t)
+        answer_text(item, t, p)
     )
 }
 /// A link to a line in a file at a commit, when the repository's name and
@@ -1801,7 +1821,7 @@ fn version_line(item: &Item, t: &Thread, p: &Problem) -> String {
         and(&others),
         code(&m.want),
         file_link(&t.repo, &p.sha, &m.path, 0),
-        answer_text(item, t)
+        answer_text(item, t, p)
     )
 }
 fn file_link(repo: &str, sha: &str, path: &str, line: usize) -> String {
@@ -1981,6 +2001,7 @@ fn data(t: &Thread, p: Option<&Problem>) -> String {
             (_, Some(ProblemKind::Security)) => "security",
             (_, Some(ProblemKind::WorkflowRisks)) => "workflows",
             (_, Some(ProblemKind::Versions)) => "versions",
+            (_, Some(ProblemKind::ReleaseBuild)) => "release_build",
             (ThreadKind::Comment, _) => "pull_request",
             (ThreadKind::Issue, _) => "default_branch",
         },
@@ -2124,6 +2145,9 @@ pub fn issue_title(t: &Thread, p: &Problem) -> String {
     if p.kind == ProblemKind::Versions {
         return "Make the version files agree".into();
     }
+    if p.kind == ProblemKind::ReleaseBuild {
+        return format!("The release build for {} is failing", t.branch);
+    }
     if let Some(source) = p.source {
         return format!("Fix the open {}", source.many());
     }
@@ -2147,6 +2171,9 @@ pub fn issue_body(t: &Thread, p: &Problem, closing: bool) -> String {
     }
     if p.kind == ProblemKind::Versions {
         return versions_body(t, p);
+    }
+    if p.kind == ProblemKind::ReleaseBuild {
+        return build_body(t, p);
     }
     let on = branch(t);
     let status = if p.is_open() {
@@ -2182,6 +2209,35 @@ pub fn issue_body(t: &Thread, p: &Problem, closing: bool) -> String {
     };
     format!(
         "## Orbit · CI\n\n{status}\n\n{broke}{}\n\nOrbit opened this issue because CI fails on {on}. It edits this issue as CI changes, and closes it once every check has passed for an hour.\n\n{}",
+        items_text(t, p),
+        data(t, Some(p))
+    )
+}
+/// Orbit's issue about the runs a version tag started failing. The tag is
+/// in `t.branch`. The fix goes on the default branch, and the next
+/// version's tag builds with it; the build itself passes only once its
+/// runs do, such as after a rerun.
+fn build_body(t: &Thread, p: &Problem) -> String {
+    let tag = code(&t.branch);
+    let status = if p.is_open() {
+        format!(
+            "{} in the release build for {tag} at {}.",
+            checks(failing_count(t)),
+            code(short(&p.sha))
+        )
+    } else if p.passed() {
+        format!(
+            "Every run of the release build for {tag} passed at {}.",
+            code(short(&p.closed_sha))
+        )
+    } else {
+        format!(
+            "Orbit has stopped watching this build. {}",
+            p.closed_reason.as_deref().unwrap_or_default()
+        )
+    };
+    format!(
+        "## Orbit · Release build\n\n{status}\n\n{}\n\nOrbit opened this issue because the runs the tag {tag} started fail. Fix what fails on the default branch, so the next version's tag builds with it. Orbit edits this issue as the runs change, and closes it once each of them passes or a newer version is tagged.\n\n{}",
         items_text(t, p),
         data(t, Some(p))
     )
@@ -2373,6 +2429,12 @@ pub fn closing_note(t: &Thread, p: &Problem) -> String {
         format!(
             "The version files on {} agree at {}, so Orbit is closing this issue.",
             branch(t),
+            code(short(&p.closed_sha))
+        )
+    } else if p.passed() && p.kind == ProblemKind::ReleaseBuild {
+        format!(
+            "Every run of the release build for {} passed at {}, so Orbit is closing this issue.",
+            code(&t.branch),
             code(short(&p.closed_sha))
         )
     } else if p.passed() && p.kind == ProblemKind::NoCi {

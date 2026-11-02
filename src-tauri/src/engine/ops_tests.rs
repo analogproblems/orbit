@@ -3061,3 +3061,161 @@ async fn nothing_is_proposed_where_something_runs_checks() {
         .unwrap()
         .contains("      - run: cargo test\n```"));
 }
+
+/// `a/b` with its only version tag, v0.3.0, at commit 3, and these runs
+/// for it there: an ID, a workflow and how it stands.
+fn released(dir: &Path, runs: &[(u64, &str, &str, Option<&str>)]) {
+    let tags = json!({ "data": { "repository": {
+        "viewerPermission": "ADMIN",
+        "defaultBranchRef": { "name": "main", "target": { "oid": sha('1') } },
+        "refs": { "totalCount": 1, "nodes": [
+            { "name": "v0.3.0", "target": { "__typename": "Commit", "oid": sha('3') } }
+        ] },
+    } } });
+    std::fs::write(dir.join("tags.json"), tags.to_string()).unwrap();
+    let runs: Vec<Value> = runs
+        .iter()
+        .map(|(id, name, status, conclusion)| {
+            json!({
+                "id": id,
+                "workflow_id": id,
+                "name": name,
+                "head_branch": "v0.3.0",
+                "head_sha": sha('3'),
+                "event": "push",
+                "status": status,
+                "conclusion": conclusion,
+                "created_at": "2026-11-02T12:00:00Z",
+                "html_url": format!("https://github.com/a/b/actions/runs/{id}"),
+            })
+        })
+        .collect();
+    std::fs::write(dir.join("queued.json"), json!(runs).to_string()).unwrap();
+}
+/// Makes each release build due to be read again.
+async fn builds_read_long_ago(e: &Engine) {
+    e.update(|s| {
+        for b in &mut s.builds {
+            b.read_at = "2020-01-01T00:00:00.000Z".into();
+        }
+    })
+    .await;
+}
+
+/// The issue's example for release builds, through the fake GitHub: a
+/// failing build on a version tag needs you once, with why it failed from
+/// its log; the agent hears of it in an issue, a job that failed by bad
+/// luck is rerun once as the rules say, and once each run passes the
+/// problem and the issue close.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_failing_release_build_needs_you_once_and_bad_luck_is_rerun() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    answer(d.path(), '1', &[("Rust", "SUCCESS")], None);
+    released(
+        d.path(),
+        &[
+            (7, "Release", "completed", Some("failure")),
+            (8, "Docs", "completed", Some("success")),
+        ],
+    );
+    in_run(
+        d.path(),
+        (7, '3'),
+        70,
+        "build (macos)",
+        1,
+        "Run actions/checkout@v4",
+        &[
+            "fatal: unable to access 'https://github.com/a/b/': Could not resolve host: github.com",
+            "##[error]Process completed with exit code 128.",
+        ],
+    );
+    let url = "https://github.com/a/b/actions/runs/7/job/70";
+    let file = d.path().join("job-70.json");
+    let mut job: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    job["html_url"] = json!(url);
+    std::fs::write(&file, job.to_string()).unwrap();
+    let e = connected(d.path()).await;
+    watch(&e, &gh).await;
+    let shown = e.shown_snapshot().await;
+    let failing: Vec<_> = shown
+        .attention
+        .iter()
+        .filter(|a| a.kind == AttentionKind::CiFailing)
+        .collect();
+    assert_eq!(failing.len(), 1);
+    assert_eq!(
+        failing[0].reason,
+        "The release build for v0.3.0 in a/b is failing at 3333333: Release / build (macos)."
+    );
+    let b = &shown.builds[0];
+    assert_eq!(
+        (b.tag.as_str(), b.ci.passing, b.runs.len()),
+        ("v0.3.0", 1, 2)
+    );
+    assert!(writes(d.path()).is_empty());
+
+    // The next pass reads why it failed, reruns it as bad luck, and tells
+    // the agent, once.
+    watch(&e, &gh).await;
+    assert_eq!(
+        writes(d.path()),
+        [
+            "POST repos/a/b/actions/jobs/70/rerun",
+            "POST repos/a/b/issues"
+        ]
+    );
+    let issue = &github(d.path())["issues"][0];
+    assert_eq!(issue["title"], "The release build for v0.3.0 is failing");
+    let body = issue["body"].as_str().unwrap();
+    assert!(body.starts_with(
+        "## Orbit · Release build\n\n1 check fails in the release build for `v0.3.0` at `3333333`."
+    ));
+    assert!(body.contains(&format!(
+        "- **I1** · `Release / build (macos)` · failing at `3333333` · [details]({url})\n  Orbit reran this job, as it looks like bad luck"
+    )));
+    assert!(body.contains("\"kind\":\"release_build\""));
+    watch(&e, &gh).await;
+    assert_eq!(writes(d.path()).len(), 2);
+    assert_eq!(
+        e.shown_snapshot()
+            .await
+            .attention
+            .iter()
+            .filter(|a| a.kind == AttentionKind::CiFailing)
+            .count(),
+        1
+    );
+
+    // The rerun passes: the problem closes, and so does the issue.
+    released(
+        d.path(),
+        &[
+            (7, "Release", "completed", Some("success")),
+            (8, "Docs", "completed", Some("success")),
+        ],
+    );
+    builds_read_long_ago(&e).await;
+    watch(&e, &gh).await;
+    let shown = e.shown_snapshot().await;
+    assert!(shown
+        .attention
+        .iter()
+        .all(|a| a.kind != AttentionKind::CiFailing));
+    assert!(shown.problems.iter().all(|p| !p.is_open()));
+    watch(&e, &gh).await;
+    let g = github(d.path());
+    assert_eq!(g["issues"][0]["state"], "closed");
+    let notes = g["comments"].as_array().unwrap();
+    assert_eq!(notes.len(), 1);
+    assert!(notes[0]["body"].as_str().unwrap().starts_with(
+        "Every run of the release build for `v0.3.0` passed at `3333333`, so Orbit is closing this issue."
+    ));
+    // Once it passed, the build isn't read again.
+    let asked = calls(d.path(), "GET repos/a/b/actions/runs");
+    builds_read_long_ago(&e).await;
+    watch(&e, &gh).await;
+    assert_eq!(calls(d.path(), "GET repos/a/b/actions/runs"), asked);
+}

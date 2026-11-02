@@ -1174,6 +1174,9 @@ export interface Snapshot {
   /** Each connected repository's releases and version tags, as Orbit last
    * read them. */
   releases?: RepoReleases[];
+  /** The runs each connected repository's newest version tag started, as
+   * Orbit last read them. */
+  builds?: Build[];
   /** Each connected repository's open security alerts, as Orbit last read
    * them. */
   security?: RepoSecurity[];
@@ -1357,7 +1360,8 @@ export type ProblemKind =
   | "security"
   | "workflow_risks"
   | "versions"
-  | "tag";
+  | "tag"
+  | "release_build";
 export interface ProblemEvent {
   at: string;
   text: string;
@@ -1851,6 +1855,35 @@ export interface RepoReleases {
   /** What the version files say at the commits of the version tags Orbit
    * checked, the highest version first. */
   checks?: TagCheck[];
+}
+/** One workflow's newest run for a tag. */
+export interface BuildRun {
+  id: number;
+  /** As GitHub shows it: its workflow's name, unless the workflow names
+   * its runs. */
+  name: string;
+  url: string;
+  /** What started it, such as "push" or "release". */
+  event: string;
+  state: CiState;
+}
+/** The runs a repository's newest version tag started, as Orbit last read
+ * them. */
+export interface Build {
+  repo: string;
+  tag: string;
+  sha: string;
+  runs: BuildRun[];
+  /** Where they stand together: failed jobs by name, and how many runs
+   * pass or still run. */
+  ci: CommitCi;
+  /** When Orbit first read this tag's runs, and last did. */
+  firstReadAt: string;
+  readAt: string;
+  /** Why the last read failed; what was read before is kept. */
+  error?: string | null;
+  retryAt?: string | null;
+  tries: number;
 }
 /** What the version files say at a version tag's commit. */
 export interface TagCheck {

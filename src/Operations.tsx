@@ -34,6 +34,7 @@ import {
   type AlertSource,
   type AttentionHandlers,
   type Broke,
+  type Build,
   type CiFailure,
   type CiState,
   type DependabotUpdate,
@@ -127,15 +128,20 @@ function opensIssue(p: Problem) {
     p.kind === "security" ||
     p.kind === "workflow_risks" ||
     p.kind === "versions" ||
-    p.kind === "no_ci"
+    p.kind === "no_ci" ||
+    p.kind === "release_build"
   );
 }
 
-/** Whether a problem is yours to see to: a failing default branch, runs
- * waiting for a runner, or a version tag on the wrong commit. */
+/** Whether a problem is yours to see to: a failing default branch or
+ * release build, runs waiting for a runner, or a version tag on the wrong
+ * commit. */
 function needsYou(p: Problem) {
   return (
-    p.kind === "default_branch" || p.kind === "waiting" || p.kind === "tag"
+    p.kind === "default_branch" ||
+    p.kind === "release_build" ||
+    p.kind === "waiting" ||
+    p.kind === "tag"
   );
 }
 
@@ -504,6 +510,7 @@ function title(s: Snapshot, p: Problem) {
   if (p.kind === "workflow_risks") return `${p.repo}: workflow settings`;
   if (p.kind === "versions") return `${p.repo}: version files`;
   if (p.kind === "tag") return `${p.repo}: tag ${p.tag ?? ""}`;
+  if (p.kind === "release_build") return `${p.repo}: release build ${p.branch}`;
   if (p.kind === "default_branch")
     return `${p.repo}: ${p.branch || "default branch"}`;
   const pr = s.prs.find((pr) => pr.id === p.prId);
@@ -1554,10 +1561,38 @@ export function releaseLines(r: RepoReleases) {
     );
   return lines;
 }
-/** The dot for a repository's releases. */
-export function releaseDot(r: RepoReleases) {
+/** How long Orbit looks for the runs of a tag with none yet, as the
+ * engine has it (`builds::LOOK_FOR`). */
+const LOOK_FOR_MS = 24 * 60 * 60 * 1000;
+/** What the build of a repository's newest version tag says, as Bit says
+ * it (`builds::sentence`), or nothing before Orbit read it, or for an old
+ * tag with no runs, as GitHub deletes old runs. */
+export function buildLine(b: Build | undefined, now = Date.now()) {
+  if (!b?.readAt) return undefined;
+  switch (b.ci.state) {
+    case "failing":
+      return `The release build for ${b.tag} is failing: ${checkNames(b.ci.failing)}.`;
+    case "running":
+      return `The release build for ${b.tag} is still running.`;
+    case "passing":
+      return `The release build for ${b.tag} passed (${b.ci.passing === 1 ? "1 run" : `${b.ci.passing} runs`}).`;
+    default:
+      return now - Date.parse(b.firstReadAt) < LOOK_FOR_MS
+        ? `Nothing has run for ${b.tag} yet.`
+        : undefined;
+  }
+}
+/** The build Orbit last read for a repository. */
+function buildOf(s: Snapshot, repo: string) {
+  return s.builds?.find((b) => sameRepo(b.repo, repo));
+}
+/** The dot for a repository's releases. A failing release build comes
+ * first. */
+export function releaseDot(r: RepoReleases, b?: Build) {
   if (r.unseen || !r.readAt)
     return { variant: "neutral" as const, label: "Not seen" };
+  if (b?.ci.state === "failing")
+    return { variant: "error" as const, label: "Build failing" };
   if (r.draftCount > 0)
     return { variant: "warning" as const, label: "Draft waiting" };
   if ((r.latest || r.published > 0) && r.unreleasedCount > 0)
@@ -1577,13 +1612,16 @@ function Releases() {
     <VStack gap={3}>
       <Heading level={3}>Releases</Heading>
       <Text color="secondary">
-        Each repository’s latest release, drafts waiting to be published, and
-        version tags, such as v1.2.0, with no release.
+        Each repository’s latest release, drafts waiting to be published,
+        version tags, such as v1.2.0, with no release, and how the build its
+        newest tag started went.
       </Text>
       <Card padding={0}>
         <List hasDividers aria-label="Releases">
           {read.map((r) => {
-            const dot = releaseDot(r);
+            const build = buildOf(s, r.repo);
+            const dot = releaseDot(r, build);
+            const built = r.unseen ? undefined : buildLine(build);
             return (
               <ListItem
                 key={r.repo}
@@ -1598,6 +1636,13 @@ function Releases() {
                       releaseLines(r).map((line, i) => (
                         <Text key={`${i}:${line}`}>{line}</Text>
                       ))}
+                    {built && <Text>{built}</Text>}
+                    {build?.error && (
+                      <HStack gap={2} vAlign="center">
+                        <StatusDot variant="warning" label="Not read" />
+                        <Text color="secondary">{build.error}</Text>
+                      </HStack>
+                    )}
                     {r.unseen && <Text color="secondary">{r.unseen}</Text>}
                     {r.error && (
                       <HStack gap={2} vAlign="center">

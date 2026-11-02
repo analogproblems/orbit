@@ -12,7 +12,9 @@
 //! files (`see_risks`), and version files that disagree (`see_versions`),
 //! which are only listed. A version tag on a commit whose files say
 //! another version tells you once (`see_tags`), as only a person should
-//! move a tag.
+//! move a tag. A failing release build, the runs a repository's newest
+//! version tag started, tells you once like a failing default branch
+//! (`see_build`).
 //!
 //! Everything here is worked out from what Orbit read; nothing reaches
 //! GitHub.
@@ -66,6 +68,9 @@ pub enum ProblemKind {
     /// A version tag on a commit whose version files say another version
     /// (see `crate::releases::TagCheck`).
     Tag,
+    /// The runs a repository's newest version tag started fail (see
+    /// `crate::builds`).
+    ReleaseBuild,
 }
 /// Something that happened to a problem.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,14 +90,16 @@ pub struct Problem {
     /// `wait:owner/name` for its runs waiting for a runner,
     /// `security:owner/name:dependabot` for its security alerts of a kind,
     /// `workflows:owner/name` for risky settings in its workflows,
-    /// `versions:owner/name` for its version files disagreeing, and
-    /// `tag:owner/name:v1.2.0` for a version tag on the wrong commit.
+    /// `versions:owner/name` for its version files disagreeing,
+    /// `tag:owner/name:v1.2.0` for a version tag on the wrong commit, and
+    /// `build:owner/name:v1.2.0` for a failing release build.
     pub key: String,
     pub kind: ProblemKind,
     pub repo: String,
     pub pr_id: Option<String>,
     /// The default branch, for a default branch's problem; the pull
-    /// request's branch for a pull request's.
+    /// request's branch for a pull request's; the tag, for a release
+    /// build's.
     pub branch: String,
     /// The latest commit seen failing, and the first since it last passed.
     pub sha: String,
@@ -190,7 +197,10 @@ impl Problem {
     /// author's to fix: security alerts only while one of them needs you.
     pub fn needs_you(&self) -> bool {
         match self.kind {
-            ProblemKind::DefaultBranch | ProblemKind::Waiting | ProblemKind::Tag => true,
+            ProblemKind::DefaultBranch
+            | ProblemKind::Waiting
+            | ProblemKind::Tag
+            | ProblemKind::ReleaseBuild => true,
             ProblemKind::Security => self
                 .security_alerts
                 .iter()
@@ -304,6 +314,9 @@ pub fn versions_key(repo: &str) -> String {
     format!("versions:{}", repo.to_ascii_lowercase())
 }
 /// The key of the problem about a version tag on the wrong commit.
+pub fn build_key(repo: &str, tag: &str) -> String {
+    format!("build:{}:{tag}", repo.to_ascii_lowercase())
+}
 pub fn tag_key(repo: &str, tag: &str) -> String {
     format!("tag:{}:{tag}", repo.to_ascii_lowercase())
 }
@@ -1022,6 +1035,72 @@ pub fn see_tags(
             p.close(&at, reason);
         }
     }
+}
+
+/// A failing release build in a sentence: "The release build for v1.2.0
+/// in acme/api is failing at 1a2b3c4: Release / build."
+pub fn build_text(p: &Problem) -> String {
+    format!(
+        "The release build for {} in {} is failing at {}: {}.",
+        p.branch,
+        p.repo,
+        ci::short(&p.sha),
+        names(&p.failing)
+    )
+}
+fn newest_now(tag: &str) -> String {
+    format!("{tag} is the newest version tag now.")
+}
+/// Closes the problem about a repository's release build once its tag is
+/// no longer the newest, from a read of its tags that worked: once a newer
+/// version is tagged, or the tag is gone. The new tag's build is read next.
+pub fn close_old_builds(
+    problems: &mut [Problem],
+    read: &crate::releases::RepoReleases,
+    now: DateTime<Utc>,
+) {
+    if read.read_at.is_empty() || read.unseen.is_some() {
+        return;
+    }
+    let at = stamp(now);
+    let newest = read.tags.first();
+    for p in problems.iter_mut().filter(|p| {
+        p.is_open() && p.kind == ProblemKind::ReleaseBuild && same_repo(&p.repo, &read.repo)
+    }) {
+        match newest {
+            Some(t) if t.name == p.branch => {}
+            Some(t) => p.close(&at, newest_now(&t.name)),
+            None => p.close(&at, format!("The tag {} is gone.", p.branch)),
+        }
+    }
+}
+/// Opens, updates or closes the problem about a repository's release
+/// build from a read of it that worked, as for a default branch: it
+/// opens when a run fails and tells you, and closes once each run passed.
+/// One about an older tag closes, as the newest tag is the one that
+/// counts now.
+pub fn see_build(problems: &mut Vec<Problem>, b: &crate::builds::Build, now: DateTime<Utc>) {
+    let at = stamp(now);
+    let key = build_key(&b.repo, &b.tag);
+    for p in problems.iter_mut().filter(|p| {
+        p.is_open() && p.kind == ProblemKind::ReleaseBuild && same_repo(&p.repo, &b.repo)
+    }) {
+        if p.key != key {
+            p.close(&at, newest_now(&b.tag));
+        }
+    }
+    see(
+        problems,
+        Seen {
+            key,
+            kind: ProblemKind::ReleaseBuild,
+            repo: &b.repo,
+            pr_id: None,
+            branch: &b.tag,
+            ci: &b.ci,
+        },
+        now,
+    );
 }
 
 /// Opens, updates or closes the problem about a repository's runs waiting

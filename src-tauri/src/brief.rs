@@ -187,6 +187,7 @@ pub fn lines(s: &Snapshot) -> Vec<Line> {
                 p.base,
                 short(&p.base_sha)
             ),
+            ProblemKind::ReleaseBuild => crate::problems::build_text(p),
             ProblemKind::NoCi => format!("No CI runs on the pull requests of {}.", p.repo),
             ProblemKind::WorkflowRisks => crate::problems::risks_text(p),
             ProblemKind::Versions => crate::problems::versions_text(p),

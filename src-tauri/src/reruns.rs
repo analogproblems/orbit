@@ -101,14 +101,20 @@ fn rule(rules: &crate::buddy::Rules, done: usize) -> &str {
         &rules.rerun_again
     }
 }
-/// Whether the problem is about the latest commit Orbit knows of: a rerun
-/// of an older one's job would test code that is gone.
+/// Whether the problem is about the latest commit Orbit knows of (for a
+/// release build, the commit its tag is at now): a rerun of an older one's
+/// job would test code that is gone.
 fn current(s: &Snapshot, t: &Thread, p: &Problem) -> bool {
     match t.kind {
         ThreadKind::Comment => s
             .prs
             .iter()
             .any(|pr| t.pr_id.as_deref() == Some(pr.id.as_str()) && pr.head_sha == p.sha),
+        // A release build's tag, still at the commit its runs ran at.
+        ThreadKind::Issue if p.kind == crate::problems::ProblemKind::ReleaseBuild => s
+            .builds
+            .iter()
+            .any(|b| same_repo(&b.repo, &t.repo) && b.tag == p.branch && b.sha == p.sha),
         ThreadKind::Issue => {
             s.ci.iter()
                 .any(|c| same_repo(&c.repo, &t.repo) && c.head.sha == p.sha)

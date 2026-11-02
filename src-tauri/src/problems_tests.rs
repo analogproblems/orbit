@@ -2177,3 +2177,141 @@ mod tags {
         assert!(!problems[0].is_open());
     }
 }
+
+/// The build of a repository's newest version tag at `sha`, standing so.
+fn build(tag: &str, ci: CommitCi) -> crate::builds::Build {
+    crate::builds::Build {
+        repo: "a/b".into(),
+        tag: tag.into(),
+        sha: ci.sha.clone(),
+        ci,
+        ..Default::default()
+    }
+}
+
+/// A failing release build is one problem that tells you once, like a
+/// default branch, says what fails in a sentence, and closes once its
+/// runs pass; a build still running, or with nothing run, changes nothing.
+/// A newer tag closes the older one's problem.
+#[test]
+fn a_failing_release_build_tells_you_once_until_it_passes_or_a_newer_tag_comes() {
+    let mut problems = vec![];
+    see_build(
+        &mut problems,
+        &build("v1.0.0", commit(A, CiState::Running, &[])),
+        at(0),
+    );
+    see_build(
+        &mut problems,
+        &build("v1.0.0", commit(A, CiState::None, &[])),
+        at(1),
+    );
+    assert!(problems.is_empty());
+    let red = commit(A, CiState::Failing, &["Release / build (macos)"]);
+    see_build(&mut problems, &build("v1.0.0", red.clone()), at(2));
+    assert_eq!(problems.len(), 1);
+    let p = &problems[0];
+    assert_eq!(p.key, "build:a/b:v1.0.0");
+    assert_eq!(p.kind, ProblemKind::ReleaseBuild);
+    assert_eq!((p.branch.as_str(), p.alerts), ("v1.0.0", 1));
+    assert!(p.needs_you());
+    assert_eq!(
+        timeline(p),
+        ["Failing on v1.0.0 at 1111111: Release / build (macos)."]
+    );
+    assert_eq!(
+        build_text(p),
+        "The release build for v1.0.0 in a/b is failing at 1111111: Release / build (macos)."
+    );
+    // Read again, the same: quiet.
+    see_build(&mut problems, &build("v1.0.0", red.clone()), at(10));
+    assert_eq!((problems.len(), problems[0].alerts), (1, 1));
+    // Rerun, it passes.
+    see_build(
+        &mut problems,
+        &build("v1.0.0", commit(A, CiState::Passing, &[])),
+        at(20),
+    );
+    assert!(open(&problems).is_empty());
+    assert!(problems[0].passed());
+    assert_eq!(
+        problems[0].closed_reason.as_deref(),
+        Some("Passed at 1111111.")
+    );
+
+    // A newer tag's build: the older tag's open problem closes, and the
+    // new one's opens on its own.
+    see_build(&mut problems, &build("v1.0.0", red), at(200));
+    assert_eq!(open(&problems).len(), 1);
+    let red = commit(B, CiState::Failing, &["Release / sign"]);
+    see_build(&mut problems, &build("v1.1.0", red), at(210));
+    let still: Vec<&str> = open(&problems).iter().map(|p| p.key.as_str()).collect();
+    assert_eq!(still, ["build:a/b:v1.1.0"]);
+    let older = problems
+        .iter()
+        .rev()
+        .find(|p| p.key == "build:a/b:v1.0.0")
+        .unwrap();
+    assert!(!older.passed());
+    assert_eq!(
+        older.closed_reason.as_deref(),
+        Some("v1.1.0 is the newest version tag now.")
+    );
+    // Nothing to do with a default branch's problem.
+    observe(&mut problems, &failing(C, &["CI / Rust"]), &[], at(220));
+    see_build(
+        &mut problems,
+        &build("v1.1.0", commit(B, CiState::Passing, &[])),
+        at(230),
+    );
+    let still: Vec<&str> = open(&problems).iter().map(|p| p.key.as_str()).collect();
+    assert_eq!(still, ["ci:a/b"]);
+}
+
+/// Once a read of the tags shows the build's tag is no longer the newest,
+/// its problem closes, without waiting for the newer tag's build: a newer
+/// version came, or the tag is gone. A read that didn't show the tags
+/// changes nothing.
+#[test]
+fn a_release_build_closes_once_its_tag_is_no_longer_the_newest() {
+    use crate::releases::{RepoReleases, Tag};
+    let tags = |names: &[(&str, &str)]| RepoReleases {
+        repo: "A/B".into(),
+        read_at: stamp(at(0)),
+        tags: names
+            .iter()
+            .map(|(name, sha)| Tag {
+                name: name.to_string(),
+                sha: sha.to_string(),
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let red = commit(A, CiState::Failing, &["Release / build"]);
+    let mut problems = vec![];
+    see_build(&mut problems, &build("v1.0.0", red.clone()), at(0));
+    // Still the newest, even moved: it stays.
+    close_old_builds(&mut problems, &tags(&[("v1.0.0", B), ("v0.9.0", C)]), at(1));
+    // Not read yet, or GitHub won't show them: it stays.
+    let mut unread = tags(&[]);
+    unread.read_at.clear();
+    close_old_builds(&mut problems, &unread, at(2));
+    let mut unseen = tags(&[]);
+    unseen.unseen = Some("Not found".into());
+    close_old_builds(&mut problems, &unseen, at(3));
+    assert_eq!(open(&problems).len(), 1);
+
+    close_old_builds(&mut problems, &tags(&[("v1.1.0", B), ("v1.0.0", A)]), at(4));
+    assert!(open(&problems).is_empty());
+    assert_eq!(
+        problems[0].closed_reason.as_deref(),
+        Some("v1.1.0 is the newest version tag now.")
+    );
+    see_build(&mut problems, &build("v1.0.0", red), at(300));
+    close_old_builds(&mut problems, &tags(&[]), at(301));
+    assert!(open(&problems).is_empty());
+    assert_eq!(
+        problems.last().unwrap().closed_reason.as_deref(),
+        Some("The tag v1.0.0 is gone.")
+    );
+}

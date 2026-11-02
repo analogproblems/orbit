@@ -21,7 +21,10 @@
 // <dir>/runners-org-error exists, reading them fails with its text. The
 // runs of a/b are the list in <dir>/queued.json, or none, listed newest
 // first in pages, those with the status asked for made before `created`
-// ("<time") when it is given.
+// ("<time") when it is given, and those for the `branch` (a run's
+// `head_branch`, which is a tag's name for a run a tag started) and
+// `head_sha` asked for; while <dir>/runs-error exists, listing them fails
+// with its text.
 // The releases of a/b are the list in <dir>/releases.json, or none, in
 // pages; while <dir>/releases-error exists, listing them fails with its
 // text. Its latest release is <dir>/latest.json, or the newest made in the
@@ -645,6 +648,11 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
   if (!fs.existsSync(pull)) missing();
   process.stdout.write(fs.readFileSync(pull, "utf8"));
 } else if (endpoint === "repos/a/b/actions/runs") {
+  const refused = path.join(dir, "runs-error");
+  if (fs.existsSync(refused)) {
+    process.stderr.write(fs.readFileSync(refused, "utf8"));
+    process.exit(1);
+  }
   const queued = path.join(dir, "queued.json");
   const before = Date.parse((fields.created || "").replace(/^</, ""));
   const runs = (
@@ -653,6 +661,8 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
     .filter(
       (r) =>
         (!fields.status || r.status === fields.status) &&
+        (!fields.branch || r.head_branch === fields.branch) &&
+        (!fields.head_sha || r.head_sha === fields.head_sha) &&
         (Number.isNaN(before) || Date.parse(r.created_at) < before),
     )
     .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));

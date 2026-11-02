@@ -9,6 +9,7 @@ pub mod boxtool;
 pub mod brief;
 pub mod broke;
 pub mod buddy;
+pub mod builds;
 pub mod ci;
 pub mod claude;
 pub mod cli;
