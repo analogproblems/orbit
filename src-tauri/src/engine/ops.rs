@@ -502,6 +502,7 @@ async fn send(p: &Planned, me: &str) -> Result<Posted, String> {
     match p.action {
         Action::Find => Err("Looking isn't a write.".into()),
         Action::ChangeSetting => Err("Orbit changes a setting only on your tap.".into()),
+        Action::AskRebase => Err("Orbit asks Dependabot to rebase only on your tap.".into()),
         Action::RerunJob => reruns::send(p).await,
         Action::PostComment => {
             let body = crate::orbits::signed(&p.body, me);

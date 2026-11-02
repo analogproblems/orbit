@@ -624,6 +624,37 @@ async function demoAction(
     commit();
     return;
   }
+  if (command === "ask_rebase") {
+    const u = demo.updates?.find((u) => u.prId === args.prId);
+    if (!u?.canRebase)
+      throw Error(
+        "GitHub doesn’t say it conflicts now, so Orbit won’t ask Dependabot to rebase it.",
+      );
+    // GitHub takes the comment at once; Dependabot answers there later.
+    const at = new Date().toISOString();
+    const rebaseText =
+      "Orbit asked Dependabot to rebase it. Dependabot answers on GitHub, and may take a few minutes.";
+    demo.updates = demo.updates?.map((x) =>
+      x.prId === u.prId ? { ...x, canRebase: false, rebaseText } : x,
+    );
+    demo.journal = [
+      ...(demo.journal ?? []),
+      {
+        id: `demo-write-${Date.now()}`,
+        thread: `dependabot:${u.prId.toLowerCase()}`,
+        action: "ask_rebase",
+        repo: u.repo,
+        number: u.number,
+        state: "done",
+        at,
+        doneAt: at,
+        url: `${u.url}#issuecomment-1`,
+        head: u.headSha,
+      },
+    ];
+    commit();
+    return;
+  }
   if (command === "reset_demo") {
     timers.forEach(clearTimeout);
     timers.clear();

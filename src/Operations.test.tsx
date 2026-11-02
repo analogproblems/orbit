@@ -1186,6 +1186,61 @@ describe("operations page", () => {
     expect(screen.queryByText("Dependabot updates")).toBeNull();
   });
 
+  it("asks Dependabot to rebase one that conflicts with your tap", () => {
+    const action = vi.fn().mockResolvedValue({ ok: true });
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    useOrbit.setState({ action });
+    const s = freshDemo();
+    show(s);
+    const rows = () =>
+      within(
+        screen.getByRole("list", { name: "Dependabot updates" }),
+      ).getAllByRole("listitem");
+    // Only the one that conflicts has the button.
+    expect(rows().map((r) => r.textContent?.includes("Ask to rebase"))).toEqual(
+      [true, false, false],
+    );
+    fireEvent.click(
+      within(rows()[0]).getByRole("button", {
+        name: "Ask Dependabot to rebase acme/api#64",
+      }),
+    );
+    expect(action).toHaveBeenCalledWith("ask_rebase", {
+      prId: "acme/api#64",
+    });
+    expect(open).not.toHaveBeenCalled();
+    open.mockRestore();
+    cleanup();
+
+    // Once asked, it says so, with no button.
+    const fix = s.updates!.find((u) => u.prId === "acme/api#64")!;
+    fix.canRebase = false;
+    fix.rebaseText =
+      "Orbit asked Dependabot to rebase it. Dependabot answers on GitHub, and may take a few minutes.";
+    s.journal = [
+      ...(s.journal ?? []),
+      {
+        id: "w-rebase",
+        thread: "dependabot:acme/api#64",
+        action: "ask_rebase",
+        repo: "acme/api",
+        number: 64,
+        state: "done",
+        at: new Date().toISOString(),
+        url: "https://github.com/acme/api/pull/64#issuecomment-1",
+        head: fix.headSha,
+      },
+    ];
+    show(s);
+    expect(rows()[0].textContent).toContain(
+      "Orbit asked Dependabot to rebase it.",
+    );
+    expect(rows()[0].textContent).not.toContain("Ask to rebase");
+    expect(
+      screen.getByText("Asked Dependabot to rebase acme/api #64."),
+    ).toBeTruthy();
+  });
+
   it("says when a read failed or GitHub has more alerts than Orbit reads", () => {
     const s = freshDemo();
     const api = s.security!.find((r) => r.repo === "acme/api")!;

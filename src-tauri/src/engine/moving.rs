@@ -46,9 +46,10 @@ impl Engine {
     /// Orbit is doing to finish, then holds off anything new until it
     /// starts again: syncing, publishing, a repository being connected,
     /// telling agents about CI, reading CI, the history and write-ups, and
-    /// commit statuses on their way. A settings change after that is
-    /// refused. For an Orbit that has shut down to move, so nothing it does
-    /// lands after it's packed.
+    /// commit statuses on their way. An ask for Dependabot to rebase on its
+    /// way finishes first, and one after it sees `moving` and is refused.
+    /// A settings change after that is refused. For an Orbit that has shut
+    /// down to move, so nothing it does lands after it's packed.
     pub async fn fence(&self) -> Result<(), String> {
         self.moving.store(true, Ordering::SeqCst);
         let until = tokio::time::Instant::now() + QUIET;
@@ -61,6 +62,11 @@ impl Engine {
         let cloning = tokio::time::timeout_at(until, self.cloning.lock())
             .await
             .map_err(|_| BUSY.to_string())?;
+        drop(
+            tokio::time::timeout_at(until, self.rebasing.lock())
+                .await
+                .map_err(|_| BUSY.to_string())?,
+        );
         let quiet = self.quiet(until).await?;
         while !self.sending_statuses.lock().unwrap().is_empty() {
             if tokio::time::Instant::now() >= until {

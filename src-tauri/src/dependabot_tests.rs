@@ -684,3 +684,326 @@ fn github_is_asked_once_per_head_and_base_and_again_after_a_wait() {
     prune(&mut s);
     assert!(s.dependabot.is_empty());
 }
+
+/// The three updates, where only 12 conflicts.
+fn three() -> Snapshot {
+    let prs = vec![
+        update(10, "Bump vite from 5.4.10 to 5.4.11", '1'),
+        update(11, "Bump react from 18.3.1 to 19.0.0", '2'),
+        update(12, "Bump qs from 6.10.1 to 6.10.3", '3'),
+    ];
+    let mut s = snapshot(
+        prs,
+        &[
+            (10, CiState::Passing),
+            (11, CiState::Failing),
+            (12, CiState::Passing),
+        ],
+    );
+    s.dependabot = vec![
+        merge(&s, 10, Some(true), "clean"),
+        merge(&s, 11, Some(true), "unstable"),
+        merge(&s, 12, Some(false), "dirty"),
+    ];
+    s
+}
+fn shown(s: &Snapshot, number: u64) -> Update {
+    all(s).into_iter().find(|u| u.number == number).unwrap()
+}
+
+#[test]
+fn only_one_that_conflicts_and_isnt_asked_about_at_its_commit_may_be_rebased() {
+    let mut s = three();
+    let head = "3".repeat(40);
+    assert_eq!(
+        may_rebase(&s, "a/b#12"),
+        Ok(("a/b".into(), 12, head.clone(), MAIN.into()))
+    );
+    let fix = shown(&s, 12);
+    assert!(fix.can_rebase);
+    assert_eq!(fix.rebase_text, None);
+    for n in [10, 11] {
+        assert!(!shown(&s, n).can_rebase);
+        assert_eq!(
+            may_rebase(&s, &pr_id("a/b", n)).unwrap_err(),
+            "GitHub doesn't say it conflicts now, so Orbit won't ask Dependabot to rebase it."
+        );
+    }
+    assert!(may_rebase(&s, "a/b#99")
+        .unwrap_err()
+        .starts_with("Orbit doesn't show this Dependabot pull request now"));
+
+    // Recorded before it is sent: no second ask meanwhile.
+    let id = record_rebase(&mut s.journal, "a/b", 12, &head, now());
+    let w = s.journal.last().unwrap();
+    assert_eq!(
+        (w.action, w.state, w.number, w.head.as_deref()),
+        (
+            Action::AskRebase,
+            WriteState::Sending,
+            Some(12),
+            Some(head.as_str())
+        )
+    );
+    assert_eq!(w.thread, "dependabot:a/b#12");
+    assert_eq!(
+        may_rebase(&s, "a/b#12").unwrap_err(),
+        "Orbit is already asking Dependabot to rebase it."
+    );
+    let fix = shown(&s, 12);
+    assert!(!fix.can_rebase);
+    assert_eq!(
+        fix.rebase_text.as_deref(),
+        Some("Orbit is asking Dependabot to rebase it.")
+    );
+
+    // Done: once for each commit.
+    let url = "https://github.com/a/b/pull/12#issuecomment-1";
+    settle_rebase(&mut s.journal, &id, Ok(url.into()), now());
+    assert_eq!(s.journal[0].url, url);
+    assert_eq!(
+        may_rebase(&s, "a/b#12").unwrap_err(),
+        "Orbit already asked Dependabot to rebase it at this commit."
+    );
+    assert_eq!(
+        shown(&s, 12).rebase_text.as_deref(),
+        Some("Orbit asked Dependabot to rebase it. Dependabot answers on GitHub, and may take a few minutes.")
+    );
+
+    // Dependabot rebased it, and it conflicts again: a new commit, a new ask.
+    s.prs[2].head_sha = "4".repeat(40);
+    s.ci[0].pulls[2].ci.sha = "4".repeat(40);
+    s.dependabot[2] = merge(&s, 12, Some(false), "dirty");
+    assert!(may_rebase(&s, "a/b#12").is_ok());
+    let fix = shown(&s, 12);
+    assert!(fix.can_rebase);
+    assert_eq!(fix.rebase_text, None);
+
+    // One GitHub refused may be asked again, and says why.
+    let id = record_rebase(&mut s.journal, "a/b", 12, &"4".repeat(40), now());
+    settle_rebase(
+        &mut s.journal,
+        &id,
+        Err("gh: Resource not accessible by integration (HTTP 403)".into()),
+        now(),
+    );
+    assert!(may_rebase(&s, "a/b#12").is_ok());
+    let fix = shown(&s, 12);
+    assert!(fix.can_rebase);
+    assert_eq!(
+        fix.rebase_text.as_deref(),
+        Some("Orbit couldn't ask Dependabot to rebase it. GitHub didn't let Orbit's sign-in comment on this pull request.")
+    );
+
+    // One whose answer was lost may have posted: not again until Orbit
+    // has looked for its comment.
+    let id = record_rebase(&mut s.journal, "a/b", 12, &"4".repeat(40), now());
+    settle_rebase(
+        &mut s.journal,
+        &id,
+        Err("gh: connection reset by peer".into()),
+        now(),
+    );
+    let w = s.journal.last().unwrap();
+    assert_eq!((w.state, w.done_at.as_deref()), (WriteState::Sending, None));
+    assert_eq!(
+        may_rebase(&s, "a/b#12").unwrap_err(),
+        "Orbit doesn't know yet whether GitHub took its last ask to rebase it, so it won't ask again until it has looked."
+    );
+    let fix = shown(&s, 12);
+    assert!(!fix.can_rebase);
+    assert_eq!(
+        fix.rebase_text.as_deref(),
+        Some("Orbit doesn't know yet whether GitHub took its ask to rebase it. GitHub didn't answer clearly (connection reset by peer), so Orbit looks on GitHub for its comment before it asks again.")
+    );
+    assert_eq!(unsettled(&mut s.journal).len(), 1);
+
+    // Not while either switch is off.
+    s.settings.watch_security = false;
+    assert!(may_rebase(&s, "a/b#12").is_err());
+}
+
+#[test]
+fn githubs_errors_to_an_ask_to_rebase_are_said_plainly() {
+    assert_eq!(
+        rebase_error("gh: API rate limit exceeded for user ID 1. (HTTP 403)"),
+        "GitHub's rate limit held this back. Tap Ask to rebase again later."
+    );
+    assert_eq!(
+        rebase_error("gh: Not Found (HTTP 404)"),
+        "GitHub can't find this pull request now."
+    );
+    assert_eq!(
+        rebase_error("gh: Must have admin rights (HTTP 403)"),
+        "GitHub didn't let Orbit's sign-in comment on this pull request."
+    );
+    assert_eq!(
+        rebase_error("gh: Validation Failed (HTTP 422)"),
+        "GitHub didn't take Orbit's comment: Validation Failed (HTTP 422)."
+    );
+    // Any other failure may have posted it.
+    assert_eq!(
+        rebase_error("gh: Bad Gateway (HTTP 502)"),
+        "GitHub didn't answer clearly (Bad Gateway (HTTP 502)), so Orbit looks on GitHub for its comment before it asks again."
+    );
+    for (error, refused) in [
+        ("gh: Not Found (HTTP 404)", true),
+        ("gh: Validation Failed (HTTP 422)", true),
+        ("gh: You have exceeded a secondary rate limit", true),
+        ("gh: Bad Gateway (HTTP 502)", false),
+        ("gh: connection reset by peer", false),
+        ("Invalid comment response", false),
+        ("gh: HTTP 4", false),
+    ] {
+        assert_eq!(super::refused(error), refused, "{error}");
+    }
+}
+
+#[test]
+fn an_ask_to_rebase_cut_off_is_never_sent_again_and_is_looked_for() {
+    let mut s = three();
+    let head = "3".repeat(40);
+    let cut = record_rebase(&mut s.journal, "a/b", 12, &head, now());
+    let done = record_rebase(&mut s.journal, "a/b", 10, &"1".repeat(40), now());
+    settle_rebase(&mut s.journal, &done, Ok(String::new()), now());
+
+    let later = now() + Duration::minutes(30);
+    let found = unsettled(&mut s.journal);
+    assert_eq!(
+        found,
+        [(
+            cut.clone(),
+            "a/b".into(),
+            12,
+            "2026-11-02T11:55:00.000Z".into()
+        )],
+        "looked for from a little before it was recorded"
+    );
+    // Unsettled until Orbit has looked: no second ask meanwhile.
+    let w = &s.journal[0];
+    assert_eq!(w.state, WriteState::Sending);
+    assert_eq!(
+        w.error.as_deref(),
+        Some("Orbit stopped before GitHub answered, so it looks on GitHub for its comment before it asks again.")
+    );
+    assert!(may_rebase(&s, "a/b#12").is_err());
+    assert!(!shown(&s, 12).can_rebase);
+    assert_eq!(s.journal[1].state, WriteState::Done, "the done one stays");
+    assert_eq!(unsettled(&mut s.journal), found, "until it has looked");
+
+    // Only Orbit's sign-in's comment that says the command alone counts.
+    let comment = |login: &str, body: &str, id: u64| {
+        serde_json::json!({
+            "user": { "login": login },
+            "body": body,
+            "html_url": format!("https://github.com/a/b/pull/12#issuecomment-{id}"),
+        })
+    };
+    let comments = vec![
+        comment("someone", "@dependabot rebase", 1),
+        comment("me", "Could you @dependabot rebase this?", 2),
+        comment("ME", "@dependabot rebase\n", 3),
+    ];
+    let none = std::collections::HashSet::new();
+    assert_eq!(
+        find_rebase(&comments, "me", &none).as_deref(),
+        Some("https://github.com/a/b/pull/12#issuecomment-3")
+    );
+    assert_eq!(find_rebase(&comments[..2], "me", &none), None);
+    assert_eq!(find_rebase(&comments, "", &none), None);
+    // One an earlier ask already has isn't this one's.
+    let mut journal = s.journal.clone();
+    let mut earlier = journal[0].clone();
+    earlier.id = "earlier".into();
+    earlier.state = WriteState::Done;
+    earlier.url = "https://github.com/a/b/pull/12#issuecomment-3".into();
+    journal.insert(0, earlier);
+    let others = taken(&journal, &cut);
+    assert_eq!(others.len(), 1);
+    assert_eq!(find_rebase(&comments, "me", &others), None);
+    let mut more = comments.clone();
+    more.push(comment("me", "@dependabot rebase", 4));
+    assert_eq!(
+        find_rebase(&more, "me", &others).as_deref(),
+        Some("https://github.com/a/b/pull/12#issuecomment-4")
+    );
+    assert!(taken(&journal, "earlier").is_empty(), "not its own");
+
+    // Found: it got there.
+    let mut journal = s.journal.clone();
+    found_rebase(
+        &mut journal,
+        &cut,
+        Ok(find_rebase(&comments, "me", &none)),
+        later,
+    );
+    assert_eq!(journal[0].state, WriteState::Done);
+    assert_eq!(journal[0].error, None);
+    assert!(may_rebase(
+        &{
+            let mut s = s.clone();
+            s.journal = journal;
+            s
+        },
+        "a/b#12"
+    )
+    .is_err());
+
+    // A look that failed, or couldn't read every comment, settles nothing:
+    // it looks again on the next pass.
+    found_rebase(
+        &mut s.journal,
+        &cut,
+        Err("gh: Bad Gateway (HTTP 502)".into()),
+        later,
+    );
+    assert_eq!(s.journal[0].state, WriteState::Sending);
+    assert_eq!(
+        s.journal[0].error.as_deref(),
+        Some("Orbit couldn't look on GitHub for its comment yet: Bad Gateway (HTTP 502). It looks again on its next pass.")
+    );
+    assert!(may_rebase(&s, "a/b#12").is_err());
+    assert_eq!(unsettled(&mut s.journal).len(), 1);
+
+    // Not found after reading every comment: it didn't go through, to tap
+    // again.
+    found_rebase(&mut s.journal, &cut, Ok(None), later);
+    assert_eq!(s.journal[0].state, WriteState::Failed);
+    assert_eq!(
+        s.journal[0].error.as_deref(),
+        Some("Orbit didn't find its comment on GitHub, so its ask didn't go through. Tap Ask to rebase again if it still conflicts.")
+    );
+    assert!(may_rebase(&s, "a/b#12").is_ok());
+    assert!(shown(&s, 12).can_rebase);
+    assert!(unsettled(&mut s.journal).is_empty());
+    // A settled ask isn't changed by a late look.
+    found_rebase(&mut s.journal, &cut, Ok(Some("x".into())), later);
+    assert_eq!(s.journal[0].state, WriteState::Failed);
+}
+
+#[test]
+fn only_githubs_answer_that_it_conflicts_counts_as_a_conflict() {
+    let s = three();
+    let m = |mergeable: Option<bool>, state: &str| Merge {
+        mergeable,
+        state: state.into(),
+        ..merge(&s, 12, mergeable, state)
+    };
+    assert!(conflicts(&m(Some(false), "dirty")));
+    assert!(conflicts(&m(Some(false), "blocked")));
+    assert!(!conflicts(&m(None, "dirty")), "still working it out");
+    assert!(!conflicts(&m(Some(false), "unknown")));
+    assert!(!conflicts(&m(Some(true), "clean")));
+    assert!(!conflicts(&m(Some(true), "behind")));
+}
+
+#[test]
+fn a_cut_off_write_of_another_kind_isnt_dependabots_to_settle() {
+    let mut journal = vec![];
+    let id = record_rebase(&mut journal, "a/b", 12, &"3".repeat(40), now());
+    let mut threads = vec![];
+    assert!(!crate::ops::interrupted(&mut journal, &mut threads, now()));
+    assert_eq!(journal[0].state, WriteState::Sending);
+    assert_eq!(unsettled(&mut journal).len(), 1);
+    assert_eq!(journal[0].id, id);
+}

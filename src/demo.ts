@@ -1001,6 +1001,7 @@ export function demoUpdates(): DependabotUpdate[] {
     conflicts: false,
     mergeText: "GitHub says it can merge.",
     ready: false,
+    canRebase: false,
     ...rest,
   });
   return [
@@ -1018,6 +1019,7 @@ export function demoUpdates(): DependabotUpdate[] {
       ],
       conflicts: true,
       mergeText: "It conflicts with main.",
+      canRebase: true,
     }),
     update("acme/orbit", 152, "Bump vite from 5.4.10 to 5.4.11", "7", {
       what: "Updates vite from 5.4.10 to 5.4.11, a patch update.",

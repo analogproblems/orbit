@@ -1322,7 +1322,7 @@ export function updatesSummary(all: DependabotUpdate[]) {
  * fixes, its checks and whether GitHub says it can merge, fixes for the
  * most severe alerts first. Listed only while there are some. */
 function DependabotUpdates() {
-  const { snapshot: s } = useOrbit();
+  const { snapshot: s, action } = useOrbit();
   const all = s.updates ?? [];
   if (!all.length) return null;
   return (
@@ -1369,9 +1369,26 @@ function DependabotUpdates() {
                     {u.error && u.error !== u.mergeText && (
                       <Text color="secondary">{u.error}</Text>
                     )}
+                    {u.rebaseText && (
+                      <Text color="secondary">{u.rebaseText}</Text>
+                    )}
                   </VStack>
                 }
                 onClick={() => openLink(u.url)}
+                endContent={
+                  u.canRebase ? (
+                    <Button
+                      label={`Ask Dependabot to rebase ${u.repo}#${u.number}`}
+                      size="sm"
+                      variant="secondary"
+                      onClick={() =>
+                        void action("ask_rebase", { prId: u.prId })
+                      }
+                    >
+                      Ask to rebase
+                    </Button>
+                  ) : undefined
+                }
               />
             );
           })}
@@ -1647,6 +1664,7 @@ const writeText: Record<OpsAction, string> = {
   reopen_issue: "Reopened its issue on",
   rerun_job: "Reran a job on",
   change_setting: "Changed a security setting in",
+  ask_rebase: "Asked Dependabot to rebase",
 };
 /** A write in words, such as "Opened an issue on acme/api #45", or
  * "Turned on Dependabot alerts in acme/api". */

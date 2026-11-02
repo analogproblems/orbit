@@ -1838,6 +1838,11 @@ export interface DependabotUpdate {
    * merge. */
   ready: boolean;
   error?: string | null;
+  /** It conflicts, and Orbit hasn't asked Dependabot to rebase it at
+   * this commit, or its ask didn't go through. */
+  canRebase: boolean;
+  /** Where Orbit's ask to rebase it at this commit stands, if it asked. */
+  rebaseText?: string | null;
 }
 /** A readiness answer in one line, as Orbit says it. */
 export function readinessLine(r: Readiness) {
@@ -2092,7 +2097,8 @@ export type OpsAction =
   | "close_issue"
   | "reopen_issue"
   | "rerun_job"
-  | "change_setting";
+  | "change_setting"
+  | "ask_rebase";
 /** One write Orbit made on GitHub, recorded before it was sent. */
 export interface OpsWrite {
   id: string;
@@ -2107,6 +2113,8 @@ export interface OpsWrite {
   error?: string | null;
   /** For a change to a security setting, which one. */
   setting?: SecuritySetting;
+  /** For an ask to rebase, the commit the pull request was at. */
+  head?: string;
 }
 /** A commit's first seven characters, as GitHub shows them. */
 export function shortSha(sha: string) {

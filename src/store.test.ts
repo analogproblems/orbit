@@ -290,6 +290,32 @@ describe("demo security settings", () => {
   });
 });
 
+describe("demo Dependabot updates", () => {
+  it("asks Dependabot to rebase the one that conflicts, once", async () => {
+    const args = { prId: "acme/api#64" };
+    const result = await useOrbit.getState().action("ask_rebase", args);
+    expect(result.ok).toBe(true);
+    const s = useOrbit.getState().snapshot;
+    const fix = s.updates!.find((u) => u.prId === "acme/api#64")!;
+    expect(fix.canRebase).toBe(false);
+    expect(fix.rebaseText).toContain("Orbit asked Dependabot to rebase it.");
+    expect(s.journal!.at(-1)).toMatchObject({
+      action: "ask_rebase",
+      repo: "acme/api",
+      number: 64,
+      state: "done",
+    });
+    const again = await useOrbit
+      .getState()
+      .action("ask_rebase", args, { quiet: true });
+    expect(again.ok).toBe(false);
+    const clean = await useOrbit
+      .getState()
+      .action("ask_rebase", { prId: "acme/orbit#152" }, { quiet: true });
+    expect(clean.ok).toBe(false);
+  });
+});
+
 describe("demo buddy", () => {
   it("gives older demos Bit and saves one buddy field at a time", async () => {
     const old = structuredClone(useOrbit.getState().snapshot);
