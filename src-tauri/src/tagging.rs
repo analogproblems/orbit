@@ -56,21 +56,21 @@ pub fn reason(u: &Untagged) -> String {
 }
 
 /// The tag for `version`, named the way the repository names its version
-/// tags: as its highest one does, or else as its workflows' tag filters
-/// take them, with a `v` unless they all start with a digit.
-pub fn name(r: &RepoReleases, setup: &Setup, version: &str) -> String {
-    let prefixed = match r.tags.first() {
-        Some(t) => t.name.starts_with('v'),
-        None => {
-            let patterns: Vec<&String> = setup.workflows.iter().flat_map(|w| &w.tags).collect();
-            let digits = |p: &&String| p.starts_with(|c: char| c.is_ascii_digit() || c == '[');
-            patterns.is_empty() || !patterns.iter().all(digits)
-        }
+/// tags: as its highest one does, with or without a `v`, or with none yet,
+/// `v` and the version, else the version alone. Where workflows run on
+/// tags, the tag must start one of them, as GitHub reads their filters
+/// (`Workflow::runs_on_tag`), so a tag never misses the release workflow.
+/// None when no name fits.
+pub fn name(r: &RepoReleases, setup: &Setup, version: &str) -> Option<String> {
+    let release: Vec<&crate::workflows::Workflow> =
+        setup.workflows.iter().filter(|w| w.on_tags()).collect();
+    let starts = |tag: &String| release.is_empty() || release.iter().any(|w| w.runs_on_tag(tag));
+    let names = match r.tags.first() {
+        Some(t) if t.name.starts_with('v') => vec![format!("v{version}")],
+        Some(_) => vec![version.to_string()],
+        None => vec![format!("v{version}"), version.to_string()],
     };
-    match prefixed {
-        true => format!("v{version}"),
-        false => version.to_string(),
-    }
+    names.into_iter().find(starts)
 }
 
 /// The versions waiting for a tag, one at most for each repository Orbit
@@ -96,14 +96,20 @@ pub fn waiting(s: &Snapshot) -> Vec<Untagged> {
 ///
 /// - the repository has version tags, or a workflow that runs on tags, and
 ///   Orbit's sign-in can push there;
+/// - Orbit read every version tag (none beyond the newest it reads), and
+///   the version is higher than each;
 /// - Orbit read the version files and the tags workflows run on at the
 ///   branch's latest commit, every manifest there says the same version,
 ///   and no version files disagree;
-/// - CI passed at that commit;
-/// - the version is higher than every version tag Orbit read;
+/// - CI passed at that commit, as Orbit's latest read of it says;
+/// - a name fits (`name`);
 /// - no push of that tag is on its way or done.
 pub fn of(s: &Snapshot, r: &RepoReleases) -> Option<Untagged> {
     if r.read_at.is_empty() || r.unseen.is_some() || r.drafts_hidden {
+        return None;
+    }
+    // A tag Orbit didn't read may be the version, or a higher one.
+    if r.more_tags || r.tags.len() != r.version_tags as usize {
         return None;
     }
     let setup = s.setups.iter().find(|x| same_repo(&x.repo, &r.repo))?;
@@ -115,7 +121,9 @@ pub fn of(s: &Snapshot, r: &RepoReleases) -> Option<Untagged> {
         return None;
     }
     let ci = s.ci.iter().find(|c| same_repo(&c.repo, &r.repo))?;
-    if ci.head.sha != setup.sha || ci.head.state != crate::ci::CiState::Passing {
+    // What passed before a read that failed may not hold now.
+    let passed = ci.error.is_none() && ci.head.state == crate::ci::CiState::Passing;
+    if ci.head.sha != setup.sha || !passed {
         return None;
     }
     let disagree = s
@@ -129,7 +137,7 @@ pub fn of(s: &Snapshot, r: &RepoReleases) -> Option<Untagged> {
         return None;
     };
     let wanted = version(said)?;
-    let tagged = setup.workflows.iter().any(|w| !w.tags.is_empty());
+    let tagged = setup.workflows.iter().any(|w| w.on_tags());
     if r.tags.is_empty() && !tagged {
         return None;
     }
@@ -139,7 +147,7 @@ pub fn of(s: &Snapshot, r: &RepoReleases) -> Option<Untagged> {
     {
         return None;
     }
-    let tag = name(r, setup, said);
+    let tag = name(r, setup, said)?;
     if pushing(&s.journal, &r.repo, &tag) {
         return None;
     }
@@ -160,6 +168,32 @@ pub fn pushing(journal: &[Write], repo: &str, tag: &str) -> bool {
             && same_repo(&w.repo, repo)
             && w.tag.as_deref() == Some(tag)
     })
+}
+
+/// The tag you tapped, or Bit took on, while it still waits: the version
+/// `repo` waits to tag now, if it is `tag`. Kept as it is then, commit and
+/// all, so a version that takes its place while Orbit waits for its turn
+/// isn't pushed instead.
+pub fn offered(s: &Snapshot, repo: &str, tag: &str) -> Result<Untagged, String> {
+    match waiting(s).into_iter().find(|u| same_repo(&u.repo, repo)) {
+        Some(u) if u.tag == tag => Ok(u),
+        Some(u) => Err(format!(
+            "{repo} waits for {} now, not {tag}, so Orbit didn't push {tag}.",
+            u.tag
+        )),
+        None => Err(format!(
+            "{repo} doesn't wait for {tag} any more, so Orbit didn't push it."
+        )),
+    }
+}
+/// The names GitHub may have the version under: the tag, and the same
+/// version with or without its `v`.
+pub fn spellings(u: &Untagged) -> [String; 2] {
+    let other = match u.tag.strip_prefix('v') {
+        Some(bare) => bare.to_string(),
+        None => format!("v{}", u.tag),
+    };
+    [u.tag.clone(), other]
 }
 
 /// The version `repo` waits to tag, for your tap or Bit's, or why there is
@@ -339,6 +373,7 @@ pub fn seen(r: &mut RepoReleases, tag: &str, sha: &str) {
         name: tag.to_string(),
         sha: sha.to_string(),
     });
+    r.version_tags += 1;
     r.tags.sort_by_key(|t| std::cmp::Reverse(version(&t.name)));
 }
 

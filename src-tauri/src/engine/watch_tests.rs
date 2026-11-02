@@ -1200,6 +1200,84 @@ async fn bit_pushes_a_tag_itself_only_on_do_it() {
     assert!(writes(d.path()).is_empty());
 }
 
+/// What you tap is what Orbit pushes: when another version takes its
+/// place while the tap waits for its turn, nothing is pushed.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_tap_pushes_the_tag_it_showed_or_nothing() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    bumped(d.path());
+    let e = connected(d.path()).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    // Another push holds the turn.
+    let held = e.tagging.lock().await;
+    let tap = crate::github::GH.scope(gh.clone(), e.fix("push:a/b:v0.3.0"));
+    tokio::pin!(tap);
+    let waited = tokio::time::timeout(std::time::Duration::from_millis(300), &mut tap).await;
+    assert!(waited.is_err());
+    // Meanwhile Orbit reads 0.4.0 at that green commit.
+    e.update(|s| {
+        for f in &mut s.setups[0].versions {
+            f.version = "0.4.0".into();
+        }
+    })
+    .await;
+    let s = e.shown_snapshot().await;
+    assert!(s.attention.iter().any(|a| a.key == "push:a/b:v0.4.0"));
+    drop(held);
+    assert_eq!(
+        tap.await.unwrap_err(),
+        "What waits for a tag in a/b changed while Orbit waited its turn, so it didn't push v0.3.0."
+    );
+    assert!(writes(d.path()).is_empty() && push_of(&e.snapshot().await).is_none());
+}
+
+/// Only CI Orbit's latest read saw pass counts: after a read that failed,
+/// what passed before doesn't, so nothing is offered or pushed. And the
+/// version on GitHub without its `v` holds a push back too.
+#[cfg(unix)]
+#[tokio::test]
+async fn no_tag_is_pushed_on_old_ci_or_beside_its_other_spelling() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    let head = bumped(d.path());
+    let e = connected(d.path()).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let offered = |s: &Snapshot| s.attention.iter().any(|a| a.key == "push:a/b:v0.3.0");
+    assert!(offered(&e.shown_snapshot().await));
+    // The next CI read fails, keeping what passed before.
+    std::fs::write(d.path().join("answer.json"), "not json").unwrap();
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    let s = e.shown_snapshot().await;
+    assert!(s.ci[0].error.is_some() && s.ci[0].head.sha == head);
+    assert!(!offered(&s));
+    let error = crate::github::GH
+        .scope(gh.clone(), e.fix("push:a/b:v0.3.0"))
+        .await
+        .unwrap_err();
+    assert_eq!(error, "This doesn't need you any more.");
+    assert!(writes(d.path()).is_empty());
+
+    // Read again, it's offered; but 0.3.0 reached GitHub meanwhile.
+    std::fs::write(d.path().join("answer.json"), answer(&head, "SUCCESS")).unwrap();
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert!(offered(&e.shown_snapshot().await));
+    std::fs::write(d.path().join("tag-0.3.0.txt"), &head).unwrap();
+    let error = crate::github::GH
+        .scope(gh.clone(), e.fix("push:a/b:v0.3.0"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error,
+        "GitHub has 0.3.0 already, at 1111111, so Orbit didn't push v0.3.0."
+    );
+    assert!(writes(d.path()).is_empty() && push_of(&e.snapshot().await).is_none());
+    // It counts as that version's tag now.
+    let s = e.shown_snapshot().await;
+    assert!(s.attention.iter().all(|a| a.kind != AttentionKind::Release));
+}
+
 /// The issue's example, through the fake GitHub: v0.3.0 tagged on a
 /// commit whose files still say 0.2.0, while main says 0.3.0, needs you
 /// once, with how to fix it by hand; Orbit reads the files there once, and

@@ -96,10 +96,161 @@ pub struct Workflow {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub missed: Vec<ToolRun>,
     /// The tags a `push` runs it for, as its `tags` filter writes them,
-    /// such as `v*`; `**` when it names `tags` with no list. Empty when it
-    /// runs on no tag, or Orbit can't read its `on:`.
+    /// in order, such as `v*` and `!v*-*`; `**` when it names `tags` with
+    /// no list. Empty when it runs on no tag, or Orbit can't read its
+    /// `on:`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// The tags its `push` leaves out, as its `tags-ignore` filter writes
+    /// them, when it has one instead.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags_ignore: Vec<String>,
+}
+impl Workflow {
+    /// Whether a `push` filter makes it run on tags at all. A `push` with
+    /// no filters runs on every tag too, but that is a check, not a
+    /// release, so it doesn't count.
+    pub fn on_tags(&self) -> bool {
+        !self.tags.is_empty() || !self.tags_ignore.is_empty()
+    }
+    /// Whether pushing the tag `name` runs it, as GitHub reads its filter:
+    /// the last of its `tags` patterns that matches decides, a `!` one
+    /// leaving the tag out; or, with `tags-ignore`, every tag none of its
+    /// patterns matches.
+    pub fn runs_on_tag(&self, name: &str) -> bool {
+        if !self.tags.is_empty() {
+            self.tags
+                .iter()
+                .fold(false, |on, p| match p.strip_prefix('!') {
+                    Some(out) if filter_match(out, name) => false,
+                    None if filter_match(p, name) => true,
+                    _ => on,
+                })
+        } else {
+            !self.tags_ignore.is_empty() && !self.tags_ignore.iter().any(|p| filter_match(p, name))
+        }
+    }
+}
+
+/// One part of a filter pattern (`filter_match`).
+#[derive(Debug)]
+enum Atom {
+    Char(char),
+    /// One of these ranges of characters, from `[...]`.
+    Set(Vec<(char, char)>),
+    /// `*`: any characters but `/`.
+    Star,
+    /// `**`: any characters.
+    Stars,
+}
+/// How often an atom comes: once, or with `?` after it, maybe, or with
+/// `+`, once or more.
+#[derive(Clone, Copy, Debug)]
+enum Times {
+    One,
+    Maybe,
+    Many,
+}
+/// Whether a branch or tag name matches a pattern of a workflow's filter,
+/// as GitHub reads one: `*` is any characters but `/`, `**` any characters,
+/// `?` and `+` say the character before may be left out or repeated, `[...]`
+/// is one of the characters or ranges in it, and `\` takes the next
+/// character as it is. A pattern Orbit can't read matches nothing.
+pub fn filter_match(pattern: &str, name: &str) -> bool {
+    let Some(atoms) = filter_atoms(pattern) else {
+        return false;
+    };
+    let name: Vec<char> = name.chars().collect();
+    atoms_match(&atoms, &name)
+}
+fn filter_atoms(pattern: &str) -> Option<Vec<(Atom, Times)>> {
+    let mut out: Vec<(Atom, Times)> = vec![];
+    let mut chars = pattern.chars().peekable();
+    while let Some(c) = chars.next() {
+        let atom = match c {
+            '*' if chars.peek() == Some(&'*') => {
+                chars.next();
+                Atom::Stars
+            }
+            '*' => Atom::Star,
+            '?' | '+' => {
+                // It says how often the atom before it comes.
+                let (before, times) = out.last_mut()?;
+                if !matches!(times, Times::One) || matches!(before, Atom::Star | Atom::Stars) {
+                    return None;
+                }
+                *times = if c == '?' { Times::Maybe } else { Times::Many };
+                continue;
+            }
+            '[' => {
+                let mut set = vec![];
+                loop {
+                    let a = chars.next()?;
+                    if a == ']' && !set.is_empty() {
+                        break;
+                    }
+                    if chars.peek() == Some(&'-') {
+                        chars.next();
+                        match chars.next()? {
+                            ']' => {
+                                set.push((a, a));
+                                set.push(('-', '-'));
+                                break;
+                            }
+                            b if a <= b => set.push((a, b)),
+                            _ => return None,
+                        }
+                    } else {
+                        set.push((a, a));
+                    }
+                }
+                Atom::Set(set)
+            }
+            '\\' => Atom::Char(chars.next()?),
+            c => Atom::Char(c),
+        };
+        out.push((atom, Times::One));
+    }
+    Some(out)
+}
+fn atoms_match(atoms: &[(Atom, Times)], name: &[char]) -> bool {
+    let Some(((atom, times), rest)) = atoms.split_first() else {
+        return name.is_empty();
+    };
+    let one = |c: char| match atom {
+        Atom::Char(a) => *a == c,
+        Atom::Set(set) => set.iter().any(|(a, b)| (*a..=*b).contains(&c)),
+        Atom::Star => c != '/',
+        Atom::Stars => true,
+    };
+    let first = |n: &[char]| n.first().is_some_and(|c| one(*c));
+    match (atom, times) {
+        (Atom::Star | Atom::Stars, _) => {
+            for at in 0..=name.len() {
+                if atoms_match(rest, &name[at..]) {
+                    return true;
+                }
+                if at < name.len() && !one(name[at]) {
+                    return false;
+                }
+            }
+            false
+        }
+        (_, Times::One) => first(name) && atoms_match(rest, &name[1..]),
+        (_, Times::Maybe) => {
+            atoms_match(rest, name) || first(name) && atoms_match(rest, &name[1..])
+        }
+        (_, Times::Many) => {
+            let mut at = 0;
+            while at < name.len() && one(name[at]) {
+                at += 1;
+                if atoms_match(rest, &name[at..]) {
+                    return true;
+                }
+            }
+            false
+        }
+    }
 }
 /// What Orbit read about a repository's CI at its default branch's latest
 /// commit.
@@ -371,7 +522,8 @@ pub fn understand(
             };
             Some(Workflow {
                 on_pulls: text.map_or(OnPulls::Unknown, on_pulls),
-                tags: text.map(on_tags).unwrap_or_default(),
+                tags: text.map(|t| on_tags(t).0).unwrap_or_default(),
+                tags_ignore: text.map(|t| on_tags(t).1).unwrap_or_default(),
                 path,
                 checked,
                 risks: found.risks,
@@ -471,23 +623,30 @@ pub fn on_pulls(text: &str) -> OnPulls {
 }
 
 /// The tags a workflow's `push` runs it for, as its `tags` filter writes
-/// them, or `**` for a `tags` with no list. None for a workflow that runs
-/// on no tag, or whose `on:` Orbit can't read.
-pub fn on_tags(text: &str) -> Vec<String> {
+/// them, or `**` for a `tags` with no list, and those its `tags-ignore`
+/// filter leaves out. Neither for a workflow that runs on no tag, or whose
+/// `on:` Orbit can't read.
+pub fn on_tags(text: &str) -> (Vec<String>, Vec<String>) {
     let Some(events) = events(text) else {
-        return vec![];
+        return (vec![], vec![]);
     };
-    events
+    let filters: Vec<(&str, Vec<String>)> = events
         .iter()
         .filter(|e| e.name == "push")
         .filter_map(|e| e.filters())
         .flatten()
-        .filter(|(key, _)| *key == "tags")
-        .flat_map(|(_, list)| match list.is_empty() {
-            true => vec!["**".to_string()],
-            false => list,
-        })
-        .collect()
+        .collect();
+    let of = |name: &str| -> Vec<String> {
+        filters
+            .iter()
+            .filter(|(key, _)| *key == name)
+            .flat_map(|(_, list)| match list.is_empty() {
+                true => vec!["**".to_string()],
+                false => list.clone(),
+            })
+            .collect()
+    };
+    (of("tags"), of("tags-ignore"))
 }
 
 /// An event a workflow's `on:` names, with its settings: on its line, or

@@ -48,6 +48,7 @@ fn repo(version: &str, tags: &[&str]) -> Snapshot {
                 sha: B.into(),
             })
             .collect(),
+        version_tags: tags.len() as u32,
         ..Default::default()
     });
     s.setups.push(Setup {
@@ -129,6 +130,27 @@ fn nothing_waits_until_every_part_of_it_is_ready() {
         (
             "CI read at another commit",
             Box::new(|s| s.ci[0].head.sha = B.into()),
+        ),
+        (
+            "CI's latest read failed, so what passed may not hold",
+            Box::new(|s| s.ci[0].error = Some("gh: Bad Gateway (HTTP 502)".into())),
+        ),
+        (
+            "more tags on GitHub than Orbit read",
+            Box::new(|s| s.releases[0].more_tags = true),
+        ),
+        (
+            "version tags Orbit didn't keep",
+            Box::new(|s| s.releases[0].version_tags += 1),
+        ),
+        (
+            "a release workflow its tag wouldn't start",
+            Box::new(|s| {
+                s.setups[0].workflows.push(Workflow {
+                    tags: vec!["release-*".into()],
+                    ..Default::default()
+                })
+            }),
         ),
         (
             "files read before Orbit read tags",
@@ -213,28 +235,95 @@ fn push_of(s: &mut Snapshot, state: WriteState) {
 }
 
 #[test]
-fn a_tag_is_named_as_the_repository_names_them() {
+fn a_tag_is_named_as_the_repository_names_them_and_starts_its_release() {
     // As its highest version tag does.
     let s = repo("0.3.0", &["0.2.0"]);
     assert_eq!(waiting(&s)[0].tag, "0.3.0");
-    // With none, as its release workflow's filter takes them: with a v,
-    // unless every filter starts with a digit.
-    let workflow = |tags: &[&str]| Workflow {
+    let workflow = |tags: &[&str], ignore: &[&str]| Workflow {
         path: ".github/workflows/release.yml".into(),
         tags: tags.iter().map(|t| t.to_string()).collect(),
+        tags_ignore: ignore.iter().map(|t| t.to_string()).collect(),
         ..Default::default()
     };
-    for (tags, name) in [
-        (vec!["v*"], "v0.3.0"),
-        (vec!["**"], "v0.3.0"),
-        (vec!["[0-9]+.[0-9]+.[0-9]+"], "0.3.0"),
-        (vec!["1.*", "0.*"], "0.3.0"),
-        (vec!["0.*", "v*"], "v0.3.0"),
+    // With none yet: v and the version, else the version alone, whichever
+    // starts the release workflow, as GitHub reads its filter.
+    let none: Vec<&str> = vec![];
+    for (tags, ignore, name) in [
+        (vec!["v*"], none.clone(), Some("v0.3.0")),
+        (vec!["**"], none.clone(), Some("v0.3.0")),
+        (vec!["v[0-9]+.[0-9]+.[0-9]+"], none.clone(), Some("v0.3.0")),
+        (vec!["[0-9]+.[0-9]+.[0-9]+"], none.clone(), Some("0.3.0")),
+        (vec!["1.*", "0.*"], none.clone(), Some("0.3.0")),
+        (none.clone(), vec!["v*"], Some("0.3.0")),
+        // A range the version is outside, another prefix, or left out.
+        (vec!["1.*"], none.clone(), None),
+        (vec!["release-*"], none.clone(), None),
+        (vec!["v*", "!v0.*"], none.clone(), None),
+        (none.clone(), vec!["*"], None),
     ] {
         let mut s = repo("0.3.0", &[]);
-        s.setups[0].workflows.push(workflow(&tags));
-        assert_eq!(waiting(&s)[0].tag, name, "{tags:?}");
+        s.setups[0].workflows.push(workflow(&tags, &ignore));
+        assert_eq!(
+            waiting(&s).first().map(|u| u.tag.as_str()),
+            name,
+            "{tags:?} {ignore:?}"
+        );
     }
+    // With version tags, the release workflow must take the name they give.
+    let mut s = repo("0.3.0", &["v0.2.0"]);
+    s.setups[0].workflows.push(workflow(&["v*", "!v*-*"], &[]));
+    assert_eq!(waiting(&s)[0].tag, "v0.3.0");
+    let mut s = repo("0.3.0-rc.1", &["v0.2.0"]);
+    s.setups[0].workflows.push(workflow(&["v*", "!v*-*"], &[]));
+    assert!(waiting(&s).is_empty());
+    let mut s = repo("0.3.0", &["v0.2.0"]);
+    s.setups[0].workflows.push(workflow(&["[0-9]*"], &[]));
+    assert!(waiting(&s).is_empty());
+}
+
+/// Orbit offers a tag only when it read every version tag: a higher one,
+/// or the same version without its `v`, may be among those it didn't.
+#[test]
+fn nothing_waits_while_some_tags_are_unread() {
+    // 100 recent backport tags, and v2.0.0 on an older commit past them.
+    let backports: Vec<String> = (0..100).map(|i| format!("v1.9.{i}")).collect();
+    let names: Vec<&str> = backports.iter().map(String::as_str).collect();
+    let mut s = repo("1.10.0", &names);
+    assert_eq!(waiting(&s)[0].tag, "v1.10.0");
+    s.releases[0].more_tags = true;
+    assert!(waiting(&s).is_empty());
+    // 0.3.0, among the tags Orbit didn't read.
+    let mut s = repo("0.3.0", &["v0.2.0"]);
+    s.releases[0].more_tags = true;
+    assert!(waiting(&s).is_empty());
+    // A tag Orbit finds is kept and counted.
+    let mut s = repo("0.3.0", &["v0.2.0"]);
+    seen(&mut s.releases[0], "0.3.0", A);
+    assert_eq!(s.releases[0].version_tags, 2);
+    assert!(waiting(&s).is_empty());
+}
+
+/// A tap pushes the tag on its button, at the commit Orbit showed, or
+/// nothing; GitHub is asked for the version under either spelling.
+#[test]
+fn a_tap_pushes_only_what_it_offered() {
+    let mut s = repo("0.3.0", &["v0.2.0"]);
+    assert_eq!(offered(&s, "a/b", "v0.3.0").unwrap(), waiting(&s)[0]);
+    assert_eq!(
+        offered(&s, "a/b", "v0.2.9").unwrap_err(),
+        "a/b waits for v0.3.0 now, not v0.2.9, so Orbit didn't push v0.2.9."
+    );
+    s.ci[0].head.state = CiState::Failing;
+    assert_eq!(
+        offered(&s, "a/b", "v0.3.0").unwrap_err(),
+        "a/b doesn't wait for v0.3.0 any more, so Orbit didn't push it."
+    );
+    let tagged = |tag: &str| Untagged {
+        tag: tag.into(),
+        ..Default::default()
+    };
+    assert_eq!(spellings(&tagged("v0.3.0")), ["v0.3.0", "0.3.0"]);
+    assert_eq!(spellings(&tagged("0.3.0")), ["0.3.0", "v0.3.0"]);
 }
 
 #[test]
