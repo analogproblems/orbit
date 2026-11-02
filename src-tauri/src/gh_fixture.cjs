@@ -106,7 +106,9 @@ const url = (n, id) =>
 // Comments and issues are made a second apart, by ID, and an edit takes the
 // next second too. A list with `since` holds those posted or edited then or
 // later, by ID. While <dir>/comments-error exists, listing an issue's
-// comments fails with its text; reading one comment still works.
+// comments fails with its text; reading one comment still works. While
+// <dir>/post-lost exists, a comment posted is kept but its answer is lost:
+// the call fails as if the connection dropped.
 const made = (id) =>
   new Date(Date.UTC(2026, 9, 29, 12) + id * 1000)
     .toISOString()
@@ -277,6 +279,12 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
     c.node_id = `IC_${c.id}`;
     db.comments.push(c);
     save(db);
+    if (fs.existsSync(path.join(dir, "post-lost"))) {
+      process.stderr.write(
+        `Post "https://api.github.com/${endpoint}": read tcp: connection reset by peer\n`,
+      );
+      process.exit(1);
+    }
     answer(c);
   }
 } else if ((m = endpoint.match(/^repos\/a\/b\/issues\/comments\/(\d+)$/))) {

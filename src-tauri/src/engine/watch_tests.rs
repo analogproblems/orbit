@@ -3424,7 +3424,7 @@ async fn a_tap_asks_dependabot_to_rebase_one_that_conflicts_with_one_comment() {
         .unwrap_err();
     assert_eq!(
         clean,
-        "GitHub doesn't say it conflicts now, so Orbit won't ask Dependabot to rebase it."
+        "GitHub didn't say just now that it conflicts, so Orbit didn't ask Dependabot to rebase it. GitHub may still be working that out: try again in a minute."
     );
     assert_eq!(sent(d.path(), "GET repos/a/b/pulls/11"), 2);
     let s = e.shown_snapshot().await;
@@ -3482,13 +3482,13 @@ async fn a_tap_asks_dependabot_to_rebase_one_that_conflicts_with_one_comment() {
     assert_eq!(lost.state, WriteState::Failed);
     assert_eq!(
         lost.error.as_deref(),
-        Some("Orbit stopped before GitHub answered, and didn't find its comment there. Tap Ask to rebase again if it still conflicts.")
+        Some("Orbit didn't find its comment on GitHub, so its ask didn't go through. Tap Ask to rebase again if it still conflicts.")
     );
     let u = s.updates.iter().find(|u| u.number == 11).unwrap();
     assert!(u.can_rebase, "tap again");
     assert_eq!(
         u.rebase_text.as_deref(),
-        Some("Orbit couldn't ask Dependabot to rebase it. Orbit stopped before GitHub answered, and didn't find its comment there. Tap Ask to rebase again if it still conflicts.")
+        Some("Orbit couldn't ask Dependabot to rebase it. Orbit didn't find its comment on GitHub, so its ask didn't go through. Tap Ask to rebase again if it still conflicts.")
     );
     crate::github::GH
         .scope(gh.clone(), e.ask_rebase("a/b#11"))
@@ -3539,4 +3539,241 @@ async fn an_ask_to_rebase_that_cant_be_saved_is_never_posted() {
         .await
         .unwrap();
     assert_eq!(writes(d.path()), ["POST repos/a/b/issues/12/comments"]);
+}
+
+/// A conflicting security fix Orbit has read once, with its sign-in known,
+/// for the tests below on what happens while Orbit asks GitHub about it.
+#[cfg(unix)]
+async fn conflicting_fix(dir: &Path, gh: &Path) -> std::sync::Arc<Engine> {
+    let fix = "6".repeat(40);
+    dependabot_ci(dir, &[(12, &fix, "SUCCESS")]);
+    dependabot_merges(dir, 12, &fix, false, "dirty");
+    let e = connected(dir).await;
+    e.update(|s| {
+        s.github_user = Some("me".into());
+        s.prs = vec![dependabot_pull(12, "Bump qs from 6.10.1 to 6.10.3", &fix)];
+    })
+    .await;
+    crate::github::GH
+        .scope(gh.to_path_buf(), e.watch_ci())
+        .await;
+    assert!(e.shown_snapshot().await.updates[0].can_rebase);
+    e
+}
+/// Starts a tap to ask Dependabot to rebase `a/b#12`, and waits for GitHub
+/// to hold Orbit's read of it.
+#[cfg(unix)]
+async fn ask_while_held(
+    e: &std::sync::Arc<Engine>,
+    dir: &Path,
+    gh: &Path,
+) -> tokio::task::JoinHandle<Result<(), String>> {
+    let _ = std::fs::remove_file(dir.join("held"));
+    std::fs::write(dir.join("hold"), "repos/a/b/pulls/12").unwrap();
+    let asking = tokio::spawn(crate::github::GH.scope(gh.to_path_buf(), {
+        let e = e.clone();
+        async move { e.ask_rebase("a/b#12").await }
+    }));
+    held(dir).await;
+    asking
+}
+
+/// Only what GitHub says just now counts: a tap on a pull request GitHub
+/// is still working out posts nothing, though Orbit last read it as
+/// conflicting, and nor does one whose commit moves on while Orbit asks.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_ask_to_rebase_is_posted_only_on_what_github_says_just_now() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    let e = conflicting_fix(d.path(), &gh).await;
+
+    // GitHub is working out whether it merges again.
+    let unknown = json!({
+        "user": { "login": "dependabot[bot]" },
+        "head": { "sha": "6".repeat(40) },
+        "base": { "sha": "1".repeat(40), "ref": "main" },
+        "mergeable": null,
+        "mergeable_state": "unknown",
+    });
+    std::fs::write(d.path().join("pull-12.json"), unknown.to_string()).unwrap();
+    let error = crate::github::GH
+        .scope(gh.clone(), e.ask_rebase("a/b#12"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error,
+        "GitHub didn't say just now that it conflicts, so Orbit didn't ask Dependabot to rebase it. GitHub may still be working that out: try again in a minute."
+    );
+    assert_eq!(sent(d.path(), "GET repos/a/b/pulls/12"), 2, "read first");
+    assert!(writes(d.path()).is_empty());
+    assert!(e.shown_snapshot().await.journal.is_empty());
+
+    // It conflicts again, but Dependabot pushes while GitHub answers.
+    dependabot_merges(d.path(), 12, &"6".repeat(40), false, "dirty");
+    let asking = ask_while_held(&e, d.path(), &gh).await;
+    e.update(|s| s.prs[0].head_sha = "7".repeat(40)).await;
+    std::fs::remove_file(d.path().join("hold")).unwrap();
+    assert_eq!(
+        asking.await.unwrap().unwrap_err(),
+        "It changed while Orbit checked it with GitHub, so Orbit didn't ask Dependabot. Tap Ask to rebase again if it still conflicts."
+    );
+    assert!(writes(d.path()).is_empty());
+    assert!(e.shown_snapshot().await.journal.is_empty());
+}
+
+/// An ask to rebase on its way when this Orbit starts to move finishes
+/// first, and the move waits for it. GitHub answers after the move began,
+/// so Orbit posts nothing and records nothing, and no tap after does.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_ask_to_rebase_posts_nothing_once_orbit_starts_to_move() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    let e = conflicting_fix(d.path(), &gh).await;
+    let asking = ask_while_held(&e, d.path(), &gh).await;
+    let fencing = tokio::spawn({
+        let e = e.clone();
+        async move { e.fence().await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(e.moving());
+    assert!(!fencing.is_finished(), "waits for the ask");
+    std::fs::remove_file(d.path().join("hold")).unwrap();
+    assert_eq!(asking.await.unwrap().unwrap_err(), super::MOVING);
+    fencing.await.unwrap().unwrap();
+    assert!(writes(d.path()).is_empty());
+    assert!(e.shown_snapshot().await.journal.is_empty());
+    let later = crate::github::GH
+        .scope(gh.clone(), e.ask_rebase("a/b#12"))
+        .await
+        .unwrap_err();
+    assert_eq!(later, super::MOVING);
+    assert!(writes(d.path()).is_empty());
+}
+
+/// A comment GitHub kept though its answer was lost is never posted again.
+/// Orbit says it doesn't know yet, and looks for it on GitHub before any
+/// new ask; while it can't look it still doesn't know, and it finds the
+/// comment however many come before it.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_ask_to_rebase_github_may_have_kept_is_looked_for_not_sent_again() {
+    use crate::ops::WriteState;
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    // Over ten pages of other comments come first, one of them asking
+    // Dependabot to rebase too.
+    let stamp = |id: u64| {
+        (chrono::DateTime::parse_from_rfc3339("2026-10-29T12:00:00Z").unwrap()
+            + chrono::Duration::seconds(id as i64))
+        .to_utc()
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string()
+    };
+    let others: Vec<_> = (1..=1000u64)
+        .map(|id| {
+            json!({
+                "id": id,
+                "issue": 12,
+                "user": { "login": "someone" },
+                "body": if id == 1 { "@dependabot rebase" } else { "Looks fine." },
+                "created_at": stamp(id),
+                "updated_at": stamp(id),
+                "html_url": format!("https://github.com/a/b/issues/12#issuecomment-{id}"),
+                "node_id": format!("IC_{id}"),
+            })
+        })
+        .collect();
+    std::fs::write(
+        d.path().join("github.json"),
+        json!({ "next": 2000, "issues": [], "comments": others }).to_string(),
+    )
+    .unwrap();
+    let e = conflicting_fix(d.path(), &gh).await;
+
+    std::fs::write(d.path().join("post-lost"), "").unwrap();
+    let unsure = crate::github::GH
+        .scope(gh.clone(), e.ask_rebase("a/b#12"))
+        .await
+        .unwrap_err();
+    std::fs::remove_file(d.path().join("post-lost")).unwrap();
+    assert!(
+        unsure.starts_with("GitHub didn't answer clearly (")
+            && unsure
+                .ends_with("), so Orbit looks on GitHub for its comment before it asks again."),
+        "{unsure}"
+    );
+    assert_eq!(writes(d.path()), ["POST repos/a/b/issues/12/comments"]);
+    let s = e.shown_snapshot().await;
+    let w = s.journal.last().unwrap();
+    assert_eq!(w.state, WriteState::Sending);
+    assert!(!s.updates[0].can_rebase);
+    assert_eq!(
+        s.updates[0].rebase_text.as_deref(),
+        Some(
+            format!("Orbit doesn't know yet whether GitHub took its ask to rebase it. {unsure}")
+                .as_str()
+        )
+    );
+    // The fake GitHub's clock is in 2026-10-29.
+    e.update(|s| s.journal.last_mut().unwrap().at = "2026-10-29T12:00:00.000Z".into())
+        .await;
+
+    // Orbit can't look for it yet: neither a tap nor a pass sends again.
+    std::fs::write(
+        d.path().join("comments-error"),
+        "gh: Bad Gateway (HTTP 502)\n",
+    )
+    .unwrap();
+    let blind = crate::github::GH
+        .scope(gh.clone(), e.ask_rebase("a/b#12"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        blind,
+        "Orbit doesn't know yet whether GitHub took its last ask to rebase it, so it won't ask again until it has looked."
+    );
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    assert_eq!(writes(d.path()).len(), 1);
+    let s = e.shown_snapshot().await;
+    let w = s.journal.last().unwrap();
+    assert_eq!(w.state, WriteState::Sending);
+    assert!(
+        w.error
+            .as_deref()
+            .unwrap()
+            .starts_with("Orbit couldn't look on GitHub for its comment yet: "),
+        "{w:?}"
+    );
+    assert!(!s.updates[0].can_rebase);
+
+    // It can look again, and finds its comment past the first ten pages.
+    std::fs::remove_file(d.path().join("comments-error")).unwrap();
+    let looked = sent(d.path(), "GET repos/a/b/issues/12/comments");
+    let again = crate::github::GH
+        .scope(gh.clone(), e.ask_rebase("a/b#12"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        again,
+        "Orbit already asked Dependabot to rebase it at this commit."
+    );
+    assert!(sent(d.path(), "GET repos/a/b/issues/12/comments") - looked > 10);
+    assert_eq!(writes(d.path()), ["POST repos/a/b/issues/12/comments"]);
+    let db: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(d.path().join("github.json")).unwrap())
+            .unwrap();
+    let mine = db["comments"].as_array().unwrap().last().unwrap();
+    assert_eq!(mine["user"]["login"], "me");
+    let s = e.shown_snapshot().await;
+    let w = s.journal.last().unwrap();
+    assert_eq!(
+        (w.state, w.url.as_str(), w.error.as_deref()),
+        (WriteState::Done, mine["html_url"].as_str().unwrap(), None)
+    );
+    assert_eq!(
+        s.updates[0].rebase_text.as_deref(),
+        Some("Orbit asked Dependabot to rebase it. Dependabot answers on GitHub, and may take a few minutes.")
+    );
 }

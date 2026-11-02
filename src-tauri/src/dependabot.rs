@@ -356,6 +356,12 @@ pub fn prune(s: &mut Snapshot) -> bool {
     s.dependabot.len() != before
 }
 
+/// Whether GitHub's answer says the pull request conflicts, rather than
+/// that it is still working it out.
+pub fn conflicts(m: &Merge) -> bool {
+    let pending = m.mergeable.is_none() || m.state == "unknown";
+    !pending && (m.mergeable == Some(false) || m.state == "dirty")
+}
 /// Orbit's latest ask for Dependabot to rebase a pull request at the
 /// commit it is at now, in the journal.
 fn rebase_of<'a>(journal: &'a [Write], pr: &PullRequest) -> Option<&'a Write> {
@@ -374,14 +380,17 @@ pub fn may_rebase(s: &Snapshot, pr_id: &str) -> Result<(String, u64, String, Str
     let Some(pr) = pulls(s).find(|pr| pr.id == pr_id) else {
         return Err("Orbit doesn't show this Dependabot pull request now, so it won't ask about it. Watch CI or Watch security alerts is off, or it closed.".into());
     };
-    match rebase_of(&s.journal, pr).map(|w| w.state) {
-        Some(WriteState::Sending) => {
+    match rebase_of(&s.journal, pr) {
+        Some(w) if w.state == WriteState::Sending && w.error.is_some() => {
+            return Err("Orbit doesn't know yet whether GitHub took its last ask to rebase it, so it won't ask again until it has looked.".into())
+        }
+        Some(w) if w.state == WriteState::Sending => {
             return Err("Orbit is already asking Dependabot to rebase it.".into())
         }
-        Some(WriteState::Done) => {
+        Some(w) if w.state == WriteState::Done => {
             return Err("Orbit already asked Dependabot to rebase it at this commit.".into())
         }
-        Some(WriteState::Failed) | None => {}
+        _ => {}
     }
     let base = base_of(s, pr);
     if !merge_of(asked(s, pr, &base), pr).1 {
@@ -417,8 +426,12 @@ pub fn record_rebase(
     });
     id
 }
-/// Records what GitHub said to an ask to rebase: where its comment is, or
-/// why it didn't go, in a sentence (`rebase_error`).
+/// Records what GitHub said to an ask to rebase, from the raw `result` of
+/// posting it: where its comment is, or, when GitHub refused it, why it
+/// didn't go (`rebase_error`). Any other failure, such as an answer lost
+/// on the way or one Orbit couldn't read, may have posted it, so the ask
+/// stays unsettled, with why, until Orbit looks for its comment
+/// (`unsettled`), and is never sent again meanwhile.
 pub fn settle_rebase(
     journal: &mut [Write],
     id: &str,
@@ -428,22 +441,40 @@ pub fn settle_rebase(
     let Some(w) = journal.iter_mut().find(|w| w.id == id) else {
         return;
     };
-    w.done_at = Some(stamp(now));
     match result {
         Ok(url) => {
             w.state = WriteState::Done;
+            w.done_at = Some(stamp(now));
             w.url = url;
             w.error = None;
         }
         Err(error) => {
-            w.state = WriteState::Failed;
-            w.error = Some(error);
+            if refused(&error) {
+                w.state = WriteState::Failed;
+                w.done_at = Some(stamp(now));
+            }
+            w.error = Some(rebase_error(&error));
         }
     }
 }
-/// Why GitHub didn't take Orbit's ask to rebase, in a sentence.
+/// Whether GitHub answered a post by refusing it, with a 4xx status or a
+/// rate limit, so its comment surely isn't there.
+pub fn refused(error: &str) -> bool {
+    logs::rate_limited(error)
+        || error.match_indices("HTTP 4").any(|(at, _)| {
+            let code = &error.as_bytes()[at + 6..];
+            code.len() >= 2 && code[..2].iter().all(u8::is_ascii_digit)
+        })
+}
+/// What became of an ask to rebase that failed, from its raw error, in a
+/// sentence.
 pub fn rebase_error(error: &str) -> String {
-    if logs::rate_limited(error) {
+    if !refused(error) {
+        format!(
+            "GitHub didn't answer clearly ({}), so Orbit looks on GitHub for its comment before it asks again.",
+            logs::short(error)
+        )
+    } else if logs::rate_limited(error) {
         "GitHub's rate limit held this back. Tap Ask to rebase again later.".into()
     } else if error.contains("HTTP 404") || error.contains("HTTP 410") {
         "GitHub can't find this pull request now.".into()
@@ -456,33 +487,30 @@ pub fn rebase_error(error: &str) -> String {
         )
     }
 }
-/// Asks to rebase left on their way to GitHub when Orbit stopped, which
-/// GitHub may or may not have. None is sent again: each is marked as not
-/// gone through until Orbit finds it on GitHub (`found_rebase`). Run while
-/// no ask is being sent. Returns each one's id, repository, number and the
-/// time to look for its comment from.
-pub fn interrupted(
-    journal: &mut [Write],
-    now: DateTime<Utc>,
-) -> Vec<(String, String, u64, String)> {
-    let mut cut = vec![];
+/// Asks to rebase that GitHub may or may not have: left on their way when
+/// Orbit stopped, or with an answer Orbit couldn't trust. None is sent
+/// again: each stays unsettled until Orbit has looked for its comment on
+/// GitHub (`found_rebase`). Run while no ask is being sent. Returns each
+/// one's id, repository, number and the time to look for its comment from.
+pub fn unsettled(journal: &mut [Write]) -> Vec<(String, String, u64, String)> {
+    let mut found = vec![];
     for w in journal
         .iter_mut()
         .filter(|w| w.action == Action::AskRebase && w.state == WriteState::Sending)
     {
-        w.state = WriteState::Failed;
-        w.done_at = Some(stamp(now));
-        w.error = Some(CUT_OFF.into());
+        if w.error.is_none() {
+            w.error = Some(CUT_OFF.into());
+        }
         let since = time(&w.at)
             .map(|at| stamp(at - Duration::minutes(SKEW_MINUTES)))
             .unwrap_or_default();
         if let Some(number) = w.number {
-            cut.push((w.id.clone(), w.repo.clone(), number, since));
+            found.push((w.id.clone(), w.repo.clone(), number, since));
         }
     }
-    cut
+    found
 }
-const CUT_OFF: &str = "Orbit stopped before GitHub answered, so it didn't ask again. It looks on GitHub for its comment.";
+const CUT_OFF: &str = "Orbit stopped before GitHub answered, so it looks on GitHub for its comment before it asks again.";
 /// The comment that asks Dependabot to rebase, from Orbit's sign-in
 /// (`login`), among a pull request's comments.
 pub fn find_rebase(comments: &[serde_json::Value], login: &str) -> Option<String> {
@@ -496,31 +524,38 @@ pub fn find_rebase(comments: &[serde_json::Value], login: &str) -> Option<String
         })
         .map(|c| c["html_url"].as_str().unwrap_or_default().to_string())
 }
-/// Records what Orbit found on GitHub for an ask to rebase it was cut off
-/// from: its comment, which makes it done, or nothing there, or a look
-/// that failed, either of which leaves it not gone through, to tap again.
+/// Records what Orbit found on GitHub for an unsettled ask to rebase: its
+/// comment, which makes it done, or, after looking through every comment
+/// since, nothing, which means it didn't go through, to tap again. A look
+/// that failed, or couldn't finish, leaves it unsettled, to look again on
+/// the next pass.
 pub fn found_rebase(
     journal: &mut [Write],
     id: &str,
     found: Result<Option<String>, String>,
     now: DateTime<Utc>,
 ) {
-    let Some(w) = journal.iter_mut().find(|w| w.id == id) else {
+    let Some(w) = journal
+        .iter_mut()
+        .find(|w| w.id == id && w.state == WriteState::Sending)
+    else {
         return;
     };
-    w.done_at = Some(stamp(now));
     match found {
         Ok(Some(url)) => {
             w.state = WriteState::Done;
+            w.done_at = Some(stamp(now));
             w.url = url;
             w.error = None;
         }
         Ok(None) => {
-            w.error = Some("Orbit stopped before GitHub answered, and didn't find its comment there. Tap Ask to rebase again if it still conflicts.".into());
+            w.state = WriteState::Failed;
+            w.done_at = Some(stamp(now));
+            w.error = Some("Orbit didn't find its comment on GitHub, so its ask didn't go through. Tap Ask to rebase again if it still conflicts.".into());
         }
         Err(e) => {
             w.error = Some(format!(
-                "Orbit stopped before GitHub answered, and couldn't look for its comment there: {}. Tap Ask to rebase again if it still conflicts.",
+                "Orbit couldn't look on GitHub for its comment yet: {}. It looks again on its next pass.",
                 logs::short(&e)
             ));
         }
@@ -530,7 +565,10 @@ pub fn found_rebase(
 /// sentence, if it asked.
 fn rebase_text(w: &Write) -> String {
     match w.state {
-        WriteState::Sending => "Orbit is asking Dependabot to rebase it.".into(),
+        WriteState::Sending => match &w.error {
+            Some(why) => format!("Orbit doesn't know yet whether GitHub took its ask to rebase it. {why}"),
+            None => "Orbit is asking Dependabot to rebase it.".into(),
+        },
         WriteState::Done => "Orbit asked Dependabot to rebase it. Dependabot answers on GitHub, and may take a few minutes.".into(),
         WriteState::Failed => format!(
             "Orbit couldn't ask Dependabot to rebase it. {}",
@@ -704,7 +742,7 @@ fn merge_of(m: Option<&Merge>, pr: &PullRequest) -> (String, bool, bool) {
             false,
         );
     }
-    if m.mergeable == Some(false) || m.state == "dirty" {
+    if conflicts(m) {
         return (format!("It conflicts with {base}."), true, false);
     }
     let text = match m.state.as_str() {

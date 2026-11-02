@@ -164,7 +164,7 @@ type Notifier = Box<dyn Fn(&crate::attention::Notice) + Send + Sync>;
 /// `items` via `retire_dead_connection` → `disconnected`); `poll_lock` →
 /// `state` and `synced_repos` (one at a time); `publish_lock` → `state`;
 /// `containers` → `git_lock`; `cleanup_lock` → `git_lock` → `state`; `cloning` → `state`
-/// (`set_up_repository`); `rebasing` → `state` (`ask_rebase`, `read_updates`); `poll_lock` → `cloning` → `state` (`take_in`); `poll_lock` →
+/// (`set_up_repository`); `rebasing` → `state` (`ask_rebase`, `read_updates`); `poll_lock` → `publish_lock` → `cloning` → `rebasing`, the last let go at once (`fence`); `poll_lock` → `cloning` → `state` (`take_in`); `poll_lock` →
 /// `publish_lock` → `state`, held for good once the Orbit moves (`fence`); `state` → `synced_repos`
 /// (`schedule`); `state` → `taking_in` (`take_in`, `move_status`); `state` → `fixing` (`flush`); `state` → `wake_retry` (`wake_devices`, `woken`, `push_notices`, `remove_push_device`); `state` → `asking`
 /// (`ask_buddy_anything`); `state` → `using` (`use_proposal`). `preparing`,
