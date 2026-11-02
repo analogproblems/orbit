@@ -26,6 +26,7 @@ import {
   buildLine,
   releaseDot,
   releaseLines,
+  dueDay,
   riskText,
   risksText,
   mismatchText,
@@ -54,6 +55,7 @@ import {
   type Problem,
   type RepoCi,
   type RepoReleases,
+  type Milestone,
   type RunnerPlace,
   type ActionsStorage,
   type SecurityAlert,
@@ -1946,6 +1948,47 @@ describe("ci sentences", () => {
       "Latest release: v1.0.0.",
       "GitHub has more releases than the newest 100 Orbit read, so Orbit can’t say which version tags have none, and there may be more drafts.",
     ]);
+    // Releases due by a milestone, with what it still has open, until
+    // they're out.
+    const milestone = (over: Partial<Milestone>): Milestone => ({
+      number: 3,
+      title: "v1.1.0",
+      version: "v1.1.0",
+      due: "2026-11-04",
+      url: "https://github.com/a/b/milestone/3",
+      issues: [],
+      issueCount: 0,
+      prs: [],
+      prCount: 0,
+      released: false,
+      ...over,
+    });
+    const due = dueDay("2026-11-04");
+    expect(due).toMatch(/4/);
+    expect(
+      releaseLines(
+        r({
+          latest,
+          milestones: [
+            milestone({
+              prs: [12],
+              prCount: 1,
+              issues: [9, 10],
+              issueCount: 2,
+            }),
+            milestone({ number: 4, version: "v1.2.0", issueCount: 1 }),
+            milestone({ number: 5, version: "v1.3.0" }),
+            milestone({ number: 6, version: "v1.0.0", released: true }),
+          ],
+        }),
+      ),
+    ).toEqual([
+      "Latest release: v1.0.0.",
+      `v1.1.0 is due ${due}. Its milestone has 1 open pull request and 2 open issues.`,
+      `v1.2.0 is due ${due}. Its milestone has 1 open issue.`,
+      `v1.3.0 is due ${due}. Nothing in its milestone is open.`,
+    ]);
+    expect(dueDay("someday")).toBe("someday");
   });
 
   it("say how the build of the newest tag went, and a failing one first", () => {

@@ -1333,8 +1333,9 @@ export function demoCi(
     tries: 0,
     ...more,
   });
-  // Orbit has a draft waiting, api a tag with no release, dashboard hides
-  // its drafts from Orbit's sign-in, and docs has no releases.
+  // Orbit has a draft waiting and a release due, api a tag with no
+  // release, dashboard hides its drafts from Orbit's sign-in, and docs has
+  // no releases.
   const releases: RepoReleases[] = [
     releasesOf("acme/orbit", {
       latest: release(41, "v1.4.0", 9, { name: "Orbit 1.4" }),
@@ -1350,6 +1351,21 @@ export function demoCi(
       published: 12,
       versionTags: 13,
       since: 23,
+      // Its milestone says v1.5.0 is due in two days.
+      milestones: [
+        {
+          number: 8,
+          title: "v1.5.0",
+          version: "v1.5.0",
+          due: ago(-2 * DAY).slice(0, 10),
+          url: "https://github.com/acme/orbit/milestone/8",
+          issues: [],
+          issueCount: 0,
+          prs: [7],
+          prCount: 1,
+          released: false,
+        },
+      ],
     }),
     releasesOf("acme/api", {
       latest: release(30, "v2.3.1", 16, {
@@ -2321,12 +2337,19 @@ export function demoPublished(releases: RepoReleases[], key: string) {
       draft: false,
       publishedAt: new Date().toISOString(),
     };
+    // A milestone for the version it releases is done with.
+    const bare = (v: string) => v.replace(/^v/i, "");
     return {
       ...r,
       drafts: r.drafts.filter((d) => d !== draft),
       draftCount: r.draftCount - 1,
       published: r.published + 1,
       ...(draft.prerelease ? { prerelease: out } : { latest: out, since: 0 }),
+      ...(r.milestones && {
+        milestones: r.milestones.map((m) =>
+          bare(m.version) === bare(tag) ? { ...m, released: true } : m,
+        ),
+      }),
     };
   });
 }
