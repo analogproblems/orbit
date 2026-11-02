@@ -480,7 +480,8 @@ export type Fix =
   | "turn_on_autopilot"
   | "check_connections"
   | "post_here_again"
-  | "push_tag";
+  | "push_tag"
+  | "publish_release";
 /** The fixes that always ask first: changing settings, checking
  * connections, and posting again where another Orbit posts. */
 export type AskingFix =
@@ -507,6 +508,7 @@ export const fixLabels: Record<Fix, string> = {
   check_connections: "Check again",
   post_here_again: "Post here again",
   push_tag: "Push a release tag",
+  publish_release: "Publish a draft release",
 };
 export const fixDescriptions: Record<RuledFix, string> = {
   continue_loop: "When a loop reaches its round limit, allow two more rounds.",
@@ -517,6 +519,8 @@ export const fixDescriptions: Record<RuledFix, string> = {
   sync_now: "When syncing keeps failing, sync again.",
   push_tag:
     "When a repository’s version files agree on a version with no tag yet, and CI passed at that commit, push the tag there, named as the repository names its tags. Only where version tags or a workflow that runs on tags are already used. Orbit never moves or deletes a tag.",
+  publish_release:
+    "When the newest version tag has a draft release, and every run the tag started passed, publish the draft as it is. Orbit never changes a release’s text, files or tag.",
 };
 export const postLabels: Record<RuledPost, string> = {
   comment_on_prs: "Comment on pull requests",
@@ -529,7 +533,7 @@ export const postDescriptions: Record<RuledPost, string> = {
   comment_on_prs:
     "When a pull request’s checks fail, post one comment on it for its agent, and keep it up to date.",
   open_issues:
-    "When a default branch’s checks fail, open an issue labelled orbit for the repository’s agent, and close it once the checks have passed for an hour.",
+    "When a default branch’s checks fail, open an issue labelled orbit for the repository’s agent, and close it once the checks have passed for an hour. The same for the runs a new version tag starts, closed once they pass.",
   rerun_flaky:
     "When a job fails before any test ran, or because its runner went away or the network failed, rerun it once and say so on Orbit’s comment or issue.",
   rerun_again:
@@ -561,6 +565,7 @@ export const defaultBuddy: Buddy = {
     publish: "ask_first",
     sync_now: "ask_first",
     push_tag: "ask_first",
+    publish_release: "ask_first",
     comment_on_prs: "do_it",
     open_issues: "do_it",
     rerun_flaky: "do_it",
@@ -810,13 +815,30 @@ export function buddyOf(settings: Settings): Buddy {
 /** The tag a Needs you item offers to push, from its key
  * (`push:<repo>:<tag>`). */
 export function pushedTag(key: string | null | undefined) {
-  if (!key?.startsWith("push:")) return undefined;
-  return key.slice(key.lastIndexOf(":") + 1) || undefined;
+  return keyTag("push:", key);
 }
-/** The label of an item's fix button: Push v0.3.0 for a tag. */
+/** The tag whose draft release a Needs you item offers to publish, from
+ * its key (`release:<repo>:<tag>:<id>:<look>`). */
+export function releasedTag(key: string | null | undefined) {
+  return keyTag("release:", key);
+}
+/** The tag a key names: what follows its repository. */
+function keyTag(prefix: string, key: string | null | undefined) {
+  if (!key?.startsWith(prefix)) return undefined;
+  return key.split(":")[2] || undefined;
+}
+/** The label of an item's fix button: Push v0.3.0 for a tag, Publish
+ * v0.3.0 for a draft release. */
 export function fixLabel(fix: Fix, key: string | null | undefined) {
-  const tag = fix === "push_tag" ? pushedTag(key) : undefined;
-  return tag ? `Push ${tag}` : fixLabels[fix];
+  if (fix === "push_tag") {
+    const tag = pushedTag(key);
+    if (tag) return `Push ${tag}`;
+  }
+  if (fix === "publish_release") {
+    const tag = releasedTag(key);
+    if (tag) return `Publish ${tag}`;
+  }
+  return fixLabels[fix];
 }
 /** Whether a fix always waits for your tap, whatever Bit's rules. */
 export const asksFirst = (fix: Fix): fix is AskingFix =>
@@ -2281,7 +2303,9 @@ export type OpsAction =
   | "reopen_issue"
   | "rerun_job"
   | "change_setting"
-  | "ask_rebase";
+  | "ask_rebase"
+  | "push_tag"
+  | "publish_release";
 /** One write Orbit made on GitHub, recorded before it was sent. */
 export interface OpsWrite {
   id: string;
@@ -2296,8 +2320,13 @@ export interface OpsWrite {
   error?: string | null;
   /** For a change to a security setting, which one. */
   setting?: SecuritySetting;
-  /** For an ask to rebase, the commit the pull request was at. */
+  /** For an ask to rebase, the commit the pull request was at; for a tag
+   * or a release, the commit the tag points at. */
   head?: string;
+  /** For a tag or a release, the tag's name. */
+  tag?: string;
+  /** For a release, its id on GitHub. */
+  release?: number;
 }
 /** A commit's first seven characters, as GitHub shows them. */
 export function shortSha(sha: string) {

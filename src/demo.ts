@@ -662,6 +662,17 @@ export function freshDemo(): Snapshot {
         repo: red.repo,
         reason: `${redReason} It still fails at ${red.sha.slice(0, 7)}. It started failing with #208, merged as 7d41e09; 3b8e6f4 before it passed.`,
       },
+      {
+        key: "release:acme/orbit:v1.5.0:42:5d1e0c7a",
+        kind: "release",
+        prId: null,
+        reviewId: null,
+        approvalId: null,
+        repo: "acme/orbit",
+        reason:
+          "acme/orbit has a draft release for v1.5.0 (Orbit 1.5), and every run the tag started passed at 5e6f7a8.",
+        fix: "publish_release",
+      },
       ...security.attention,
     ],
     loopStates: [
@@ -1368,7 +1379,8 @@ export function demoCi(
     }),
     releasesOf("acme/docs", {}),
   ];
-  // The build api's newest tag started passed; dashboard's still runs.
+  // The builds Orbit's and api's newest tags started passed, so Orbit's
+  // draft is ready to publish; dashboard's still runs.
   const built = (
     repo: string,
     tag: string,
@@ -1398,6 +1410,7 @@ export function demoCi(
     tries: 0,
   });
   const builds: Build[] = [
+    built("acme/orbit", "v1.5.0", "5e6f7a8", "passing", 1),
     built("acme/api", "v2.3.2", "4be81aa", "passing", 2),
     built("acme/dashboard", "v1.0.0-beta.1", "c0ffee1", "running", 1),
   ];
@@ -2295,6 +2308,28 @@ const line = (
   prId: string | null = null,
   key: string | null = null,
 ): BuddyNoteLine => ({ text, prId, key });
+/** The releases once the demo publishes the draft a Needs you item's key
+ * (`release:<repo>:<tag>:…`) names: out, and the latest, as on GitHub. */
+export function demoPublished(releases: RepoReleases[], key: string) {
+  const [, repo, tag] = key.split(":");
+  return releases.map((r) => {
+    const draft =
+      r.repo === repo ? r.drafts.find((d) => d.tag === tag) : undefined;
+    if (!draft) return r;
+    const out = {
+      ...draft,
+      draft: false,
+      publishedAt: new Date().toISOString(),
+    };
+    return {
+      ...r,
+      drafts: r.drafts.filter((d) => d !== draft),
+      draftCount: r.draftCount - 1,
+      published: r.published + 1,
+      ...(draft.prerelease ? { prerelease: out } : { latest: out, since: 0 }),
+    };
+  });
+}
 /** What Bit says when a fix goes through, as the engine words it in the
  * cheerful tone. */
 export function demoFixed(
@@ -2304,9 +2339,13 @@ export function demoFixed(
   key?: string,
 ) {
   const pr = prLabel(s, prId) || "this pull request";
-  const tag = key?.startsWith("push:")
-    ? `${key.slice(key.lastIndexOf(":") + 1)} in ${key.slice(5, key.lastIndexOf(":"))}`
-    : "the tag";
+  // `push:<repo>:<tag>` or `release:<repo>:<tag>:<id>:<look>`.
+  const tagIn = (prefix: string) => {
+    const [, repo, tag] = key?.startsWith(prefix) ? key.split(":") : [];
+    return repo && tag ? `${tag} in ${repo}` : undefined;
+  };
+  const tag = tagIn("push:") ?? "the tag";
+  const release = tagIn("release:") ?? "the release";
   return {
     continue_loop: `Gave ${pr} two more rounds!`,
     review_again: `Queued a new review of ${pr}. Fingers crossed!`,
@@ -2316,6 +2355,7 @@ export function demoFixed(
     check_connections: "It's connected again. All good!",
     post_here_again: `I'll post on ${pr} again!`,
     push_tag: `Pushed ${tag}! 🏷️`,
+    publish_release: `Published ${release}! 🚀`,
   }[fix];
 }
 /** Bit's answer to a quick question, from the demo's state, as the engine

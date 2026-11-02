@@ -182,6 +182,14 @@ fn a_partial_list_of_tags_doesnt_replace_the_build_orbit_knows() {
             [tag("v2.0.0", '2')]
         );
     }
+    // The same version spelled another way doesn't replace it either.
+    for r in [
+        partial(&[("2.0.0", '3'), ("v1.9.1", '4')]),
+        partial(&[("v2.0.0+build.7", '3')]),
+    ] {
+        assert_eq!(target(&r, Some(&failing)), Some(tag("v2.0.0", '2')));
+        assert!(kept(&r));
+    }
     // With no build known, the highest read is the one.
     let r = partial(&[("v1.9.1", '3')]);
     assert_eq!(target(&r, None), Some(tag("v1.9.1", '3')));
@@ -261,6 +269,9 @@ fn the_newest_run_of_each_workflow_at_the_tag_counts() {
     );
     assert_eq!(runs[1].0.url, "https://github.com/a/b/actions/runs/5");
     assert_eq!(runs[1].0.event, "push");
+    // How each ended, once it has.
+    assert_eq!(runs[0].0.conclusion, "");
+    assert_eq!(runs[1].0.conclusion, "failure");
 
     let job = |name: &str, status: &str, conclusion: Option<&str>| {
         json!({
@@ -398,4 +409,78 @@ fn a_build_in_a_sentence() {
     b.read_at.clear();
     b.ci.state = CiState::Passing;
     assert_eq!(sentence(&b, now()), None);
+}
+
+/// A release may be published from a build only when every workflow's
+/// newest run passed, or was skipped by its own conditions, with at least
+/// one passing: a cancelled run counts against it, though `ci.state`
+/// leaves it out.
+#[test]
+fn a_release_is_published_only_from_a_build_whose_every_run_passed() {
+    let run = |id: u64, name: &str, state: CiState, conclusion: &str| Run {
+        id,
+        name: name.into(),
+        state,
+        conclusion: conclusion.into(),
+        ..Default::default()
+    };
+    let with = |runs: Vec<Run>| Build {
+        runs,
+        ..built("a/b", "v1.0.0", '1', CiState::Passing, 60, 10)
+    };
+    let release = run(1, "Release", CiState::Passing, "success");
+    assert_eq!(publishable(&with(vec![release.clone()])), Ok(()));
+    let docs_skipped = run(2, "Docs", CiState::None, "skipped");
+    assert_eq!(
+        publishable(&with(vec![release.clone(), docs_skipped.clone()])),
+        Ok(())
+    );
+    for (other, why) in [
+        (
+            run(2, "Package", CiState::None, "cancelled"),
+            "Package was cancelled",
+        ),
+        (
+            run(2, "Package", CiState::Running, ""),
+            "Package is still running",
+        ),
+        (
+            run(2, "Package", CiState::Failing, "failure"),
+            "Package failed",
+        ),
+        (
+            run(2, "Package", CiState::None, "neutral"),
+            "Package ended as neutral",
+        ),
+        (run(2, "", CiState::None, "stale"), "a run ended as stale"),
+        (
+            run(2, "Package", CiState::Passing, ""),
+            "Orbit hasn't read how Package ended",
+        ),
+    ] {
+        assert_eq!(
+            publishable(&with(vec![release.clone(), other])),
+            Err(why.to_string())
+        );
+    }
+    assert_eq!(
+        publishable(&with(vec![docs_skipped])),
+        Err("no run v1.0.0 started has passed".into())
+    );
+    assert_eq!(
+        publishable(&with(vec![])),
+        Err("no run v1.0.0 started has passed".into())
+    );
+    let mut failed_read = with(vec![release.clone()]);
+    failed_read.error = Some("Bad Gateway".into());
+    assert_eq!(
+        publishable(&failed_read),
+        Err("Orbit's latest read of the runs v1.0.0 started failed".into())
+    );
+    let mut more = with(vec![release]);
+    more.ci.incomplete = true;
+    assert_eq!(
+        publishable(&more),
+        Err("v1.0.0 started more runs than Orbit reads".into())
+    );
 }

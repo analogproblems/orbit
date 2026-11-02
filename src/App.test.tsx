@@ -420,7 +420,7 @@ describe("PR review regressions", () => {
     onTestFinished(() => wide.mockRestore());
     await mount();
     const item = screen.getByRole("button", { name: /^Needs you/ });
-    expect(item.parentElement?.textContent).toContain("5");
+    expect(item.parentElement?.textContent).toContain("6");
     await user().click(item);
     expect(
       await screen.findByRole("heading", { name: "Needs you" }),
@@ -503,7 +503,7 @@ describe("PR review regressions", () => {
       screen.getByRole("heading", { level: 1, name: "Live" }),
     ).toBeTruthy();
     expect(
-      screen.getByText("Autopilot · 2 loops running · 5 need you"),
+      screen.getByText("Autopilot · 2 loops running · 6 need you"),
     ).toBeTruthy();
     fireEvent.keyDown(document, { key: "k", ctrlKey: true });
     const search = await screen.findByPlaceholderText("Search pull requests…");
@@ -946,7 +946,7 @@ describe("Bit", () => {
       question: "needs_you",
     });
     const answer = await within(chat()).findByRole("list", {
-      name: "5 things need you. Here's the list:",
+      name: "6 things need you. Here's the list:",
     });
     expect(within(answer).getAllByRole("listitem")[0].textContent).toContain(
       "Round limit reached.",

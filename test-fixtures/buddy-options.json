@@ -83,7 +83,8 @@
     "turn_on_autopilot",
     "check_connections",
     "post_here_again",
-    "push_tag"
+    "push_tag",
+    "publish_release"
   ],
   "helpActions": ["sign_in", "open_page"],
   "questions": ["needs_you", "running", "loops", "repositories", "setup"],
@@ -104,7 +105,8 @@
     "rerun_flaky": "do_it",
     "rerun_again": "ask_first",
     "propose_ci": "ask_first",
-    "push_tag": "ask_first"
+    "push_tag": "ask_first",
+    "publish_release": "ask_first"
   },
   "actions": [
     "continue_loop",

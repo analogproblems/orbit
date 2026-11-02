@@ -38,6 +38,7 @@ import {
   asksFirst,
   fixLabel,
   pushedTag,
+  releasedTag,
   readinessLine,
   withPatch,
   type Attention,
@@ -451,6 +452,21 @@ describe("Bit's fixes", () => {
     expect(fixLabel("publish", "push:acme/api:v0.3.0")).toBe("Publish report");
     expect(asksFirst("push_tag")).toBe(false);
   });
+  it("names the release a publish offers on its button", () => {
+    expect(releasedTag("release:acme/api:v0.3.0:7:0a1b2c3d")).toBe("v0.3.0");
+    expect(releasedTag("release:acme/api:v0.3.0")).toBe("v0.3.0");
+    expect(releasedTag("push:acme/api:v0.3.0")).toBeUndefined();
+    expect(fixLabel("publish_release", "release:acme/api:v0.3.0")).toBe(
+      "Publish v0.3.0",
+    );
+    expect(fixLabel("publish_release", undefined)).toBe(
+      "Publish a draft release",
+    );
+    expect(fixLabel("push_tag", "release:acme/api:v0.3.0")).toBe(
+      "Push a release tag",
+    );
+    expect(asksFirst("publish_release")).toBe(false);
+  });
   it("patches one rule at a time, as the engine does", () => {
     const settings = structuredClone(defaults);
     delete settings.buddy;
@@ -468,6 +484,7 @@ describe("Bit's fixes", () => {
       rerun_again: "ask_first",
       propose_ci: "ask_first",
       push_tag: "ask_first",
+      publish_release: "ask_first",
     });
     expect(
       buddyOf(withPatch(patched, { buddy: { name: "Orbie" } })).rules.publish,

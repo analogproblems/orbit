@@ -362,6 +362,7 @@ fn change_entry(state: WriteState, action: Action, setting: Option<Setting>) -> 
         setting,
         head: None,
         tag: None,
+        release: None,
     }
 }
 

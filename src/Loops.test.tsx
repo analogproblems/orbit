@@ -215,6 +215,54 @@ describe("needs you list", () => {
       }),
     ).toBeTruthy();
   });
+  it("publishes a draft release on one tap, unless left to you", () => {
+    const snapshot = freshDemo();
+    const key = "release:acme/api:v0.3.0";
+    snapshot.attention = [
+      {
+        key,
+        kind: "release",
+        prId: null,
+        reviewId: null,
+        approvalId: null,
+        repo: "acme/api",
+        reason:
+          "acme/api has a draft release for v0.3.0, and every run the tag started passed at abc1234.",
+        fix: "publish_release",
+      },
+    ];
+    const action = vi.fn().mockResolvedValue({ ok: true });
+    useOrbit.setState({ action });
+    show(snapshot);
+    const needs = list("Needs you");
+    fireEvent.click(
+      within(needs).getByRole("button", { name: "Publish v0.3.0" }),
+    );
+    expect(action).toHaveBeenCalledWith("use_fix", { key });
+    cleanup();
+    const settings = snapshot.settings;
+    const buddy = buddyOf(settings);
+    show({
+      ...snapshot,
+      settings: {
+        ...settings,
+        buddy: {
+          ...buddy,
+          rules: { ...buddy.rules, publish_release: "leave_it" },
+        },
+      },
+    });
+    expect(
+      within(list("Needs you")).queryByRole("button", {
+        name: "Publish v0.3.0",
+      }),
+    ).toBeNull();
+    expect(
+      within(list("Needs you")).getByRole("button", {
+        name: "Open operations",
+      }),
+    ).toBeTruthy();
+  });
   it("shows no list when nothing needs you", () => {
     show({ ...freshDemo(), attention: [] });
     expect(screen.queryByRole("heading", { name: "Needs you" })).toBeNull();
@@ -370,7 +418,7 @@ describe("loops", () => {
   it("summarises autopilot for the header", () => {
     const snapshot = freshDemo();
     expect(autopilotSummary(snapshot)).toBe(
-      "Autopilot · 2 loops running · 5 need you",
+      "Autopilot · 2 loops running · 6 need you",
     );
     snapshot.attention = [];
     snapshot.loopStates = snapshot.loopStates!.slice(2);

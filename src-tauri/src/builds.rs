@@ -46,6 +46,11 @@ pub struct Run {
     /// What started it, such as `push` or `release`.
     pub event: String,
     pub state: CiState,
+    /// How it ended, as GitHub says, such as `success`, `cancelled` or
+    /// `skipped`, once it has. Empty while it runs, and in what older
+    /// versions of Orbit read.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub conclusion: String,
 }
 /// The runs a repository's newest version tag started, as Orbit last read
 /// them.
@@ -76,9 +81,10 @@ pub struct Build {
 /// tags: the newest version tag, the highest version Orbit read. Orbit
 /// reads the tags of the newest commits only, so when there are more, the
 /// build it knows of (`known`) stays the one watched while its tag is a
-/// higher version than any Orbit read and isn't among them, as it may just
-/// be on an older commit. Only a higher version Orbit read, or a full list
-/// without it, replaces it.
+/// higher version than any Orbit read, or the same one spelled another way
+/// (`2.0.0` or `v2.0.0+build` for `v2.0.0`), and isn't among them, as it
+/// may just be on an older commit. Only a higher version Orbit read, or a
+/// full list without it, replaces it.
 pub fn target(r: &RepoReleases, known: Option<&Build>) -> Option<Tag> {
     if r.read_at.is_empty() || r.unseen.is_some() {
         return None;
@@ -90,7 +96,7 @@ pub fn target(r: &RepoReleases, known: Option<&Build>) -> Option<Tag> {
             && valid_sha(&b.sha)
             && !r.tags.iter().any(|t| t.name == b.tag)
             && version(&b.tag)
-                .is_some_and(|v| newest.and_then(|t| version(&t.name)).is_none_or(|n| v > n))
+                .is_some_and(|v| newest.and_then(|t| version(&t.name)).is_none_or(|n| v >= n))
     });
     match kept {
         Some(b) => Some(Tag {
@@ -210,6 +216,11 @@ pub fn runs_of(items: &[Value], tag: &Tag) -> Vec<(Run, Value)> {
                 url: text("html_url"),
                 event: text("event"),
                 state: run_state(&v),
+                conclusion: if v["status"] == "completed" {
+                    text("conclusion")
+                } else {
+                    String::new()
+                },
             };
             (run, v)
         })
@@ -240,6 +251,45 @@ pub fn failed_jobs(run: &Run, jobs: &[Value]) -> Vec<Check> {
             }
         })
         .collect()
+}
+
+/// Whether a release may be published from a build, or why not, in a
+/// few words: read without an error, every run GitHub listed read, and
+/// each workflow's newest run finished as a success, or skipped as its
+/// own conditions say, with at least one success. A run still going, or
+/// one that failed, was cancelled or ended any other way, holds it back.
+/// This is stricter than `ci.state`, where a cancelled run doesn't count.
+pub fn publishable(b: &Build) -> Result<(), String> {
+    if b.error.is_some() || b.read_at.is_empty() {
+        return Err(format!(
+            "Orbit's latest read of the runs {} started failed",
+            b.tag
+        ));
+    }
+    if b.ci.incomplete {
+        return Err(format!("{} started more runs than Orbit reads", b.tag));
+    }
+    let name = |r: &Run| {
+        if r.name.is_empty() {
+            "a run".to_string()
+        } else {
+            r.name.clone()
+        }
+    };
+    for r in &b.runs {
+        match (r.state, r.conclusion.as_str()) {
+            (CiState::Running, _) => return Err(format!("{} is still running", name(r))),
+            (CiState::Failing, _) => return Err(format!("{} failed", name(r))),
+            (_, "success" | "skipped") => {}
+            (_, "cancelled") => return Err(format!("{} was cancelled", name(r))),
+            (_, "") => return Err(format!("Orbit hasn't read how {} ended", name(r))),
+            (_, other) => return Err(format!("{} ended as {other}", name(r))),
+        }
+    }
+    if !b.runs.iter().any(|r| r.conclusion == "success") {
+        return Err(format!("no run {} started has passed", b.tag));
+    }
+    Ok(())
 }
 
 /// Reads the runs `tag` started in `repo`, and the jobs of each that
@@ -334,6 +384,45 @@ async fn jobs(repo: &str, run: u64) -> Result<Vec<Value>, String> {
     Ok(jobs)
 }
 
+/// Keeps a read of the runs `tag` started in `repo`, from a pass or just
+/// before a publish, while it still counts: Watch CI on, the repository
+/// connected, and `tag` still the one Orbit watches there (`target`), at
+/// that commit, so a newer tag, such as one Orbit pushed meanwhile, isn't
+/// overwritten by an older one's read. A read that worked opens, updates
+/// or closes the build's problem.
+pub fn keep(
+    s: &mut Snapshot,
+    repo: &str,
+    tag: &Tag,
+    result: Result<Build, String>,
+    now: DateTime<Utc>,
+) {
+    let connected: Vec<String> = s
+        .settings
+        .repositories
+        .iter()
+        .map(|r| r.name.clone())
+        .collect();
+    let known = s.builds.iter().find(|b| same_repo(&b.repo, repo));
+    let watched = s
+        .releases
+        .iter()
+        .find(|r| same_repo(&r.repo, repo))
+        .and_then(|r| target(r, known));
+    if !s.settings.watch_ci
+        || !connected.iter().any(|c| same_repo(c, repo))
+        || watched.is_none_or(|t| t.name != tag.name || t.sha != tag.sha)
+    {
+        return;
+    }
+    let fresh = result.is_ok();
+    record(&mut s.builds, repo, tag, result, now);
+    prune(&mut s.builds, &connected);
+    let read = s.builds.iter().find(|b| same_repo(&b.repo, repo));
+    if let Some(b) = read.filter(|_| fresh) {
+        crate::problems::see_build(&mut s.problems, b, now);
+    }
+}
 /// Keeps what Orbit read of a repository's build, in place of what it read
 /// before. A read of the same tag at the same commit keeps when Orbit
 /// first read it. A failed read keeps the earlier read of that tag, if

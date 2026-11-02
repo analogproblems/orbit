@@ -150,9 +150,16 @@ describe("live page", () => {
     const go = show(s);
     const panel = screen.getByRole("region", { name: "Needs you" });
     expect(
-      within(panel).getByRole("heading", { name: "6 things need you" }),
+      within(panel).getByRole("heading", { name: "7 things need you" }),
     ).toBeTruthy();
     expect(within(panel).getByText("Codex is disconnected")).toBeTruthy();
+    // A draft release ready to publish is one tap.
+    fireEvent.click(
+      within(panel).getByRole("button", { name: "Publish v1.5.0" }),
+    );
+    expect(action).toHaveBeenCalledWith("use_fix", {
+      key: "release:acme/orbit:v1.5.0:42:5d1e0c7a",
+    });
     fireEvent.click(
       within(panel).getByRole("button", { name: "Continue loop" }),
     );

@@ -561,7 +561,7 @@ pub async fn check(repo: &str, tag: &Tag, now: DateTime<Utc>) -> TagCheck {
     c
 }
 /// A release from GitHub's list, or None when it isn't whole.
-fn release(v: &Value) -> Option<Release> {
+pub fn release(v: &Value) -> Option<Release> {
     let tag = v["tag_name"].as_str().filter(|t| !t.is_empty())?;
     let name = v["name"]
         .as_str()

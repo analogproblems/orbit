@@ -17,6 +17,7 @@ pub mod client;
 pub mod clock;
 pub mod dependabot;
 pub mod devcontainer;
+pub mod drafts;
 pub mod engine;
 pub mod extras;
 pub mod github;

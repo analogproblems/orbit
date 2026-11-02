@@ -585,6 +585,7 @@ pub fn record_change(
         setting: Some(setting),
         head: None,
         tag: None,
+        release: None,
     });
     id
 }
