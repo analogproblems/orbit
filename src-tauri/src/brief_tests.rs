@@ -1196,19 +1196,42 @@ fn releases_due_drafts_and_untagged_versions_are_in_the_brief() {
             "a/b has a draft release, v0.3.0, waiting to be published.".to_string()
         )]
     );
-    // Its build passing makes it new in the next brief.
+    // In the next brief, v0.4.0's release and v0.2.1's draft have settled.
     look(&mut s, at("2026-11-02", "09:00"), now());
     let keys: Vec<&str> = latest(&s).lines.iter().map(|l| l.key.as_str()).collect();
     assert!(keys.contains(&"release-drafts:a/b:v0.3.0"), "{keys:?}");
+    assert_eq!(latest(&s).settled, 2);
+    // Its build passing makes it new in the next brief, and so does it
+    // failing again, while the draft itself hasn't settled.
+    let new = |s: &Snapshot| -> Vec<String> {
+        latest(s)
+            .lines
+            .iter()
+            .filter(|l| l.new)
+            .map(|l| l.key.clone())
+            .collect()
+    };
     s.builds = releasing().builds;
     look(&mut s, at("2026-11-03", "09:00"), now());
-    let ready: Vec<_> = latest(&s).lines.iter().filter(|l| l.new).collect();
-    assert_eq!(ready.len(), 1);
-    assert_eq!(ready[0].key, "release-drafts:a/b:v0.3.0:ready=v0.3.0");
-    assert!(ready[0]
+    assert_eq!(new(&s), ["release-drafts:a/b:v0.3.0:ready=v0.3.0"]);
+    assert!(latest(&s).lines[0]
         .text
         .ends_with("The one for v0.3.0 is ready: every run its tag started passed."));
+    assert_eq!(latest(&s).settled, 0);
     s.builds.clear();
+    look(&mut s, at("2026-11-04", "09:00"), now());
+    assert_eq!(new(&s), ["release-drafts:a/b:v0.3.0"]);
+    assert_eq!(latest(&s).settled, 0);
+    // Published: it has settled.
+    let draft = s.releases[0].drafts.remove(0);
+    s.releases[0].draft_count = 0;
+    look(&mut s, at("2026-11-05", "09:00"), now());
+    assert_eq!(
+        (latest(&s).day.as_str(), latest(&s).settled),
+        ("2026-11-05", 1)
+    );
+    s.releases[0].drafts.push(draft);
+    s.releases[0].draft_count = 1;
     s.releases[0].draft_count = 3;
     assert_eq!(
         release(&s)[0].1,

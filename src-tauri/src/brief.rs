@@ -331,8 +331,9 @@ pub fn release_lines(s: &Snapshot, now: DateTime<Utc>) -> Vec<Line> {
     out
 }
 /// What a line is about: its key, but a security line's without the count
-/// of alerts told that makes it new again, and a Dependabot fix's without
-/// its head and whether it is ready.
+/// of alerts told that makes it new again, a Dependabot fix's without its
+/// head and whether it is ready, and a release's drafts without which one
+/// is ready, so a change there is new without anything having settled.
 fn thing(key: &str) -> &str {
     if let Some(rest) = key.strip_prefix("security:") {
         return rest.rsplit_once(':').map_or(key, |(id, _)| id);
@@ -340,6 +341,9 @@ fn thing(key: &str) -> &str {
     if let Some(rest) = key.strip_prefix("dependabot:") {
         let end = "dependabot:".len() + rest.find(':').unwrap_or(rest.len());
         return &key[..end];
+    }
+    if key.starts_with("release-drafts:") {
+        return key.find(":ready=").map_or(key, |end| &key[..end]);
     }
     key
 }
