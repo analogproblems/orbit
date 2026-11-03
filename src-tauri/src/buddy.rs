@@ -968,6 +968,13 @@ mod say {
             _ => format!("Hmm. {what} Worth a look."),
         }
     }
+    pub fn learned(tone: &str, what: &str, next: &str) -> String {
+        match tone {
+            "calm" => format!("Orbit learned something: {what} {next}"),
+            "dry" => format!("Noticed a pattern. {what} {next}"),
+            _ => format!("I learned something! {what} {next}"),
+        }
+    }
     pub fn answered(tone: &str, what: &str) -> String {
         match tone {
             "calm" => what.to_string(),
@@ -1406,6 +1413,25 @@ pub fn observe_outcomes(s: &mut Snapshot, settled: &[crate::outcomes::Outcome]) 
     let changed = !notes.is_empty();
     append(&mut s.buddy_feed, notes);
     changed
+}
+
+/// Notes each lesson Orbit learned just now, while Bit is on (see
+/// `crate::cases`). Says whether it noted any.
+pub fn observe_lessons(s: &mut Snapshot, learned: &[crate::cases::Lesson]) -> bool {
+    if !s.settings.buddy.enabled || learned.is_empty() {
+        return false;
+    }
+    let tone = s.settings.buddy.tone.clone();
+    let notes: Vec<Note> = learned
+        .iter()
+        .map(|l| Note {
+            repo: Some(l.repo.clone()),
+            key: Some(format!("lesson:{}", l.id)),
+            ..Note::new(NoteKind::Ci, say::learned(&tone, &l.what, &l.next))
+        })
+        .collect();
+    append(&mut s.buddy_feed, notes);
+    true
 }
 
 /// Something in a pull request's story that needs a decision: a flag that

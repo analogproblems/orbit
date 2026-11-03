@@ -1196,6 +1196,12 @@ export interface Snapshot {
   journal?: OpsWrite[];
   /** How what Orbit and the agents did lately turned out. */
   outcomes?: Outcome[];
+  /** A short record of each problem about failing checks, kept for 90
+   * days after it closed; what Orbit learned from repeats among them; and
+   * the lessons you forgot. */
+  cases?: Case[];
+  lessons?: Lesson[];
+  forgottenLessons?: { id: string; at: string }[];
   /** Why the jobs still failing on open problems failed, as Orbit read
    * them. */
   failures?: CiFailure[];
@@ -1471,6 +1477,62 @@ export interface Problem {
   /** For something failing that passed before, as a problem of its own
    * that closed by passing: when it passed, and at which commit. */
   fixedBefore?: { at: string; sha: string } | null;
+  /** For failing checks: what happened the last time something like it
+   * failed, once Orbit looked, and the lessons about it while it is
+   * open. */
+  lastTime?: LastTime | null;
+  lookedBack?: boolean;
+  lessons?: Lesson[];
+}
+/** How a case ended (`cases.rs`). */
+export type CaseEnd = "open" | "again" | "fixed" | "passed" | "closed";
+/** The short record of one problem about failing checks. */
+export interface Case {
+  id: string;
+  key: string;
+  kind: ProblemKind;
+  repo: string;
+  branch: string;
+  number?: number | null;
+  checks: string[];
+  last: string[];
+  step?: string;
+  sha: string;
+  openedAt: string;
+  closedAt?: string | null;
+  end: CaseEnd;
+  passed?: string;
+  fixed?: boolean;
+  fix?: string;
+  reran?: boolean;
+  reason?: string;
+}
+/** What happened the last time something like a problem failed. */
+export interface LastTime {
+  case: Case;
+  at: string;
+  /** In a sentence, as the app shows it. */
+  text: string;
+}
+/** Something Orbit learned from a repeat. Guidance only: it changes what
+ * Orbit says, never what it may do. */
+export interface Lesson {
+  id: string;
+  kind: "luck" | "back" | "fix" | "setting" | "build";
+  repo: string;
+  check?: string;
+  branch?: string;
+  setting?: SecuritySetting | null;
+  /** How many times it happened in the last 30 days. */
+  count: number;
+  fixes?: string[];
+  from: string[];
+  learnedAt: string;
+  /** When it last happened. */
+  seenAt: string;
+  /** What happened, and what to do next time. */
+  what: string;
+  next: string;
 }
 /** What a version file is, as the engine has it (`versions.rs`). */
 export type VersionFileKind =

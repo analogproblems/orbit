@@ -26,6 +26,7 @@ import {
   type OpsThread,
   type OpsWrite,
   type Outcome,
+  type Lesson,
   type Problem,
   type PullRequest,
   type RepoCi,
@@ -750,6 +751,16 @@ export function freshDemo(): Snapshot {
     buddyFeed: {
       notes: [
         {
+          id: 9,
+          at: ago(3 * 24 * 60),
+          kind: "ci",
+          prId: null,
+          reviewId: null,
+          repo: "acme/api",
+          text: "I learned something! CI / End-to-end in acme/api failed and then passed when it ran again at the same commit 3 times in 30 days. When it fails again, running it again will likely pass, but it may need fixing so it stops failing by chance.",
+          key: "lesson:luck:acme/api:ci / end-to-end",
+        },
+        {
           id: 7,
           at: ago(2 * 24 * 60),
           kind: "ci",
@@ -1061,6 +1072,7 @@ export function demoCi(
   | "ops"
   | "journal"
   | "outcomes"
+  | "lessons"
   | "failures"
   | "setups"
   | "runners"
@@ -1867,12 +1879,87 @@ export function demoCi(
   for (const t of ops)
     for (const i of t.items)
       if (i.failing) i.why = failures.find((f) => f.url === i.url) ?? null;
+  // What Orbit learned from repeats: the end-to-end job keeps passing when
+  // it runs again, and main keeps breaking. The failing problems say so,
+  // with what happened the last time each failed.
+  const lessons: Lesson[] = [
+    {
+      id: `luck:${failingPr.repo}:ci / end-to-end`,
+      kind: "luck",
+      repo: failingPr.repo,
+      check: "CI / End-to-end",
+      count: 4,
+      from: [],
+      learnedAt: ago(3 * 24 * 60),
+      seenAt: ago(2 * 24 * 60),
+      what: `CI / End-to-end in ${failingPr.repo} failed and then passed when it ran again at the same commit 4 times in 30 days.`,
+      next: "When it fails again, running it again will likely pass, but it may need fixing so it stops failing by chance.",
+    },
+    {
+      id: "back:ci:acme/orbit",
+      kind: "back",
+      repo: "acme/orbit",
+      branch: "main",
+      count: 3,
+      fixes: [sha("5e0a7b2")],
+      from: [],
+      learnedAt: ago(6 * 24 * 60),
+      seenAt: ago(6 * 24 * 60),
+      what: "CI on main in acme/orbit broke 3 times in 30 days and was fixed each time, most recently at 5e0a7b2.",
+      next: "Look for what keeps breaking it, not just the check that fails now.",
+    },
+  ];
+  const [red, failing] = problems;
+  red.lookedBack = true;
+  red.lessons = [lessons[1]];
+  red.lastTime = {
+    at: red.openedAt,
+    text: "Last time, 6 days earlier: CI / Rust tests failed on main. It passed again at 5e0a7b2 after the agent’s fix, 3 hours later.",
+    case: {
+      id: "demo-case-1",
+      key: red.key,
+      kind: "default_branch",
+      repo: red.repo,
+      branch: "main",
+      checks: ["CI / Rust tests"],
+      last: ["CI / Rust tests"],
+      sha: sha("41c8d07"),
+      openedAt: ago(6 * 24 * 60 + 4 * 60),
+      closedAt: ago(6 * 24 * 60 + 60),
+      end: "fixed",
+      passed: sha("5e0a7b2"),
+      fixed: true,
+    },
+  };
+  failing.lookedBack = true;
+  failing.lessons = [lessons[0]];
+  failing.lastTime = {
+    at: failing.openedAt,
+    text: "Last time, 2 days earlier: CI / End-to-end failed on pull request #197. It passed when Orbit reran it at the same commit, 12 minutes later.",
+    case: {
+      id: "demo-case-2",
+      key: `ci:${failingPr.repo}#197`,
+      kind: "pull_request",
+      repo: failingPr.repo,
+      branch: "faster-sync",
+      number: 197,
+      checks: ["CI / End-to-end"],
+      last: ["CI / End-to-end"],
+      sha: sha("b6d2e90"),
+      openedAt: ago(2 * 24 * 60 + 12),
+      closedAt: ago(2 * 24 * 60),
+      end: "again",
+      passed: sha("b6d2e90"),
+      reran: true,
+    },
+  };
   return {
     ci,
     problems,
     ops,
     journal,
     outcomes,
+    lessons,
     failures,
     setups,
     runners,

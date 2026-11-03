@@ -735,7 +735,8 @@ export default function App() {
                           setPage("decisions");
                         } else if (
                           note.key?.startsWith("problem:") ||
-                          note.key?.startsWith("outcome:")
+                          note.key?.startsWith("outcome:") ||
+                          note.key?.startsWith("lesson:")
                         ) {
                           setPage("operations");
                         } else if (note.prId) {

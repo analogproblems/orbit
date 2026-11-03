@@ -587,11 +587,61 @@ describe("operations page", () => {
     const s = freshDemo();
     const red = s.problems!.find((p) => p.kind === "default_branch")!;
     red.fixedBefore = { at: red.openedAt, sha: "4".repeat(40) };
+    red.lastTime = null;
     show(s);
     const open = screen.getByRole("list", { name: "Open problems" });
     expect(within(open).getAllByRole("listitem")[0].textContent).toContain(
       "It was fixed before: it passed at 4444444 on",
     );
+  });
+
+  it("says what happened last time, and what Orbit learned, in place of when it was fixed before", () => {
+    const s = freshDemo();
+    const red = s.problems!.find((p) => p.kind === "default_branch")!;
+    red.fixedBefore = { at: red.openedAt, sha: "4".repeat(40) };
+    show(s);
+    const row = within(
+      screen.getByRole("list", { name: "Open problems" }),
+    ).getAllByRole("listitem")[0];
+    expect(row.textContent).toContain(
+      "Last time, 6 days earlier: CI / Rust tests failed on main. It passed again at 5e0a7b2 after the agent’s fix, 3 hours later.",
+    );
+    expect(row.textContent).toContain(
+      "Orbit learned: CI on main in acme/orbit broke 3 times in 30 days and was fixed each time, most recently at 5e0a7b2. Look for what keeps breaking it",
+    );
+    expect(row.textContent).not.toContain("It was fixed before");
+  });
+
+  it("lists what Orbit learned, the latest seen first, with a tap to forget each", () => {
+    const action = vi.fn().mockResolvedValue({ ok: true });
+    useOrbit.setState({ action });
+    const s = freshDemo();
+    show(s);
+    const list = screen.getByRole("list", { name: "What Orbit learned" });
+    const items = within(list).getAllByRole("listitem");
+    expect(items.map((i) => i.textContent)).toEqual([
+      expect.stringContaining(
+        "CI / End-to-end in acme/api failed and then passed when it ran again at the same commit 4 times in 30 days.When it fails again",
+      ),
+      expect.stringContaining(
+        "CI on main in acme/orbit broke 3 times in 30 days",
+      ),
+    ]);
+    expect(
+      screen.getByText(
+        /A lesson only changes what Orbit says, never what it may do\./,
+      ),
+    ).toBeTruthy();
+    fireEvent.click(within(items[1]).getByRole("button", { name: /^Forget/ }));
+    expect(action).toHaveBeenCalledWith("forget_lesson", {
+      id: "back:ci:acme/orbit",
+    });
+    cleanup();
+    s.lessons = [];
+    show(s);
+    expect(
+      screen.queryByRole("list", { name: "What Orbit learned" }),
+    ).toBeNull();
   });
 
   it("shows no outcomes until Orbit has some", () => {

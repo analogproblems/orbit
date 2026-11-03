@@ -3299,3 +3299,65 @@ mod workflows {
         );
     }
 }
+
+/// What happened last time and the lessons about a problem come before
+/// its items, with names as code, in place of when it was fixed before.
+#[test]
+fn issues_and_comments_say_what_orbit_has_seen_before() {
+    use crate::cases::{Case, End, LastTime, Lesson, LessonKind};
+    let last = LastTime {
+        case: Case {
+            kind: ProblemKind::DefaultBranch,
+            branch: "main".into(),
+            last: vec!["CI / Rust".into()],
+            opened_at: stamp(t0() - Duration::days(3)),
+            closed_at: Some(stamp(t0() - Duration::days(2))),
+            end: End::Again,
+            reran: true,
+            ..Default::default()
+        },
+        at: stamp(t0()),
+        text: "Last time (as the app says it)".into(),
+    };
+    let lesson = Lesson {
+        id: "luck:a/b:ci / rust".into(),
+        kind: LessonKind::Luck,
+        repo: "a/b".into(),
+        check: "CI / Rust".into(),
+        count: 3,
+        ..Default::default()
+    };
+    let mut p = Problem {
+        fixed_before: Some(crate::problems::FixedBefore {
+            at: stamp(t0() - Duration::days(2)),
+            sha: sha('9'),
+        }),
+        ..branch(&["CI / Rust"], '1')
+    };
+    let mut threads = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    // Before Orbit looked back, it says when it was fixed before.
+    let body = issue_body(&threads[0], &p, false);
+    assert!(body.contains("It was fixed before: it passed at `9999999` 2 days earlier."));
+    assert!(!body.contains("seen this before"));
+    p.last_time = Some(last.clone());
+    p.lessons = vec![lesson.clone()];
+    let body = issue_body(&threads[0], &p, false);
+    assert!(!body.contains("It was fixed before"));
+    let seen = "Orbit has seen this before:\n\n- Last time, 2 days earlier: `CI / Rust` failed on `main`. It passed when Orbit reran it at the same commit, 24 hours later.\n- `CI / Rust` in a/b failed and then passed when it ran again at the same commit 3 times in 30 days. When it fails again, running it again will likely pass, but it may need fixing so it stops failing by chance.\n\n";
+    let at = body.find(seen).unwrap_or_else(|| panic!("{body}"));
+    assert!(at < body.find("**I1**").unwrap());
+    // A closed problem doesn't, and a pull request's comment does.
+    let mut closed = p.clone();
+    pass(&mut closed, '2', t0());
+    assert!(!issue_body(&threads[0], &closed, true).contains("seen this before"));
+    let mut pr = pull("p2", &["CI / Rust"], '1', t0());
+    pr.lessons = vec![lesson];
+    let mut threads = vec![];
+    refresh(&mut threads, std::slice::from_ref(&pr), t0());
+    let body = comment_body(&threads[0], Some(&pr));
+    let at = body
+        .find("Orbit has seen this before:\n\n- `CI / Rust` in a/b failed")
+        .unwrap();
+    assert!(at < body.find("**I1**").unwrap());
+}

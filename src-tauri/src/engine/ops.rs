@@ -94,6 +94,12 @@ impl Engine {
             // Nothing is on its way while this runs, so a write still marked
             // as sending was cut off when Orbit stopped.
             let mut changed = ops::interrupted(&mut s.journal, &mut s.ops, now);
+            // Before the threads change, so a problem that closed is kept
+            // as its thread last saw it, and a new one says what happened
+            // last time before Orbit first tells its agent.
+            let (followed, learned) = crate::cases::follow(s, now);
+            changed |= followed;
+            changed |= crate::buddy::observe_lessons(s, &learned);
             changed |= ops::refresh(&mut s.ops, &s.problems, now);
             changed |= ops::explain(&mut s.ops, &s.failures);
             let mut again = reruns::noticed(s);

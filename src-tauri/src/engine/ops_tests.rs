@@ -358,6 +358,125 @@ async fn a_branch_that_breaks_again_soon_names_what_broke_it_this_time() {
     assert_eq!(calls(d.path(), "GET history/"), 4);
 }
 
+/// A branch that breaks again hours after it passed opens a new problem,
+/// whose issue and Needs you item say what happened last time; once a
+/// check has passed by bad luck three times, Orbit learns it, the issue
+/// says so and Bit notes it.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_branch_that_breaks_again_says_what_happened_last_time() {
+    use crate::cases::{Case, End};
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    answer(d.path(), '1', &[("Rust", "FAILURE")], None);
+    let e = connected(d.path()).await;
+    e.update(|s| s.settings.buddy.enabled = true).await;
+    watch(&e, &gh).await;
+    answer(d.path(), '2', &[("Rust", "SUCCESS")], None);
+    watch(&e, &gh).await;
+    let s = e.snapshot().await;
+    assert_eq!(s.cases.len(), 1);
+    assert_eq!(
+        (s.cases[0].end, s.cases[0].passed.as_str()),
+        (End::Passed, &*sha('2'))
+    );
+    // As if it failed three hours ago and passed two hours ago.
+    e.update(|s| {
+        let ago = |h: i64| crate::problems::stamp(chrono::Utc::now() - chrono::Duration::hours(h));
+        s.problems[0].opened_at = ago(3);
+        s.problems[0].closed_at = Some(ago(2));
+        s.cases[0].opened_at = ago(3);
+        s.cases[0].closed_at = Some(ago(2));
+    })
+    .await;
+    watch(&e, &gh).await;
+    assert_eq!(github(d.path())["issues"][0]["state"], "closed");
+
+    answer(d.path(), '3', &[("Rust", "FAILURE")], None);
+    watch(&e, &gh).await;
+    let shown = e.shown_snapshot().await;
+    assert_eq!(shown.problems.len(), 2);
+    let last = "Last time, 2 hours earlier: CI / Rust failed on main. It passed again at 2222222, an hour later.";
+    assert_eq!(
+        shown.problems[1]
+            .last_time
+            .as_ref()
+            .map(|l| l.text.as_str()),
+        Some(last)
+    );
+    assert!(
+        shown.attention[0].reason.ends_with(last),
+        "{}",
+        shown.attention[0].reason
+    );
+    let issues = github(d.path())["issues"].clone();
+    assert_eq!(issues.as_array().unwrap().len(), 2);
+    let body = issues[1]["body"].as_str().unwrap().to_string();
+    assert!(body.contains("Orbit has seen this before:\n\n- Last time, 2 hours earlier: `CI / Rust` failed on `main`. It passed again at `2222222`, an hour later.\n\n"), "{body}");
+    assert!(!body.contains("It was fixed before"));
+
+    // It passed by bad luck three times lately: a lesson, on the issue and
+    // in Bit's notes.
+    e.update(|s| {
+        for n in 0..3 {
+            let at = |h: i64| {
+                crate::problems::stamp(
+                    chrono::Utc::now() - chrono::Duration::hours(24 * (n + 1) + h),
+                )
+            };
+            s.cases.push(Case {
+                id: format!("old{n}"),
+                key: "ci:a/b".into(),
+                repo: "a/b".into(),
+                branch: "main".into(),
+                checks: vec!["CI / Rust".into()],
+                last: vec!["CI / Rust".into()],
+                sha: sha('0'),
+                opened_at: at(1),
+                closed_at: Some(at(0)),
+                end: End::Again,
+                passed: sha('0'),
+                ..Default::default()
+            });
+        }
+    })
+    .await;
+    watch(&e, &gh).await;
+    let s = e.snapshot().await;
+    assert_eq!(s.lessons.len(), 1);
+    assert_eq!(s.problems[1].lessons.len(), 1);
+    let lesson = "`CI / Rust` in a/b failed and then passed when it ran again at the same commit 3 times in 30 days.";
+    let body = github(d.path())["issues"][1]["body"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        body.contains(&format!("\n- {lesson} When it fails again")),
+        "{body}"
+    );
+    let note = s
+        .buddy_feed
+        .notes
+        .iter()
+        .find(|n| n.key.as_deref() == Some("lesson:luck:a/b:ci / rust"))
+        .expect("Bit noted it");
+    assert!(
+        note.text
+            .contains("CI / Rust in a/b failed and then passed"),
+        "{}",
+        note.text
+    );
+    // Learned once.
+    watch(&e, &gh).await;
+    let s = e.snapshot().await;
+    let notes = s
+        .buddy_feed
+        .notes
+        .iter()
+        .filter(|n| n.key.as_deref().is_some_and(|k| k.starts_with("lesson:")));
+    assert_eq!(notes.count(), 1);
+}
+
 /// Adds to the CI `answer` gave when `main`'s latest commit was made and
 /// when pull request 12's checks began.
 fn timed(dir: &Path, made: &str, began: &str) {

@@ -462,6 +462,20 @@ async function demoAction(
     commit();
     return;
   }
+  if (command === "forget_lesson") {
+    const id = String(args.id);
+    if (!demo.lessons?.some((l) => l.id === id))
+      throw Error("Orbit doesn't have that lesson any more.");
+    demo.lessons = demo.lessons.filter((l) => l.id !== id);
+    demo.forgottenLessons = [
+      ...(demo.forgottenLessons ?? []).filter((f) => f.id !== id),
+      { id, at: new Date().toISOString() },
+    ];
+    for (const p of demo.problems ?? [])
+      p.lessons = p.lessons?.filter((l) => l.id !== id);
+    commit();
+    return;
+  }
   if (command === "close_brief") {
     const b = demo.brief?.latest;
     if (b && b.day === args.day) b.open = false;

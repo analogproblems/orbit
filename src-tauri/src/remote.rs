@@ -70,6 +70,7 @@ pub const COMMANDS: &[&str] = &[
     "ask_buddy_anything",
     "use_proposal",
     "forget_memory",
+    "forget_lesson",
     "clear_memory",
     "close_brief",
     "push_key",
@@ -438,6 +439,7 @@ async fn dispatch(e: &Arc<Engine>, name: &str, a: &Value) -> Result<Value, Strin
                 &arg::<String>(a, "line")?,
             )
             .await?),
+        "forget_lesson" => out(e.forget_lesson(&arg::<String>(a, "id")?).await?),
         "clear_memory" => out(e.clear_memory().await?),
         "close_brief" => out(e.close_brief(&arg::<String>(a, "day")?).await?),
         "push_key" => out(e.push_key().await?),

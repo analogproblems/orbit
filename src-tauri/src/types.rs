@@ -1389,6 +1389,13 @@ pub struct Snapshot {
     /// How what Orbit and the agents did turned out: each outcome check,
     /// waiting or settled (see `crate::outcomes`).
     pub outcomes: Vec<crate::outcomes::Outcome>,
+    /// The short record of each problem about failing checks, kept after
+    /// it closes; what Orbit learned from repeats among them and the
+    /// outcome checks that missed; and the lessons you forgot (see
+    /// `crate::cases`).
+    pub cases: Vec<crate::cases::Case>,
+    pub lessons: Vec<crate::cases::Lesson>,
+    pub forgotten_lessons: Vec<crate::cases::Forgot>,
     /// Why the jobs still failing on open problems failed, as Orbit read
     /// them (see `crate::logs`).
     pub failures: Vec<crate::logs::Failure>,

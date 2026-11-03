@@ -741,6 +741,18 @@ impl Engine {
         let _ = self.flush().await;
         Ok(())
     }
+    /// Forgets a lesson Orbit learned, so only what happens from now on
+    /// can teach it again (see `crate::cases`).
+    pub async fn forget_lesson(&self, id: &str) -> Result<(), String> {
+        let mut found = false;
+        self.update(|s| found = crate::cases::forget(s, id, chrono::Utc::now()))
+            .await;
+        if !found {
+            return Err("Orbit doesn't have that lesson any more.".into());
+        }
+        let _ = self.flush().await;
+        Ok(())
+    }
     /// Takes the morning brief for `day` out of Needs you, as you read it.
     /// A brief already out of it, or a newer one, is left as it is.
     pub async fn close_brief(&self, day: &str) -> Result<(), String> {

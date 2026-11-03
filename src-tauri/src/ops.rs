@@ -2083,7 +2083,14 @@ fn checks(n: usize) -> String {
 /// Orbit's comment on a pull request: whether it is clear to merge, for
 /// one Orbit reviews automatically, then its CI problem, if any.
 pub fn comment_body(t: &Thread, p: Option<&Problem>) -> String {
-    let ci = p.map(|p| format!("{}\n\n{}", ci_status(t, p), items_text(t, p)));
+    let ci = p.map(|p| {
+        format!(
+            "{}\n\n{}{}",
+            ci_status(t, p),
+            seen_text(p),
+            items_text(t, p)
+        )
+    });
     let Some(r) = &t.ready else {
         return format!(
             "## Orbit · CI\n\n{}\n\nOrbit reads CI after each sync and edits this comment when it changes. It never pushes to this branch.\n\n{}",
@@ -2213,13 +2220,15 @@ pub fn issue_body(t: &Thread, p: &Problem, closing: bool) -> String {
         Some(found) => format!("{found}\n\n"),
         None => String::new(),
     };
-    // Back after it passed: when, so the agent knows it came back.
+    // Back after it passed: when, so the agent knows it came back. What
+    // happened last time says that and more.
     let before = crate::problems::fixed_before_text(p, code)
-        .filter(|_| p.is_open())
+        .filter(|_| p.is_open() && p.last_time.is_none())
         .map(|text| format!("{text}\n\n"))
         .unwrap_or_default();
+    let seen = seen_text(p);
     format!(
-        "## Orbit · CI\n\n{status}\n\n{before}{broke}{}\n\nOrbit opened this issue because CI fails on {on}. It edits this issue as CI changes, and closes it once every check has passed for an hour.\n\n{}",
+        "## Orbit · CI\n\n{status}\n\n{before}{seen}{broke}{}\n\nOrbit opened this issue because CI fails on {on}. It edits this issue as CI changes, and closes it once every check has passed for an hour.\n\n{}",
         items_text(t, p),
         data(t, Some(p))
     )
@@ -2248,10 +2257,21 @@ fn build_body(t: &Thread, p: &Problem) -> String {
         )
     };
     format!(
-        "## Orbit · Release build\n\n{status}\n\n{}\n\nOrbit opened this issue because the runs the tag {tag} started fail. Fix what fails on the default branch, so the next version's tag builds with it. Orbit edits this issue as the runs change, and closes it once each of them passes or a newer version is tagged.\n\n{}",
+        "## Orbit · Release build\n\n{status}\n\n{}{}\n\nOrbit opened this issue because the runs the tag {tag} started fail. Fix what fails on the default branch, so the next version's tag builds with it. Orbit edits this issue as the runs change, and closes it once each of them passes or a newer version is tagged.\n\n{}",
+        seen_text(p),
         items_text(t, p),
         data(t, Some(p))
     )
+}
+/// What an open problem has seen before, for the agent, as a short list
+/// and a blank line, or nothing (see `crate::cases`).
+fn seen_text(p: &Problem) -> String {
+    let lines = crate::cases::seen_before(p, &code);
+    if lines.is_empty() {
+        return String::new();
+    }
+    let lines: Vec<String> = lines.iter().map(|l| format!("- {l}")).collect();
+    format!("Orbit has seen this before:\n\n{}\n\n", lines.join("\n"))
 }
 /// Orbit's issue proposing CI for a repository where none runs on pull
 /// requests, with the workflow Orbit built from its files. The paths and

@@ -11,6 +11,7 @@ pub mod broke;
 pub mod broker;
 pub mod buddy;
 pub mod builds;
+pub mod cases;
 pub mod ci;
 pub mod claude;
 pub mod cli;
@@ -324,6 +325,10 @@ mod desktop {
         line: String,
     ) -> Result<(), String> {
         engine.forget_memory(repo.as_deref(), &line).await
+    }
+    #[tauri::command]
+    async fn forget_lesson(engine: State<'_, AppState>, id: String) -> Result<(), String> {
+        engine.forget_lesson(&id).await
     }
     #[tauri::command]
     async fn set_api_key(
@@ -801,6 +806,7 @@ mod desktop {
                 ask_buddy_anything,
                 use_proposal,
                 forget_memory,
+                forget_lesson,
                 close_brief,
                 push_key,
                 add_push_device,

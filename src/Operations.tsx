@@ -920,13 +920,26 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
                     </Text>
                   )}
                   {broke && <Text>{broke}</Text>}
-                  {p.fixedBefore && (
-                    <Text>
-                      It was fixed before: it passed at{" "}
-                      {shortSha(p.fixedBefore.sha)} on{" "}
-                      <Timestamp value={p.fixedBefore.at} format="date_time" />.
-                    </Text>
+                  {p.lastTime ? (
+                    <Text>{p.lastTime.text}</Text>
+                  ) : (
+                    p.fixedBefore && (
+                      <Text>
+                        It was fixed before: it passed at{" "}
+                        {shortSha(p.fixedBefore.sha)} on{" "}
+                        <Timestamp
+                          value={p.fixedBefore.at}
+                          format="date_time"
+                        />
+                        .
+                      </Text>
+                    )
                   )}
+                  {p.lessons?.map((l) => (
+                    <Text key={l.id} color="secondary">
+                      Orbit learned: {l.what} {l.next}
+                    </Text>
+                  ))}
                   <Why s={s} p={p} t={t} />
                   {told && <Text color="secondary">{told}</Text>}
                   {t?.items
@@ -2049,6 +2062,56 @@ function TurnedOut() {
   );
 }
 
+/** What Orbit learned from things that happened more than once, the
+ * latest seen first, each with a button to forget it. */
+function Learned() {
+  const { snapshot: s, action } = useOrbit();
+  const lessons = [...(s.lessons ?? [])].sort((a, b) =>
+    b.seenAt.localeCompare(a.seenAt),
+  );
+  if (!lessons.length) return null;
+  return (
+    <VStack gap={3}>
+      <Heading level={3}>What Orbit learned</Heading>
+      <Text color="secondary">
+        When something happens more than once, Orbit keeps a lesson: what
+        happened, and what to do next time. It tells agents and{" "}
+        {buddyOf(s.settings).name} when it fails again. A lesson only changes
+        what Orbit says, never what it may do. Forget one, and Orbit learns it
+        again only if it keeps happening.
+      </Text>
+      <Card padding={0}>
+        <List hasDividers aria-label="What Orbit learned">
+          {lessons.map((l) => (
+            <ListItem
+              key={l.id}
+              label={
+                <Text weight="medium" maxLines={3}>
+                  {l.what}
+                </Text>
+              }
+              description={<Text color="secondary">{l.next}</Text>}
+              endContent={
+                <VStack gap={2} hAlign="end">
+                  <Timestamp value={l.seenAt} format="relative_short" />
+                  <Button
+                    label={`Forget: ${l.what}`}
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => void action("forget_lesson", { id: l.id })}
+                  >
+                    Forget
+                  </Button>
+                </VStack>
+              }
+            />
+          ))}
+        </List>
+      </Card>
+    </VStack>
+  );
+}
+
 const writeText: Record<OpsAction, string> = {
   post_comment: "Commented on",
   edit_comment: "Updated its comment on",
@@ -2177,6 +2240,7 @@ export function Operations(go: AttentionHandlers) {
           <StorageUse />
           <RecentlyFixed />
           <TurnedOut />
+          <Learned />
           <Posted />
         </>
       )}

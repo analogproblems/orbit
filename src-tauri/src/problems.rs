@@ -185,6 +185,15 @@ pub struct Problem {
     /// that closed by passing: when it passed, and at which commit.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fixed_before: Option<FixedBefore>,
+    /// For checks that fail: what happened the last time something like it
+    /// failed, once Orbit looked (`looked_back`), and the lessons about it
+    /// while it is open (see `crate::cases`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_time: Option<crate::cases::LastTime>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub looked_back: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub lessons: Vec<crate::cases::Lesson>,
 }
 /// When something failing again passed before (`Problem.fixed_before`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,7 +254,7 @@ impl Problem {
             _ => false,
         }
     }
-    fn note(&mut self, at: &str, text: String) {
+    pub(crate) fn note(&mut self, at: &str, text: String) {
         self.timeline.push(ProblemEvent {
             at: at.into(),
             text,
