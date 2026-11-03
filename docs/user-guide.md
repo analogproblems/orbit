@@ -329,8 +329,8 @@ A problem closes when its commit passes ("Passed at 4be81aa."), when its pull re
 After Orbit does something on GitHub that it can check later, and after an agent answers `Fixed I2 in <sha>`, Orbit checks how it turned out, by what it reads on its next passes. It checks that:
 
 - a security setting Orbit changed reads as on, or as Orbit set it (see [Security settings](#security-settings));
-- a tag Orbit pushed points at its commit, and a draft release Orbit published reads as published (see [Releases](#releases));
-- a job Orbit reran passed the second time (see [Rerunning bad luck](#rerunning-bad-luck)): only once every check at that commit has finished, and it misses if the job failed again;
+- a tag Orbit pushed points at its commit, and a draft release Orbit published reads as published (see [Releases](#releases)): a read GitHub refused doesn't count, and a release that is neither a draft nor the latest one can't be told, as it may have been deleted;
+- a job Orbit reran passed the second time (see [Rerunning bad luck](#rerunning-bad-luck)): only once GitHub says that check passed, or for a release build, its run; it misses if the job failed again, and Orbit can't tell if it was cancelled or skipped;
 - Dependabot rebased a pull request Orbit asked it to (see [Dependabot updates](#dependabot-updates));
 - an agent's fix passes at the commit it named (see [Telling agents](#telling-agents)).
 

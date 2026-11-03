@@ -255,6 +255,57 @@ fn a_tag_holds_at_its_commit_and_a_release_once_published() {
     s.releases = vec![read];
     pass(&mut s);
     assert_eq!(s.outcomes[0].verdict, Verdict::Waiting);
+
+    // A read GitHub refused says nothing of either: both wait.
+    let mut s = snapshot();
+    s.journal = vec![
+        Write {
+            head: Some(SHA.into()),
+            tag: Some("v1.2.0".into()),
+            ..write(Action::PushTag, 10)
+        },
+        Write {
+            tag: Some("v1.2.0".into()),
+            release: Some(7),
+            ..write(Action::PublishRelease, 9)
+        },
+    ];
+    s.releases = vec![RepoReleases {
+        repo: "a/b".into(),
+        read_at: ago(5),
+        unseen: Some("GitHub won't show a/b's releases.".into()),
+        ..Default::default()
+    }];
+    assert!(pass(&mut s).is_empty());
+    assert_eq!(s.outcomes.len(), 2);
+    // A release that is neither a draft nor the latest may have been
+    // deleted: Orbit can't tell.
+    s.releases = vec![RepoReleases {
+        repo: "a/b".into(),
+        read_at: ago(4),
+        tags: vec![Tag {
+            name: "v1.2.0".into(),
+            sha: SHA.into(),
+        }],
+        latest: Some(Release {
+            id: 6,
+            tag: "v1.1.0".into(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }];
+    pass(&mut s);
+    assert_eq!(
+        verdicts(&s),
+        [
+            (Kind::Tag, Verdict::Held, "It points at 1111111."),
+            (
+                Kind::Release,
+                Verdict::Unclear,
+                "It isn't a draft any more, but it isn't the latest release either, so Orbit can't tell whether it was published or deleted."
+            ),
+        ]
+    );
 }
 
 #[test]
@@ -282,7 +333,7 @@ fn a_rerun_holds_once_its_commit_passes_and_misses_if_it_fails_again() {
         }],
         ..Default::default()
     };
-    let ci = |running: u32, failing: Vec<Check>| RepoCi {
+    let ci = |running: u32, failing: Vec<Check>, passed: &[&str]| RepoCi {
         repo: "a/b".into(),
         branch: "main".into(),
         head: CommitCi {
@@ -294,13 +345,19 @@ fn a_rerun_holds_once_its_commit_passes_and_misses_if_it_fails_again() {
             },
             failing,
             running,
+            passing: passed.len() as u32,
+            passed: passed.iter().map(|p| p.to_string()).collect(),
             ..Default::default()
         },
         ..Default::default()
     };
+    let lint = || Check {
+        name: "CI / lint".into(),
+        url: String::new(),
+    };
     let mut s = snapshot();
     s.ops = vec![thread(false, true)];
-    s.ci = vec![ci(1, vec![])];
+    s.ci = vec![ci(1, vec![], &[])];
     pass(&mut s);
     let o = &s.outcomes[0];
     assert_eq!(o.id, format!("rerun:issue:p1:1:{job}"));
@@ -309,22 +366,33 @@ fn a_rerun_holds_once_its_commit_passes_and_misses_if_it_fails_again() {
     // While it runs again, it isn't failing, but it hasn't passed either.
     s.ops = vec![thread(false, false)];
     assert!(pass(&mut s).is_empty());
-    // Another check failing at the commit doesn't make it pass.
-    s.ci = vec![ci(
-        0,
-        vec![Check {
-            name: "CI / lint".into(),
-            url: String::new(),
-        }],
-    )];
+    // Nor once the others finish, while GitHub hasn't said it passed: it
+    // may have been cancelled, with another check still failing.
+    s.ci = vec![ci(0, vec![lint()], &["CI / build"])];
+    let settled = pass(&mut s);
+    assert_eq!(
+        (settled[0].verdict, settled[0].why.as_str()),
+        (
+            Verdict::Unclear,
+            "It didn't pass or fail after the rerun: GitHub may have cancelled or skipped it."
+        )
+    );
+    // It holds when GitHub says it passed, whatever else fails.
+    s.outcomes.clear();
+    s.ci = vec![ci(1, vec![lint()], &["CI / test"])];
     let settled = pass(&mut s);
     assert_eq!(settled[0].verdict, Verdict::Held);
     assert_eq!(settled[0].why, "It passed after the rerun.");
+    // CI from before a restart has no names of what passed: it waits.
+    s.outcomes.clear();
+    s.ci = vec![ci(0, vec![], &["CI / build"])];
+    s.ci[0].head.passed.clear();
+    assert!(pass(&mut s).is_empty());
 
     // Failing again is a miss.
     let mut s = snapshot();
     s.ops = vec![thread(true, true)];
-    s.ci = vec![ci(0, vec![])];
+    s.ci = vec![ci(0, vec![], &[])];
     let settled = pass(&mut s);
     assert_eq!(
         (settled[0].verdict, settled[0].why.as_str()),
@@ -341,6 +409,100 @@ fn a_rerun_holds_once_its_commit_passes_and_misses_if_it_fails_again() {
     record(&mut s, now());
     s.ops[0].items[0].at = OTHER.into();
     assert_eq!(settle(&mut s, now())[0].verdict, Verdict::Unclear);
+}
+
+#[test]
+fn a_release_build_rerun_is_told_by_its_run_not_the_default_branch() {
+    let job = "https://github.com/a/b/actions/runs/9/job/5";
+    let mut s = snapshot();
+    s.problems.push(crate::problems::Problem {
+        id: "p1".into(),
+        kind: ProblemKind::ReleaseBuild,
+        repo: "a/b".into(),
+        branch: "v1.2.0".into(),
+        sha: SHA.into(),
+        ..Default::default()
+    });
+    s.ops = vec![Thread {
+        key: "issue:p1".into(),
+        kind: crate::ops::ThreadKind::Issue,
+        repo: "a/b".into(),
+        branch: "v1.2.0".into(),
+        problem_id: "p1".into(),
+        items: vec![Item {
+            number: 1,
+            check: "Release / build (macos)".into(),
+            url: job.into(),
+            at: SHA.into(),
+            reruns: vec![Rerun {
+                url: job.into(),
+                at: ago(10),
+                done: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        ..Default::default()
+    }];
+    // The default branch at the same commit, passing, says nothing of it.
+    s.ci = vec![RepoCi {
+        repo: "a/b".into(),
+        branch: "main".into(),
+        head: CommitCi {
+            sha: SHA.into(),
+            state: CiState::Passing,
+            passing: 1,
+            passed: vec!["Release / build (macos)".into()],
+            ..Default::default()
+        },
+        ..Default::default()
+    }];
+    let run = |state: CiState, conclusion: &str| crate::builds::Run {
+        id: 9,
+        name: "Release".into(),
+        state,
+        conclusion: conclusion.into(),
+        ..Default::default()
+    };
+    let build = |tag: &str, read: i64, run: crate::builds::Run| crate::builds::Build {
+        repo: "a/b".into(),
+        tag: tag.into(),
+        sha: SHA.into(),
+        runs: vec![run],
+        read_at: ago(read),
+        ..Default::default()
+    };
+    assert!(pass(&mut s).is_empty());
+    assert_eq!(
+        s.outcomes[0].what,
+        "Orbit reran Release / build (macos) at 1111111 on v1.2.0 in a/b."
+    );
+    // A build read before the rerun, or still running, waits.
+    s.builds = vec![build("v1.2.0", 20, run(CiState::Passing, "success"))];
+    assert!(pass(&mut s).is_empty());
+    s.builds = vec![build("v1.2.0", 5, run(CiState::Running, ""))];
+    assert!(pass(&mut s).is_empty());
+    // Its run passing holds, though the default branch moved on.
+    s.ci[0].head.sha = OTHER.into();
+    s.builds = vec![build("v1.2.0", 5, run(CiState::Passing, "success"))];
+    let settled = pass(&mut s);
+    assert_eq!(
+        (settled[0].verdict, settled[0].why.as_str()),
+        (Verdict::Held, "Its run passed after the rerun.")
+    );
+    // A cancelled run can't be told, nor one Orbit stopped watching.
+    s.outcomes.clear();
+    s.builds = vec![build("v1.2.0", 5, run(CiState::None, "cancelled"))];
+    assert_eq!(
+        pass(&mut s)[0].why,
+        "Its run didn't pass or fail after the rerun: GitHub says it was cancelled."
+    );
+    s.outcomes.clear();
+    s.builds = vec![build("v1.3.0", 5, run(CiState::Passing, "success"))];
+    assert_eq!(
+        pass(&mut s)[0].why,
+        "Orbit watches the build of v1.3.0 now."
+    );
 }
 
 #[test]

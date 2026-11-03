@@ -19,9 +19,9 @@
 use crate::{
     baseline::Setting,
     broker::clean,
-    ci::short,
+    ci::{short, CiState},
     ops::{Action, AnswerKind, FixCheck, Thread, WriteState},
-    problems::{stamp, time},
+    problems::{stamp, time, ProblemKind},
     types::*,
 };
 use chrono::{DateTime, Duration, Utc};
@@ -333,13 +333,18 @@ fn setting(s: &Snapshot, o: &Outcome) -> Found {
     }
 }
 
-fn tag(s: &Snapshot, o: &Outcome) -> Found {
-    let read = s
-        .releases
+/// The repository's releases and tags, as Orbit read them after `o` was
+/// done. A read GitHub refused (`unseen`) says nothing either way, so it
+/// waits for one that worked.
+fn releases_after<'a>(s: &'a Snapshot, o: &Outcome) -> Option<&'a crate::releases::RepoReleases> {
+    s.releases
         .iter()
         .find(|r| same_repo(&r.repo, &o.repo))
-        .filter(|r| after(&r.read_at, &o.at));
-    let Some(read) = read else {
+        .filter(|r| after(&r.read_at, &o.at) && r.unseen.is_none())
+}
+
+fn tag(s: &Snapshot, o: &Outcome) -> Found {
+    let Some(read) = releases_after(s, o) else {
         return gone(s, o);
     };
     match read.tags.iter().find(|t| t.name == o.tag) {
@@ -358,12 +363,7 @@ fn tag(s: &Snapshot, o: &Outcome) -> Found {
 
 fn release(s: &Snapshot, o: &Outcome) -> Found {
     let id = o.release?;
-    let read = s
-        .releases
-        .iter()
-        .find(|r| same_repo(&r.repo, &o.repo))
-        .filter(|r| after(&r.read_at, &o.at));
-    let Some(read) = read else {
+    let Some(read) = releases_after(s, o) else {
         return gone(s, o);
     };
     let published = [&read.latest, &read.prerelease]
@@ -375,7 +375,13 @@ fn release(s: &Snapshot, o: &Outcome) -> Found {
     } else if read.drafts.iter().any(|d| d.id == id) {
         Some((Verdict::Missed, "It's still a draft.".into()))
     } else if !read.drafts_hidden && read.drafts.len() as u32 >= read.draft_count {
-        Some((Verdict::Held, "It isn't among the drafts any more.".into()))
+        // Orbit reads only the latest release and pre-release, so one
+        // published behind them looks the same as one deleted.
+        Some((
+            Verdict::Unclear,
+            "It isn't a draft any more, but it isn't the latest release either, so Orbit can't tell whether it was published or deleted."
+                .into(),
+        ))
     } else {
         None
     }
@@ -400,12 +406,33 @@ fn rerun(s: &Snapshot, o: &Outcome) -> Found {
     if failed_again {
         return Some((Verdict::Missed, "It failed again after the rerun.".into()));
     }
-    // Passed only once every check at the commit has finished and this one
-    // isn't failing: while the rerun runs, it isn't failing either.
+    let release = s
+        .problems
+        .iter()
+        .any(|p| p.id == t.problem_id && p.kind == ProblemKind::ReleaseBuild);
+    if release {
+        return build_rerun(s, t, o);
+    }
+    // Passed only when GitHub says this check passed: one that was
+    // cancelled or skipped isn't failing either.
     let ci = commit_ci(s, t).filter(|c| c.sha == o.sha)?;
     let failing = ci.failing.iter().any(|c| c.name == item.check);
-    (ci.running == 0 && !ci.incomplete && !failing && !item.failing)
-        .then(|| (Verdict::Held, "It passed after the rerun.".into()))
+    if failing || item.failing {
+        return None;
+    }
+    if ci.passed.contains(&item.check) {
+        return Some((Verdict::Held, "It passed after the rerun.".into()));
+    }
+    // Every check finished without it passing, by a read that has their
+    // names: not one from before a restart.
+    let finished = ci.running == 0 && !ci.incomplete && ci.passed.len() == ci.passing as usize;
+    finished.then(|| {
+        (
+            Verdict::Unclear,
+            "It didn't pass or fail after the rerun: GitHub may have cancelled or skipped it."
+                .into(),
+        )
+    })
 }
 /// The latest commit's checks, as Orbit last read them, for a thread's
 /// pull request or default branch.
@@ -416,6 +443,47 @@ fn commit_ci<'a>(s: &'a Snapshot, t: &Thread) -> Option<&'a crate::ci::CommitCi>
         (Some(_), None) => None,
         (None, _) => Some(&repo.head),
     }
+}
+/// A rerun of a release build's job, by its workflow run in the build
+/// Orbit read after it: GitHub reruns a job in the same run.
+fn build_rerun(s: &Snapshot, t: &Thread, o: &Outcome) -> Found {
+    let build = s.builds.iter().find(|b| same_repo(&b.repo, &t.repo))?;
+    if build.tag != t.branch {
+        return Some((
+            Verdict::Unclear,
+            format!("Orbit watches the build of {} now.", clean(&build.tag, 80)),
+        ));
+    }
+    if build.sha != o.sha {
+        return Some((
+            Verdict::Unclear,
+            "A newer commit came before Orbit saw how the rerun went.".into(),
+        ));
+    }
+    if !after(&build.read_at, &o.at) {
+        return None;
+    }
+    let run = run_of(&o.job).and_then(|id| build.runs.iter().find(|r| r.id == id))?;
+    match run.state {
+        CiState::Passing => Some((Verdict::Held, "Its run passed after the rerun.".into())),
+        CiState::None if !run.conclusion.is_empty() => Some((
+            Verdict::Unclear,
+            format!(
+                "Its run didn't pass or fail after the rerun: GitHub says it was {}.",
+                clean(&run.conclusion, 40)
+            ),
+        )),
+        _ => None,
+    }
+}
+/// The workflow run a job's link is in: `.../actions/runs/<id>/job/<id>`.
+fn run_of(job: &str) -> Option<u64> {
+    job.split("/actions/runs/")
+        .nth(1)?
+        .split('/')
+        .next()?
+        .parse()
+        .ok()
 }
 
 fn rebase(s: &Snapshot, o: &Outcome) -> Found {
