@@ -726,6 +726,7 @@ fn the_app_knows_the_same_settings() {
                 "name": s.name(),
                 "publicOnly": s.public_only(),
                 "orbit": Setting::ORBIT.contains(&s),
+                "fixedText": s.fixed_text(),
             })
         })
         .collect();

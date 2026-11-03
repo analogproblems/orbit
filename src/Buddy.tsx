@@ -295,8 +295,8 @@ function ProposalButton({
   );
 }
 
-/** Where a note leads: its pull request's decisions, its loop, the
- * repositories, or settings. Answers lead nowhere; their lines carry their
+/** Where a note leads: its pull request's decisions, Operations, its loop,
+ * the repositories, or settings. Answers lead nowhere; their lines carry their
  * own buttons. */
 function noteLink(note: BuddyNote) {
   if (
@@ -306,8 +306,11 @@ function noteLink(note: BuddyNote) {
   )
     return undefined;
   if (note.kind === "decide") return "Open decisions";
+  // A CI problem's note, and how something Orbit did turned out, are on
+  // Operations, even when they name a pull request.
+  if (note.key?.startsWith("problem:") || note.key?.startsWith("outcome:"))
+    return "Open operations";
   if (note.prId) return "Open loop";
-  if (note.key?.startsWith("problem:")) return "Open operations";
   if (note.repo) return "Open repositories";
   if (note.key || note.kind === "fixing" || note.kind === "fixed")
     return "Open settings";

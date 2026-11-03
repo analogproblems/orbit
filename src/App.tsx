@@ -733,7 +733,10 @@ export default function App() {
                         if (note.kind === "decide") {
                           setChapter(note.prId ?? null);
                           setPage("decisions");
-                        } else if (note.key?.startsWith("problem:")) {
+                        } else if (
+                          note.key?.startsWith("problem:") ||
+                          note.key?.startsWith("outcome:")
+                        ) {
                           setPage("operations");
                         } else if (note.prId) {
                           setLoop(note.prId);

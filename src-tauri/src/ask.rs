@@ -228,6 +228,7 @@ Looking things up:
 - log, with repository and job: a job's failed step and the end of its log, up to its error. Job ids are in the summary's `ci`, and in what a runs lookup finds.
 - workflow, with repository and path: a workflow file on the default branch, such as .github/workflows/ci.yml, from the summary's `workflowFiles`.
 - changes, with repository and either pr or commit: a pull request's or a commit's changes, file by file. The commits and pull requests that broke a default branch are in the summary's `ci.problems`.
+- The summary's `outcomes` says how what Orbit did lately turned out, such as a setting it turned on or a job it reran, and how agents' fixes went: held, missed, waiting or unclear, with why.
 - Only connected repositories. Leave the fields a kind doesn't use null. While you look things up, `answer` is one short line saying what you're looking at, and `proposals` and `memory` stay empty: Orbit shows the person your next answer instead.
 
 Keep answers short: a few sentences, or a short list. Name pull requests by repository and number, like orbit#12.
@@ -712,6 +713,26 @@ pub fn briefing(s: &Snapshot, lookups: &Lookups) -> Value {
         })
         .collect();
     earlier.reverse();
+    // How what Orbit and the agents did lately turned out, newest first.
+    let mut outcomes: Vec<&crate::outcomes::Outcome> = s.outcomes.iter().collect();
+    outcomes.sort_by(|a, b| b.at.cmp(&a.at));
+    let outcomes: Vec<Value> = outcomes
+        .into_iter()
+        .take(crate::outcomes::SHOWN)
+        .map(|o| {
+            json!({
+                "kind": key(&o.kind),
+                "repository": o.repo,
+                "pr": o.number,
+                "what": clean(&o.what, 300),
+                "doneMeans": clean(&o.expect, 200),
+                "verdict": key(&o.verdict),
+                "why": (!o.why.is_empty()).then(|| clean(&o.why, 300)),
+                "doneAt": o.at,
+                "settledAt": o.settled_at,
+            })
+        })
+        .collect();
     json!({
         "now": now(),
         "clockZone": crate::clock::computer_zone(),
@@ -757,6 +778,7 @@ pub fn briefing(s: &Snapshot, lookups: &Lookups) -> Value {
         "pullRequests": pull_requests,
         "decisions": decisions(&lookups.decisions, s.settings.write_ups.enabled),
         "needsYou": needs_you,
+        "outcomes": outcomes,
         "recentNotes": recent,
         "earlierConversation": earlier,
         "memory": {

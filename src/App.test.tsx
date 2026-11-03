@@ -838,6 +838,35 @@ describe("Bit", () => {
     expect(await screen.findByRole("list", { name: "Rounds" })).toBeTruthy();
   });
 
+  it("opens Operations from a note about how something turned out, even one naming a pull request", async () => {
+    const notes = snapshot.buddyFeed!.notes;
+    notes.push({
+      id: Math.max(...notes.map((n) => n.id)) + 1,
+      at: new Date().toISOString(),
+      kind: "ci",
+      prId: snapshot.prs[0].id,
+      reviewId: null,
+      repo: snapshot.prs[0].repo,
+      key: "outcome:write:demo",
+      text: "Hmm. Orbit asked Dependabot to rebase it. It closed before Orbit saw it rebased. Worth a look.",
+    });
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Bit" }));
+    const chat = screen.getByRole("log", { name: "Bit's notes" });
+    // The note's own button, the nearest around its text.
+    let note: HTMLElement | null = within(chat).getByText(
+      /It closed before Orbit saw it rebased/,
+    );
+    while (note && !within(note).queryByRole("button", { name: /^Open / }))
+      note = note.parentElement;
+    await user().click(
+      within(note!).getByRole("button", { name: "Open operations" }),
+    );
+    expect(
+      await screen.findByRole("list", { name: "How it turned out" }),
+    ).toBeTruthy();
+  });
+
   it("opens what a note says to decide, and the sidebar goes back to every pull request", async () => {
     const { demoDecisions } = await import("./demoDecisions");
     const decisions = demoDecisions();

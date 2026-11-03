@@ -990,6 +990,46 @@ fn bit_is_told_each_repositorys_ci_and_how_to_look_things_up() {
 }
 
 #[test]
+fn bit_is_told_how_what_orbit_did_turned_out_newest_first() {
+    use crate::outcomes::{Kind, Outcome, Verdict, SHOWN};
+    let mut s = snapshot();
+    let outcome = |n: usize, verdict: Verdict| Outcome {
+        id: format!("write:w{n}"),
+        kind: Kind::Setting,
+        repo: "a/b".into(),
+        what: "Orbit turned on Dependabot alerts in a/b.".into(),
+        expect: "it reads as on".into(),
+        at: format!("2026-11-03T{:02}:00:00Z", n),
+        verdict,
+        ..Default::default()
+    };
+    s.outcomes = (0..SHOWN + 2)
+        .map(|n| outcome(n, Verdict::Waiting))
+        .collect();
+    let last = s.outcomes.last_mut().unwrap();
+    last.verdict = Verdict::Missed;
+    last.why = format!("It still reads as off. ghp_{}", "a".repeat(36));
+    last.settled_at = Some("2026-11-03T13:00:00Z".into());
+    last.number = Some(3);
+    let told = briefing(&s, &Lookups::default())["outcomes"].clone();
+    let told = told.as_array().unwrap();
+    assert_eq!(told.len(), SHOWN);
+    assert_eq!(
+        told[0],
+        json!({
+            "kind": "setting", "repository": "a/b", "pr": 3,
+            "what": "Orbit turned on Dependabot alerts in a/b.",
+            "doneMeans": "it reads as on", "verdict": "missed",
+            "why": crate::broker::HELD_TEXT,
+            "doneAt": "2026-11-03T11:00:00Z", "settledAt": "2026-11-03T13:00:00Z",
+        })
+    );
+    assert_eq!(told[1]["doneAt"], "2026-11-03T10:00:00Z");
+    assert_eq!(told[1]["why"], Value::Null);
+    assert!(instructions(&s.settings.buddy).contains("The summary's `outcomes` says how"));
+}
+
+#[test]
 fn what_orbit_looked_up_is_data_that_cant_close_its_block() {
     let found = |text: &str, error: Option<&str>| Found {
         lookup: None,

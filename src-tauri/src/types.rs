@@ -1386,6 +1386,9 @@ pub struct Snapshot {
     /// Each write Orbit made on GitHub for them, recorded before it was
     /// sent; the newest last.
     pub journal: Vec<crate::ops::Write>,
+    /// How what Orbit and the agents did turned out: each outcome check,
+    /// waiting or settled (see `crate::outcomes`).
+    pub outcomes: Vec<crate::outcomes::Outcome>,
     /// Why the jobs still failing on open problems failed, as Orbit read
     /// them (see `crate::logs`).
     pub failures: Vec<crate::logs::Failure>,

@@ -2203,6 +2203,32 @@ async fn a_flaky_job_is_rerun_once_and_never_twice_without_a_tap() {
         job_url(1002)
     )));
     assert!(noted(&e, "I1 (CI / Rust) failed again on a/b #12 after a rerun. It still looks like bad luck: The runner went away. Tap Rerun again on Operations to try once more.").await);
+    // How the rerun turned out: a miss, which Bit noted just above, once.
+    e.flush().await.unwrap();
+    let s = e.snapshot().await;
+    let reran: Vec<_> = s
+        .outcomes
+        .iter()
+        .filter(|o| o.kind == crate::outcomes::Kind::Rerun)
+        .collect();
+    assert_eq!(reran.len(), 1);
+    assert_eq!(
+        (
+            reran[0].what.as_str(),
+            reran[0].verdict,
+            reran[0].why.as_str()
+        ),
+        (
+            "Orbit reran CI / Rust at 5555555 on a/b #12.",
+            crate::outcomes::Verdict::Missed,
+            "It failed again after the rerun."
+        )
+    );
+    assert!(!s
+        .buddy_feed
+        .notes
+        .iter()
+        .any(|n| n.key.as_deref().is_some_and(|k| k.starts_with("outcome:"))));
     assert!(e.allow_rerun("pr:a/b#12", 9).await.is_err());
     e.allow_rerun("pr:a/b#12", 1).await.unwrap();
     crate::github::GH.scope(gh.clone(), e.tell_agents()).await;

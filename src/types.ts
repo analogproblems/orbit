@@ -1194,6 +1194,8 @@ export interface Snapshot {
   ops?: OpsThread[];
   /** Each write Orbit made on GitHub for them; the newest last. */
   journal?: OpsWrite[];
+  /** How what Orbit and the agents did lately turned out. */
+  outcomes?: Outcome[];
   /** Why the jobs still failing on open problems failed, as Orbit read
    * them. */
   failures?: CiFailure[];
@@ -2359,6 +2361,24 @@ export interface OpsWrite {
   tag?: string;
   /** For a release, its id on GitHub. */
   release?: number;
+}
+/** An outcome check: something Orbit did on GitHub, or a fix an agent
+ * named, and how it turned out by what Orbit read since. */
+export interface Outcome {
+  id: string;
+  kind: "setting" | "tag" | "release" | "rerun" | "rebase" | "fix";
+  repo: string;
+  number?: number | null;
+  /** What was done, in a sentence, and what done means, as a clause:
+   * "it reads as on". */
+  what: string;
+  expect: string;
+  url: string;
+  at: string;
+  verdict: "waiting" | "held" | "missed" | "unclear";
+  /** Why it held or missed, or why Orbit couldn't tell. */
+  why?: string;
+  settledAt?: string | null;
 }
 /** A commit's first seven characters, as GitHub shows them. */
 export function shortSha(sha: string) {
