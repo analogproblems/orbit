@@ -63,7 +63,8 @@ fn reads_the_default_branch_and_each_pull_request() {
     assert!(ci.head.failing[0].url.ends_with("/job/Rust"));
     assert_eq!(ci.head.passing, 1);
     // By name too, for telling whether a check Orbit reran passed.
-    assert_eq!(ci.head.passed, ["CI / Frontend"]);
+    assert_eq!(ci.head.passed[0].name, "CI / Frontend");
+    assert!(ci.head.passed[0].url.ends_with("/job/Frontend"));
     assert!(ci.complete);
     let pull = ci.pull(7).unwrap();
     assert!(pull.draft);

@@ -413,15 +413,23 @@ fn rerun(s: &Snapshot, o: &Outcome) -> Found {
     if release {
         return build_rerun(s, t, o);
     }
-    // Passed only when GitHub says this check passed: one that was
-    // cancelled or skipped isn't failing either.
+    // Passed only when GitHub says this job passed: one that was cancelled
+    // or skipped isn't failing either. GitHub reruns a job in the same
+    // workflow run, so a pass by its name in that run is the rerun's, and
+    // one in another run at the commit, such as a pull request's run of
+    // the same workflow, says nothing of it.
     let ci = commit_ci(s, t).filter(|c| c.sha == o.sha)?;
+    let run = run_of(&o.job)?;
+    let passed = ci
+        .passed
+        .iter()
+        .any(|c| c.name == item.check && run_of(&c.url) == Some(run));
+    if passed {
+        return Some((Verdict::Held, "It passed after the rerun.".into()));
+    }
     let failing = ci.failing.iter().any(|c| c.name == item.check);
     if failing || item.failing {
         return None;
-    }
-    if ci.passed.contains(&item.check) {
-        return Some((Verdict::Held, "It passed after the rerun.".into()));
     }
     // Every check finished without it passing, by a read that has their
     // names: not one from before a restart.

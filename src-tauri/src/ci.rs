@@ -65,11 +65,12 @@ pub struct CommitCi {
     /// A check that passed didn't say when it began.
     #[serde(skip)]
     pub untimed: bool,
-    /// The checks that passed, by name, one for each counted in `passing`,
-    /// to tell whether a check Orbit reran passed. Kept with Orbit for its
-    /// latest read only: after a restart it's empty until the next one.
+    /// The checks that passed, by name and link, one for each counted in
+    /// `passing`, to tell whether a job Orbit reran passed: its link names
+    /// its workflow run. Kept with Orbit for its latest read only: after a
+    /// restart it's empty until the next one.
     #[serde(skip)]
-    pub passed: Vec<String>,
+    pub passed: Vec<Check>,
 }
 /// An open pull request's latest commit and its checks.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -348,7 +349,7 @@ pub fn add_checks(ci: &mut CommitCi, contexts: &Value) {
             CiState::Running => ci.running += 1,
             CiState::Passing => {
                 ci.passing += 1;
-                ci.passed.push(check.name);
+                ci.passed.push(check);
                 match began(node) {
                     Some(at) => {
                         let earlier = crate::problems::time(&ci.ran_at).is_none_or(|t| at < t);

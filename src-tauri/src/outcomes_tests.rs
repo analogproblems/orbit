@@ -333,7 +333,8 @@ fn a_rerun_holds_once_its_commit_passes_and_misses_if_it_fails_again() {
         }],
         ..Default::default()
     };
-    let ci = |running: u32, failing: Vec<Check>, passed: &[&str]| RepoCi {
+    // Checks that passed, by name and the run they're in.
+    let ci = |running: u32, failing: Vec<Check>, passed: &[(&str, u32)]| RepoCi {
         repo: "a/b".into(),
         branch: "main".into(),
         head: CommitCi {
@@ -346,7 +347,16 @@ fn a_rerun_holds_once_its_commit_passes_and_misses_if_it_fails_again() {
             failing,
             running,
             passing: passed.len() as u32,
-            passed: passed.iter().map(|p| p.to_string()).collect(),
+            passed: passed
+                .iter()
+                .map(|(name, run)| Check {
+                    name: name.to_string(),
+                    url: format!(
+                        "https://github.com/a/b/actions/runs/{run}/job/{}",
+                        run + 100
+                    ),
+                })
+                .collect(),
             ..Default::default()
         },
         ..Default::default()
@@ -366,9 +376,13 @@ fn a_rerun_holds_once_its_commit_passes_and_misses_if_it_fails_again() {
     // While it runs again, it isn't failing, but it hasn't passed either.
     s.ops = vec![thread(false, false)];
     assert!(pass(&mut s).is_empty());
+    // Nor while the same job passed in another run at the commit, such as
+    // a pull request's run of the same workflow.
+    s.ci = vec![ci(1, vec![lint()], &[("CI / test", 8)])];
+    assert!(pass(&mut s).is_empty());
     // Nor once the others finish, while GitHub hasn't said it passed: it
     // may have been cancelled, with another check still failing.
-    s.ci = vec![ci(0, vec![lint()], &["CI / build"])];
+    s.ci = vec![ci(0, vec![lint()], &[("CI / build", 9), ("CI / test", 8)])];
     let settled = pass(&mut s);
     assert_eq!(
         (settled[0].verdict, settled[0].why.as_str()),
@@ -379,13 +393,13 @@ fn a_rerun_holds_once_its_commit_passes_and_misses_if_it_fails_again() {
     );
     // It holds when GitHub says it passed, whatever else fails.
     s.outcomes.clear();
-    s.ci = vec![ci(1, vec![lint()], &["CI / test"])];
+    s.ci = vec![ci(1, vec![lint()], &[("CI / test", 9)])];
     let settled = pass(&mut s);
     assert_eq!(settled[0].verdict, Verdict::Held);
     assert_eq!(settled[0].why, "It passed after the rerun.");
     // CI from before a restart has no names of what passed: it waits.
     s.outcomes.clear();
-    s.ci = vec![ci(0, vec![], &["CI / build"])];
+    s.ci = vec![ci(0, vec![], &[("CI / build", 9)])];
     s.ci[0].head.passed.clear();
     assert!(pass(&mut s).is_empty());
 
@@ -452,7 +466,10 @@ fn a_release_build_rerun_is_told_by_its_run_not_the_default_branch() {
             sha: SHA.into(),
             state: CiState::Passing,
             passing: 1,
-            passed: vec!["Release / build (macos)".into()],
+            passed: vec![Check {
+                name: "Release / build (macos)".into(),
+                url: "https://github.com/a/b/actions/runs/9/job/6".into(),
+            }],
             ..Default::default()
         },
         ..Default::default()
