@@ -1076,6 +1076,9 @@ fn a_tag_that_held_has_a_release_build_that_passes_within_a_day() {
         // read before, until Orbit gives up.
         s.builds[0].error = Some("Orbit couldn't read the release build yet".into());
         assert!(settle(&mut s, day + Duration::hours(1)).is_empty());
+        // Even one timed after the day: a read that failed says nothing.
+        s.builds[0].read_at = stamp(day + Duration::minutes(30));
+        assert!(settle(&mut s, day + Duration::hours(1)).is_empty());
         let late = settle(
             &mut s,
             day + Duration::days(GIVE_UP_DAYS) + Duration::hours(1),
