@@ -188,6 +188,46 @@ fn a_branch_that_breaks_again_later_is_a_new_problem() {
     assert!(quiet_keys(&problems, at(10 + 61)).is_empty());
 }
 
+#[test]
+fn a_branch_that_breaks_again_says_when_it_was_fixed_before() {
+    let mut problems = vec![];
+    observe(&mut problems, &failing(A, &["Test"]), &[], at(0));
+    observe(&mut problems, &passing(B), &[], at(10));
+    // Two days later it breaks again: a new problem, fixed before.
+    observe(
+        &mut problems,
+        &failing(C, &["Test"]),
+        &[],
+        at(10 + 2 * 24 * 60),
+    );
+    let p = open(&problems)[0];
+    assert_eq!(
+        p.fixed_before,
+        Some(FixedBefore {
+            at: stamp(at(10)),
+            sha: B.into()
+        })
+    );
+    assert_eq!(
+        timeline(p),
+        [
+            "Failing on main at 3333333: Test.",
+            "It was fixed before: it passed at 2222222 2 days earlier."
+        ]
+    );
+    // One that never passed before says nothing of it.
+    assert_eq!(problems[0].fixed_before, None);
+    for (d, words) in [
+        (Duration::seconds(20), "a minute"),
+        (Duration::minutes(40), "40 minutes"),
+        (Duration::minutes(61), "an hour"),
+        (Duration::hours(47), "47 hours"),
+        (Duration::days(3), "3 days"),
+    ] {
+        assert_eq!(how_long(d), words);
+    }
+}
+
 fn followed(number: u64, sha: &str) -> PullRequest {
     let mut p = pr();
     p.number = number;

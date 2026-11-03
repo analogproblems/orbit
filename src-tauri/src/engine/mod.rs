@@ -459,7 +459,9 @@ impl Engine {
         let checking = crate::outcomes::record(&mut s, now);
         let settled = crate::outcomes::settle(&mut s, now);
         crate::buddy::observe_outcomes(&mut s, &settled);
-        let noted = noted || checking || !settled.is_empty();
+        // A check that held may start one due later.
+        let following = !settled.is_empty() && crate::outcomes::record(&mut s, now);
+        let noted = noted || checking || !settled.is_empty() || following;
         // An item Bit fixes on its own is noted instead of notified; if the
         // fix fails, it is notified then.
         let mut fixing = vec![];

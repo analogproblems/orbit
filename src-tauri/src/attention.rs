@@ -341,6 +341,9 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
         if let Some(found) = p.broke.as_ref().and_then(crate::broke::text) {
             reason.push_str(&format!(" {found}"));
         }
+        if let Some(before) = crate::problems::fixed_before_text(p, str::to_string) {
+            reason.push_str(&format!(" {before}"));
+        }
         out.push(Attention {
             repo: Some(p.repo.clone()),
             ..item(p.item_key(), AttentionKind::CiFailing, None, None, reason)

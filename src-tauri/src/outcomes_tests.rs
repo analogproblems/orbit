@@ -591,10 +591,37 @@ fn a_rebase_holds_once_its_pull_request_moves() {
         "Orbit asked Dependabot to rebase a/b #4."
     );
     assert_eq!(s.outcomes[0].verdict, Verdict::Waiting);
+    assert_eq!(s.outcomes[0].expect, "Dependabot rebases it within a day");
+    assert_eq!(
+        s.outcomes[0].due,
+        Some(stamp(
+            now() - Duration::minutes(10) + Duration::hours(REBASE_HOURS)
+        ))
+    );
+    let mut missed = s.clone();
     s.prs[0].head_sha = OTHER.into();
     let settled = pass(&mut s);
     assert_eq!(settled[0].verdict, Verdict::Held);
     assert_eq!(settled[0].why, "Dependabot rebased it, to 2222222.");
+    // Still at the same commit a day on, by a sync after then, is a miss.
+    let day = now() + Duration::hours(REBASE_HOURS);
+    missed.last_poll = Some(stamp(day - Duration::minutes(20)));
+    assert!(settle(&mut missed, day).is_empty(), "not synced since");
+    missed.last_poll = Some(stamp(day));
+    // Nor by a sync that failed for its repository, which keeps what
+    // Orbit read before.
+    missed.sync_failures = vec![crate::types::SyncFailure {
+        repo: "a/b".into(),
+        count: 1,
+        error: "HTTP 502".into(),
+    }];
+    assert!(settle(&mut missed, day).is_empty(), "its sync failed");
+    missed.sync_failures.clear();
+    let settled = settle(&mut missed, day);
+    assert_eq!(
+        (settled[0].verdict, settled[0].why.as_str()),
+        (Verdict::Missed, "Dependabot didn't rebase it within a day.")
+    );
     // One that closed first can't be told.
     let mut s = snapshot();
     s.journal.push(Write {
@@ -695,8 +722,10 @@ fn an_outcome_orbit_cant_tell_gives_up_and_old_ones_go() {
     pr.head_sha = SHA.into();
     s.prs.push(pr);
     pass(&mut s);
-    // Done 10 minutes ago: Orbit waits 7 days from then.
-    let later = now() - Duration::minutes(10) + Duration::days(GIVE_UP_DAYS);
+    // Done 10 minutes ago, due a day later: Orbit waits 7 days from then.
+    let later = now() - Duration::minutes(10)
+        + Duration::hours(REBASE_HOURS)
+        + Duration::days(GIVE_UP_DAYS);
     assert!(settle(&mut s, later).is_empty());
     let settled = settle(&mut s, later + Duration::minutes(1));
     assert_eq!(
@@ -776,4 +805,342 @@ fn a_miss_is_a_note_from_bit() {
     // Nothing while Bit is off.
     s.settings.buddy.enabled = false;
     assert!(!crate::buddy::observe_outcomes(&mut s, &[missed]));
+}
+
+/// GitHub's CI for a/b's main at `sha`, read at `at`.
+fn main_at(sha: &str, state: CiState, at: DateTime<Utc>) -> RepoCi {
+    RepoCi {
+        repo: "a/b".into(),
+        branch: "main".into(),
+        head: CommitCi {
+            sha: sha.into(),
+            state,
+            failing: if state == CiState::Failing {
+                vec![Check {
+                    name: "CI / test".into(),
+                    url: String::new(),
+                }]
+            } else {
+                vec![]
+            },
+            ..Default::default()
+        },
+        complete: true,
+        checked_at: stamp(at),
+        ..Default::default()
+    }
+}
+/// a/b's main failed at 3333333, then passed at 1111111 at `now()`.
+fn fixed() -> Snapshot {
+    let mut s = snapshot();
+    let read = |s: &mut Snapshot, ci: RepoCi, at| {
+        crate::problems::observe(&mut s.problems, &ci, &[], at);
+        s.ci = vec![ci];
+    };
+    let before = now() - Duration::minutes(30);
+    read(
+        &mut s,
+        main_at(&"3".repeat(40), CiState::Failing, before),
+        before,
+    );
+    read(&mut s, main_at(SHA, CiState::Passing, now()), now());
+    s
+}
+
+#[test]
+fn a_fixed_default_branch_holds_3_days_on_once() {
+    let mut s = fixed();
+    assert!(pass(&mut s).is_empty());
+    let problem = s.problems[0].id.clone();
+    let o = s.outcomes[0].clone();
+    assert_eq!(o.id, format!("holds:{problem}:{SHA}"));
+    assert_eq!(o.kind, Kind::Holds);
+    assert_eq!(o.what, "CI on main in a/b passed at 1111111 after failing.");
+    assert_eq!(o.expect, "it stays fixed for 3 days");
+    assert_eq!(o.url, format!("https://github.com/a/b/commit/{SHA}"));
+    let due = now() + Duration::days(HOLDS_DAYS);
+    assert_eq!(o.due, Some(stamp(due)));
+    // Still green 2 days on: waiting.
+    let two = now() + Duration::days(2);
+    s.ci = vec![main_at(SHA, CiState::Passing, two)];
+    assert!(settle(&mut s, two).is_empty());
+    // Due, but Orbit hasn't read CI since then.
+    assert!(settle(&mut s, due).is_empty());
+    // Read on the date while a newer commit's checks run: not yet.
+    s.ci = vec![main_at(&"5".repeat(40), CiState::Running, due)];
+    assert!(settle(&mut s, due).is_empty());
+    // Read on the date passing: it held, once.
+    s.ci = vec![main_at(SHA, CiState::Passing, due)];
+    let settled = settle(&mut s, due);
+    assert_eq!(
+        (settled[0].verdict, settled[0].why.as_str()),
+        (Verdict::Held, "It stayed fixed for 3 days.")
+    );
+    assert!(settle(&mut s, due).is_empty());
+    assert!(!record(&mut s, due));
+    assert_eq!(s.outcomes.len(), 1);
+}
+
+#[test]
+fn a_fixed_default_branch_that_breaks_again_misses_at_once() {
+    // 2 days later: a new problem, which says when it was fixed before.
+    let mut s = fixed();
+    pass(&mut s);
+    let two = now() + Duration::days(2);
+    let red = main_at(&"4".repeat(40), CiState::Failing, two);
+    crate::problems::observe(&mut s.problems, &red, &[], two);
+    let settled = settle(&mut s, two);
+    assert_eq!(
+        (settled[0].verdict, settled[0].why.as_str()),
+        (Verdict::Missed, "It failed again 2 days after it passed.")
+    );
+    let back = s.problems.iter().find(|p| p.is_open()).unwrap();
+    assert_eq!(
+        back.fixed_before,
+        Some(crate::problems::FixedBefore {
+            at: stamp(now()),
+            sha: SHA.into()
+        })
+    );
+    assert!(back
+        .timeline
+        .iter()
+        .any(|e| e.text == "It was fixed before: it passed at 1111111 2 days earlier."));
+    // Bit's note is the new problem's, not a second one.
+    s.settings.buddy.enabled = true;
+    assert!(!crate::buddy::observe_outcomes(&mut s, &settled));
+
+    // Back within the hour: the same problem, failing again, also a miss.
+    let mut s = fixed();
+    pass(&mut s);
+    let soon = now() + Duration::minutes(30);
+    let red = main_at(&"4".repeat(40), CiState::Failing, soon);
+    crate::problems::observe(&mut s.problems, &red, &[], soon);
+    assert_eq!(s.problems.len(), 1);
+    let settled = settle(&mut s, soon);
+    assert_eq!(
+        settled[0].why,
+        "It failed again 30 minutes after it passed."
+    );
+    // Passing again at another commit is a new check.
+    let green = now() + Duration::minutes(40);
+    let ci = main_at(OTHER, CiState::Passing, green);
+    crate::problems::observe(&mut s.problems, &ci, &[], green);
+    assert!(record(&mut s, green));
+    assert_eq!(
+        s.outcomes[1].id,
+        format!("holds:{}:{OTHER}", s.problems[0].id)
+    );
+}
+
+#[test]
+fn a_setting_that_held_is_checked_again_a_week_later() {
+    let mut s = snapshot();
+    s.journal.push(Write {
+        setting: Some(Setting::DependabotAlerts),
+        ..write(Action::ChangeSetting, 10)
+    });
+    let read = |at: DateTime<Utc>, on: bool| RepoSettings {
+        repo: "a/b".into(),
+        read_at: stamp(at),
+        found: vec![SettingFound {
+            setting: Setting::DependabotAlerts,
+            on: Some(on),
+        }],
+        ..Default::default()
+    };
+    s.repo_settings = vec![read(now(), true)];
+    assert_eq!(pass(&mut s)[0].verdict, Verdict::Held);
+    // The check due later comes once it held.
+    assert!(record(&mut s, now()));
+    let later = s.outcomes[1].clone();
+    assert_eq!(later.id, "later:write:w10");
+    assert_eq!(later.kind, Kind::StillOn);
+    assert_eq!(later.what, "Orbit turned on Dependabot alerts in a/b.");
+    assert_eq!(later.expect, "it's still on a week later");
+    let week = now() - Duration::minutes(10) + Duration::days(STILL_ON_DAYS);
+    assert_eq!(later.due, Some(stamp(week)));
+    assert!(!record(&mut s, now()));
+    let mut off = s.clone();
+    // Still on before the date: waiting; on, read on the date: held.
+    s.repo_settings = vec![read(now() + Duration::days(3), true)];
+    assert!(settle(&mut s, now() + Duration::days(3)).is_empty());
+    s.repo_settings = vec![read(week, true)];
+    let settled = settle(&mut s, week);
+    assert_eq!(
+        (settled[0].verdict, settled[0].why.as_str()),
+        (Verdict::Held, "It's still on a week later.")
+    );
+    // Read as off before the date: a miss at once.
+    off.repo_settings = vec![read(now() + Duration::days(2), false)];
+    let settled = settle(&mut off, now() + Duration::days(2));
+    assert_eq!(
+        (settled[0].verdict, settled[0].why.as_str()),
+        (Verdict::Missed, "It reads as off again.")
+    );
+}
+
+#[test]
+fn a_tag_that_held_has_a_release_build_that_passes_within_a_day() {
+    use crate::builds::Build;
+    let start = || {
+        let mut s = snapshot();
+        s.settings.watch_ci = true;
+        s.journal.push(Write {
+            head: Some(SHA.into()),
+            tag: Some("v1.2.0".into()),
+            ..write(Action::PushTag, 10)
+        });
+        s.releases = vec![RepoReleases {
+            repo: "a/b".into(),
+            read_at: stamp(now()),
+            tags: vec![Tag {
+                name: "v1.2.0".into(),
+                sha: SHA.into(),
+            }],
+            ..Default::default()
+        }];
+        assert_eq!(pass(&mut s)[0].verdict, Verdict::Held);
+        assert!(record(&mut s, now()));
+        s
+    };
+    let build = |tag: &str, state: CiState| Build {
+        repo: "a/b".into(),
+        tag: tag.into(),
+        sha: SHA.into(),
+        read_at: stamp(now()),
+        runs: vec![crate::builds::Run {
+            id: 9,
+            name: "Release".into(),
+            state,
+            conclusion: match state {
+                CiState::Passing => "success",
+                CiState::Failing => "failure",
+                _ => "",
+            }
+            .into(),
+            ..Default::default()
+        }],
+        ci: CommitCi {
+            sha: SHA.into(),
+            state,
+            running: u32::from(state == CiState::Running),
+            failing: if state == CiState::Failing {
+                vec![Check {
+                    name: "Release / build".into(),
+                    url: String::new(),
+                }]
+            } else {
+                vec![]
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut s = start();
+    let o = &s.outcomes[1];
+    assert_eq!((o.id.as_str(), o.kind), ("later:write:w10", Kind::Build));
+    assert_eq!(o.expect, "its release build passes within a day");
+    let day = now() - Duration::minutes(10) + Duration::hours(BUILD_HOURS);
+    assert_eq!(o.due, Some(stamp(day)));
+    // Failing before the day is up may still pass after a rerun.
+    s.builds = vec![build("v1.2.0", CiState::Failing)];
+    assert!(settle(&mut s, now()).is_empty());
+    s.builds = vec![build("v1.2.0", CiState::Passing)];
+    assert_eq!(settle(&mut s, now())[0].why, "Its release build passed.");
+    for (state, verdict, why) in [
+        (
+            CiState::Failing,
+            Verdict::Missed,
+            "Its release build still fails: Release / build.",
+        ),
+        (
+            CiState::Running,
+            Verdict::Missed,
+            "Its release build hadn't passed within a day.",
+        ),
+        (
+            CiState::None,
+            Verdict::Unclear,
+            "No release build ran for it within a day.",
+        ),
+    ] {
+        let mut s = start();
+        s.builds = vec![build("v1.2.0", state)];
+        if state == CiState::None {
+            s.builds[0].runs.clear();
+        }
+        // A read from before the day may have passed since: it waits.
+        assert!(settle(&mut s, day).is_empty());
+        // So does a read that failed after the day, which keeps what Orbit
+        // read before, until Orbit gives up.
+        s.builds[0].error = Some("Orbit couldn't read the release build yet".into());
+        assert!(settle(&mut s, day + Duration::hours(1)).is_empty());
+        // Even one timed after the day: a read that failed says nothing.
+        s.builds[0].read_at = stamp(day + Duration::minutes(30));
+        assert!(settle(&mut s, day + Duration::hours(1)).is_empty());
+        let late = settle(
+            &mut s,
+            day + Duration::days(GIVE_UP_DAYS) + Duration::hours(1),
+        );
+        assert_eq!(
+            (late[0].verdict, late[0].why.as_str()),
+            (Verdict::Unclear, "Orbit couldn't tell within 7 days.")
+        );
+        // A read on or after the day that worked tells.
+        let mut s = start();
+        s.builds = vec![build("v1.2.0", state)];
+        if state == CiState::None {
+            s.builds[0].runs.clear();
+        }
+        s.builds[0].read_at = stamp(day);
+        let settled = settle(&mut s, day);
+        assert_eq!(
+            (settled[0].verdict, settled[0].why.as_str()),
+            (verdict, why)
+        );
+    }
+    // Runs Orbit didn't read aren't still running: by the day, Orbit
+    // can't tell.
+    let mut s = start();
+    s.builds = vec![build("v1.2.0", CiState::Passing)];
+    s.builds[0].ci.incomplete = true;
+    s.builds[0].ci.passing = 1;
+    crate::ci::settle(&mut s.builds[0].ci);
+    assert_eq!(s.builds[0].ci.state, CiState::Running);
+    s.builds[0].read_at = stamp(day);
+    assert_eq!(
+        settle(&mut s, day)[0].why,
+        "Orbit couldn't tell whether its release build passed within a day: v1.2.0 started more runs than Orbit reads."
+    );
+    // A cancelled run beside one that passed isn't a pass: by the day,
+    // Orbit can't tell.
+    let mut s = start();
+    let mut b = build("v1.2.0", CiState::Passing);
+    b.runs.push(crate::builds::Run {
+        id: 10,
+        name: "Docs".into(),
+        state: CiState::None,
+        conclusion: "cancelled".into(),
+        ..Default::default()
+    });
+    s.builds = vec![b];
+    assert!(settle(&mut s, now()).is_empty());
+    s.builds[0].read_at = stamp(day);
+    assert_eq!(
+        settle(&mut s, day)[0].why,
+        "Orbit couldn't tell whether its release build passed within a day: Docs was cancelled."
+    );
+    // A read from before the tag was pushed waits.
+    let mut s = start();
+    s.builds = vec![build("v1.2.0", CiState::Passing)];
+    s.builds[0].read_at = ago(20);
+    assert!(settle(&mut s, now()).is_empty());
+    // A newer tag's build is what Orbit watches now.
+    let mut s = start();
+    s.builds = vec![build("v1.3.0", CiState::Passing)];
+    assert_eq!(
+        settle(&mut s, now())[0].why,
+        "Orbit watches the build of v1.3.0 now."
+    );
 }

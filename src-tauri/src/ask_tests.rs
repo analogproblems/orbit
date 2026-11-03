@@ -931,6 +931,10 @@ fn bit_is_told_each_repositorys_ci_and_how_to_look_things_up() {
             direct: 1,
             ..Default::default()
         }),
+        fixed_before: Some(crate::problems::FixedBefore {
+            at: "2026-11-01T09:00:00Z".into(),
+            sha: "f".repeat(40),
+        }),
         ..Default::default()
     };
     let pull = Problem {
@@ -940,6 +944,7 @@ fn bit_is_told_each_repositorys_ci_and_how_to_look_things_up() {
         sha: "e".repeat(40),
         since_sha: "e".repeat(40),
         broke: None,
+        fixed_before: None,
         ..red.clone()
     };
     let closed = Problem {
@@ -961,12 +966,13 @@ fn bit_is_told_each_repositorys_ci_and_how_to_look_things_up() {
              "failing": [{"check": "CI / test", "job": 5}],
              "broke": {"lastPassing": "aaaaaaa", "firstFailing": "bbbbbbb",
                        "commits": ["bbbbbbb", "ddddddd"], "pullRequests": [7],
-                       "directCommits": 1, "error": null}},
+                       "directCommits": 1, "error": null},
+             "fixedBefore": {"passedAt": "2026-11-01T09:00:00Z", "commit": "fffffff"}},
             {"kind": "pull_request", "branch": "fix", "pr": 1,
              "failingSince": "eeeeeee", "stillFailingAt": null,
              "openedAt": "2026-11-03T09:00:00Z",
              "failing": [{"check": "CI / test", "job": 5}],
-             "broke": null},
+             "broke": null, "fixedBefore": null},
         ])
     );
     // Nothing while Watch CI is off.
@@ -1021,7 +1027,8 @@ fn bit_is_told_how_what_orbit_did_turned_out_newest_first() {
             "what": "Orbit turned on Dependabot alerts in a/b.",
             "doneMeans": "it reads as on", "verdict": "missed",
             "why": crate::broker::HELD_TEXT,
-            "doneAt": "2026-11-03T11:00:00Z", "settledAt": "2026-11-03T13:00:00Z",
+            "doneAt": "2026-11-03T11:00:00Z", "dueAt": null,
+            "settledAt": "2026-11-03T13:00:00Z",
         })
     );
     assert_eq!(told[1]["doneAt"], "2026-11-03T10:00:00Z");
