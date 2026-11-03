@@ -960,6 +960,14 @@ mod say {
             _ => format!("{what} 📮"),
         }
     }
+    /// Something Orbit or an agent did that didn't turn out as it should.
+    pub fn missed(tone: &str, what: &str) -> String {
+        match tone {
+            "calm" => what.to_string(),
+            "dry" => format!("{what} So much for that."),
+            _ => format!("Hmm. {what} Worth a look."),
+        }
+    }
     pub fn answered(tone: &str, what: &str) -> String {
         match tone {
             "calm" => what.to_string(),
@@ -1359,6 +1367,39 @@ pub fn observe_ci(s: &mut Snapshot, events: &[crate::ops::Event]) -> bool {
                 repo: Some(repo),
                 key: Some(format!("problem:{problem}")),
                 ..Note::new(NoteKind::Ci, text)
+            }
+        })
+        .collect();
+    let changed = !notes.is_empty();
+    append(&mut s.buddy_feed, notes);
+    changed
+}
+
+/// Notes each outcome check that missed just now, while Bit is on (see
+/// `crate::outcomes`), unless Bit notes that miss from its CI thread
+/// already. Says whether it noted any.
+pub fn observe_outcomes(s: &mut Snapshot, settled: &[crate::outcomes::Outcome]) -> bool {
+    if !s.settings.buddy.enabled {
+        return false;
+    }
+    let tone = s.settings.buddy.tone.clone();
+    let notes: Vec<Note> = settled
+        .iter()
+        .filter(|o| o.verdict == crate::outcomes::Verdict::Missed)
+        .filter(|o| !crate::outcomes::noted_elsewhere(o))
+        .map(|o| {
+            let pr_id = o
+                .number
+                .map(|n| crate::types::pr_id(&o.repo, n))
+                .filter(|id| s.prs.iter().any(|p| &p.id == id));
+            Note {
+                repo: Some(o.repo.clone()),
+                pr_id,
+                key: Some(format!("outcome:{}", o.id)),
+                ..Note::new(
+                    NoteKind::Ci,
+                    say::missed(&tone, &crate::outcomes::missed_text(o)),
+                )
             }
         })
         .collect();

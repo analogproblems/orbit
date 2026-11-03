@@ -453,6 +453,13 @@ impl Engine {
         // Bit's feed is saved the same way, so a note is written once.
         let fresh: Vec<Attention> = notices.iter().map(|n| n.item.clone()).collect();
         let noted = crate::buddy::observe(&mut s, &fresh);
+        // How what Orbit and the agents did turned out, by what Orbit read
+        // since; a miss is a note from Bit.
+        let now = chrono::Utc::now();
+        let checking = crate::outcomes::record(&mut s, now);
+        let settled = crate::outcomes::settle(&mut s, now);
+        crate::buddy::observe_outcomes(&mut s, &settled);
+        let noted = noted || checking || !settled.is_empty();
         // An item Bit fixes on its own is noted instead of notified; if the
         // fix fails, it is notified then.
         let mut fixing = vec![];

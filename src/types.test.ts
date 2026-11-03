@@ -284,6 +284,7 @@ describe("security settings baseline", () => {
         name: x.name.replace("’", "'"),
         publicOnly: x.publicOnly,
         orbit: x.orbit,
+        fixedText: x.fixedText,
       })),
     ).toEqual(securitySettingsFixture);
     expect(wantedFor(undefined, "acme")).toEqual(

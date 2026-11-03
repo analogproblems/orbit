@@ -65,6 +65,14 @@ pub struct CommitCi {
     /// A check that passed didn't say when it began.
     #[serde(skip)]
     pub untimed: bool,
+    /// Every check read, by name and link, with where it stands, to tell
+    /// whether a job Orbit reran passed: a job's link names its workflow
+    /// run. Kept with Orbit only, and only from a read since it started
+    /// (`named`): after a restart both are empty until the next read.
+    #[serde(skip)]
+    pub checks: Vec<(Check, CiState)>,
+    #[serde(skip)]
+    pub named: bool,
 }
 /// An open pull request's latest commit and its checks.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -330,10 +338,12 @@ fn commit(v: &Value) -> Result<CommitCi, String> {
 
 /// Adds one page of a commit's checks, and where the next page starts.
 pub fn add_checks(ci: &mut CommitCi, contexts: &Value) {
+    ci.named = true;
     for node in contexts["nodes"].as_array().into_iter().flatten() {
         let Some((check, state)) = check(node) else {
             continue;
         };
+        ci.checks.push((check.clone(), state));
         match state {
             CiState::Failing => {
                 if !ci.failing.iter().any(|c| c.name == check.name) {

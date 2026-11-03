@@ -104,6 +104,29 @@ impl Setting {
             Setting::ForkApproval => "Approval for first-time contributors",
         }
     }
+    /// What Orbit did when it changed it, as a sentence's start: "Turned
+    /// on Dependabot alerts".
+    pub fn fixed_text(self) -> &'static str {
+        match self {
+            Setting::SecretScanning => "Turned on secret scanning",
+            Setting::PushProtection => "Turned on push protection for secrets",
+            Setting::DependabotAlerts => "Turned on Dependabot alerts",
+            Setting::DependabotUpdates => "Turned on Dependabot security updates",
+            Setting::PrivateReporting => "Turned on private vulnerability reporting",
+            Setting::ReadOnlyToken => "Made the Actions token read-only",
+            Setting::NoActionsApproval => "Stopped GitHub Actions approving pull requests",
+            Setting::ForkApproval => {
+                "Made workflows from first-time contributors wait for approval"
+            }
+        }
+    }
+    /// Whether it is a switch, on or off, rather than a choice of value.
+    pub fn is_switch(self) -> bool {
+        !matches!(
+            self,
+            Setting::ReadOnlyToken | Setting::NoActionsApproval | Setting::ForkApproval
+        )
+    }
     /// Whether only a public repository has it: GitHub offers private
     /// reporting only there, and only there can anyone's fork run a
     /// workflow.

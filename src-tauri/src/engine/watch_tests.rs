@@ -4041,6 +4041,82 @@ fn set_settings(dir: &Path, settings: serde_json::Value) {
     std::fs::write(dir.join("settings.json"), settings.to_string()).unwrap();
 }
 
+/// A setting Orbit turned on with a tap gets an outcome check, which held
+/// once Orbit read it as on afterwards; one that still reads as off missed,
+/// and Bit says so.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_setting_orbit_turned_on_held_once_it_read_as_on() {
+    use crate::baseline::Setting;
+    use crate::outcomes::{Kind, Verdict};
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    std::fs::write(
+        d.path().join("answer.json"),
+        answer(&"1".repeat(40), "SUCCESS"),
+    )
+    .unwrap();
+    admin_of(d.path(), true);
+    set_settings(
+        d.path(),
+        json!({"vulnerability-alerts": false, "automated-security-fixes": false}),
+    );
+    let e = connected(d.path()).await;
+    e.update(|s| s.settings.buddy.enabled = true).await;
+    crate::github::GH.scope(gh.clone(), e.watch_ci()).await;
+    e.ask_to_fix("a/b", Setting::DependabotAlerts)
+        .await
+        .unwrap();
+    crate::github::GH.scope(gh.clone(), e.read_settings()).await;
+    e.flush().await.unwrap();
+    let s = e.shown_snapshot().await;
+    let o = s.outcomes.iter().find(|o| o.kind == Kind::Setting).unwrap();
+    assert_eq!(
+        (o.what.as_str(), o.verdict, o.why.as_str()),
+        (
+            "Orbit turned on Dependabot alerts in a/b.",
+            Verdict::Held,
+            "It reads as on."
+        )
+    );
+    assert_eq!(o.url, "https://github.com/a/b/settings/security_analysis");
+    assert!(o.settled_at.is_some());
+    // Once: saving again checks nothing new.
+    e.flush().await.unwrap();
+    assert_eq!(e.shown_snapshot().await.outcomes.len(), 1);
+
+    // GitHub took a change, but it still reads as off: a miss, and Bit
+    // says so.
+    e.update(|s| {
+        let now = chrono::Utc::now();
+        let id =
+            crate::baseline::record_change(&mut s.journal, "a/b", Setting::DependabotUpdates, now);
+        crate::baseline::settle(&mut s.journal, &id, Ok(()), now);
+        s.repo_settings[0].read_at = "2026-01-01T00:00:00.000Z".into();
+    })
+    .await;
+    crate::github::GH.scope(gh.clone(), e.read_settings()).await;
+    e.flush().await.unwrap();
+    let s = e.shown_snapshot().await;
+    let missed: Vec<_> = s
+        .outcomes
+        .iter()
+        .filter(|o| o.verdict == Verdict::Missed)
+        .collect();
+    assert_eq!(missed.len(), 1);
+    assert_eq!(
+        missed[0].what,
+        "Orbit turned on Dependabot security updates in a/b."
+    );
+    let note = s
+        .buddy_feed
+        .notes
+        .iter()
+        .find(|n| n.key.as_deref() == Some(&format!("outcome:{}", missed[0].id)))
+        .unwrap();
+    assert!(note.text.contains("Orbit turned on Dependabot security updates in a/b. It still reads as off, though GitHub took the change."), "{}", note.text);
+}
+
 /// A repository missing Dependabot alerts shows that drift, and a tap
 /// turns them on once, even across a restart. Nothing changes without a
 /// tap, and a change cut off by Orbit stopping isn't sent again: Orbit

@@ -43,6 +43,7 @@ import {
   type OpsItem,
   type OpsThread,
   type OpsWrite,
+  type Outcome,
   type Problem,
   type RepoCi,
   type RepoReleases,
@@ -1973,6 +1974,69 @@ function RecentlyFixed() {
   );
 }
 
+const outcomeDot: Record<
+  Outcome["verdict"],
+  { variant: "success" | "error" | "neutral" | "warning"; label: string }
+> = {
+  held: { variant: "success", label: "Held" },
+  missed: { variant: "error", label: "Missed" },
+  waiting: { variant: "neutral", label: "Waiting" },
+  unclear: { variant: "warning", label: "Couldn’t tell" },
+};
+/** How what Orbit and the agents did lately turned out, newest first:
+ * held, missed, still waiting, or Orbit couldn't tell. */
+function TurnedOut() {
+  const { snapshot: s } = useOrbit();
+  const outcomes = [...(s.outcomes ?? [])]
+    .sort((a, b) => b.at.localeCompare(a.at))
+    .slice(0, RECENT);
+  if (!outcomes.length) return null;
+  return (
+    <VStack gap={3}>
+      <Heading level={3}>How it turned out</Heading>
+      <Text color="secondary">
+        After Orbit changes something on GitHub, or an agent says it fixed a
+        problem, Orbit checks that it worked by what it reads next. A miss is a
+        note from {buddyOf(s.settings).name}.
+      </Text>
+      <Card padding={0}>
+        <List hasDividers aria-label="How it turned out">
+          {outcomes.map((o) => (
+            <ListItem
+              key={o.id}
+              startContent={
+                <StatusDot
+                  variant={outcomeDot[o.verdict].variant}
+                  label={outcomeDot[o.verdict].label}
+                />
+              }
+              label={
+                <Text weight="medium" maxLines={2}>
+                  {o.what}
+                </Text>
+              }
+              description={
+                <Text color="secondary">
+                  {o.verdict === "waiting"
+                    ? `Orbit checks that ${o.expect}.`
+                    : o.why}
+                </Text>
+              }
+              onClick={o.url ? () => openLink(o.url) : undefined}
+              endContent={
+                <Timestamp
+                  value={o.settledAt ?? o.at}
+                  format="relative_short"
+                />
+              }
+            />
+          ))}
+        </List>
+      </Card>
+    </VStack>
+  );
+}
+
 const writeText: Record<OpsAction, string> = {
   post_comment: "Commented on",
   edit_comment: "Updated its comment on",
@@ -2100,6 +2164,7 @@ export function Operations(go: AttentionHandlers) {
           <Runners />
           <StorageUse />
           <RecentlyFixed />
+          <TurnedOut />
           <Posted />
         </>
       )}

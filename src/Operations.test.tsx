@@ -127,6 +127,48 @@ describe("operations page", () => {
     expect(risky.length).toBeGreaterThan(0);
     for (const item of risky) expect(ask(item)).toBeNull();
     cleanup();
+    // A failing release build asks about its tag.
+    const release = freshDemo();
+    release.problems = [
+      {
+        ...release.problems![0],
+        id: "demo-release",
+        key: "release:acme/orbit:v1.6.0",
+        kind: "release_build",
+        branch: "v1.6.0",
+        broke: undefined,
+      },
+    ];
+    show(release);
+    const build = within(
+      screen.getByRole("list", { name: "Open problems" }),
+    ).getAllByRole("listitem")[0];
+    fireEvent.click(ask(build)!);
+    expect(action).toHaveBeenLastCalledWith("ask_buddy_anything", {
+      question: "Why is the release build for v1.6.0 failing in acme/orbit?",
+    });
+    cleanup();
+    // A question that couldn't be asked leaves you here, ready to try again.
+    const failed = vi.fn().mockResolvedValue({ ok: false, error: "No" });
+    useOrbit.setState({ action: failed });
+    const stays = show(freshDemo());
+    const again = () =>
+      ask(
+        within(
+          screen.getByRole("list", { name: "Open problems" }),
+        ).getAllByRole("listitem")[0],
+      )!;
+    fireEvent.click(again());
+    await vi.waitFor(() => expect(failed).toHaveBeenCalled());
+    await vi.waitFor(() =>
+      expect(
+        again().getAttribute("aria-disabled") === "true" ||
+          again().hasAttribute("disabled"),
+      ).toBe(false),
+    );
+    expect(stays.onBuddy).not.toHaveBeenCalled();
+    useOrbit.setState({ action });
+    cleanup();
     // Greyed out while Bit answers, and gone while Bit is off.
     const answering = freshDemo();
     answering.buddyFeed!.notes.push({
@@ -509,6 +551,41 @@ describe("operations page", () => {
         `Reran a job on ${s.prs[2].id.replace("#", " #")}.`,
       ),
     );
+  });
+
+  it("lists how what Orbit and the agents did turned out, newest first", () => {
+    const s = freshDemo();
+    show(s);
+    const list = screen.getByRole("list", { name: "How it turned out" });
+    const items = within(list).getAllByRole("listitem");
+    expect(items).toHaveLength(4);
+    // A rebase still waiting says what Orbit checks.
+    expect(items[0].textContent).toContain(
+      "Orbit asked Dependabot to rebase acme/api #64.Orbit checks that Dependabot rebases it.",
+    );
+    expect(within(items[0]).getByLabelText("Waiting")).toBeTruthy();
+    const at = s.prs[2].headSha.slice(0, 7);
+    const missed = items.filter((i) => within(i).queryByLabelText("Missed"));
+    expect(missed.map((i) => i.textContent)).toEqual([
+      expect.stringContaining(
+        `Orbit reran CI / End-to-end at ${at} on ${s.prs[2].id.replace("#", " #")}.It failed again after the rerun.`,
+      ),
+      expect.stringContaining(`Its checks fail at ${at}.`),
+    ]);
+    expect(items[3].textContent).toContain(
+      "Orbit turned on secret scanning in acme/orbit.It reads as on.",
+    );
+    expect(within(items[3]).getByLabelText("Held")).toBeTruthy();
+    expect(screen.getByText(/A miss is a note from Bit\./)).toBeTruthy();
+  });
+
+  it("shows no outcomes until Orbit has some", () => {
+    const s = freshDemo();
+    s.outcomes = [];
+    show(s);
+    expect(
+      screen.queryByRole("list", { name: "How it turned out" }),
+    ).toBeNull();
   });
 
   it("lists each repository's Actions storage, and where Orbit can't see it", () => {

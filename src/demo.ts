@@ -25,6 +25,7 @@ import {
   type Snapshot,
   type OpsThread,
   type OpsWrite,
+  type Outcome,
   type Problem,
   type PullRequest,
   type RepoCi,
@@ -1059,6 +1060,7 @@ export function demoCi(
   | "problems"
   | "ops"
   | "journal"
+  | "outcomes"
   | "failures"
   | "setups"
   | "runners"
@@ -1746,6 +1748,61 @@ export function demoCi(
     write("demo-write-10", "edit_comment", ops[3], ago(18)),
     write("demo-write-7", "edit_issue", ops[0], ago(18)),
   ];
+  // How what Orbit and the agents did turned out: the rerun and the
+  // agent's fix above missed, a setting held, and a rebase waits.
+  const at = failingPr.headSha.slice(0, 7);
+  const where = `${failingPr.repo} #${failingPr.number}`;
+  const outcomes: Outcome[] = [
+    {
+      id: "demo-outcome-1",
+      kind: "setting",
+      repo: "acme/orbit",
+      what: "Orbit turned on secret scanning in acme/orbit.",
+      expect: "it reads as on",
+      url: "https://github.com/acme/orbit/settings/security_analysis",
+      at: ago(27 * 60),
+      verdict: "held",
+      why: "It reads as on.",
+      settledAt: ago(27 * 60 - 5),
+    },
+    {
+      id: "demo-outcome-2",
+      kind: "rerun",
+      repo: failingPr.repo,
+      number: failingPr.number,
+      what: `Orbit reran CI / End-to-end at ${at} on ${where}.`,
+      expect: "the job passes the second time",
+      url: e2eFirst,
+      at: ago(19),
+      verdict: "missed",
+      why: "It failed again after the rerun.",
+      settledAt: ago(9),
+    },
+    {
+      id: "demo-outcome-3",
+      kind: "fix",
+      repo: failingPr.repo,
+      number: failingPr.number,
+      what: `${failingPr.author} said I1 (CI / Frontend) is fixed in ${at} on ${where}.`,
+      expect: `its checks pass at ${at}`,
+      url: `${failingPr.url}#issuecomment-905`,
+      at: ago(19),
+      verdict: "missed",
+      why: `Its checks fail at ${at}.`,
+      settledAt: ago(17),
+    },
+    {
+      id: "demo-outcome-4",
+      kind: "rebase",
+      repo: "acme/api",
+      number: 64,
+      what: "Orbit asked Dependabot to rebase acme/api #64.",
+      expect: "Dependabot rebases it",
+      url: "https://github.com/acme/api/pull/64",
+      at: ago(6),
+      verdict: "waiting",
+    },
+  ];
   const failures: CiFailure[] = [
     {
       url: rustJob,
@@ -1801,6 +1858,7 @@ export function demoCi(
     problems,
     ops,
     journal,
+    outcomes,
     failures,
     setups,
     runners,

@@ -62,6 +62,22 @@ fn reads_the_default_branch_and_each_pull_request() {
     assert_eq!(ci.head.failing[0].name, "CI / Rust");
     assert!(ci.head.failing[0].url.ends_with("/job/Rust"));
     assert_eq!(ci.head.passing, 1);
+    // By name too, for telling whether a check Orbit reran passed.
+    assert!(ci.head.named);
+    let checks: Vec<_> = ci
+        .head
+        .checks
+        .iter()
+        .map(|(c, state)| (c.name.as_str(), *state))
+        .collect();
+    assert_eq!(
+        checks,
+        [
+            ("CI / Rust", CiState::Failing),
+            ("CI / Frontend", CiState::Passing)
+        ]
+    );
+    assert!(ci.head.checks[1].0.url.ends_with("/job/Frontend"));
     assert!(ci.complete);
     let pull = ci.pull(7).unwrap();
     assert!(pull.draft);
@@ -232,6 +248,7 @@ async fn all_pages_passing_pass_and_too_many_pages_never_do() {
     let ci = crate::github::GH.scope(gh, read("o/r")).await.unwrap();
     assert_eq!(ci.head.state, CiState::Passing);
     assert_eq!(ci.head.passing, 103);
+    assert_eq!(ci.head.checks.len(), 103);
     // Page after page of passes: Orbit stops reading, and doesn't pass it.
     let d = tempfile::tempdir().unwrap();
     let gh = fake_gh(d.path(), &first, &more(passes(100), Some("again")));
