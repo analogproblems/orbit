@@ -357,7 +357,14 @@ async function demoAction(
     if (!buddy.enabled) throw Error(`Turn ${buddy.name} on in Settings first.`);
     if (demo.buddyFeed?.notes.some((n) => n.pending))
       throw Error(`${buddy.name} is still answering your last question.`);
-    demoNote({ kind: "answer", question, text: "", pending: true });
+    // As in Orbit, the question shows what Bit looks up while it thinks.
+    demoNote({
+      kind: "answer",
+      question,
+      text: "",
+      pending: true,
+      looked: D.demoLooked(),
+    });
     const id = demo.buddyFeed!.notes.at(-1)!.id;
     commit();
     timers.set(

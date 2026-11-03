@@ -369,7 +369,11 @@ function NoteMessage({
           {note.pending ? (
             <HStack gap={2} vAlign="center">
               <Spinner size="sm" aria-label="Thinking…" />
-              <Text color="secondary">Thinking…</Text>
+              <Text color="secondary">
+                {note.looked?.length
+                  ? "Looking things up on GitHub…"
+                  : "Thinking…"}
+              </Text>
             </HStack>
           ) : note.kind === "answer" ? (
             <SafeMarkdown>{note.text}</SafeMarkdown>
@@ -402,11 +406,38 @@ function NoteMessage({
               {memoryChangeText(change)}
             </Text>
           ))}
+          <LookedList note={note} />
           <FixButton itemKey={note.key} />
           {note.kind === "brief" && <ReadButton itemKey={note.key} />}
         </VStack>
       </ChatMessageBubble>
     </ChatMessage>
+  );
+}
+
+/** What Orbit looked up on GitHub for an answer, or is looking up while
+ * Bit thinks, each opening on GitHub. */
+function LookedList({ note }: { note: BuddyNote }) {
+  const looked = note.looked ?? [];
+  if (!looked.length) return null;
+  const label = note.pending ? "Looking at" : "Looked at";
+  return (
+    <VStack gap={1}>
+      <Text type="supporting" weight="semibold" color="secondary">
+        {label}
+      </Text>
+      <List aria-label={label}>
+        {looked.map((l, index) => (
+          <ListItem
+            key={index}
+            label={l.what}
+            description={l.error ?? undefined}
+            onClick={l.url ? () => openLink(l.url) : undefined}
+            endContent={l.url ? <ExternalLink aria-hidden /> : undefined}
+          />
+        ))}
+      </List>
+    </VStack>
   );
 }
 

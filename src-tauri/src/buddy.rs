@@ -631,6 +631,10 @@ pub struct Note {
     /// memory.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub memory: Vec<MemoryChange>,
+    /// For a question you typed, what Orbit looked up on GitHub for the
+    /// answer, or is looking up while it's pending (`crate::broker`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub looked: Vec<crate::broker::Looked>,
     /// A question you typed that Bit is still answering.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pending: bool,
@@ -650,6 +654,7 @@ impl Note {
             lines: vec![],
             proposals: vec![],
             memory: vec![],
+            looked: vec![],
             pending: false,
         }
     }
@@ -1662,6 +1667,14 @@ pub fn answered(
         note.proposals = proposals;
         note.memory = change_memory(&mut feed.memory, memory);
         note.pending = false;
+    }
+}
+/// Shows what Orbit is looking up, or has, for a question Bit is still
+/// answering.
+pub fn looking(s: &mut Snapshot, id: u64, looked: Vec<crate::broker::Looked>) {
+    let notes = &mut s.buddy_feed.notes;
+    if let Some(note) = notes.iter_mut().find(|n| n.id == id && n.pending) {
+        note.looked = looked;
     }
 }
 /// Says why Bit couldn't answer a question you typed.
