@@ -16,6 +16,7 @@ import {
 import { FolderGit2, Workflow } from "lucide-react";
 import { openLink, useOrbit } from "./store";
 import { SaveFeedback } from "./SaveFeedback";
+import { AskWhy } from "./AskWhy";
 import {
   alertNeedsYou,
   buddyOf,
@@ -996,6 +997,7 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
                       <Timestamp value={p.openedAt} format="relative_short" />
                     )
                   )}
+                  <AskWhy problem={p} onAsked={go.onBuddy} />
                 </VStack>
               }
             />

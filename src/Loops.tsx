@@ -38,6 +38,7 @@ import {
   type Review,
   type Snapshot,
 } from "./types";
+import { AskWhy, problemOfItem } from "./AskWhy";
 import { ReviewActions } from "./ReviewActions";
 import { ReviewStatus } from "./ReviewStatus";
 import { recentTimestamp } from "./timestamps";
@@ -163,6 +164,7 @@ function NeedsYou(go: AttentionHandlers) {
       {attention.map((a) => {
         const p = knownPr(s, a.prId);
         const main = mainAction(s, a, go, run(a.key));
+        const why = a.kind === "ci_failing" ? problemOfItem(s, a) : undefined;
         return (
           <ListItem
             key={a.key}
@@ -186,15 +188,21 @@ function NeedsYou(go: AttentionHandlers) {
               </VStack>
             }
             endContent={
-              main && (
-                <Button
-                  label={main.label}
-                  size="sm"
-                  variant="primary"
-                  isLoading={busy === a.key}
-                  isDisabled={busy === a.key}
-                  onClick={main.onClick}
-                />
+              (main || why) && (
+                // Stacked, so a narrow window keeps room for the text.
+                <VStack gap={2} hAlign="end">
+                  {main && (
+                    <Button
+                      label={main.label}
+                      size="sm"
+                      variant="primary"
+                      isLoading={busy === a.key}
+                      isDisabled={busy === a.key}
+                      onClick={main.onClick}
+                    />
+                  )}
+                  {why && <AskWhy problem={why} onAsked={go.onBuddy} />}
+                </VStack>
               )
             }
           />

@@ -75,6 +75,7 @@ function show(snapshot: Snapshot) {
     onApproval: vi.fn(),
     onPublish: vi.fn(),
     onOperations: vi.fn(),
+    onBuddy: vi.fn(),
   };
   render(<Operations {...go} />);
   return go;
@@ -98,6 +99,60 @@ describe("operations page", () => {
     // A pull request's problem opens the pull request.
     fireEvent.click(within(pull).getByText(new RegExp(`^${s.prs[2].id}`)));
     expect(go.onChoose).toHaveBeenCalledWith(s.prs[2]);
+  });
+
+  it("asks Bit why something fails, then opens Bit's conversation", async () => {
+    const s = freshDemo();
+    const action = vi.fn().mockResolvedValue({ ok: true });
+    useOrbit.setState({ action });
+    const go = show(s);
+    const open = screen.getByRole("list", { name: "Open problems" });
+    const items = within(open).getAllByRole("listitem");
+    const ask = (item: HTMLElement) =>
+      within(item).queryByRole("button", { name: "Ask Bit why" });
+    fireEvent.click(ask(items[0])!);
+    expect(action).toHaveBeenCalledWith("ask_buddy_anything", {
+      question: "Why is CI failing on main in acme/orbit?",
+    });
+    await vi.waitFor(() => expect(go.onBuddy).toHaveBeenCalled());
+    // A pull request's failing checks too, but not risky settings.
+    const pull = items.find((i) => i.textContent?.includes(s.prs[2].id))!;
+    fireEvent.click(ask(pull)!);
+    expect(action).toHaveBeenLastCalledWith("ask_buddy_anything", {
+      question: `Why is CI failing on ${s.prs[2].id}?`,
+    });
+    const risky = items.filter((i) =>
+      within(i).queryByLabelText("Risky settings"),
+    );
+    expect(risky.length).toBeGreaterThan(0);
+    for (const item of risky) expect(ask(item)).toBeNull();
+    cleanup();
+    // Greyed out while Bit answers, and gone while Bit is off.
+    const answering = freshDemo();
+    answering.buddyFeed!.notes.push({
+      id: 999,
+      at: "2026-11-03T10:00:00Z",
+      kind: "answer",
+      prId: null,
+      reviewId: null,
+      repo: null,
+      question: "Hi?",
+      text: "",
+      pending: true,
+    });
+    show(answering);
+    const first = within(
+      screen.getByRole("list", { name: "Open problems" }),
+    ).getAllByRole("listitem")[0];
+    expect(
+      ask(first)!.getAttribute("aria-disabled") === "true" ||
+        ask(first)!.hasAttribute("disabled"),
+    ).toBe(true);
+    cleanup();
+    const off = freshDemo();
+    off.settings.buddy = { ...off.settings.buddy!, enabled: false };
+    show(off);
+    expect(screen.queryByRole("button", { name: "Ask Bit why" })).toBeNull();
   });
 
   it("shows each repository's CI, with what couldn't be read", () => {
@@ -237,7 +292,12 @@ describe("operations page", () => {
     expect(row().textContent).toContain(
       "Your rule is Leave it to me, so Orbit doesn’t tell the agent.",
     );
-    expect(within(row()).queryByRole("button")).toBeNull();
+    // Only Bit's own question is left to tap.
+    expect(
+      within(row())
+        .getAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual(["Ask Bit why"]);
     cleanup();
     s.settings.buddy.rules.open_issues = "do_it";
     s.settings.buddy.enabled = false;
@@ -254,7 +314,9 @@ describe("operations page", () => {
     expect(row().textContent).toContain(
       "Orbit stopped before GitHub answered its post, so it looks on GitHub for it before posting again.",
     );
-    expect(within(row()).queryByRole("button")).toBeNull();
+    expect(
+      within(row()).queryByRole("button", { name: "Open issue" }),
+    ).toBeNull();
     cleanup();
     s.settings.buddy.rules.open_issues = "do_it";
     issue.unsure = false;

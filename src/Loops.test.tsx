@@ -173,6 +173,28 @@ describe("needs you list", () => {
     fireEvent.click(within(needs).getByText(pr.title));
     expect(go.onChoose).toHaveBeenCalledWith(pr, undefined);
   });
+  it("asks Bit why a failing default branch fails", async () => {
+    const snapshot = freshDemo();
+    const action = vi.fn().mockResolvedValue({ ok: true });
+    useOrbit.setState({ action });
+    const go = show(snapshot);
+    const needs = list("Needs you");
+    const asks = within(needs).getAllByRole("button", { name: "Ask Bit why" });
+    // Only the failing CI item, next to its own button.
+    expect(asks).toHaveLength(1);
+    const item = asks[0].closest("li") as HTMLElement;
+    expect(
+      within(item).getByRole("button", { name: "Open operations" }),
+    ).toBeTruthy();
+    fireEvent.click(asks[0]);
+    expect(action).toHaveBeenCalledWith("ask_buddy_anything", {
+      question: "Why is CI failing on main in acme/orbit?",
+    });
+    await vi.waitFor(() =>
+      expect(asks[0].hasAttribute("disabled")).toBe(false),
+    );
+    expect(go.onOperations).not.toHaveBeenCalled();
+  });
   it("pushes a version's missing tag on one tap, unless left to you", () => {
     const snapshot = freshDemo();
     const key = "push:acme/api:v0.3.0";

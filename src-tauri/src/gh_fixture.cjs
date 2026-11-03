@@ -25,7 +25,9 @@
 // `head_branch`, which is a tag's name for a run a tag started) and
 // `head_sha` asked for; while <dir>/runs-error exists, listing them fails
 // with its text. A file of a/b, read with its contents, is <dir>/file-<its
-// name>, sent as GitHub sends one, or 404.
+// name>, sent as GitHub sends one, or 404. The files a pull request <n>
+// of a/b changes are the list in <dir>/files-<n>.json, and commit <sha>
+// with the files it changes is <dir>/changes-<sha>.json, or 404.
 // The releases of a/b are the list in <dir>/releases.json, or none, in
 // pages; while <dir>/releases-error exists, listing them fails with its
 // text. Its latest release is <dir>/latest.json, or the newest made in the
@@ -692,6 +694,14 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
       .toString("base64")
       .replace(/(.{60})/g, "$1\n"),
   });
+} else if ((m = endpoint.match(/^repos\/a\/b\/pulls\/(\d+)\/files$/))) {
+  const files = path.join(dir, `files-${m[1]}.json`);
+  if (!fs.existsSync(files)) missing();
+  process.stdout.write(fs.readFileSync(files, "utf8"));
+} else if ((m = endpoint.match(/^repos\/a\/b\/commits\/([0-9a-f]+)$/))) {
+  const changes = path.join(dir, `changes-${m[1]}.json`);
+  if (!fs.existsSync(changes)) missing();
+  process.stdout.write(fs.readFileSync(changes, "utf8"));
 } else if (endpoint === "repos/a/b/actions/runs") {
   const refused = path.join(dir, "runs-error");
   if (fs.existsSync(refused)) {

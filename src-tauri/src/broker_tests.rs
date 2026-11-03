@@ -560,3 +560,205 @@ fn a_credential_in_a_name_is_held_back_whole() {
         assert!(!refused[0].looked.what.contains("ghp_"));
     }
 }
+
+#[test]
+fn changes_are_looked_up_for_a_known_pull_request_or_a_commit() {
+    let mut s = snapshot();
+    let ok = |s: &Snapshot, w: Wanted| check(s, &w);
+    let pull = ok(
+        &s,
+        Wanted {
+            pr: Some(3),
+            ..wanted("changes", "a/b")
+        },
+    )
+    .unwrap();
+    assert_eq!((pull.pr, pull.sha.as_str()), (Some(3), ""));
+    assert_eq!(pull.what(), "The changes in a/b#3");
+    assert_eq!(pull.url(), "https://github.com/a/b/pull/3/files");
+    // A commit as the summary shortens it, or in full.
+    let commit = ok(
+        &s,
+        Wanted {
+            commit: Some(" 1A2B3C4 ".into()),
+            ..wanted("changes", "a/b")
+        },
+    )
+    .unwrap();
+    assert_eq!(commit.sha, "1a2b3c4");
+    assert_eq!(commit.what(), "The changes in 1a2b3c4 in a/b");
+    assert_eq!(commit.url(), "https://github.com/a/b/commit/1a2b3c4");
+    assert_eq!(
+        ok(
+            &s,
+            Wanted {
+                commit: Some(HEAD.into()),
+                ..wanted("changes", "a/b")
+            }
+        )
+        .unwrap()
+        .sha,
+        HEAD
+    );
+    // A pull request Orbit hasn't read, a commit that isn't one, or
+    // neither, is refused.
+    let merged = Wanted {
+        pr: Some(7),
+        ..wanted("changes", "a/b")
+    };
+    assert_eq!(
+        ok(&s, merged.clone()).unwrap_err(),
+        "Orbit hasn't read a/b#7."
+    );
+    for (commit, why) in [
+        ("1a2b3c", "\"1a2b3c\" isn't a commit."),
+        ("main", "\"main\" isn't a commit."),
+        ("1a2b3c4; rm", "\"1a2b3c4; rm\" isn't a commit."),
+        (
+            "",
+            "A changes lookup needs a pull request's number or a commit.",
+        ),
+    ] {
+        let w = Wanted {
+            commit: Some(commit.into()),
+            ..wanted("changes", "a/b")
+        };
+        assert_eq!(ok(&s, w).unwrap_err(), why);
+    }
+    // A merged pull request that Orbit found broke the default branch.
+    s.problems.push(crate::problems::Problem {
+        repo: "a/b".into(),
+        broke: Some(crate::broke::Broke {
+            done: true,
+            pulls: vec![7],
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    assert_eq!(ok(&s, merged).unwrap().pr, Some(7));
+}
+
+#[test]
+fn changes_list_each_file_and_leave_out_credentials() {
+    let l = Lookup {
+        pr: Some(3),
+        ..looked_up(Kind::Changes)
+    };
+    let files = [
+        json!({"filename": "src/lib.rs", "status": "modified", "additions": 1, "deletions": 1,
+            "patch": "@@ -1 +1 @@\n-fn a() {}\n+fn b() {}"}),
+        json!({"filename": ".env", "status": "added", "additions": 1, "deletions": 0,
+            "patch": format!("@@ -0,0 +1 @@\n+TOKEN=ghp_{}", "a".repeat(36))}),
+        json!({"filename": "logo.png", "status": "added", "additions": 0, "deletions": 0}),
+        json!({"filename": "new.rs", "previous_filename": "old.rs", "status": "renamed",
+            "additions": 0, "deletions": 0}),
+    ];
+    let text = changes_text(&l, None, &files.iter().collect::<Vec<_>>());
+    assert_eq!(
+        text,
+        "The changes in a/b#3, file by file:
+- src/lib.rs (modified, +1 −1):
+  @@ -1 +1 @@
+  -fn a() {}
+  +fn b() {}
+- .env (added, +1 −0):
+  Orbit left its changes out, as they look like they hold a credential.
+- logo.png (added, +0 −0):
+  GitHub shows no text changes for it.
+- old.rs → new.rs (renamed, +0 −0):
+  GitHub shows no text changes for it."
+    );
+    assert!(credential_kinds(&text).is_empty());
+
+    // A commit says what it is first; each file's changes and the list
+    // are cut to a size.
+    let commit = Lookup {
+        sha: "1a2b3c4".into(),
+        ..looked_up(Kind::Changes)
+    };
+    let big = json!({"filename": "big.rs", "status": "modified", "additions": 900,
+        "deletions": 0, "patch": "+".repeat(FILE_CHANGES + 10)});
+    let many: Vec<Value> = (0..CHANGED_FILES + 2).map(|_| big.clone()).collect();
+    let about = json!({"sha": HEAD, "commit": {"message": "Speed up tests\n\nAnd more.",
+        "author": {"name": "Sam"}}});
+    let text = changes_text(&commit, Some(&about), &many.iter().collect::<Vec<_>>());
+    assert!(text.starts_with(
+        "Commit 1111111 in a/b, \"Speed up tests\", by Sam, file by file:\n- big.rs (modified, +900 −0):\n  +++"
+    ));
+    assert!(text.contains(&format!(
+        "\n  … (cut: Orbit gives at most {FILE_CHANGES} characters of each file)\n"
+    )));
+    assert!(text.ends_with("\nAnd 2 more files."));
+    assert_eq!(
+        changes_text(&commit, Some(&about), &[]),
+        "Commit 1111111 in a/b, \"Speed up tests\", by Sam, file by file:\nNo files changed."
+    );
+    // A full page may hold more files than GitHub sent.
+    let page: Vec<Value> = (0..100).map(|_| big.clone()).collect();
+    assert!(
+        changes_text(&commit, Some(&about), &page.iter().collect::<Vec<_>>())
+            .ends_with("\nAnd at least 70 more files.")
+    );
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn changes_are_read_from_github() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let write = |name: &str, text: String| std::fs::write(d.path().join(name), text).unwrap();
+    write(
+        "files-3.json",
+        json!([{"filename": "src/lib.rs", "status": "modified", "additions": 1,
+            "deletions": 0, "patch": "@@ -1 +1,2 @@\n fn a() {}\n+fn b() {}"}])
+        .to_string(),
+    );
+    write(
+        "changes-1a2b3c4.json",
+        json!({"sha": HEAD, "commit": {"message": "Break the tests", "author": {"name": "Sam"}},
+            "files": [{"filename": "tests/a.rs", "status": "removed", "additions": 0,
+                "deletions": 3, "patch": "@@ -1,3 +0,0 @@\n-#[test]\n-fn a() {}\n-"}]})
+        .to_string(),
+    );
+    let pull = Lookup {
+        pr: Some(3),
+        ..looked_up(Kind::Changes)
+    };
+    let commit = Lookup {
+        sha: "1a2b3c4".into(),
+        ..looked_up(Kind::Changes)
+    };
+    let gone = Lookup {
+        pr: Some(4),
+        ..looked_up(Kind::Changes)
+    };
+    let found = crate::github::GH
+        .scope(gh, async {
+            let mut found = vec![];
+            for l in [pull, commit, gone] {
+                found.push(read(&l).await);
+            }
+            found
+        })
+        .await;
+    assert_eq!(
+        found[0].text,
+        "The changes in a/b#3, file by file:\n- src/lib.rs (modified, +1 −0):\n  @@ -1 +1,2 @@\n   fn a() {}\n  +fn b() {}"
+    );
+    assert!(found[1].text.starts_with(
+        "Commit 1111111 in a/b, \"Break the tests\", by Sam, file by file:\n- tests/a.rs (removed, +0 −3):"
+    ));
+    assert_eq!(
+        found[2].looked.error.as_deref(),
+        Some("GitHub doesn't have it.")
+    );
+    let calls = std::fs::read_to_string(d.path().join("calls")).unwrap();
+    assert_eq!(
+        calls.lines().collect::<Vec<_>>(),
+        [
+            "GET repos/a/b/pulls/3/files",
+            "GET repos/a/b/commits/1a2b3c4",
+            "GET repos/a/b/pulls/4/files",
+        ]
+    );
+}

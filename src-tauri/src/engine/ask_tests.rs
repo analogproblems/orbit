@@ -1379,3 +1379,164 @@ async fn an_api_key_answer_looks_things_up_in_rounds() {
     assert!(sent[2].contains("You can't look anything else up now"));
     assert!(e.asking.lock().unwrap().is_none());
 }
+
+/// Asked why a default branch broke, as **Ask Bit why** asks, Bit sees the
+/// commits that broke it in the summary and reads what changed in them, a
+/// pull request's changes and a job's log, then answers naming the commit.
+#[cfg(unix)]
+#[tokio::test]
+async fn bit_reads_what_changed_before_it_answers() {
+    let (_dir, e, rpc) = fixture().await;
+    rpc.request(
+        "fixture/configure",
+        json!({"startResponse": {"model": "model-a", "reasoningEffort": "high"}}),
+    )
+    .await
+    .unwrap();
+    let gh_dir = tempfile::tempdir().unwrap();
+    let gh = super::ops_tests::fake_gh(gh_dir.path());
+    let write = |name: &str, text: String| std::fs::write(gh_dir.path().join(name), text).unwrap();
+    let red = "b".repeat(40);
+    write(
+        "changes-bbbbbbb.json",
+        json!({"sha": red, "commit": {"message": "Rename the parser", "author": {"name": "Sam"}},
+            "files": [{"filename": "src/parse.rs", "status": "modified", "additions": 1,
+                "deletions": 1, "patch": "@@ -1 +1 @@\n-pub fn parse() {}\n+pub fn read() {}"}]})
+        .to_string(),
+    );
+    write(
+        "files-3.json",
+        json!([{"filename": "src/lib.rs", "status": "modified", "additions": 1, "deletions": 0,
+            "patch": format!("@@ -1 +1,2 @@\n+const KEY: &str = \"ghp_{}\";", "a".repeat(36))},
+            {"filename": "tests/parse.rs", "status": "added", "additions": 1, "deletions": 0,
+            "patch": "@@ -0,0 +1 @@\n+parse();"}])
+        .to_string(),
+    );
+    write(
+        "job-5.json",
+        json!({"id": 5, "run_id": 9, "name": "test", "workflow_name": "CI",
+            "head_sha": red, "status": "completed", "conclusion": "failure",
+            "html_url": "https://github.com/a/b/actions/runs/9/job/5", "steps": []})
+        .to_string(),
+    );
+    write(
+        "log-5.txt",
+        "error[E0425]: cannot find function `parse`\n##[error]Process completed with exit code 101.".into(),
+    );
+    let job = "https://github.com/a/b/actions/runs/9/job/5";
+    e.update(|s| {
+        s.settings
+            .repositories
+            .push(Repository::new("a/b", "/tmp/a-b"));
+        let mut pr = crate::types::tests::pr();
+        pr.repo = "a/b".into();
+        pr.number = 3;
+        pr.head_sha = "e".repeat(40);
+        s.prs.push(pr);
+        let failing = crate::ci::CommitCi {
+            sha: red.clone(),
+            state: crate::ci::CiState::Failing,
+            failing: vec![crate::ci::Check {
+                name: "CI / test".into(),
+                url: job.into(),
+            }],
+            ..Default::default()
+        };
+        s.ci.push(crate::ci::RepoCi {
+            repo: "a/b".into(),
+            branch: "main".into(),
+            head: failing.clone(),
+            ..Default::default()
+        });
+        s.problems.push(crate::problems::Problem {
+            id: "p1".into(),
+            kind: crate::problems::ProblemKind::DefaultBranch,
+            repo: "a/b".into(),
+            branch: "main".into(),
+            sha: red.clone(),
+            since_sha: red.clone(),
+            failing: failing.failing.clone(),
+            broke: Some(crate::broke::Broke {
+                done: true,
+                green: "a".repeat(40),
+                red: red.clone(),
+                commits: vec![red.clone()],
+                direct: 1,
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+    })
+    .await;
+    e.ask_buddy_anything("Why is CI failing on main in a/b?")
+        .await
+        .unwrap();
+    let first = sent(&rpc, "turn/start").await[0]["input"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // The summary names the commit that broke it.
+    assert!(first.contains("\"firstFailing\": \"bbbbbbb\""));
+    let asked = json!({"answer": "Reading what changed.", "proposals": [], "lookUp": [
+        {"kind": "changes", "repository": "a/b", "branch": null, "pr": null, "job": null,
+         "path": null, "commit": "bbbbbbb"},
+        {"kind": "changes", "repository": "a/b", "branch": null, "pr": 3, "job": null,
+         "path": null, "commit": null},
+        {"kind": "log", "repository": "a/b", "branch": null, "pr": null, "job": 5,
+         "path": null, "commit": null},
+    ]});
+    crate::github::GH
+        .scope(gh.clone(), codex_says(&e, &asked.to_string(), "completed"))
+        .await;
+    until_sent(&rpc, "turn/start", 2).await;
+    let second = sent(&rpc, "turn/start").await[1]["input"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(second.contains("Commit bbbbbbb in a/b, \\\"Rename the parser\\\", by Sam"));
+    assert!(second.contains("+pub fn read() {}"));
+    assert!(second.contains("cannot find function `parse`"));
+    // A file whose changes look like a credential is listed without them.
+    assert!(second.contains("tests/parse.rs"));
+    assert!(second.contains("Orbit left its changes out"));
+    assert!(!second.contains("ghp_"));
+    let calls = std::fs::read_to_string(gh_dir.path().join("calls")).unwrap();
+    assert_eq!(
+        calls.lines().collect::<Vec<_>>(),
+        [
+            "GET repos/a/b/commits/bbbbbbb",
+            "GET repos/a/b/pulls/3/files",
+            "GET repos/a/b/actions/jobs/5",
+            "GET repos/a/b/actions/jobs/5/logs",
+        ]
+    );
+    let answer = json!({"answer": "Commit bbbbbbb renamed parse to read, and the tests still call parse.",
+        "proposals": [], "lookUp": []});
+    codex_says(&e, &answer.to_string(), "completed").await;
+    // Bit's heads-up about the broken branch may come after the question.
+    let mut note = None;
+    for _ in 0..200 {
+        note = e
+            .snapshot()
+            .await
+            .buddy_feed
+            .notes
+            .into_iter()
+            .find(|n| n.question.is_some() && !n.pending);
+        if note.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    let note = note.expect("Bit never answered");
+    assert!(note.text.starts_with("Commit bbbbbbb renamed parse"));
+    let looked: Vec<&str> = note.looked.iter().map(|l| l.what.as_str()).collect();
+    assert_eq!(
+        looked,
+        [
+            "The changes in bbbbbbb in a/b",
+            "The changes in a/b#3",
+            "The log of job 5 in a/b",
+        ]
+    );
+}
