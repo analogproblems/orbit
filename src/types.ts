@@ -1468,6 +1468,9 @@ export interface Problem {
    * versions the files there say. */
   tag?: string;
   tagSays?: string[];
+  /** For something failing that passed before, as a problem of its own
+   * that closed by passing: when it passed, and at which commit. */
+  fixedBefore?: { at: string; sha: string } | null;
 }
 /** What a version file is, as the engine has it (`versions.rs`). */
 export type VersionFileKind =
@@ -2366,7 +2369,16 @@ export interface OpsWrite {
  * named, and how it turned out by what Orbit read since. */
 export interface Outcome {
   id: string;
-  kind: "setting" | "tag" | "release" | "rerun" | "rebase" | "fix";
+  kind:
+    | "setting"
+    | "tag"
+    | "release"
+    | "rerun"
+    | "rebase"
+    | "fix"
+    | "holds"
+    | "still_on"
+    | "build";
   repo: string;
   number?: number | null;
   /** What was done, in a sentence, and what done means, as a clause:
@@ -2379,6 +2391,8 @@ export interface Outcome {
   /** Why it held or missed, or why Orbit couldn't tell. */
   why?: string;
   settledAt?: string | null;
+  /** For a check due later: when. It settles then, or sooner on a miss. */
+  due?: string | null;
 }
 /** A commit's first seven characters, as GitHub shows them. */
 export function shortSha(sha: string) {

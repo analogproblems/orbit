@@ -2213,8 +2213,13 @@ pub fn issue_body(t: &Thread, p: &Problem, closing: bool) -> String {
         Some(found) => format!("{found}\n\n"),
         None => String::new(),
     };
+    // Back after it passed: when, so the agent knows it came back.
+    let before = crate::problems::fixed_before_text(p, code)
+        .filter(|_| p.is_open())
+        .map(|text| format!("{text}\n\n"))
+        .unwrap_or_default();
     format!(
-        "## Orbit · CI\n\n{status}\n\n{broke}{}\n\nOrbit opened this issue because CI fails on {on}. It edits this issue as CI changes, and closes it once every check has passed for an hour.\n\n{}",
+        "## Orbit · CI\n\n{status}\n\n{before}{broke}{}\n\nOrbit opened this issue because CI fails on {on}. It edits this issue as CI changes, and closes it once every check has passed for an hour.\n\n{}",
         items_text(t, p),
         data(t, Some(p))
     )

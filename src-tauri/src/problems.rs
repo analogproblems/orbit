@@ -181,6 +181,43 @@ pub struct Problem {
     pub tag: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tag_says: Vec<String>,
+    /// For something failing that passed before, as a problem of its own
+    /// that closed by passing: when it passed, and at which commit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fixed_before: Option<FixedBefore>,
+}
+/// When something failing again passed before (`Problem.fixed_before`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct FixedBefore {
+    pub at: String,
+    pub sha: String,
+}
+/// When something failing again passed before, in a sentence: "It was
+/// fixed before: it passed at 2222222 2 days earlier.", with `sha` as the
+/// caller shows a commit.
+pub fn fixed_before_text(p: &Problem, sha: impl Fn(&str) -> String) -> Option<String> {
+    let f = p.fixed_before.as_ref()?;
+    let gap = how_long(time(&p.opened_at)? - time(&f.at)?);
+    Some(format!(
+        "It was fixed before: it passed at {} {gap} earlier.",
+        sha(ci::short(&f.sha))
+    ))
+}
+/// How long something took, in words: "5 minutes", "an hour", "2 days".
+pub fn how_long(d: Duration) -> String {
+    let (n, one, many) = if d < Duration::hours(1) {
+        (d.num_minutes().max(1), "a minute", "minutes")
+    } else if d < Duration::days(2) {
+        (d.num_hours(), "an hour", "hours")
+    } else {
+        (d.num_days(), "a day", "days")
+    };
+    if n == 1 {
+        one.into()
+    } else {
+        format!("{n} {many}")
+    }
 }
 pub(crate) fn is_zero(n: &u32) -> bool {
     *n == 0
@@ -1486,6 +1523,20 @@ fn see(problems: &mut Vec<Problem>, seen: Seen, now: DateTime<Utc>) {
                         &at,
                         format!("Failing{on} at {short}: {}.", names(&seen.ci.failing)),
                     );
+                    // It passed before, as a problem of its own: say when.
+                    let before = problems
+                        .iter()
+                        .filter(|q| q.key == p.key && q.passed())
+                        .max_by(|a, b| a.closed_at.cmp(&b.closed_at));
+                    if let Some(q) = before {
+                        p.fixed_before = Some(FixedBefore {
+                            at: q.closed_at.clone().unwrap_or_default(),
+                            sha: q.closed_sha.clone(),
+                        });
+                        if let Some(text) = fixed_before_text(&p, str::to_string) {
+                            p.note(&at, text);
+                        }
+                    }
                     if p.needs_you() {
                         p.alert(&at);
                     }

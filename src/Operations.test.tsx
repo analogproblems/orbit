@@ -558,10 +558,10 @@ describe("operations page", () => {
     show(s);
     const list = screen.getByRole("list", { name: "How it turned out" });
     const items = within(list).getAllByRole("listitem");
-    expect(items).toHaveLength(4);
-    // A rebase still waiting says what Orbit checks.
+    expect(items).toHaveLength(5);
+    // A rebase still waiting says what Orbit checks, and by when.
     expect(items[0].textContent).toContain(
-      "Orbit asked Dependabot to rebase acme/api #64.Orbit checks that Dependabot rebases it.",
+      "Orbit asked Dependabot to rebase acme/api #64.Orbit checks that Dependabot rebases it within a day, by",
     );
     expect(within(items[0]).getByLabelText("Waiting")).toBeTruthy();
     const at = s.prs[2].headSha.slice(0, 7);
@@ -576,7 +576,22 @@ describe("operations page", () => {
       "Orbit turned on secret scanning in acme/orbit.It reads as on.",
     );
     expect(within(items[3]).getByLabelText("Held")).toBeTruthy();
+    // Then checked again a week on.
+    expect(items[4].textContent).toContain(
+      "Orbit turned on secret scanning in acme/orbit.Orbit checks that it's still on a week later, by",
+    );
     expect(screen.getByText(/A miss is a note from Bit\./)).toBeTruthy();
+  });
+
+  it("says when a failing default branch was fixed before", () => {
+    const s = freshDemo();
+    const red = s.problems!.find((p) => p.kind === "default_branch")!;
+    red.fixedBefore = { at: red.openedAt, sha: "4".repeat(40) };
+    show(s);
+    const open = screen.getByRole("list", { name: "Open problems" });
+    expect(within(open).getAllByRole("listitem")[0].textContent).toContain(
+      "It was fixed before: it passed at 4444444 on",
+    );
   });
 
   it("shows no outcomes until Orbit has some", () => {

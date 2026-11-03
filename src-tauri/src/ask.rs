@@ -611,6 +611,10 @@ fn ci_of(s: &Snapshot, repo: &str) -> Value {
                     "job": crate::logs::job_of(&f.url, repo),
                 })).collect::<Vec<_>>(),
                 "broke": broke,
+                "fixedBefore": p.fixed_before.as_ref().map(|f| json!({
+                    "passedAt": f.at,
+                    "commit": crate::ci::short(&f.sha),
+                })),
             })
         })
         .collect();
@@ -729,6 +733,7 @@ pub fn briefing(s: &Snapshot, lookups: &Lookups) -> Value {
                 "verdict": key(&o.verdict),
                 "why": (!o.why.is_empty()).then(|| clean(&o.why, 300)),
                 "doneAt": o.at,
+                "dueAt": o.due,
                 "settledAt": o.settled_at,
             })
         })

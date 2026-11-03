@@ -6,9 +6,10 @@
 //! security alerts that need you, and what it notes about runners, storage
 //! and security settings that drift from their baseline
 //! (`crate::baseline`), then the releases due this week, the drafts
-//! waiting and the versions waiting for a tag (`release_lines`). It marks
-//! each line that is new since the last brief
-//! and counts what settled since then. On a day with nothing new and
+//! waiting and the versions waiting for a tag (`release_lines`), and last
+//! what Orbit and the agents did that held or missed since the last brief
+//! (`turned_out_lines`, from `crate::outcomes`). It marks each line that is
+//! new since the last brief and counts what settled since then. On a day with nothing new and
 //! nothing settled, nothing is sent. A brief shows in Bit's conversation
 //! and in Needs you until you mark it read or the next brief's time comes.
 //! Nothing here calls a model or reaches GitHub.
@@ -49,7 +50,8 @@ pub struct Brief {
     /// What Bit says first: how many of each, what is new and what settled.
     pub text: String,
     /// Clear to merge first, then Dependabot's fixes, stuck, CI problems,
-    /// security alerts, and runners, storage and security settings.
+    /// security alerts, and runners, storage and security settings, then
+    /// releases, and what missed and what held since the last brief.
     pub lines: Vec<Line>,
     /// How many lines of the brief before are gone.
     pub settled: u32,
@@ -334,6 +336,43 @@ pub fn release_lines(s: &Snapshot, now: DateTime<Utc>) -> Vec<Line> {
 /// of alerts told that makes it new again, a Dependabot fix's without its
 /// head and whether it is ready, and a release's drafts without which one
 /// is ready, so a change there is new without anything having settled.
+/// What held and what missed since `since`: a line for each miss, newest
+/// first, and one for all that held.
+pub fn turned_out_lines(s: &Snapshot, since: &str) -> Vec<Line> {
+    use crate::outcomes::{settled_since, Verdict, SHOWN};
+    let settled = settled_since(&s.outcomes, since);
+    let mut out: Vec<Line> = settled
+        .iter()
+        .filter(|o| o.verdict == Verdict::Missed)
+        .take(SHOWN)
+        .map(|o| {
+            line(
+                format!("missed:{}", o.id),
+                format!("Missed: {} {}", o.what, o.why),
+                None,
+            )
+        })
+        .collect();
+    let held: Vec<_> = settled
+        .iter()
+        .filter(|o| o.verdict == Verdict::Held)
+        .collect();
+    if let Some(latest) = held.first() {
+        let text = match held.len() {
+            1 => format!("Held: {} {}", latest.what, latest.why),
+            n => format!(
+                "Held: {n} things Orbit and the agents did. The latest: {} {}",
+                latest.what, latest.why
+            ),
+        };
+        out.push(line(
+            format!("held:{}:{}", held.len(), latest.id),
+            text,
+            None,
+        ));
+    }
+    out
+}
 fn thing(key: &str) -> &str {
     if let Some(rest) = key.strip_prefix("security:") {
         return rest.rsplit_once(':').map_or(key, |(id, _)| id);
@@ -474,6 +513,12 @@ pub fn look(s: &mut Snapshot, local: NaiveDateTime, now: DateTime<Utc>) -> bool 
     };
     let mut current = lines(s);
     current.extend(release_lines(s, now));
+    let since = s
+        .brief
+        .latest
+        .as_ref()
+        .map_or_else(|| stamp(now - chrono::Duration::days(1)), |b| b.at.clone());
+    current.extend(turned_out_lines(s, &since));
     let before: Vec<String> = s
         .brief
         .latest
@@ -484,8 +529,11 @@ pub fn look(s: &mut Snapshot, local: NaiveDateTime, now: DateTime<Utc>) -> bool 
     }
     // A line that changed, as a security problem's does with each alert it
     // tells, is new but hasn't settled.
+    // What turned out is only ever since the last brief, so it never
+    // settles.
     let settled = before
         .iter()
+        .filter(|k| !k.starts_with("missed:") && !k.starts_with("held:"))
         .filter(|k| !current.iter().any(|l| thing(&l.key) == thing(k)))
         .count() as u32;
     s.brief.looked = day.clone();
@@ -547,7 +595,21 @@ fn say(tone: &str, lines: &[Line], settled: u32, first: bool) -> String {
     let security = count("security:");
     let fixes = count("dependabot:");
     let releases = count("release-");
-    let notes = lines.len() - clear - stuck - failing - security - fixes - releases;
+    let missed = count("missed:");
+    let held_line = count("held:");
+    let held: usize = lines
+        .iter()
+        .filter_map(|l| {
+            l.key
+                .strip_prefix("held:")?
+                .split(':')
+                .next()?
+                .parse::<usize>()
+                .ok()
+        })
+        .sum();
+    let notes =
+        lines.len() - clear - stuck - failing - security - fixes - releases - missed - held_line;
     let parts: Vec<String> = [
         (
             clear,
@@ -576,6 +638,12 @@ fn say(tone: &str, lines: &[Line], settled: u32, first: bool) -> String {
             "note is about releases",
             "notes are about releases",
         ),
+        (
+            missed,
+            "thing Orbit or an agent did missed",
+            "things Orbit or the agents did missed",
+        ),
+        (held, "thing held", "things held"),
     ]
     .into_iter()
     .filter(|(n, ..)| *n > 0)

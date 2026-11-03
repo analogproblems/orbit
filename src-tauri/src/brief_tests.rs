@@ -1240,3 +1240,74 @@ fn releases_due_drafts_and_untagged_versions_are_in_the_brief() {
     s.settings.watch_ci = false;
     assert!(release(&s).is_empty());
 }
+
+#[test]
+fn the_brief_says_what_held_and_what_missed_since_the_last_one() {
+    use crate::outcomes::{Outcome, Verdict};
+    let outcome = |id: &str, verdict: Verdict, at: DateTime<Utc>| Outcome {
+        id: id.into(),
+        repo: "a/b".into(),
+        what: format!("Orbit did {id}."),
+        why: if verdict == Verdict::Held {
+            "It worked."
+        } else {
+            "It didn't."
+        }
+        .into(),
+        verdict,
+        settled_at: Some(stamp(at)),
+        ..Default::default()
+    };
+    let hours = |n: i64| now() - chrono::Duration::hours(n);
+    let mut s = Snapshot {
+        outcomes: vec![
+            outcome("a", Verdict::Held, hours(2)),
+            outcome("b", Verdict::Missed, hours(3)),
+            outcome("c", Verdict::Held, hours(1)),
+            outcome("u", Verdict::Unclear, hours(1)),
+            // Settled more than a day before the first brief.
+            outcome("old", Verdict::Missed, hours(30)),
+            Outcome {
+                settled_at: None,
+                ..outcome("w", Verdict::Waiting, now())
+            },
+        ],
+        ..Default::default()
+    };
+    look(&mut s, at("2026-10-31", "09:00"), now());
+    let b = latest(&s);
+    assert_eq!(
+        texts(b),
+        [
+            ("Missed: Orbit did b. It didn't.", true),
+            (
+                "Held: 2 things Orbit and the agents did. The latest: Orbit did c. It worked.",
+                true
+            ),
+        ]
+    );
+    assert_eq!(
+        b.text,
+        "Here's your morning brief! 1 thing Orbit or an agent did missed and 2 things held."
+    );
+    // The next day, with nothing else, there's nothing to send: they
+    // don't count as settled either.
+    let tomorrow = now() + chrono::Duration::days(1);
+    look(&mut s, at("2026-11-01", "09:00"), tomorrow);
+    assert_eq!(latest(&s).day, "2026-10-31");
+    // One miss since then is in the next one, alone.
+    s.outcomes.push(outcome(
+        "d",
+        Verdict::Missed,
+        tomorrow + chrono::Duration::hours(1),
+    ));
+    let after = tomorrow + chrono::Duration::days(1);
+    look(&mut s, at("2026-11-02", "09:00"), after);
+    let b = latest(&s);
+    assert_eq!(texts(b), [("Missed: Orbit did d. It didn't.", true)]);
+    assert_eq!(b.settled, 0);
+    assert_eq!(
+        b.text,
+        "Here's your morning brief! 1 thing Orbit or an agent did missed. It is new since the last brief."
+    );
+}

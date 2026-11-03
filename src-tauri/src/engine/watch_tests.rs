@@ -4081,9 +4081,15 @@ async fn a_setting_orbit_turned_on_held_once_it_read_as_on() {
     );
     assert_eq!(o.url, "https://github.com/a/b/settings/security_analysis");
     assert!(o.settled_at.is_some());
-    // Once: saving again checks nothing new.
+    // Once, and then a week later: saving again checks nothing new.
     e.flush().await.unwrap();
-    assert_eq!(e.shown_snapshot().await.outcomes.len(), 1);
+    let s = e.shown_snapshot().await;
+    assert_eq!(s.outcomes.len(), 2);
+    let later = &s.outcomes[1];
+    assert_eq!(
+        (later.id.as_str(), later.kind, later.verdict),
+        (&*format!("later:{}", o.id), Kind::StillOn, Verdict::Waiting)
+    );
 
     // GitHub took a change, but it still reads as off: a miss, and Bit
     // says so.

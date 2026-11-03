@@ -920,6 +920,13 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
                     </Text>
                   )}
                   {broke && <Text>{broke}</Text>}
+                  {p.fixedBefore && (
+                    <Text>
+                      It was fixed before: it passed at{" "}
+                      {shortSha(p.fixedBefore.sha)} on{" "}
+                      <Timestamp value={p.fixedBefore.at} format="date_time" />.
+                    </Text>
+                  )}
                   <Why s={s} p={p} t={t} />
                   {told && <Text color="secondary">{told}</Text>}
                   {t?.items
@@ -2016,11 +2023,16 @@ function TurnedOut() {
                 </Text>
               }
               description={
-                <Text color="secondary">
-                  {o.verdict === "waiting"
-                    ? `Orbit checks that ${o.expect}.`
-                    : o.why}
-                </Text>
+                o.verdict !== "waiting" ? (
+                  <Text color="secondary">{o.why}</Text>
+                ) : o.due ? (
+                  <Text color="secondary">
+                    Orbit checks that {o.expect}, by{" "}
+                    <Timestamp value={o.due} format="date_time" />.
+                  </Text>
+                ) : (
+                  <Text color="secondary">Orbit checks that {o.expect}.</Text>
+                )
               }
               onClick={o.url ? () => openLink(o.url) : undefined}
               endContent={

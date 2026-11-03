@@ -1749,7 +1749,8 @@ export function demoCi(
     write("demo-write-7", "edit_issue", ops[0], ago(18)),
   ];
   // How what Orbit and the agents did turned out: the rerun and the
-  // agent's fix above missed, a setting held, and a rebase waits.
+  // agent's fix above missed, a setting held and is checked again a week
+  // on, and a rebase waits.
   const at = failingPr.headSha.slice(0, 7);
   const where = `${failingPr.repo} #${failingPr.number}`;
   const outcomes: Outcome[] = [
@@ -1797,10 +1798,23 @@ export function demoCi(
       repo: "acme/api",
       number: 64,
       what: "Orbit asked Dependabot to rebase acme/api #64.",
-      expect: "Dependabot rebases it",
+      expect: "Dependabot rebases it within a day",
       url: "https://github.com/acme/api/pull/64",
       at: ago(6),
       verdict: "waiting",
+      due: ago(6 - 24 * 60),
+    },
+    // Once the setting held, Orbit checks it again a week on.
+    {
+      id: "later:demo-outcome-1",
+      kind: "still_on",
+      repo: "acme/orbit",
+      what: "Orbit turned on secret scanning in acme/orbit.",
+      expect: "it's still on a week later",
+      url: "https://github.com/acme/orbit/settings/security_analysis",
+      at: ago(27 * 60),
+      verdict: "waiting",
+      due: ago(27 * 60 - 7 * 24 * 60),
     },
   ];
   const failures: CiFailure[] = [

@@ -9,13 +9,20 @@
 //! which misses Bit already notes from the CI thread).
 //!
 //! What gets one:
-//! - a security setting Orbit turned on (`crate::baseline`) reads as on;
-//! - a tag Orbit pushed (`crate::tagging`) points at its commit;
+//! - a security setting Orbit turned on (`crate::baseline`) reads as on,
+//!   and is still on a week later;
+//! - a tag Orbit pushed (`crate::tagging`) points at its commit, and its
+//!   release build (`crate::builds`) passes within a day;
 //! - a draft Orbit published (`crate::drafts`) reads as published;
 //! - a job Orbit reran (`crate::reruns`) passed the second time;
 //! - Dependabot rebased a pull request Orbit asked it to
-//!   (`crate::dependabot`);
-//! - an agent's `Fixed I2 in <sha>` passed at that commit (`crate::ops`).
+//!   (`crate::dependabot`), within a day;
+//! - an agent's `Fixed I2 in <sha>` passed at that commit (`crate::ops`);
+//! - a default branch that passed after failing (`crate::problems`) stays
+//!   fixed for 3 days.
+//!
+//! A check due later (`Outcome.due`) settles on its date, or sooner when
+//! Orbit sees it miss.
 use crate::{
     baseline::Setting,
     broker::clean,
@@ -39,6 +46,12 @@ pub const KEEP_MISSED_DAYS: i64 = 90;
 pub const MAX_KEPT: usize = 200;
 /// The most a summary of them names.
 pub const SHOWN: usize = 10;
+/// When the checks due later are due: a default branch stays fixed, a
+/// setting stays on, a tag's release build passes, Dependabot rebases.
+pub const HOLDS_DAYS: i64 = 3;
+pub const STILL_ON_DAYS: i64 = 7;
+pub const BUILD_HOURS: i64 = 24;
+pub const REBASE_HOURS: i64 = 24;
 
 /// What an outcome check is about.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,6 +64,12 @@ pub enum Kind {
     Rerun,
     Rebase,
     Fix,
+    /// A default branch that passed after failing stays fixed.
+    Holds,
+    /// A setting Orbit turned on is still on a week later.
+    StillOn,
+    /// A tag Orbit pushed has a release build that passes.
+    Build,
 }
 /// How it turned out.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,8 +89,9 @@ pub enum Verdict {
 #[serde(rename_all = "camelCase", default)]
 pub struct Outcome {
     /// Stays the same for the same thing: `write:<id>` for a write in the
-    /// journal, `rerun:<thread>:<item>:<job>` and
-    /// `fix:<thread>:<item>:<commit>`.
+    /// journal, `rerun:<thread>:<item>:<job>`,
+    /// `fix:<thread>:<item>:<commit>`, `holds:<problem>:<commit>` and
+    /// `later:<id>` for the check due later after one held.
     pub id: String,
     pub kind: Kind,
     pub repo: String,
@@ -92,6 +112,9 @@ pub struct Outcome {
     pub why: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub settled_at: Option<String>,
+    /// For a check due later: when. It settles then, or sooner on a miss.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub due: Option<String>,
     /// What it is checked against: the setting; the commit a tag should
     /// point at, a pull request was at when Orbit asked for a rebase, a
     /// job was rerun at, or an agent named; the tag; the release.
@@ -111,6 +134,9 @@ pub struct Outcome {
     pub item: u32,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub job: String,
+    /// For a default branch that stays fixed: its problem.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub problem: String,
 }
 fn is_zero(n: &u32) -> bool {
     *n == 0
@@ -177,8 +203,9 @@ pub fn record(s: &mut Snapshot, now: DateTime<Utc>) -> bool {
                     "Orbit asked Dependabot to rebase {repo} #{}.",
                     w.number.unwrap_or(0)
                 ),
-                expect: "Dependabot rebases it".into(),
+                expect: "Dependabot rebases it within a day".into(),
                 sha: head,
+                due: later(done, Duration::hours(REBASE_HOURS)),
                 ..base
             },
             _ => continue,
@@ -236,6 +263,73 @@ pub fn record(s: &mut Snapshot, now: DateTime<Utc>) -> bool {
             });
         }
     }
+    // A default branch that passed after failing stays fixed.
+    for p in s
+        .problems
+        .iter()
+        .filter(|p| p.kind == ProblemKind::DefaultBranch && p.passed())
+    {
+        let Some(closed) = p.closed_at.as_deref().filter(|at| recent(at)) else {
+            continue;
+        };
+        let branch = if p.branch.is_empty() {
+            "the default branch"
+        } else {
+            &p.branch
+        };
+        new.push(Outcome {
+            id: format!("holds:{}:{}", p.id, p.closed_sha),
+            kind: Kind::Holds,
+            repo: p.repo.clone(),
+            what: format!(
+                "CI on {} in {} passed at {} after failing.",
+                clean(branch, 200),
+                p.repo,
+                short(&p.closed_sha)
+            ),
+            expect: format!("it stays fixed for {HOLDS_DAYS} days"),
+            url: format!("https://github.com/{}/commit/{}", p.repo, p.closed_sha),
+            at: closed.to_string(),
+            due: later(closed, Duration::days(HOLDS_DAYS)),
+            sha: p.closed_sha.clone(),
+            problem: p.id.clone(),
+            ..Default::default()
+        });
+    }
+    // Once a setting or a tag held, a check due later.
+    for o in s.outcomes.iter().filter(|o| o.verdict == Verdict::Held) {
+        if !o.settled_at.as_deref().is_some_and(recent) {
+            continue;
+        }
+        let (kind, expect, after) = match o.kind {
+            Kind::Setting if o.setting.is_some_and(Setting::is_switch) => (
+                Kind::StillOn,
+                "it's still on a week later".to_string(),
+                Duration::days(STILL_ON_DAYS),
+            ),
+            Kind::Setting => (
+                Kind::StillOn,
+                "GitHub still shows the change a week later".to_string(),
+                Duration::days(STILL_ON_DAYS),
+            ),
+            Kind::Tag => (
+                Kind::Build,
+                "its release build passes within a day".to_string(),
+                Duration::hours(BUILD_HOURS),
+            ),
+            _ => continue,
+        };
+        new.push(Outcome {
+            id: format!("later:{}", o.id),
+            kind,
+            expect,
+            due: later(&o.at, after),
+            verdict: Verdict::Waiting,
+            why: String::new(),
+            settled_at: None,
+            ..o.clone()
+        });
+    }
     let before = s.outcomes.len();
     for o in new {
         if !s.outcomes.iter().any(|x| x.id == o.id) {
@@ -244,6 +338,18 @@ pub fn record(s: &mut Snapshot, now: DateTime<Utc>) -> bool {
     }
     s.outcomes.len() != before
 }
+/// The time `after` from `at`, as Orbit keeps times.
+fn later(at: &str, after: Duration) -> Option<String> {
+    time(at).map(|t| stamp(t + after))
+}
+/// Whether a check due later is due.
+fn is_due(o: &Outcome, now: DateTime<Utc>) -> bool {
+    o.due
+        .as_deref()
+        .and_then(time)
+        .is_some_and(|due| now >= due)
+}
+
 /// Checks each outcome still waiting against what Orbit read since, and
 /// returns those that settled just now.
 pub fn settle(s: &mut Snapshot, now: DateTime<Utc>) -> Vec<Outcome> {
@@ -257,10 +363,15 @@ pub fn settle(s: &mut Snapshot, now: DateTime<Utc>) -> Vec<Outcome> {
             Kind::Tag => tag(s, o),
             Kind::Release => release(s, o),
             Kind::Rerun => rerun(s, o),
-            Kind::Rebase => rebase(s, o),
+            Kind::Rebase => rebase(s, o, now),
             Kind::Fix => fix(s, o),
+            Kind::Holds => holds(s, o, now),
+            Kind::StillOn => still_on(s, o, now),
+            Kind::Build => build(s, o, now),
         };
-        let gave_up = time(&o.at)
+        // From when it was done, or for a check due later, from its date.
+        let from = o.due.as_deref().unwrap_or(&o.at);
+        let gave_up = time(from)
             .is_none_or(|at| now.signed_duration_since(at) > Duration::days(GIVE_UP_DAYS));
         let found = found.or_else(|| {
             gave_up.then(|| {
@@ -510,7 +621,7 @@ fn run_of(job: &str) -> Option<u64> {
         .ok()
 }
 
-fn rebase(s: &Snapshot, o: &Outcome) -> Found {
+fn rebase(s: &Snapshot, o: &Outcome, now: DateTime<Utc>) -> Found {
     let number = o.number?;
     match s
         .prs
@@ -521,6 +632,21 @@ fn rebase(s: &Snapshot, o: &Outcome) -> Found {
             Verdict::Held,
             format!("Dependabot rebased it, to {}.", short(&pr.head_sha)),
         )),
+        // Orbit reads pull requests on each sync: one that didn't move by
+        // then wasn't rebased. A sync that failed for its repository keeps
+        // what Orbit read before, so it says nothing.
+        Some(_)
+            if is_due(o, now)
+                && s.last_poll
+                    .as_deref()
+                    .is_some_and(|synced| !after(o.due.as_deref().unwrap_or_default(), synced))
+                && !s.sync_failures.iter().any(|f| same_repo(&f.repo, &o.repo)) =>
+        {
+            Some((
+                Verdict::Missed,
+                "Dependabot didn't rebase it within a day.".into(),
+            ))
+        }
         Some(_) => None,
         None => gone(s, o).or_else(|| {
             Some((
@@ -566,6 +692,143 @@ fn fix(s: &Snapshot, o: &Outcome) -> Found {
     }
 }
 
+/// A default branch that passed stays fixed: it misses as soon as it fails
+/// again, as the same problem back or a new one, and holds once Orbit read
+/// its CI on or after the date.
+fn holds(s: &Snapshot, o: &Outcome, now: DateTime<Utc>) -> Found {
+    let Some(p) = s.problems.iter().find(|p| p.id == o.problem) else {
+        return gone(s, o).or_else(|| {
+            Some((
+                Verdict::Unclear,
+                "Orbit doesn't keep that problem any more.".into(),
+            ))
+        });
+    };
+    let passed = time(&o.at);
+    // Back again: the same problem reopened, or a new one opened since.
+    let back = if p.closed_sha != o.sha {
+        p.timeline
+            .iter()
+            .find(|e| after(&e.at, &o.at) && e.text.starts_with("Failing again"))
+            .map(|e| e.at.clone())
+            .or_else(|| Some(p.updated_at.clone()))
+    } else {
+        s.problems
+            .iter()
+            .filter(|q| q.key == p.key && q.id != p.id && after(&q.opened_at, &o.at))
+            .map(|q| q.opened_at.clone())
+            .min()
+    };
+    if let Some(back) = back {
+        let gap = match (passed, time(&back)) {
+            (Some(a), Some(b)) => format!(" {} after it passed", crate::problems::how_long(b - a)),
+            _ => String::new(),
+        };
+        return Some((Verdict::Missed, format!("It failed again{gap}.")));
+    }
+    // Held only by a read on or after the date that shows the branch
+    // passing: one that shows it running or failing waits, as a failure
+    // reopens the problem and misses.
+    let due = o.due.as_deref()?;
+    let read =
+        s.ci.iter()
+            .find(|c| same_repo(&c.repo, &o.repo))
+            .is_some_and(|c| !after(due, &c.checked_at) && c.head.state == CiState::Passing);
+    (is_due(o, now) && read).then(|| {
+        (
+            Verdict::Held,
+            format!("It stayed fixed for {HOLDS_DAYS} days."),
+        )
+    })
+}
+
+/// A setting Orbit turned on is still on a week later: it misses as soon
+/// as Orbit reads it off, and holds once Orbit read it on, on or after the
+/// date.
+fn still_on(s: &Snapshot, o: &Outcome, now: DateTime<Utc>) -> Found {
+    let setting = o.setting?;
+    let Some(read) = s
+        .repo_settings
+        .iter()
+        .find(|r| same_repo(&r.repo, &o.repo))
+        .filter(|r| after(&r.read_at, &o.at))
+    else {
+        return gone(s, o);
+    };
+    let switch = setting.is_switch();
+    match read.on(setting) {
+        Some(false) if switch => Some((Verdict::Missed, "It reads as off again.".into())),
+        Some(false) => Some((
+            Verdict::Missed,
+            "GitHub shows it as it was before again.".into(),
+        )),
+        Some(true) if is_due(o, now) && !after(o.due.as_deref()?, &read.read_at) => Some((
+            Verdict::Held,
+            if switch {
+                "It's still on a week later.".into()
+            } else {
+                "GitHub still shows the change a week later.".into()
+            },
+        )),
+        _ => None,
+    }
+}
+
+/// A tag Orbit pushed has a release build that passes within a day: it
+/// holds once Orbit reads it passing, and misses if it still fails or runs
+/// when the day is up.
+fn build(s: &Snapshot, o: &Outcome, now: DateTime<Utc>) -> Found {
+    if !s.settings.watch_ci {
+        return None;
+    }
+    let read = s.builds.iter().find(|b| same_repo(&b.repo, &o.repo));
+    let Some(b) = read.filter(|b| b.tag == o.tag && b.sha == o.sha) else {
+        return match read {
+            Some(b) if !b.tag.is_empty() => Some((
+                Verdict::Unclear,
+                format!("Orbit watches the build of {} now.", clean(&b.tag, 100)),
+            )),
+            _ => gone(s, o),
+        };
+    };
+    if !after(&b.read_at, &o.at) {
+        return gone(s, o);
+    }
+    // Passed only as Orbit would publish from it: every run a success or
+    // skipped, with one success. A cancelled run isn't failing either.
+    let why = match crate::builds::publishable(b) {
+        Ok(()) => return Some((Verdict::Held, "Its release build passed.".into())),
+        Err(why) => why,
+    };
+    if !is_due(o, now) {
+        return None;
+    }
+    match b.ci.state {
+        CiState::Failing => Some((
+            Verdict::Missed,
+            format!(
+                "Its release build still fails: {}.",
+                clean(&crate::problems::names(&b.ci.failing), 300)
+            ),
+        )),
+        CiState::Running => Some((
+            Verdict::Missed,
+            "Its release build hadn't passed within a day.".into(),
+        )),
+        _ if b.runs.is_empty() => Some((
+            Verdict::Unclear,
+            "No release build ran for it within a day.".into(),
+        )),
+        _ => Some((
+            Verdict::Unclear,
+            format!(
+                "Orbit couldn't tell whether its release build passed within a day: {}.",
+                clean(&why, 200)
+            ),
+        )),
+    }
+}
+
 /// Lets go of outcomes settled long ago, keeping misses longer and at most
 /// `MAX_KEPT`, the newest. Waiting ones are kept. Says whether it let any
 /// go.
@@ -588,12 +851,26 @@ pub fn prune(outcomes: &mut Vec<Outcome>, now: DateTime<Utc>) -> bool {
     outcomes.len() != before
 }
 
-/// Whether Bit already notes this kind of miss from the CI thread it is
-/// on (`crate::ops`): a job that failed again after a rerun, and an agent's
-/// fix that still fails, isn't on the branch, or names a commit GitHub
-/// doesn't know. Those misses get no second note.
+/// Whether Bit already tells you of this kind of miss another way: from
+/// the CI thread it is on (`crate::ops`), a job that failed again after a
+/// rerun, and an agent's fix that still fails, isn't on the branch, or
+/// names a commit GitHub doesn't know; and a default branch failing again,
+/// which is a problem of its own (or the same one back, quietly at first,
+/// as `crate::problems` keeps it). Those misses get no second note.
 pub fn noted_elsewhere(o: &Outcome) -> bool {
-    matches!(o.kind, Kind::Rerun | Kind::Fix)
+    matches!(o.kind, Kind::Rerun | Kind::Fix | Kind::Holds)
+}
+
+/// What held and what missed since `since` (a brief's time), the newest
+/// first.
+pub fn settled_since<'a>(outcomes: &'a [Outcome], since: &str) -> Vec<&'a Outcome> {
+    let mut out: Vec<&Outcome> = outcomes
+        .iter()
+        .filter(|o| matches!(o.verdict, Verdict::Held | Verdict::Missed))
+        .filter(|o| o.settled_at.as_deref().is_some_and(|at| after(at, since)))
+        .collect();
+    out.sort_by(|a, b| b.settled_at.cmp(&a.settled_at));
+    out
 }
 
 /// What a missed outcome says in Bit's note.
