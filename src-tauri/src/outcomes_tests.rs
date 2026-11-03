@@ -1024,6 +1024,7 @@ fn a_tag_that_held_has_a_release_build_that_passes_within_a_day() {
         ci: CommitCi {
             sha: SHA.into(),
             state,
+            running: u32::from(state == CiState::Running),
             failing: if state == CiState::Failing {
                 vec![Check {
                     name: "Release / build".into(),
@@ -1069,12 +1070,46 @@ fn a_tag_that_held_has_a_release_build_that_passes_within_a_day() {
         if state == CiState::None {
             s.builds[0].runs.clear();
         }
+        // A read from before the day may have passed since: it waits.
+        assert!(settle(&mut s, day).is_empty());
+        // So does a read that failed after the day, which keeps what Orbit
+        // read before, until Orbit gives up.
+        s.builds[0].error = Some("Orbit couldn't read the release build yet".into());
+        assert!(settle(&mut s, day + Duration::hours(1)).is_empty());
+        let late = settle(
+            &mut s,
+            day + Duration::days(GIVE_UP_DAYS) + Duration::hours(1),
+        );
+        assert_eq!(
+            (late[0].verdict, late[0].why.as_str()),
+            (Verdict::Unclear, "Orbit couldn't tell within 7 days.")
+        );
+        // A read on or after the day that worked tells.
+        let mut s = start();
+        s.builds = vec![build("v1.2.0", state)];
+        if state == CiState::None {
+            s.builds[0].runs.clear();
+        }
+        s.builds[0].read_at = stamp(day);
         let settled = settle(&mut s, day);
         assert_eq!(
             (settled[0].verdict, settled[0].why.as_str()),
             (verdict, why)
         );
     }
+    // Runs Orbit didn't read aren't still running: by the day, Orbit
+    // can't tell.
+    let mut s = start();
+    s.builds = vec![build("v1.2.0", CiState::Passing)];
+    s.builds[0].ci.incomplete = true;
+    s.builds[0].ci.passing = 1;
+    crate::ci::settle(&mut s.builds[0].ci);
+    assert_eq!(s.builds[0].ci.state, CiState::Running);
+    s.builds[0].read_at = stamp(day);
+    assert_eq!(
+        settle(&mut s, day)[0].why,
+        "Orbit couldn't tell whether its release build passed within a day: v1.2.0 started more runs than Orbit reads."
+    );
     // A cancelled run beside one that passed isn't a pass: by the day,
     // Orbit can't tell.
     let mut s = start();
@@ -1088,6 +1123,7 @@ fn a_tag_that_held_has_a_release_build_that_passes_within_a_day() {
     });
     s.builds = vec![b];
     assert!(settle(&mut s, now()).is_empty());
+    s.builds[0].read_at = stamp(day);
     assert_eq!(
         settle(&mut s, day)[0].why,
         "Orbit couldn't tell whether its release build passed within a day: Docs was cancelled."

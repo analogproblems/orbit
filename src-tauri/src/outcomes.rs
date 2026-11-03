@@ -775,8 +775,8 @@ fn still_on(s: &Snapshot, o: &Outcome, now: DateTime<Utc>) -> Found {
 }
 
 /// A tag Orbit pushed has a release build that passes within a day: it
-/// holds once Orbit reads it passing, and misses if it still fails or runs
-/// when the day is up.
+/// holds once Orbit reads it passing, and misses if a read on or after the
+/// day shows it still failing or running.
 fn build(s: &Snapshot, o: &Outcome, now: DateTime<Utc>) -> Found {
     if !s.settings.watch_ci {
         return None;
@@ -800,7 +800,10 @@ fn build(s: &Snapshot, o: &Outcome, now: DateTime<Utc>) -> Found {
         Ok(()) => return Some((Verdict::Held, "Its release build passed.".into())),
         Err(why) => why,
     };
-    if !is_due(o, now) {
+    // Only a read on or after the day that worked can say it didn't pass:
+    // an earlier one may have passed since, and a read that failed keeps
+    // what Orbit read before. Until one comes, it waits, or gives up.
+    if !is_due(o, now) || b.error.is_some() || after(o.due.as_deref()?, &b.read_at) {
         return None;
     }
     match b.ci.state {
@@ -811,11 +814,12 @@ fn build(s: &Snapshot, o: &Outcome, now: DateTime<Utc>) -> Found {
                 clean(&crate::problems::names(&b.ci.failing), 300)
             ),
         )),
-        CiState::Running => Some((
+        // A run Orbit read still running, not just runs it didn't read.
+        CiState::Running if b.ci.running > 0 => Some((
             Verdict::Missed,
             "Its release build hadn't passed within a day.".into(),
         )),
-        _ if b.runs.is_empty() => Some((
+        _ if b.runs.is_empty() && !b.ci.incomplete => Some((
             Verdict::Unclear,
             "No release build ran for it within a day.".into(),
         )),
