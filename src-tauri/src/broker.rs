@@ -2,16 +2,16 @@
 //! and GitHub. The answerer has no tools. Its answer can name up to
 //! `MAX_LOOKUPS` things it wants to read (`Wanted`), and Orbit checks each
 //! one (`check`): a kind of lookup in `KINDS`, in a connected repository,
-//! with a well-formed job, branch or path. Orbit then reads it (`read`) and
+//! with a well-formed job, branch, commit or path. Orbit then reads it (`read`) and
 //! hands what it found to the answerer in its next message, marked as data.
 //! An answerer looks things up at most `MAX_ROUNDS` times, then answers.
 //!
 //! Everything here only reads, and nothing else reads for Bit's answers:
 //! every request goes through `get` or `get_text`, which only ever ask
 //! GitHub with `GET` (a test reads this file to keep it that way). What
-//! Orbit reads is someone else's words, such as a log or a workflow file:
-//! anything that looks like a credential is held back, never shown or
-//! passed on, and each lookup is cut to `MAX_FOUND` characters.
+//! Orbit reads is someone else's words, such as a log, a workflow file or
+//! a change: anything that looks like a credential is held back, never
+//! shown or passed on, and each lookup is cut to `MAX_FOUND` characters.
 use crate::{
     ci::short,
     logs,
@@ -37,6 +37,12 @@ const FAILED_RUNS: usize = 3;
 pub const LOG_LINES: usize = 60;
 /// The most failed jobs a runs lookup names in each run.
 const FAILED_JOBS: usize = 10;
+/// The most files a changes lookup lists, and the most characters of each
+/// file's changes it gives.
+pub const CHANGED_FILES: usize = 30;
+pub const FILE_CHANGES: usize = 1500;
+/// The most files GitHub sends in one page.
+const PAGE: usize = 100;
 
 /// What Orbit can look up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,14 +55,17 @@ pub enum Kind {
     Log,
     /// A workflow file on the default branch.
     Workflow,
+    /// A pull request's or a commit's changes, file by file.
+    Changes,
 }
-pub const KINDS: [Kind; 3] = [Kind::Runs, Kind::Log, Kind::Workflow];
+pub const KINDS: [Kind; 4] = [Kind::Runs, Kind::Log, Kind::Workflow, Kind::Changes];
 impl Kind {
     pub fn key(self) -> &'static str {
         match self {
             Kind::Runs => "runs",
             Kind::Log => "log",
             Kind::Workflow => "workflow",
+            Kind::Changes => "changes",
         }
     }
 }
@@ -72,6 +81,7 @@ pub struct Wanted {
     pub pr: Option<u64>,
     pub job: Option<u64>,
     pub path: Option<String>,
+    pub commit: Option<String>,
 }
 
 /// A lookup Orbit checked, ready to read.
@@ -87,7 +97,8 @@ pub struct Lookup {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub branch: String,
     /// For a pull request's runs: its number, and its latest commit as
-    /// Orbit last read it.
+    /// Orbit last read it. For a pull request's changes, only its number;
+    /// for a commit's changes, only the commit, as the answer named it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr: Option<u64>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -120,6 +131,10 @@ impl Lookup {
             },
             Kind::Log => format!("The log of job {} in {repo}", self.job.unwrap_or(0)),
             Kind::Workflow => format!("{} in {repo}", self.path),
+            Kind::Changes => match self.pr {
+                Some(n) => format!("The changes in {repo}#{n}"),
+                None => format!("The changes in {} in {repo}", short(&self.sha)),
+            },
         }
     }
     /// Where GitHub shows it. A job's own page is known once it's read.
@@ -139,6 +154,10 @@ impl Lookup {
                 branch_path(&self.branch),
                 self.path
             ),
+            Kind::Changes => match self.pr {
+                Some(n) => format!("https://github.com/{repo}/pull/{n}/files"),
+                None => format!("https://github.com/{repo}/commit/{}", self.sha),
+            },
         }
     }
 }
@@ -267,7 +286,7 @@ pub fn check_all(s: &Snapshot, wanted: &[Wanted], done: &[Found]) -> (Vec<Lookup
 /// A lookup an answer asks for, if Orbit makes it: one of `KINDS`, in a
 /// connected repository, with what that kind needs.
 pub fn check(s: &Snapshot, w: &Wanted) -> Result<Lookup, String> {
-    let named = [&w.repository, &w.branch, &w.path];
+    let named = [&w.repository, &w.branch, &w.path, &w.commit];
     if named
         .iter()
         .filter_map(|t| t.as_deref())
@@ -335,8 +354,38 @@ pub fn check(s: &Snapshot, w: &Wanted) -> Result<Lookup, String> {
             l.path = path.to_string();
             l.branch = default()?;
         }
+        Kind::Changes => {
+            let commit = w.commit.as_deref().map(str::trim).unwrap_or_default();
+            match w.pr {
+                Some(n) if known_pull(s, &repo, n) => l.pr = Some(n),
+                Some(n) => return Err(format!("Orbit hasn't read {repo}#{n}.")),
+                None if commit.is_empty() => {
+                    return Err(
+                        "A changes lookup needs a pull request's number or a commit.".into(),
+                    )
+                }
+                None if valid_commit(commit) => l.sha = commit.to_ascii_lowercase(),
+                None => return Err(format!("\"{}\" isn't a commit.", shown(commit))),
+            }
+        }
     }
     Ok(l)
+}
+/// Whether Orbit has read pull request `number`: one open now, or one it
+/// found broke a default branch.
+fn known_pull(s: &Snapshot, repo: &str, number: u64) -> bool {
+    let broke = s
+        .problems
+        .iter()
+        .filter(|p| same_repo(&p.repo, repo))
+        .filter_map(|p| p.broke.as_ref())
+        .any(|b| b.pulls.contains(&number) || b.pull == Some(number));
+    head_of(s, repo, number).is_some() || broke
+}
+/// A commit as an answer names it: 7 to 40 hexadecimal digits, as the
+/// summary shortens them.
+fn valid_commit(sha: &str) -> bool {
+    (7..=40).contains(&sha.len()) && sha.chars().all(|c| c.is_ascii_hexdigit())
 }
 /// A pull request's latest commit, as Orbit last read it.
 fn head_of(s: &Snapshot, repo: &str, number: u64) -> Option<String> {
@@ -394,6 +443,7 @@ pub async fn read(l: &Lookup) -> Found {
         Kind::Runs => runs(l).await,
         Kind::Log => log(l, &mut found.looked).await,
         Kind::Workflow => workflow(l).await,
+        Kind::Changes => changes(l).await,
     };
     match read {
         Ok(Some(text)) if credential_kinds(&text).is_empty() => found.text = cut(&text),
@@ -595,6 +645,87 @@ pub fn file_text(file: &Value) -> Result<String, String> {
         .decode(packed)
         .map_err(|_| "GitHub sent a file Orbit couldn't read.".to_string())?;
     String::from_utf8(bytes).map_err(|_| "It isn't a text file.".to_string())
+}
+
+/// A pull request's or a commit's changes, file by file.
+async fn changes(l: &Lookup) -> Result<Option<String>, String> {
+    validate_repo(&l.repo)?;
+    let per_page = [("per_page", PAGE.to_string())];
+    match l.pr {
+        Some(n) => {
+            let endpoint = format!("repos/{}/pulls/{n}/files", l.repo);
+            let files = get(&endpoint, &per_page).await?;
+            let files: Vec<&Value> = files.as_array().into_iter().flatten().collect();
+            Ok(Some(changes_text(l, None, &files)))
+        }
+        None => {
+            let endpoint = format!("repos/{}/commits/{}", l.repo, l.sha);
+            let commit = get(&endpoint, &per_page).await?;
+            let files: Vec<&Value> = commit["files"].as_array().into_iter().flatten().collect();
+            Ok(Some(changes_text(l, Some(&commit), &files)))
+        }
+    }
+}
+/// Changes as the answerer reads them: each file, how it changed and its
+/// changes, cut to `FILE_CHANGES` characters. A file whose changes look
+/// like they hold a credential is listed without them.
+pub fn changes_text(l: &Lookup, commit: Option<&Value>, files: &[&Value]) -> String {
+    let mut lines = vec![];
+    match commit {
+        Some(c) => {
+            let message = c["commit"]["message"].as_str().unwrap_or_default();
+            let title = message.lines().next().unwrap_or_default();
+            lines.push(format!(
+                "Commit {} in {}, \"{}\", by {}, file by file:",
+                short(c["sha"].as_str().unwrap_or(&l.sha)),
+                l.repo,
+                text(&Value::from(title)),
+                text(&c["commit"]["author"]["name"]),
+            ));
+        }
+        None => lines.push(format!("{}, file by file:", l.what())),
+    }
+    if files.is_empty() {
+        lines.push("No files changed.".into());
+    }
+    for file in files.iter().take(CHANGED_FILES) {
+        let name = text(&file["filename"]);
+        let status = text(&file["status"]).replace('_', " ");
+        let moved = match file["previous_filename"].as_str() {
+            Some(old) if status == "renamed" => format!("{} → ", text(&Value::from(old))),
+            _ => String::new(),
+        };
+        lines.push(format!(
+            "- {moved}{name} ({status}, +{} −{}):",
+            file["additions"].as_u64().unwrap_or(0),
+            file["deletions"].as_u64().unwrap_or(0),
+        ));
+        match file["patch"].as_str() {
+            Some(patch) if !credential_kinds(patch).is_empty() => lines.push(
+                "  Orbit left its changes out, as they look like they hold a credential.".into(),
+            ),
+            Some(patch) => {
+                let kept: String = patch.chars().take(FILE_CHANGES).collect();
+                lines.extend(kept.lines().map(|line| format!("  {line}")));
+                if kept.len() < patch.len() {
+                    lines.push(format!(
+                        "  … (cut: Orbit gives at most {FILE_CHANGES} characters of each file)"
+                    ));
+                }
+            }
+            None => lines.push("  GitHub shows no text changes for it.".into()),
+        }
+    }
+    // GitHub sends at most a page of files, so a full page may have more.
+    if files.len() > CHANGED_FILES {
+        let more = files.len() - CHANGED_FILES;
+        lines.push(if files.len() >= PAGE {
+            format!("And at least {more} more files.")
+        } else {
+            format!("And {more} more files.")
+        });
+    }
+    lines.join("\n")
 }
 
 #[cfg(test)]

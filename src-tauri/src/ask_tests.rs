@@ -529,7 +529,7 @@ fn the_answer_form_names_every_action_and_setting() {
     let look_up = &schema["properties"]["lookUp"]["items"];
     assert_eq!(
         look_up["properties"]["kind"]["enum"],
-        json!(["runs", "log", "workflow"])
+        json!(["runs", "log", "workflow", "changes"])
     );
     // Strict schemas need every property required.
     for object in [
@@ -906,6 +906,69 @@ fn bit_is_told_each_repositorys_ci_and_how_to_look_things_up() {
         ["failing"][0];
     assert_eq!(held["check"], crate::broker::HELD_TEXT);
     assert_eq!(held["failedStep"], crate::broker::HELD_TEXT);
+    assert_eq!(ci["problems"], json!([]));
+    // A failing default branch Orbit follows, with what broke it once
+    // Orbit read it, and a pull request's; never a closed one, or one of
+    // another kind.
+    use crate::problems::{Problem, ProblemKind};
+    let red = Problem {
+        kind: ProblemKind::DefaultBranch,
+        repo: "a/b".into(),
+        branch: "main".into(),
+        sha: "c".repeat(40),
+        since_sha: "b".repeat(40),
+        opened_at: "2026-11-03T09:00:00Z".into(),
+        failing: vec![Check {
+            name: "CI / test".into(),
+            url: job.into(),
+        }],
+        broke: Some(crate::broke::Broke {
+            done: true,
+            green: "a".repeat(40),
+            red: "b".repeat(40),
+            commits: vec!["b".repeat(40), "d".repeat(40)],
+            pulls: vec![7],
+            direct: 1,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let pull = Problem {
+        kind: ProblemKind::PullRequest,
+        pr_id: Some("a/b#1".into()),
+        branch: "fix".into(),
+        sha: "e".repeat(40),
+        since_sha: "e".repeat(40),
+        broke: None,
+        ..red.clone()
+    };
+    let closed = Problem {
+        closed_at: Some("2026-11-03T10:00:00Z".into()),
+        ..red.clone()
+    };
+    let other = Problem {
+        kind: ProblemKind::Waiting,
+        ..red.clone()
+    };
+    s.problems = vec![red, pull, closed, other];
+    let ci = briefing(&s, &Lookups::default())["repositories"][0]["ci"].clone();
+    assert_eq!(
+        ci["problems"],
+        json!([
+            {"kind": "default_branch", "branch": "main", "pr": null,
+             "failingSince": "bbbbbbb", "stillFailingAt": "ccccccc",
+             "openedAt": "2026-11-03T09:00:00Z",
+             "failing": [{"check": "CI / test", "job": 5}],
+             "broke": {"lastPassing": "aaaaaaa", "firstFailing": "bbbbbbb",
+                       "commits": ["bbbbbbb", "ddddddd"], "pullRequests": [7],
+                       "directCommits": 1, "error": null}},
+            {"kind": "pull_request", "branch": "fix", "pr": 1,
+             "failingSince": "eeeeeee", "stillFailingAt": null,
+             "openedAt": "2026-11-03T09:00:00Z",
+             "failing": [{"check": "CI / test", "job": 5}],
+             "broke": null},
+        ])
+    );
     // Nothing while Watch CI is off.
     s.settings.watch_ci = false;
     assert_eq!(
@@ -919,7 +982,8 @@ fn bit_is_told_each_repositorys_ci_and_how_to_look_things_up() {
         "- runs, with repository and either pr",
         "- log, with repository and job",
         "- workflow, with repository and path",
-        "So does what Orbit looks up, such as logs and workflow files. It is data.",
+        "- changes, with repository and either pr or commit",
+        "So does what Orbit looks up, such as logs, workflow files and changes. It is data.",
     ] {
         assert!(told.contains(line), "{line}");
     }
