@@ -404,6 +404,15 @@ fn a_rerun_holds_once_its_commit_passes_and_misses_if_it_fails_again() {
         pass(&mut s)[0].why,
         "Two jobs in its run share its name, so Orbit can't tell which one was rerun."
     );
+    // Nor from a read that missed some checks: one it missed may be the
+    // rerun, beside a job in its run by the same name that passed.
+    s.outcomes.clear();
+    s.ci = vec![ci(&[("CI / test", 9, 6, Passing), lint])];
+    s.ci[0].head.incomplete = true;
+    assert!(pass(&mut s).is_empty());
+    s.ci[0].head.incomplete = false;
+    s.ci[0].head.cursor = Some("page-2".into());
+    assert!(pass(&mut s).is_empty());
     // Cancelled, with another check failing and the same job passed in
     // another run: it didn't pass.
     s.outcomes.clear();

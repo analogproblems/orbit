@@ -413,8 +413,8 @@ fn rerun(s: &Snapshot, o: &Outcome) -> Found {
     if release {
         return build_rerun(s, t, o);
     }
-    // Told only by CI read since the rerun, with the names of its checks
-    // (not from before a restart). GitHub reruns a job as a new attempt in
+    // Told only by CI read since the rerun, with the names of all its
+    // checks (not from before a restart). GitHub reruns a job as a new attempt in
     // the same workflow run, so only checks by its name in that run count:
     // another run of the workflow at the commit, such as a pull request's,
     // says nothing of it, and two jobs in its run by one name can't be told
@@ -431,10 +431,14 @@ fn rerun(s: &Snapshot, o: &Outcome) -> Found {
         .iter()
         .filter(|(c, _)| c.name == item.check && run_of(&c.url) == Some(run))
         .collect();
+    // A check by its name failing may be the rerun, and a read that missed
+    // some checks may have missed it: either way, wait.
     let failing = item.failing || ci.failing.iter().any(|c| c.name == item.check);
-    let finished = !failing && ci.running == 0 && !ci.incomplete;
+    if failing || ci.incomplete || ci.cursor.is_some() {
+        return None;
+    }
+    let finished = ci.running == 0;
     match same.as_slice() {
-        _ if failing => None,
         [(c, CiState::Passing)] if c.url != o.job => {
             Some((Verdict::Held, "It passed after the rerun.".into()))
         }
