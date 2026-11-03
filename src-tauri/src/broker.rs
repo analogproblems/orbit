@@ -215,13 +215,30 @@ fn shown(text: &str) -> String {
     } else {
         plain
     };
-    shorten(&plain, 60)
+    clean(&plain, 60)
+}
+/// What Orbit says in place of a name or line that looks like it holds a
+/// credential.
+pub const HELD_TEXT: &str = "(held back, as it looks like it holds a credential)";
+/// Text from GitHub or an answer, on one line and cut to `max` characters,
+/// or `HELD_TEXT` when the whole of it looks like it holds a credential:
+/// checked before it's cut, so a credential that crosses the cut can't
+/// pass as a harmless piece.
+pub fn clean(text: &str, max: usize) -> String {
+    if !credential_kinds(text).is_empty() {
+        return HELD_TEXT.into();
+    }
+    let plain: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    shorten(&plain, max)
 }
 
 /// The lookups an answer asks for, checked against what Orbit knows now,
 /// at most `MAX_LOOKUPS`: those Orbit will read, without any it already
 /// read for the question (`done`) or that the answer names twice, and the
-/// ones it refused, with why.
+/// ones it refused, with why, each once.
 pub fn check_all(s: &Snapshot, wanted: &[Wanted], done: &[Found]) -> (Vec<Lookup>, Vec<Found>) {
     let mut lookups: Vec<Lookup> = vec![];
     let mut refused = vec![];
@@ -234,7 +251,14 @@ pub fn check_all(s: &Snapshot, wanted: &[Wanted], done: &[Found]) -> (Vec<Lookup
                     lookups.push(l);
                 }
             }
-            Err(why) => refused.push(Found::refused(w, why)),
+            Err(why) => {
+                let found = Found::refused(w, why);
+                // Refused once is enough, in this round or an earlier one.
+                let again = refused.contains(&found) || done.contains(&found);
+                if !again {
+                    refused.push(found);
+                }
+            }
         }
     }
     (lookups, refused)
@@ -243,6 +267,15 @@ pub fn check_all(s: &Snapshot, wanted: &[Wanted], done: &[Found]) -> (Vec<Lookup
 /// A lookup an answer asks for, if Orbit makes it: one of `KINDS`, in a
 /// connected repository, with what that kind needs.
 pub fn check(s: &Snapshot, w: &Wanted) -> Result<Lookup, String> {
+    let named = [&w.repository, &w.branch, &w.path];
+    if named
+        .iter()
+        .filter_map(|t| t.as_deref())
+        .chain([w.kind.as_str()])
+        .any(|t| !credential_kinds(t).is_empty())
+    {
+        return Err("It names something that looks like a credential.".into());
+    }
     let kind = KINDS
         .into_iter()
         .find(|k| k.key() == w.kind.trim())
@@ -381,7 +414,7 @@ fn failed(error: &str) -> String {
     } else if error.contains("HTTP 403") {
         "Orbit's GitHub sign-in can't read it.".into()
     } else {
-        shorten(&sentence(error), 200)
+        clean(&sentence(error), 200)
     }
 }
 /// What one lookup passes on, cut to `MAX_FOUND` characters.
@@ -489,15 +522,9 @@ pub fn runs_text(l: &Lookup, runs: &[&Value], jobs: &[(u64, Value)]) -> String {
     }
     lines.join("\n")
 }
-/// A text field from GitHub, on one line.
+/// A text field from GitHub, on one line, as `clean` gives it.
 fn text(v: &Value) -> String {
-    let plain: String = v
-        .as_str()
-        .unwrap_or_default()
-        .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect();
-    shorten(&plain, 200)
+    clean(v.as_str().unwrap_or_default(), 200)
 }
 
 /// A job's failed step and the end of its log. None when they look like

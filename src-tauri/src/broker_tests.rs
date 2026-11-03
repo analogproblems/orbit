@@ -496,3 +496,67 @@ async fn lookups_read_github() {
         ]
     );
 }
+
+/// A name from GitHub, or from an answer, is checked for a credential as a
+/// whole before it's cut, so one that crosses the cut isn't passed on in
+/// part.
+#[test]
+fn a_credential_in_a_name_is_held_back_whole() {
+    let token = format!("ghp_{}", "a".repeat(36));
+    let long = format!("{} {token}", "s".repeat(162));
+    // As it is, and in part, past the 200 characters a name keeps.
+    assert!(!credential_kinds(&long).is_empty());
+    let (shown, _) = long.split_at(200);
+    assert!(credential_kinds(shown).is_empty());
+    assert_eq!(clean(&long, 200), HELD_TEXT);
+    assert_eq!(clean("Run cargo test", 200), "Run cargo test");
+
+    let main = Lookup {
+        branch: "main".into(),
+        ..looked_up(Kind::Runs)
+    };
+    let runs = [
+        json!({"id": 9, "name": format!("CI {token}"), "event": "push",
+        "status": "completed", "conclusion": "failure", "head_sha": HEAD,
+        "created_at": "2026-11-03T10:00:00Z"}),
+    ];
+    let jobs = json!({"jobs": [{"id": 5, "name": "test", "conclusion": "failure",
+        "steps": [{"name": long, "conclusion": "failure"}]}]});
+    let text = runs_text(&main, &runs.iter().collect::<Vec<_>>(), &[(9, jobs)]);
+    assert!(!text.contains("ghp_"), "{text}");
+    assert!(!text.contains(&"a".repeat(30)), "{text}");
+    assert_eq!(
+        text.lines().collect::<Vec<_>>()[1..],
+        [
+            format!(
+                "- Run 9, \"{HELD_TEXT}\" (push), at 1111111, made 2026-11-03T10:00:00Z: failure."
+            ),
+            format!("  - Job 5, \"test\": failure, at the step \"{HELD_TEXT}\"."),
+        ]
+    );
+    let job = json!({"id": 5, "run_id": 9, "name": long, "workflow_name": "CI",
+        "head_sha": HEAD, "status": "completed", "conclusion": "failure", "steps": []});
+    let log = log_text(&job, "##[error]Process completed with exit code 1.").unwrap();
+    assert!(!log.contains("ghp_"), "{log}");
+
+    // An answer that names one is refused without repeating it.
+    let s = snapshot();
+    for w in [
+        Wanted {
+            branch: Some(token.clone()),
+            ..wanted("runs", "a/b")
+        },
+        Wanted {
+            path: Some(format!(".github/workflows/{token}.yml")),
+            ..wanted("workflow", "a/b")
+        },
+        wanted("runs", &token),
+    ] {
+        assert_eq!(
+            check(&s, &w).unwrap_err(),
+            "It names something that looks like a credential."
+        );
+        let (_, refused) = check_all(&s, &[w], &[]);
+        assert!(!refused[0].looked.what.contains("ghp_"));
+    }
+}

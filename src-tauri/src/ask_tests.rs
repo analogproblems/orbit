@@ -894,6 +894,18 @@ fn bit_is_told_each_repositorys_ci_and_how_to_look_things_up() {
     );
     assert_eq!(ci["workflowFiles"], json!([".github/workflows/ci.yml"]));
     assert_eq!(ci["readAt"], "2026-11-03T10:00:00Z");
+    // A check's name or failed step that looks like it holds a credential
+    // is held back whole, never sent in part.
+    let token = format!("ghp_{}", "a".repeat(36));
+    s.ci[0].head.failing[0].name = format!("CI / {token}");
+    s.failures[0].step = format!("{} {token}", "s".repeat(162));
+    let prompt = prompt(&s, "Why?", &Lookups::default());
+    assert!(!prompt.contains("ghp_"));
+    assert!(!prompt.contains(&"a".repeat(30)));
+    let held = &briefing(&s, &Lookups::default())["repositories"][0]["ci"]["defaultBranchChecks"]
+        ["failing"][0];
+    assert_eq!(held["check"], crate::broker::HELD_TEXT);
+    assert_eq!(held["failedStep"], crate::broker::HELD_TEXT);
     // Nothing while Watch CI is off.
     s.settings.watch_ci = false;
     assert_eq!(

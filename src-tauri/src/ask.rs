@@ -6,7 +6,7 @@
 //! text in the summary is someone else's, so it is marked as data, and every
 //! button waits for your tap, checked again when you tap it.
 use crate::{
-    broker::{self, Found, Wanted},
+    broker::{self, clean, Found, Wanted},
     buddy::{self, Answerer, Buddy, MemoryChange, MemoryKind},
     extras,
     ledger::{writeup::DecisionKind, History},
@@ -550,9 +550,9 @@ fn ci_of(s: &Snapshot, repo: &str) -> Value {
                     .iter()
                     .find(|x| x.url == f.url && !f.url.is_empty());
                 json!({
-                    "check": shorten(&f.name, 160),
+                    "check": clean(&f.name, 160),
                     "job": crate::logs::job_of(&f.url, repo),
-                    "failedStep": read.map(|x| shorten(&x.step, 160)).filter(|x| !x.is_empty()),
+                    "failedStep": read.map(|x| clean(&x.step, 160)).filter(|x| !x.is_empty()),
                 })
             })
             .collect();
@@ -565,14 +565,14 @@ fn ci_of(s: &Snapshot, repo: &str) -> Value {
             "passing": ci.passing,
         })
     };
-    let workflows: Vec<&str> = s
+    let workflows: Vec<String> = s
         .setups
         .iter()
         .find(|x| same_repo(&x.repo, repo))
-        .map(|x| x.workflows.iter().map(|w| w.path.as_str()).collect())
+        .map(|x| x.workflows.iter().map(|w| clean(&w.path, 200)).collect())
         .unwrap_or_default();
     json!({
-        "defaultBranch": c.branch,
+        "defaultBranch": clean(&c.branch, 200),
         "defaultBranchChecks": checks(&c.head),
         "pullRequests": c.pulls.iter().take(MAX_PRS).map(|p| json!({
             "number": p.number,
@@ -580,7 +580,7 @@ fn ci_of(s: &Snapshot, repo: &str) -> Value {
         })).collect::<Vec<_>>(),
         "workflowFiles": workflows,
         "readAt": c.checked_at,
-        "error": c.error.as_deref().map(|e| shorten(e, 300)),
+        "error": c.error.as_deref().map(|e| clean(e, 300)),
     })
 }
 /// What Codex is told about Orbit right now.

@@ -1334,3 +1334,48 @@ async fn bit_looks_things_up_before_it_answers() {
     assert!(e.asking.lock().unwrap().is_none());
     assert_eq!(sent(&rpc, "turn/start").await.len(), 3);
 }
+
+/// An answerer that isn't Codex looks things up the same way: each round is
+/// a request of its own, and after the last look its answer is what shows.
+#[tokio::test]
+async fn an_api_key_answer_looks_things_up_in_rounds() {
+    use crate::api::{tests::KEY, Api};
+    let asks = json!({"answer": "Let me look.", "proposals": [], "memory": [], "lookUp": [
+        {"kind": "runs", "repository": "c/d", "branch": null, "pr": null, "job": null,
+         "path": null},
+    ]});
+    let fake = provider_with(&asks.to_string());
+    let requests = fake.requests.clone();
+    let (_dir, e, _store) = answering_with_api(Api::OpenAi, "gpt-5", fake).await;
+    e.set_api_key("openai", Some(KEY.into())).await.unwrap();
+    e.ask_buddy_anything("Why is CI red?").await.unwrap();
+    let note = answer_of(&e).await;
+    assert_eq!(note.text, "Let me look.");
+    // Refused once, though it asked each time.
+    let looked: Vec<_> = note
+        .looked
+        .iter()
+        .map(|l| (l.what.as_str(), l.error.as_deref()))
+        .collect();
+    assert_eq!(
+        looked,
+        [(
+            "A runs lookup in c/d",
+            Some("c/d isn't a connected repository.")
+        )]
+    );
+    // Each question's request, leaving out the list of models.
+    let sent: Vec<String> = requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| !r.0.ends_with("/models"))
+        .map(|r| r.2.to_string())
+        .collect();
+    assert_eq!(sent.len(), 1 + crate::broker::MAX_ROUNDS as usize);
+    assert!(!sent[0].contains("<orbit-lookups>"));
+    assert!(sent[1].contains("<orbit-lookups>"));
+    assert!(sent[1].contains("you can look up to 4 more things"));
+    assert!(sent[2].contains("You can't look anything else up now"));
+    assert!(e.asking.lock().unwrap().is_none());
+}
