@@ -1027,8 +1027,30 @@ describe("Bit", () => {
     await user().type(box, "And the others?");
     expect(send()).toHaveProperty("disabled", true);
 
-    // The answer's buttons wait for a tap.
+    // While Orbit looks things up for Bit, the question says what.
     const note = snapshot.buddyFeed!.notes.find((n) => n.id === 200)!;
+    const job = "https://github.com/acme/api/actions/runs/9/job/5";
+    note.looked = [
+      { what: "The log of job 5 in acme/api", url: job },
+      {
+        what: "A runs lookup in c/d",
+        url: "",
+        error: "c/d isn't a connected repository.",
+      },
+    ];
+    act(emit);
+    expect(
+      within(chat()).getByText("Looking things up on GitHub…"),
+    ).toBeTruthy();
+    const looking = within(chat()).getByRole("list", { name: "Looking at" });
+    expect(
+      within(looking).getByText("The log of job 5 in acme/api"),
+    ).toBeTruthy();
+    expect(
+      within(looking).getByText("c/d isn't a connected repository."),
+    ).toBeTruthy();
+
+    // The answer's buttons wait for a tap.
     Object.assign(note, {
       pending: false,
       text: "Sure. Tap below to sync **every ten minutes**.",
@@ -1044,6 +1066,17 @@ describe("Bit", () => {
     });
     act(emit);
     expect(within(chat()).queryByText("Thinking…")).toBeNull();
+    // What Bit looked at opens on GitHub; a lookup Orbit refused doesn't.
+    const looked = within(chat()).getByRole("list", { name: "Looked at" });
+    await user().click(
+      within(looked).getByRole("button", {
+        name: /The log of job 5 in acme\/api/,
+      }),
+    );
+    expect(invoke).toHaveBeenCalledWith("open_github", { url: job });
+    expect(
+      within(looked).queryByRole("button", { name: /A runs lookup in c\/d/ }),
+    ).toBeNull();
     for (const text of [
       "Remembered: You check in from your phone.",
       "Forgot (acme/api): Uses npm.",

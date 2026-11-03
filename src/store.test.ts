@@ -1,5 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { useOrbit } from "./store";
+import { demoLooked } from "./demo";
 import { canPublish, publishTarget, trustedSource } from "./types";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -486,6 +487,7 @@ describe("demo buddy", () => {
       kind: "answer",
       question: "How's it going?",
       pending: true,
+      looked: [{ what: "The latest runs on main in acme/dashboard" }],
     });
     expect(await ask("And now?")).toEqual({
       ok: false,
@@ -495,6 +497,7 @@ describe("demo buddy", () => {
     const note = last();
     expect(note.pending).toBe(false);
     expect(note.text).toMatch(/^This is the demo/);
+    expect(note.looked).toEqual(demoLooked());
     expect(note.proposals!.map((p) => p.action)).toEqual([
       "sync_now",
       "change_settings",

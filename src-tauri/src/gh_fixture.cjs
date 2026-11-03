@@ -24,7 +24,8 @@
 // ("<time") when it is given, and those for the `branch` (a run's
 // `head_branch`, which is a tag's name for a run a tag started) and
 // `head_sha` asked for; while <dir>/runs-error exists, listing them fails
-// with its text.
+// with its text. A file of a/b, read with its contents, is <dir>/file-<its
+// name>, sent as GitHub sends one, or 404.
 // The releases of a/b are the list in <dir>/releases.json, or none, in
 // pages; while <dir>/releases-error exists, listing them fails with its
 // text. Its latest release is <dir>/latest.json, or the newest made in the
@@ -679,6 +680,18 @@ if ((m = endpoint.match(/^repos\/a\/b\/compare\/(.+)$/))) {
   const pull = path.join(dir, `pull-${m[1]}.json`);
   if (!fs.existsSync(pull)) missing();
   process.stdout.write(fs.readFileSync(pull, "utf8"));
+} else if ((m = endpoint.match(/^repos\/a\/b\/contents\/(.+)$/))) {
+  const file = path.join(dir, `file-${path.basename(m[1])}`);
+  if (!fs.existsSync(file)) missing();
+  answer({
+    type: "file",
+    encoding: "base64",
+    path: m[1],
+    content: fs
+      .readFileSync(file)
+      .toString("base64")
+      .replace(/(.{60})/g, "$1\n"),
+  });
 } else if (endpoint === "repos/a/b/actions/runs") {
   const refused = path.join(dir, "runs-error");
   if (fs.existsSync(refused)) {

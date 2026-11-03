@@ -820,7 +820,7 @@ async fn read_rule(repo: &str, branch: &str) -> Result<Rule, String> {
 }
 /// A branch name as part of an API path: slashes stay, and anything else
 /// that isn't plain is escaped.
-fn branch_path(branch: &str) -> String {
+pub(crate) fn branch_path(branch: &str) -> String {
     branch
         .bytes()
         .map(|b| match b {

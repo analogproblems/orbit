@@ -678,8 +678,20 @@ export interface BuddyNote {
   /** For an answer to a question you typed, what it changed in Bit's
    * memory. */
   memory?: MemoryChange[];
+  /** For a question you typed, what Orbit looked up on GitHub for the
+   * answer, or is looking up while it's pending. */
+  looked?: Looked[];
   /** A question you typed that Bit is still answering. */
   pending?: boolean;
+}
+/** Something Orbit looked up on GitHub for one of Bit's answers. */
+export interface Looked {
+  /** What it is, in plain words, such as "The log of job 5 in a/b". */
+  what: string;
+  /** Where GitHub shows it; empty for a lookup Orbit refused. */
+  url: string;
+  /** Why Orbit didn't read it, couldn't, or held it back. */
+  error?: string | null;
 }
 /** What a button in a typed question's answer does: one of Orbit's own
  * controls. */

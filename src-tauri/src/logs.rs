@@ -269,17 +269,7 @@ fn lasting(error: String, mut failure: Failure) -> Result<Failure, String> {
 pub fn understand(mut failure: Failure, job: &Value, log: &str) -> Failure {
     let lines = parse(log);
     let step = failed_step(job);
-    let name = step
-        .and_then(|s| s["name"].as_str())
-        .map(plain)
-        .unwrap_or_default();
-    // All the step's seconds are checked, and only its own lines shown.
-    // Without the step's times, the whole log is checked and its last step
-    // shown.
-    let (checked, shown) = match step.and_then(|s| Some((s, section(&lines, s)?))) {
-        Some((s, window)) => (window, own(window, s, job)),
-        None => (&lines[..], last_step(&lines)),
-    };
+    let (name, checked, shown) = failed_lines(&lines, step, job);
     // What the step printed, not the script GitHub echoed before running it.
     let own: Vec<&str> = shown.iter().map(|l| l.text.as_str()).collect();
     let said = output(&own);
@@ -287,14 +277,52 @@ pub fn understand(mut failure: Failure, job: &Value, log: &str) -> Failure {
     // the step said on the way there, so it is never bad luck.
     failure.quota = said.iter().any(|l| l.contains(QUOTA));
     failure.flaky = flaky(step, &said).filter(|_| !failure.quota);
-    let text: Vec<&str> = checked.iter().map(|l| l.text.as_str()).collect();
-    if !credential_kinds(&format!("{name}\n{}", text.join("\n"))).is_empty() {
+    if holds_credential(&name, checked) {
         failure.held = true;
         return failure;
     }
     failure.step = cut(&name);
-    failure.lines = tail(shown).iter().map(|l| cut(l)).collect();
+    failure.lines = tail(shown, MAX_LINES).iter().map(|l| cut(l)).collect();
     failure
+}
+/// The step that failed a job and the end of its log, as `understand` reads
+/// them but with up to `max` lines, for Bit when it looks a job's log up
+/// (`crate::broker`). None when the step's log looks like it holds a
+/// credential, checked over the whole step as `understand` does.
+pub fn longer(job: &Value, log: &str, max: usize) -> Option<(String, Vec<String>)> {
+    let lines = parse(log);
+    let (name, checked, shown) = failed_lines(&lines, failed_step(job), job);
+    if holds_credential(&name, checked) {
+        return None;
+    }
+    Some((
+        cut(&name),
+        tail(shown, max).iter().map(|l| cut(l)).collect(),
+    ))
+}
+/// The failed step's name, the lines checked for credentials and the lines
+/// shown. All the step's seconds are checked, and only its own lines
+/// shown. Without the step's times, the whole log is checked and its last
+/// step shown.
+fn failed_lines<'a>(
+    lines: &'a [Line],
+    step: Option<&Value>,
+    job: &Value,
+) -> (String, &'a [Line], &'a [Line]) {
+    let name = step
+        .and_then(|s| s["name"].as_str())
+        .map(plain)
+        .unwrap_or_default();
+    let (checked, shown) = match step.and_then(|s| Some((s, section(lines, s)?))) {
+        Some((s, window)) => (window, own(window, s, job)),
+        None => (lines, last_step(lines)),
+    };
+    (name, checked, shown)
+}
+/// Whether a step's name and lines look like they hold a credential.
+fn holds_credential(name: &str, lines: &[Line]) -> bool {
+    let text: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+    !credential_kinds(&format!("{name}\n{}", text.join("\n"))).is_empty()
 }
 
 /// What a log says when the account's artifact storage is full, as
@@ -501,16 +529,16 @@ fn last_step(lines: &[Line]) -> &[Line] {
 /// The end of a whole log's last step, as Orbit shows it when it doesn't
 /// know the failed step's times: each line cut to `MAX_LINE` characters.
 pub fn excerpt(log: &str) -> Vec<String> {
-    tail(last_step(&parse(log)))
+    tail(last_step(&parse(log)), MAX_LINES)
         .iter()
         .map(|l| cut(l))
         .collect()
 }
 /// The end of a step's log: its lines up to its last error, without the
-/// commands GitHub echoes, at most `MAX_LINES`. GitHub echoes each
-/// command in a `##[group]Run` group and marks an error with
-/// `##[error]`. A step with no error gives its end.
-fn tail(lines: &[Line]) -> Vec<String> {
+/// commands GitHub echoes, at most `max`. GitHub echoes each command in a
+/// `##[group]Run` group and marks an error with `##[error]`. A step with
+/// no error gives its end.
+fn tail(lines: &[Line], max: usize) -> Vec<String> {
     let text: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
     let end = text
         .iter()
@@ -531,8 +559,8 @@ fn tail(lines: &[Line]) -> Vec<String> {
                 .map_or_else(|| line.to_string(), |rest| format!("Warning: {rest}")),
         });
     }
-    if kept.len() > MAX_LINES {
-        kept.drain(..kept.len() - MAX_LINES);
+    if kept.len() > max {
+        kept.drain(..kept.len() - max);
     }
     kept
 }

@@ -11,6 +11,7 @@ import {
   type BriefLine,
   type BuddyNote,
   type BuddyNoteLine,
+  type Looked,
   type CiFailure,
   type CiSetup,
   type DependabotUpdate,
@@ -2573,12 +2574,22 @@ function demoSetup(
 }
 /** Bit's answer to a typed question in the demo, which has no Codex to
  * think with. Its buttons show how answers offer Orbit's controls. */
+/** What the demo's answers look up on GitHub, as Orbit would for Bit. */
+export function demoLooked(): Looked[] {
+  return [
+    {
+      what: "The latest runs on main in acme/dashboard",
+      url: "https://github.com/acme/dashboard/actions?query=branch%3Amain",
+    },
+  ];
+}
 export function demoTypedAnswer(): Pick<
   BuddyNote,
-  "text" | "proposals" | "memory"
+  "text" | "proposals" | "memory" | "looked"
 > {
   return {
-    text: "This is the demo, so I can't think about your question for real. In Orbit, Codex answers here using what Orbit knows, and I can offer buttons for Orbit's own controls. They only run when you tap them, like these:",
+    text: "This is the demo, so I can't think about your question for real. In Orbit, Codex answers here using what Orbit knows, and what it reads on GitHub for me first, such as a failing job's log. I can offer buttons for Orbit's own controls too. They only run when you tap them, like these:",
+    looked: demoLooked(),
     proposals: [
       { id: 0, action: "sync_now" },
       { id: 1, action: "change_settings", settings: { pollSeconds: 300 } },

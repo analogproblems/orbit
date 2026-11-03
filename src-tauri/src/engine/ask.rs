@@ -2,13 +2,16 @@
 //! a thread of its own (read-only, in an empty folder, with no network, no
 //! approvals and none of Codex's other tools), Claude Code with no tools at
 //! all, Antigravity in its sandbox, or Ollama or a provider's API with your
-//! key, which only ever write an answer. The answer's buttons run only when
-//! you tap them.
+//! key, which only ever write an answer. An answer can ask Orbit to look
+//! things up on GitHub first (`crate::broker`); Orbit reads them, read-only,
+//! and asks again with what it found, in a new round. The answer's buttons
+//! run only when you tap them.
 use super::{extras, publish::By, Engine};
 use crate::{
     antigravity,
     api::{self, Api},
     ask::{self, Action},
+    broker::{self, Found},
     buddy::{self, Answerer},
     claude,
     cli::{Init, Output, Running, Turn, TurnKind},
@@ -18,12 +21,16 @@ use crate::{
 };
 use serde_json::{json, Value};
 use std::{
+    future::Future,
+    pin::Pin,
     sync::{atomic::Ordering, Arc},
     time::Duration,
 };
 
-/// How long Bit waits for an answer.
+/// How long Bit waits for each round of an answer.
 pub(super) const ANSWER_TIMEOUT: Duration = Duration::from_secs(180);
+/// How long Orbit spends looking things up for a round.
+pub(super) const LOOK_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The question being answered.
 pub(super) struct Asking {
@@ -44,6 +51,15 @@ pub(super) struct Asking {
     memory_generation: u64,
     /// The repositories the question's summary offered to connect.
     connectable: Vec<String>,
+    /// The question's first message (`ask::prompt`) and Bit's
+    /// instructions, sent again each round, with what to answer with.
+    prompt: String,
+    instructions: String,
+    selection: ModelSelection,
+    ollama_url: String,
+    /// How many times it has looked things up, and what Orbit found.
+    round: u32,
+    found: Vec<Found>,
 }
 
 /// A request for an answer; dropping it stops the request.
@@ -68,7 +84,7 @@ impl Engine {
             ));
         }
         self.pick_bit_answerer().await;
-        let (note, by, selection, ollama_url, connected) = {
+        let (note, connected) = {
             let mut s = self.state.lock().await;
             let name = s.settings.buddy.name.clone();
             if !s.settings.buddy.enabled {
@@ -99,15 +115,15 @@ impl Engine {
                 text: String::new(),
                 memory_generation: self.memory_generation.load(Ordering::SeqCst),
                 connectable: vec![],
+                prompt: String::new(),
+                instructions: String::new(),
+                selection,
+                ollama_url: s.settings.buddy.ollama_url.clone(),
+                round: 0,
+                found: vec![],
             });
             self.dirty.store(true, Ordering::SeqCst);
-            (
-                note,
-                by,
-                selection,
-                s.settings.buddy.ollama_url.clone(),
-                s.settings.repositories.clone(),
-            )
+            (note, s.settings.repositories.clone())
         };
         let _ = self.flush().await;
         // The question shows while Bit looks up your repositories.
@@ -124,6 +140,42 @@ impl Engine {
                 ask::prompt(&s, question, &lookups),
                 ask::instructions(&s.settings.buddy),
             )
+        };
+        let kept = self.asking_mut(note, |a| {
+            a.prompt = prompt;
+            a.instructions = instructions;
+        });
+        if kept.is_some() {
+            self.start_round(note).await;
+        }
+        Ok(())
+    }
+    /// Asks the question's answerer for this round's answer: the question's
+    /// first message, plus what Orbit has looked up for it so far. A round
+    /// that doesn't finish within `ANSWER_TIMEOUT` ends the question.
+    /// Boxed, as a round that looks things up starts the next one.
+    fn start_round(self: &Arc<Self>, note: u64) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        let e = self.clone();
+        Box::pin(async move { e.round(note).await })
+    }
+    async fn round(self: &Arc<Self>, note: u64) {
+        let Some((by, selection, ollama_url, prompt, instructions, round)) =
+            self.asking_mut(note, |a| {
+                let prompt = match a.round {
+                    0 => a.prompt.clone(),
+                    n => ask::prompt_with(&a.prompt, &a.found, n < broker::MAX_ROUNDS),
+                };
+                (
+                    a.by,
+                    a.selection.clone(),
+                    a.ollama_url.clone(),
+                    prompt,
+                    a.instructions.clone(),
+                    a.round,
+                )
+            })
+        else {
+            return;
         };
         let started = match (by, by.provider()) {
             (_, Some(Provider::Codex)) => {
@@ -167,15 +219,128 @@ impl Engine {
         };
         if let Err(error) = started {
             self.answer_done(note, Err(error)).await;
-            return Ok(());
+            return;
         }
         let e = self.clone();
         tokio::spawn(async move {
             tokio::time::sleep(ANSWER_TIMEOUT).await;
-            e.answer_done(note, Err(format!("{} took too long.", by.label())))
+            let still = e.asking_mut(note, |a| a.round == round) == Some(true);
+            if still {
+                e.answer_done(note, Err(format!("{} took too long.", by.label())))
+                    .await;
+            }
+        });
+    }
+    /// Starts looking up what an answer asks for, if it asks for anything
+    /// and the question has rounds left: Orbit checks each lookup, shows
+    /// them on the question, reads them, then starts the next round. The
+    /// round's Codex thread is put away, or its process or request
+    /// stopped, first. Returns whether it did.
+    async fn look_up_for(self: &Arc<Self>, note: u64, reply: &str) -> bool {
+        let wanted = ask::wanted(reply);
+        if wanted.is_empty() {
+            return false;
+        }
+        let done = {
+            let asking = self.asking.lock().unwrap();
+            match asking.as_ref().filter(|a| a.note == note) {
+                Some(a) if a.round < broker::MAX_ROUNDS => a.found.clone(),
+                _ => return false,
+            }
+        };
+        let (lookups, refused) = {
+            let s = self.state.lock().await;
+            broker::check_all(&s, &wanted, &done)
+        };
+        // The round is over: only one ending of it counts.
+        let ended = {
+            let mut asking = self.asking.lock().unwrap();
+            let Some(a) = asking.as_mut().filter(|a| a.note == note) else {
+                return false;
+            };
+            if a.round >= broker::MAX_ROUNDS {
+                return false;
+            }
+            a.round += 1;
+            a.text.clear();
+            a.found.extend(refused);
+            (
+                a.thread.take(),
+                a.turn.take(),
+                a.running.take(),
+                a.request.take(),
+                a.found.clone(),
+            )
+        };
+        let (thread, _, running, request, mut shown) = ended;
+        drop((running, request));
+        self.put_away(thread, None).await;
+        shown.extend(lookups.iter().map(Found::reading));
+        self.show_looking(note, &shown).await;
+        let e = self.clone();
+        let looking = async move {
+            let read = async {
+                let mut found = vec![];
+                for l in &lookups {
+                    found.push(broker::read(l).await);
+                }
+                found
+            };
+            let found = tokio::time::timeout(LOOK_TIMEOUT, read)
+                .await
+                .unwrap_or_else(|_| lookups.iter().map(Found::timed_out).collect());
+            let Some(all) = e.asking_mut(note, |a| {
+                a.found.extend(found);
+                a.found.clone()
+            }) else {
+                return;
+            };
+            e.show_looking(note, &all).await;
+            e.start_round(note).await;
+        };
+        // Tests reach their stand-in for `gh` from the new task too.
+        #[cfg(test)]
+        let looking = {
+            let gh = crate::github::GH.try_with(|p| p.clone()).ok();
+            async move {
+                match gh {
+                    Some(gh) => crate::github::GH.scope(gh, looking).await,
+                    None => looking.await,
+                }
+            }
+        };
+        tokio::spawn(looking);
+        true
+    }
+    /// Shows on the question what Orbit is looking up, or has.
+    async fn show_looking(&self, note: u64, found: &[Found]) {
+        let looked = found.iter().map(|f| f.looked.clone()).collect();
+        self.update(|s| buddy::looking(s, note, looked)).await;
+        let _ = self.flush().await;
+    }
+    /// Archives a Codex thread Bit's question is done with, interrupting
+    /// its `unfinished` turn first.
+    async fn put_away(&self, thread: Option<String>, unfinished: Option<String>) {
+        let Some(thread) = thread else {
+            return;
+        };
+        let Some(rpc) = self.rpc.lock().await.clone() else {
+            return;
+        };
+        tokio::spawn(async move {
+            if let Some(turn) = unfinished {
+                let _ = rpc
+                    .request_timeout(
+                        "turn/interrupt",
+                        json!({"threadId": thread, "turnId": turn}),
+                        10,
+                    )
+                    .await;
+            }
+            let _ = rpc
+                .request_timeout("thread/archive", json!({"threadId": thread}), 10)
                 .await;
         });
-        Ok(())
     }
     /// Starts Codex on the question, in a new thread that can't change
     /// anything: read-only, in an empty folder of Orbit's, with no network,
@@ -464,12 +629,12 @@ impl Engine {
                 left @ extras::Left::Missing(_) => left.message("I didn't ask it"),
             })
     }
-    /// Changes the question being answered, if it is still `note`.
-    fn asking_mut(&self, note: u64, f: impl FnOnce(&mut Asking)) -> Option<()> {
+    /// Changes the question being answered, or reads it, if it is still
+    /// `note`.
+    fn asking_mut<T>(&self, note: u64, f: impl FnOnce(&mut Asking) -> T) -> Option<T> {
         let mut asking = self.asking.lock().unwrap();
         let a = asking.as_mut().filter(|a| a.note == note)?;
-        f(a);
-        Some(())
+        Some(f(a))
     }
     /// Whether a Codex thread is the one answering Bit's question.
     pub(super) fn answering(&self, thread: Option<&str>) -> bool {
@@ -511,8 +676,14 @@ impl Engine {
     }
     /// Ends question `note` with the reply or why there is none, and puts
     /// its Codex thread away or stops its process. Only the first ending
-    /// counts.
+    /// counts. A reply that asks to look things up, while the question has
+    /// rounds left, starts the next round instead.
     pub(super) async fn answer_done(self: &Arc<Self>, note: u64, reply: Result<String, String>) {
+        if let Ok(text) = &reply {
+            if self.look_up_for(note, text).await {
+                return;
+            }
+        }
         let asking = {
             let mut asking = self.asking.lock().unwrap();
             if asking.as_ref().map(|a| a.note) != Some(note) {
@@ -520,26 +691,8 @@ impl Engine {
             }
             asking.take().unwrap()
         };
-        if let Some(thread) = asking.thread {
-            let rpc = self.rpc.lock().await.clone();
-            let unfinished = reply.is_err().then_some(asking.turn).flatten();
-            if let Some(rpc) = rpc {
-                tokio::spawn(async move {
-                    if let Some(turn) = unfinished {
-                        let _ = rpc
-                            .request_timeout(
-                                "turn/interrupt",
-                                json!({"threadId": thread, "turnId": turn}),
-                                10,
-                            )
-                            .await;
-                    }
-                    let _ = rpc
-                        .request_timeout("thread/archive", json!({"threadId": thread}), 10)
-                        .await;
-                });
-            }
-        }
+        let unfinished = reply.is_err().then_some(asking.turn).flatten();
+        self.put_away(asking.thread, unfinished).await;
         let connectable = &asking.connectable;
         self.update(
             |s| match reply.and_then(|r| ask::answer(s, &r, connectable)) {

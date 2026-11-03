@@ -1169,3 +1169,168 @@ async fn a_server_with_no_password_store_says_so_and_offers_the_others() {
     e.check_bit_answerer().await;
     assert_eq!(e.snapshot().await.password_store, None);
 }
+
+/// Waits until `rpc` has been sent `n` requests of `method`.
+async fn until_sent(rpc: &Rpc, method: &str, n: usize) {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while sent(rpc, method).await.len() < n {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{method} wasn't sent {n} times"));
+}
+
+/// An answer can ask Orbit to look things up first: Orbit reads what it
+/// may, read-only, holds back a credential, refuses the rest, and asks
+/// again with what it found, at most twice; then Bit answers.
+#[cfg(unix)]
+#[tokio::test]
+async fn bit_looks_things_up_before_it_answers() {
+    let (_dir, e, rpc) = fixture().await;
+    // Each round starts a thread of its own.
+    rpc.request(
+        "fixture/configure",
+        json!({"startResponse": {"model": "model-a", "reasoningEffort": "high"}}),
+    )
+    .await
+    .unwrap();
+    let gh_dir = tempfile::tempdir().unwrap();
+    let gh = super::ops_tests::fake_gh(gh_dir.path());
+    let write = |name: &str, text: String| std::fs::write(gh_dir.path().join(name), text).unwrap();
+    write(
+        "job-5.json",
+        json!({"id": 5, "run_id": 9, "name": "test", "workflow_name": "CI",
+            "head_sha": "c".repeat(40), "status": "completed", "conclusion": "failure",
+            "html_url": "https://github.com/a/b/actions/runs/9/job/5", "steps": []})
+        .to_string(),
+    );
+    write(
+        "log-5.txt",
+        "##[group]Run cargo test\ncargo test\n##[endgroup]\nthread 'lookup' panicked\n##[error]Process completed with exit code 101.".into(),
+    );
+    write(
+        "file-leak.yml",
+        format!("env:\n  TOKEN: ghp_{}\n", "a".repeat(36)),
+    );
+    e.update(|s| {
+        s.settings
+            .repositories
+            .push(Repository::new("a/b", "/tmp/a-b"));
+        s.ci.push(crate::ci::RepoCi {
+            repo: "a/b".into(),
+            branch: "main".into(),
+            head: crate::ci::CommitCi {
+                sha: "c".repeat(40),
+                state: crate::ci::CiState::Failing,
+                failing: vec![crate::ci::Check {
+                    name: "CI / test".into(),
+                    url: "https://github.com/a/b/actions/runs/9/job/5".into(),
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+    })
+    .await;
+    e.ask_buddy_anything("Why is CI red?").await.unwrap();
+    let first = sent(&rpc, "turn/start").await[0]["input"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // The summary names the failing check's job.
+    assert!(first.contains("\"check\": \"CI / test\""));
+    assert!(first.contains("\"job\": 5"));
+    let look =
+        |what: Value| json!({"answer": "Let me read the log.", "proposals": [], "lookUp": what});
+    let log = json!({"kind": "log", "repository": "a/b", "branch": null, "pr": null, "job": 5, "path": null});
+    let asked = look(json!([
+        log,
+        {"kind": "workflow", "repository": "a/b", "branch": null, "pr": null, "job": null,
+         "path": ".github/workflows/leak.yml"},
+        {"kind": "runs", "repository": "c/d", "branch": null, "pr": null, "job": null, "path": null},
+    ]));
+    crate::github::GH
+        .scope(gh.clone(), codex_says(&e, &asked.to_string(), "completed"))
+        .await;
+    until_sent(&rpc, "turn/start", 2).await;
+    let note = last(&e.snapshot().await);
+    assert!(note.pending);
+    assert_eq!(note.text, "");
+    let looked: Vec<(&str, &str, Option<&str>)> = note
+        .looked
+        .iter()
+        .map(|l| (l.what.as_str(), l.url.as_str(), l.error.as_deref()))
+        .collect();
+    assert_eq!(
+        looked,
+        [
+            (
+                "A runs lookup in c/d",
+                "",
+                Some("c/d isn't a connected repository.")
+            ),
+            (
+                "The log of job 5 in a/b",
+                "https://github.com/a/b/actions/runs/9/job/5",
+                None
+            ),
+            (
+                ".github/workflows/leak.yml in a/b",
+                "https://github.com/a/b/blob/main/.github/workflows/leak.yml",
+                Some(crate::broker::HELD)
+            ),
+        ]
+    );
+    // The next round has the question and summary again, then what Orbit
+    // found: the log, never the credential.
+    let second = sent(&rpc, "turn/start").await[1]["input"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(second.starts_with(&first));
+    assert!(second.contains("<orbit-lookups>"));
+    assert!(second.contains("thread 'lookup' panicked"));
+    assert!(!second.contains("ghp_"));
+    assert!(second.contains("If you still need to, you can look up to 4 more things"));
+    // Only GitHub reads, and each once.
+    let calls = std::fs::read_to_string(gh_dir.path().join("calls")).unwrap();
+    assert_eq!(
+        calls.lines().collect::<Vec<_>>(),
+        [
+            "GET repos/a/b/actions/jobs/5",
+            "GET repos/a/b/actions/jobs/5/logs",
+            "GET repos/a/b/contents/.github/workflows/leak.yml",
+        ]
+    );
+
+    // Looking again for what it already read reads nothing more, and is
+    // the last look.
+    crate::github::GH
+        .scope(
+            gh.clone(),
+            codex_says(&e, &look(json!([log])).to_string(), "completed"),
+        )
+        .await;
+    until_sent(&rpc, "turn/start", 3).await;
+    let third = sent(&rpc, "turn/start").await[2]["input"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(third.contains("You can't look anything else up now"));
+    assert_eq!(
+        std::fs::read_to_string(gh_dir.path().join("calls")).unwrap(),
+        calls
+    );
+
+    // One more ask is past the last look, so the answer is what shows,
+    // with what Bit looked at.
+    let answer =
+        json!({"answer": "The test called lookup panicked.", "proposals": [], "lookUp": [log]});
+    codex_says(&e, &answer.to_string(), "completed").await;
+    let note = answer_of(&e).await;
+    assert_eq!(note.text, "The test called lookup panicked.");
+    assert_eq!(note.looked.len(), 3);
+    assert!(e.asking.lock().unwrap().is_none());
+    assert_eq!(sent(&rpc, "turn/start").await.len(), 3);
+}
