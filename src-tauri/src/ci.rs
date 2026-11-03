@@ -65,12 +65,14 @@ pub struct CommitCi {
     /// A check that passed didn't say when it began.
     #[serde(skip)]
     pub untimed: bool,
-    /// The checks that passed, by name and link, one for each counted in
-    /// `passing`, to tell whether a job Orbit reran passed: its link names
-    /// its workflow run. Kept with Orbit for its latest read only: after a
-    /// restart it's empty until the next one.
+    /// Every check read, by name and link, with where it stands, to tell
+    /// whether a job Orbit reran passed: a job's link names its workflow
+    /// run. Kept with Orbit only, and only from a read since it started
+    /// (`named`): after a restart both are empty until the next read.
     #[serde(skip)]
-    pub passed: Vec<Check>,
+    pub checks: Vec<(Check, CiState)>,
+    #[serde(skip)]
+    pub named: bool,
 }
 /// An open pull request's latest commit and its checks.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -336,10 +338,12 @@ fn commit(v: &Value) -> Result<CommitCi, String> {
 
 /// Adds one page of a commit's checks, and where the next page starts.
 pub fn add_checks(ci: &mut CommitCi, contexts: &Value) {
+    ci.named = true;
     for node in contexts["nodes"].as_array().into_iter().flatten() {
         let Some((check, state)) = check(node) else {
             continue;
         };
+        ci.checks.push((check.clone(), state));
         match state {
             CiState::Failing => {
                 if !ci.failing.iter().any(|c| c.name == check.name) {
@@ -349,7 +353,6 @@ pub fn add_checks(ci: &mut CommitCi, contexts: &Value) {
             CiState::Running => ci.running += 1,
             CiState::Passing => {
                 ci.passing += 1;
-                ci.passed.push(check);
                 match began(node) {
                     Some(at) => {
                         let earlier = crate::problems::time(&ci.ran_at).is_none_or(|t| at < t);

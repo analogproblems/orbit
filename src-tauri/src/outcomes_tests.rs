@@ -333,41 +333,45 @@ fn a_rerun_holds_once_its_commit_passes_and_misses_if_it_fails_again() {
         }],
         ..Default::default()
     };
-    // Checks that passed, by name and the run they're in.
-    let ci = |running: u32, failing: Vec<Check>, passed: &[(&str, u32)]| RepoCi {
-        repo: "a/b".into(),
-        branch: "main".into(),
-        head: CommitCi {
-            sha: SHA.into(),
-            state: if failing.is_empty() {
-                CiState::Passing
-            } else {
-                CiState::Failing
+    // The checks at the commit, each by name, workflow run, job and where
+    // it stands, as Orbit read them 5 minutes ago, after the rerun.
+    let ci = |checks: &[(&str, u32, u32, CiState)]| {
+        let check = |(name, run, job, _): &(&str, u32, u32, CiState)| Check {
+            name: name.to_string(),
+            url: format!("https://github.com/a/b/actions/runs/{run}/job/{job}"),
+        };
+        let count = |state| checks.iter().filter(|c| c.3 == state).count() as u32;
+        let failing: Vec<_> = checks
+            .iter()
+            .filter(|c| c.3 == CiState::Failing)
+            .map(check)
+            .collect();
+        RepoCi {
+            repo: "a/b".into(),
+            branch: "main".into(),
+            checked_at: ago(5),
+            head: CommitCi {
+                sha: SHA.into(),
+                state: if failing.is_empty() {
+                    CiState::Passing
+                } else {
+                    CiState::Failing
+                },
+                failing,
+                running: count(CiState::Running),
+                passing: count(CiState::Passing),
+                checks: checks.iter().map(|c| (check(c), c.3)).collect(),
+                named: true,
+                ..Default::default()
             },
-            failing,
-            running,
-            passing: passed.len() as u32,
-            passed: passed
-                .iter()
-                .map(|(name, run)| Check {
-                    name: name.to_string(),
-                    url: format!(
-                        "https://github.com/a/b/actions/runs/{run}/job/{}",
-                        run + 100
-                    ),
-                })
-                .collect(),
             ..Default::default()
-        },
-        ..Default::default()
+        }
     };
-    let lint = || Check {
-        name: "CI / lint".into(),
-        url: String::new(),
-    };
+    use CiState::{Failing, None as Neither, Passing, Running};
+    let lint = ("CI / lint", 9, 7, Failing);
     let mut s = snapshot();
     s.ops = vec![thread(false, true)];
-    s.ci = vec![ci(1, vec![], &[])];
+    s.ci = vec![ci(&[("CI / test", 9, 5, Failing)])];
     pass(&mut s);
     let o = &s.outcomes[0];
     assert_eq!(o.id, format!("rerun:issue:p1:1:{job}"));
@@ -375,14 +379,39 @@ fn a_rerun_holds_once_its_commit_passes_and_misses_if_it_fails_again() {
     assert_eq!(o.expect, "the job passes the second time");
     // While it runs again, it isn't failing, but it hasn't passed either.
     s.ops = vec![thread(false, false)];
+    s.ci = vec![ci(&[("CI / test", 9, 50, Running)])];
     assert!(pass(&mut s).is_empty());
     // Nor while the same job passed in another run at the commit, such as
     // a pull request's run of the same workflow.
-    s.ci = vec![ci(1, vec![lint()], &[("CI / test", 8)])];
+    s.ci = vec![ci(&[
+        ("CI / test", 9, 50, Running),
+        ("CI / test", 8, 3, Passing),
+        lint,
+    ])];
     assert!(pass(&mut s).is_empty());
-    // Nor once the others finish, while GitHub hasn't said it passed: it
-    // may have been cancelled, with another check still failing.
-    s.ci = vec![ci(0, vec![lint()], &[("CI / build", 9), ("CI / test", 8)])];
+    // Nor while a job in its run by the same name passed: two jobs there
+    // by one name can't be told apart, even once both finish.
+    s.ci = vec![ci(&[
+        ("CI / test", 9, 50, Running),
+        ("CI / test", 9, 6, Passing),
+    ])];
+    assert!(pass(&mut s).is_empty());
+    s.ci = vec![ci(&[
+        ("CI / test", 9, 50, Passing),
+        ("CI / test", 9, 6, Passing),
+    ])];
+    assert_eq!(
+        pass(&mut s)[0].why,
+        "Two jobs in its run share its name, so Orbit can't tell which one was rerun."
+    );
+    // Cancelled, with another check failing and the same job passed in
+    // another run: it didn't pass.
+    s.outcomes.clear();
+    s.ci = vec![ci(&[
+        ("CI / test", 9, 50, Neither),
+        ("CI / test", 8, 3, Passing),
+        lint,
+    ])];
     let settled = pass(&mut s);
     assert_eq!(
         (settled[0].verdict, settled[0].why.as_str()),
@@ -391,22 +420,30 @@ fn a_rerun_holds_once_its_commit_passes_and_misses_if_it_fails_again() {
             "It didn't pass or fail after the rerun: GitHub may have cancelled or skipped it."
         )
     );
-    // It holds when GitHub says it passed, whatever else fails.
+    // It holds when GitHub says it passed in its run, whatever else fails.
     s.outcomes.clear();
-    s.ci = vec![ci(1, vec![lint()], &[("CI / test", 9)])];
+    s.ci = vec![ci(&[
+        ("CI / test", 9, 50, Passing),
+        ("CI / build", 9, 51, Running),
+        lint,
+    ])];
     let settled = pass(&mut s);
     assert_eq!(settled[0].verdict, Verdict::Held);
     assert_eq!(settled[0].why, "It passed after the rerun.");
-    // CI from before a restart has no names of what passed: it waits.
+    // Not from CI read before the rerun, nor from before a restart, which
+    // has no names of its checks.
     s.outcomes.clear();
-    s.ci = vec![ci(0, vec![], &[("CI / build", 9)])];
-    s.ci[0].head.passed.clear();
+    s.ci[0].checked_at = ago(20);
+    assert!(pass(&mut s).is_empty());
+    s.ci[0].checked_at = ago(5);
+    s.ci[0].head.checks.clear();
+    s.ci[0].head.named = false;
     assert!(pass(&mut s).is_empty());
 
     // Failing again is a miss.
     let mut s = snapshot();
     s.ops = vec![thread(true, true)];
-    s.ci = vec![ci(0, vec![], &[])];
+    s.ci = vec![ci(&[("CI / test", 9, 50, Failing)])];
     let settled = pass(&mut s);
     assert_eq!(
         (settled[0].verdict, settled[0].why.as_str()),
@@ -466,10 +503,14 @@ fn a_release_build_rerun_is_told_by_its_run_not_the_default_branch() {
             sha: SHA.into(),
             state: CiState::Passing,
             passing: 1,
-            passed: vec![Check {
-                name: "Release / build (macos)".into(),
-                url: "https://github.com/a/b/actions/runs/9/job/6".into(),
-            }],
+            checks: vec![(
+                Check {
+                    name: "Release / build (macos)".into(),
+                    url: "https://github.com/a/b/actions/runs/9/job/6".into(),
+                },
+                CiState::Passing,
+            )],
+            named: true,
             ..Default::default()
         },
         ..Default::default()

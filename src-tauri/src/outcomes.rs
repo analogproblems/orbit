@@ -413,34 +413,46 @@ fn rerun(s: &Snapshot, o: &Outcome) -> Found {
     if release {
         return build_rerun(s, t, o);
     }
-    // Passed only when GitHub says this job passed: one that was cancelled
-    // or skipped isn't failing either. GitHub reruns a job in the same
-    // workflow run, so a pass by its name in that run is the rerun's, and
-    // one in another run at the commit, such as a pull request's run of
-    // the same workflow, says nothing of it.
-    let ci = commit_ci(s, t).filter(|c| c.sha == o.sha)?;
-    let run = run_of(&o.job)?;
-    let passed = ci
-        .passed
-        .iter()
-        .any(|c| c.name == item.check && run_of(&c.url) == Some(run));
-    if passed {
-        return Some((Verdict::Held, "It passed after the rerun.".into()));
-    }
-    let failing = ci.failing.iter().any(|c| c.name == item.check);
-    if failing || item.failing {
+    // Told only by CI read since the rerun, with the names of its checks
+    // (not from before a restart). GitHub reruns a job as a new attempt in
+    // the same workflow run, so only checks by its name in that run count:
+    // another run of the workflow at the commit, such as a pull request's,
+    // says nothing of it, and two jobs in its run by one name can't be told
+    // apart. A job cancelled or skipped isn't failing either, so it holds
+    // only when GitHub says it passed.
+    let read = s.ci.iter().find(|c| same_repo(&c.repo, &t.repo))?;
+    if !after(&read.checked_at, &o.at) {
         return None;
     }
-    // Every check finished without it passing, by a read that has their
-    // names: not one from before a restart.
-    let finished = ci.running == 0 && !ci.incomplete && ci.passed.len() == ci.passing as usize;
-    finished.then(|| {
-        (
+    let ci = commit_ci(s, t).filter(|c| c.sha == o.sha && c.named)?;
+    let run = run_of(&o.job)?;
+    let same: Vec<_> = ci
+        .checks
+        .iter()
+        .filter(|(c, _)| c.name == item.check && run_of(&c.url) == Some(run))
+        .collect();
+    let failing = item.failing || ci.failing.iter().any(|c| c.name == item.check);
+    let finished = !failing && ci.running == 0 && !ci.incomplete;
+    match same.as_slice() {
+        _ if failing => None,
+        [(c, CiState::Passing)] if c.url != o.job => {
+            Some((Verdict::Held, "It passed after the rerun.".into()))
+        }
+        [(c, CiState::None)] if c.url != o.job => Some((
             Verdict::Unclear,
             "It didn't pass or fail after the rerun: GitHub may have cancelled or skipped it."
                 .into(),
-        )
-    })
+        )),
+        [] if finished => Some((
+            Verdict::Unclear,
+            "Orbit doesn't see the rerun among the checks at that commit.".into(),
+        )),
+        [_, _, ..] if finished => Some((
+            Verdict::Unclear,
+            "Two jobs in its run share its name, so Orbit can't tell which one was rerun.".into(),
+        )),
+        _ => None,
+    }
 }
 /// The latest commit's checks, as Orbit last read them, for a thread's
 /// pull request or default branch.
