@@ -615,8 +615,7 @@ fn found_fault(s: &Snapshot, c: &Call, now: DateTime<Utc>) -> Option<(Option<boo
             return if old { couldnt() } else { None };
         };
         let newer = !c.passed_sha.is_empty() && c.passed_sha != c.sha;
-        let own_fix = case.is_some_and(|k| k.fixed);
-        if fixed < passed && newer && !own_fix {
+        if fixed < passed && newer && !named_fix(s, c) {
             return Some((
                 Some(true),
                 "It passed once the default branch was fixed, with no fix of its own.".into(),
@@ -636,6 +635,28 @@ fn found_fault(s: &Snapshot, c: &Call, now: DateTime<Utc>) -> Option<(Option<boo
     None
 }
 
+/// Whether an agent said it fixed the call's problem: as its case says, or
+/// as its thread says now. Orbit reads answers after it follows cases, and
+/// scores calls by the next CI read before it follows them again, so the
+/// thread may have heard it first: from the same failing items the case
+/// reads (`crate::cases::record`), or the call's own check, whose answer
+/// stays until it fails again.
+fn named_fix(s: &Snapshot, c: &Call) -> bool {
+    use crate::ops::AnswerKind;
+    let case = s.cases.iter().any(|k| k.id == c.problem && k.fixed);
+    let thread = s
+        .ops
+        .iter()
+        .filter(|t| t.problem_id == c.problem)
+        .flat_map(|t| &t.items)
+        .any(|i| {
+            (i.failing || i.check == c.check)
+                && i.answer
+                    .as_ref()
+                    .is_some_and(|a| a.kind == AnswerKind::Fixed)
+        });
+    case || thread
+}
 /// Whether a commit's checks, all read, include `name` passing, by every
 /// job of that name: one cancelled or skipped didn't pass.
 fn passes(ci: &crate::ci::CommitCi, name: &str) -> bool {

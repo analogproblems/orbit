@@ -798,6 +798,35 @@ fn a_failing_already_call_is_scored_by_how_both_ended() {
         ),
         couldnt
     );
+    // So does one the thread heard before the case did, for the check
+    // itself once it passed, or for a check still failing.
+    for failing in [false, true] {
+        let mut s = asked();
+        s.ops = vec![crate::ops::Thread {
+            problem_id: "p1".into(),
+            items: vec![crate::ops::Item {
+                check: if failing { "CI / Lint" } else { "CI / Rust" }.into(),
+                failing,
+                answer: Some(crate::ops::Answer {
+                    kind: crate::ops::AnswerKind::Fixed,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }];
+        let reads = [
+            (10, Some(Passing), ('5', Some(Failing))),
+            (20, Some(Passing), ('6', Some(Passing))),
+        ];
+        assert_eq!(after(&mut s, &reads), couldnt);
+        // Not for another check that passed.
+        s.ops[0].items[0].check = "CI / Lint".into();
+        s.ops[0].items[0].failing = false;
+        let mut other = asked();
+        other.ops = s.ops.clone();
+        assert_eq!(after(&mut other, &reads), already);
+    }
 
     // A check cancelled or skipped, or in a read with checks left to read,
     // didn't pass.
