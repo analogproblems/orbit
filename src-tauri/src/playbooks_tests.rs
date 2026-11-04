@@ -612,7 +612,30 @@ fn other_kinds_have_their_own_steps_and_bit_hears_whats_left() {
             "Orbit tells the agent in an issue.",
             "The agent takes it.",
             "A fix lands on the default branch, for the next version.",
-            "Every run of the release build passes.",
+            "Every run of the release build passes, or a newer version is tagged.",
+        ]
+    );
+    // A newer version took its place: its own build shows whether the
+    // fix is in.
+    let newer = Problem {
+        closed_at: Some(stamp(at(5))),
+        closed_reason: Some("v1.3.0 is the newest version tag now.".into()),
+        superseded_by: "v1.3.0".into(),
+        ..build.clone()
+    };
+    assert_eq!(
+        ends(&newer),
+        [
+            (
+                StepKind::Fixed,
+                Mark::Skipped,
+                "Orbit couldn't tell: v1.3.0 was tagged since, and its own build shows whether the fix is in.".into()
+            ),
+            (
+                StepKind::Passes,
+                Mark::Done,
+                "v1.3.0 is the newest version tag now.".into()
+            ),
         ]
     );
     // A release build passes at its tag's commit: no fix was needed.
@@ -957,8 +980,8 @@ fn kinds_only_you_can_fix_go_from_your_fix_to_done() {
         ),
         (
             &tag,
-            "You move v0.3.0 to a commit whose version files say its version.",
-            "v0.3.0 points at a commit whose version files say its version.",
+            "If nothing was released from v0.3.0 yet, you move it to a commit whose version files say its version; if a release is out, you leave it and release the next version.",
+            "v0.3.0 points at a commit whose version files say its version, or a newer version comes out on the right commit.",
         ),
         (
             &secrets,
@@ -1007,12 +1030,26 @@ fn kinds_only_you_can_fix_go_from_your_fix_to_done() {
             ),
         ]
     );
-    // The tag moved to the right commit, or it's gone.
+    // A tag nothing was released from moved to the right commit; one a
+    // release came out from stayed, and the next version came out on the
+    // right commit. Or it's gone.
     let reason = "v0.3.0 now points at 2222222, whose version files say its version.";
     assert_eq!(
         ends(&closed(&tag, B, reason)),
         [
             (Fixed, Done, "It points at 2222222 now.".into()),
+            (Passes, Done, reason.into()),
+        ]
+    );
+    let reason = "v0.4.0 came out on the right commit since, so Orbit stops raising v0.3.0.";
+    let released = Problem {
+        superseded_by: "v0.4.0".into(),
+        ..closed(&tag, "", reason)
+    };
+    assert_eq!(
+        ends(&released),
+        [
+            (Fixed, Done, "v0.4.0 came out on the right commit.".into()),
             (Passes, Done, reason.into()),
         ]
     );
@@ -1056,6 +1093,63 @@ fn checks_that_ran_again_with_the_base_need_no_merge() {
 
 /// A problem saved before playbooks still loads, and one saved with its
 /// playbook keeps it.
+/// What an older Orbit saved, from before it said which newer version
+/// took a problem's place or cleared the runs once none waited, reads as
+/// done once it's upgraded; what didn't end that way stays as it was.
+#[test]
+fn problems_an_older_orbit_closed_read_as_done() {
+    let saved = r#"[
+        {"id":"w1","key":"wait:a/b","kind":"waiting","repo":"a/b",
+         "waiting":[{"id":1,"name":"CI"}],"closedAt":"2026-11-03T10:00:00.000Z",
+         "closedReason":"No runs wait for a runner now."},
+        {"id":"w2","key":"wait:a/c","kind":"waiting","repo":"a/c",
+         "waiting":[{"id":2,"name":"CI"}],"closedAt":"2026-11-03T10:00:00.000Z",
+         "closedReason":"The repository was disconnected."},
+        {"id":"b1","key":"build:a/b:v1.0.0","kind":"release_build","repo":"a/b",
+         "branch":"v1.0.0","sha":"1111111111111111111111111111111111111111",
+         "closedAt":"2026-11-03T10:00:00.000Z",
+         "closedReason":"v1.1.0 is the newest version tag now."},
+        {"id":"t1","key":"tag:a/b:v0.3.0","kind":"tag","repo":"a/b","tag":"v0.3.0",
+         "closedAt":"2026-11-03T10:00:00.000Z",
+         "closedReason":"v0.4.0 came out on the right commit since, so Orbit stops raising v0.3.0."},
+        {"id":"t2","key":"tag:a/b:v0.5.0","kind":"tag","repo":"a/b","tag":"v0.5.0",
+         "closedAt":"2026-11-03T10:00:00.000Z",
+         "closedReason":"The tag v0.5.0 is gone."}
+    ]"#;
+    let mut s = Snapshot {
+        problems: serde_json::from_str(saved).unwrap(),
+        ..Default::default()
+    };
+    let passes = |s: &Snapshot| -> Vec<Mark> {
+        s.problems
+            .iter()
+            .map(|p| step(p, StepKind::Passes).mark)
+            .collect()
+    };
+    follow(&mut s);
+    assert_eq!(passes(&s), [Mark::Missed; 5]);
+    // Loading it upgrades it.
+    crate::engine::recover(&mut s).unwrap();
+    follow(&mut s);
+    assert_eq!(
+        passes(&s),
+        [
+            Mark::Done,
+            Mark::Missed,
+            Mark::Done,
+            Mark::Done,
+            Mark::Missed
+        ]
+    );
+    assert!(s.problems[0].waiting.is_empty());
+    assert_eq!(s.problems[1].waiting.len(), 1);
+    assert_eq!(s.problems[2].superseded_by, "v1.1.0");
+    assert_eq!(s.problems[3].superseded_by, "v0.4.0");
+    assert!(s.problems[4].superseded_by.is_empty());
+    // Once is enough.
+    assert!(!crate::problems::upgrade(&mut s.problems));
+}
+
 #[test]
 fn state_from_before_playbooks_still_loads() {
     let p: Problem = serde_json::from_str(r#"{"id":"p1","key":"ci:a/b"}"#).unwrap();

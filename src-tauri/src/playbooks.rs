@@ -83,8 +83,8 @@ pub enum Mark {
     Todo,
     Done,
     /// Skipped: not needed, as it stopped failing at the commit it failed
-    /// at, or Orbit couldn't tell whether it stayed fixed or what became of
-    /// each alert.
+    /// at, or Orbit couldn't tell whether it stayed fixed, what became of
+    /// each alert, or whether a newer version has the fix.
     Skipped,
     /// It didn't happen: it failed again, or Orbit stopped following it.
     Missed,
@@ -138,11 +138,13 @@ pub fn steps(p: &Problem) -> Vec<(StepKind, Who)> {
 
 /// Whether a problem closed with nothing left to do: its commit passed or
 /// was fixed (`Problem::passed`), GitHub said what became of each of its
-/// security alerts (`Problem::resolved`), or Orbit read every queued run
-/// and none waits for a runner.
+/// security alerts (`Problem::resolved`), a newer version took its place
+/// (`Problem::superseded`), or Orbit read every queued run and none waits
+/// for a runner.
 pub fn done(p: &Problem) -> bool {
     p.passed()
         || p.resolved()
+        || p.superseded()
         || (p.kind == ProblemKind::Waiting && !p.is_open() && p.waiting.is_empty())
 }
 
@@ -190,13 +192,16 @@ fn text(p: &Problem, step: StepKind, who: Who) -> String {
         (K::Security, Fixed) => "You fix each alert, or dismiss it on GitHub.".into(),
         (K::WorkflowRisks, Fixed) => format!("You fix each risky setting on {}.", on()),
         (K::Waiting, Fixed) => "You bring a runner online that can take the waiting runs.".into(),
+        // As `problems::tag_fix` says: a tag a release came out from stays.
         (K::Tag, Fixed) => format!(
-            "You move {} to a commit whose version files say its version.",
+            "If nothing was released from {} yet, you move it to a commit whose version files say its version; if a release is out, you leave it and release the next version.",
             plain(&clean(&p.tag, 100))
         ),
         (_, Fixed) => "A fix lands on the pull request.".into(),
         (K::DefaultBranch, Passes) => format!("Every check passes on {}.", on()),
-        (K::ReleaseBuild, Passes) => "Every run of the release build passes.".into(),
+        (K::ReleaseBuild, Passes) => {
+            "Every run of the release build passes, or a newer version is tagged.".into()
+        }
         (K::BaseMoved, Passes) => format!("Every check passes again with {}'s latest.", base()),
         (K::NoCi, Passes) => format!(
             "Orbit sees a workflow on {} that runs on pull requests.",
@@ -208,7 +213,7 @@ fn text(p: &Problem, step: StepKind, who: Who) -> String {
         (K::Versions, Passes) => format!("The version files agree on {}.", on()),
         (K::Waiting, Passes) => "No runs wait for a runner.".into(),
         (K::Tag, Passes) => format!(
-            "{} points at a commit whose version files say its version.",
+            "{} points at a commit whose version files say its version, or a newer version comes out on the right commit.",
             plain(&clean(&p.tag, 100))
         ),
         (_, Passes) => "Every check passes.".into(),
@@ -508,11 +513,28 @@ fn playbook(
 /// closed. A pull request that passed at the commit it failed at needed
 /// no fix only when its case saw each job that failed pass again in its
 /// own run (`cases::passed_again`), and one whose base moved on needed no
-/// merge, as its checks ran again with the base's latest.
+/// merge, as its checks ran again with the base's latest. A release build
+/// a newer version took the place of can't tell, and a tag is fixed by
+/// releasing the next version too.
 fn fixed_anyway(p: &Problem, case: Option<&Case>) -> (Mark, Option<String>, String) {
     let closed = p.closed_at.as_deref();
     let at = short(&p.closed_sha);
+    let newer = || clean(&p.superseded_by, 100);
     match p.kind {
+        // The newer version's own build says whether the fix is in it.
+        ProblemKind::ReleaseBuild if p.superseded() => mark(
+            Mark::Skipped,
+            closed,
+            format!(
+                "Orbit couldn't tell: {} was tagged since, and its own build shows whether the fix is in.",
+                newer()
+            ),
+        ),
+        ProblemKind::Tag if p.superseded() => mark(
+            Mark::Done,
+            closed,
+            format!("{} came out on the right commit.", newer()),
+        ),
         ProblemKind::BaseMoved if p.closed_sha == p.sha => mark(
             Mark::Skipped,
             closed,

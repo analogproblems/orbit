@@ -369,7 +369,7 @@ Every problem has a playbook: the steps to done, in order, and who does each. Or
 5. Every check passes on the branch.
 6. It stays fixed for 3 days (see [How it turned out](#how-it-turned-out)).
 
-A pull request's playbook is the same from Orbit telling the agent, in its comment, to every check passing, and so is a release build's, where the fix lands on the default branch for the next version and every run of the build passes, such as after a rerun. When a pull request's checks passed before its base moved on, the fix is the agent merging the base branch in, and done is every check passing again with the base branch's latest commit. When its checks ran again with the base branch's latest at the same commit, no merge was needed, so that step is skipped.
+A pull request's playbook is the same from Orbit telling the agent, in its comment, to every check passing, and so is a release build's, where the fix lands on the default branch for the next version and every run of the build passes, such as after a rerun, or a newer version is tagged. Then whether the fix is in shows in the newer version's own build, so the fix step is skipped, as Orbit couldn't tell. When a pull request's checks passed before its base moved on, the fix is the agent merging the base branch in, and done is every check passing again with the base branch's latest commit. When its checks ran again with the base branch's latest at the same commit, no merge was needed, so that step is skipped.
 
 Where Orbit tells the agent about another kind of problem, its playbook goes the same way, from Orbit telling the agent in an issue to done:
 
@@ -385,7 +385,7 @@ Where only you can fix it, or an issue would show others where the weakness is, 
 - **A secret GitHub found**: you revoke each secret, then close its alert on GitHub, and GitHub marks each alert resolved.
 - **Security alerts or risky workflow settings in a repository that isn't private**: you fix each one, or dismiss the alert on GitHub, and done is as above.
 - **Runs waiting for a runner**: you bring a runner online that can take them, and no runs wait (see [Runners](#runners)).
-- **A version tag on the wrong commit**: you move the tag to a commit whose version files say its version, and it points there (see [Version files](#version-files)).
+- **A version tag on the wrong commit**: if nothing was released from it yet, you move the tag to a commit whose version files say its version, and it points there; if a release is out, you leave it and release the next version, and done is that version coming out on the right commit (see [Version files](#version-files)).
 
 When no alert is open any more but GitHub didn't say what became of one, such as when GitHub no longer has it, the last step is skipped, as Orbit couldn't tell. When Orbit stops following a problem before it's done, such as when **Watch CI** is turned off or the tag is deleted, the last step is missed.
 

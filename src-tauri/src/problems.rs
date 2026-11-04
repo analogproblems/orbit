@@ -181,6 +181,11 @@ pub struct Problem {
     pub tag: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tag_says: Vec<String>,
+    /// For a release build or a version tag on the wrong commit: the newer
+    /// version that took its place, when it closed as that came out
+    /// (`Problem::superseded`).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub superseded_by: String,
     /// For something failing that passed before, as a problem of its own
     /// that closed by passing: when it passed, and at which commit.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -287,7 +292,19 @@ impl Problem {
         self.closed_at = Some(at.into());
         self.closed_reason = Some(reason);
         self.closed_sha.clear();
+        self.superseded_by.clear();
         self.alert_due = None;
+    }
+    /// Closes it as a newer version, `newer`, took its place.
+    fn supersede(&mut self, at: &str, newer: &str, reason: String) {
+        self.close(at, reason);
+        self.superseded_by = newer.into();
+    }
+    /// Whether it closed as a newer version took its place: a release
+    /// build whose tag isn't the newest any more, or a version tag on the
+    /// wrong commit once a higher version came out on the right one.
+    pub fn superseded(&self) -> bool {
+        !self.is_open() && !self.superseded_by.is_empty()
     }
     /// Whether it closed because its commit passed.
     pub fn passed(&self) -> bool {
@@ -1082,11 +1099,8 @@ pub fn see_tags(
             continue;
         };
         if let Some(newer) = newer_right(&v, &p.opened_at) {
-            let reason = format!(
-                "{} came out on the right commit since, so Orbit stops raising {}.",
-                newer.name, p.tag
-            );
-            p.close(&at, reason);
+            let reason = tag_superseded(&newer.name, &p.tag);
+            p.supersede(&at, &newer.name, reason);
         }
     }
 }
@@ -1104,6 +1118,46 @@ pub fn build_text(p: &Problem) -> String {
 }
 fn newest_now(tag: &str) -> String {
     format!("{tag} is the newest version tag now.")
+}
+fn tag_superseded(newer: &str, tag: &str) -> String {
+    format!("{newer} came out on the right commit since, so Orbit stops raising {tag}.")
+}
+const NO_RUNS_WAIT: &str = "No runs wait for a runner now.";
+
+/// Brings problems an older Orbit closed up to date, from the reason it
+/// gave as each closed, in its own words: runs waiting that closed with
+/// none left still list the runs, and a release build or version tag a
+/// newer version took the place of doesn't say which. Returns whether any
+/// changed.
+pub fn upgrade(problems: &mut [Problem]) -> bool {
+    let mut changed = false;
+    for p in problems.iter_mut().filter(|p| !p.is_open()) {
+        let reason = p.closed_reason.clone().unwrap_or_default();
+        match p.kind {
+            ProblemKind::Waiting if reason == NO_RUNS_WAIT && !p.waiting.is_empty() => {
+                p.waiting.clear();
+                changed = true;
+            }
+            ProblemKind::ReleaseBuild | ProblemKind::Tag if p.superseded_by.is_empty() => {
+                let newer = if p.kind == ProblemKind::Tag {
+                    reason
+                        .split_once(" came out on the right commit since")
+                        .map(|(newer, _)| newer)
+                        .filter(|newer| tag_superseded(newer, &p.tag) == reason)
+                } else {
+                    reason
+                        .strip_suffix(" is the newest version tag now.")
+                        .filter(|newer| *newer != p.branch && newest_now(newer) == reason)
+                };
+                if let Some(newer) = newer.filter(|n| !n.is_empty()) {
+                    p.superseded_by = newer.to_string();
+                    changed = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    changed
 }
 /// Closes the problem about a repository's release build once its tag is
 /// no longer the one to watch (`builds::target`), from a read of its tags
@@ -1135,7 +1189,7 @@ pub fn close_old_builds(
             _ if !listed && !read.more_tags => {
                 p.close(&at, format!("The tag {} is gone.", p.branch))
             }
-            Some(t) => p.close(&at, newest_now(&t.name)),
+            Some(t) => p.supersede(&at, &t.name, newest_now(&t.name)),
             None => {}
         }
     }
@@ -1152,7 +1206,7 @@ pub fn see_build(problems: &mut Vec<Problem>, b: &crate::builds::Build, now: Dat
         p.is_open() && p.kind == ProblemKind::ReleaseBuild && same_repo(&p.repo, &b.repo)
     }) {
         if p.key != key {
-            p.close(&at, newest_now(&b.tag));
+            p.supersede(&at, &b.tag, newest_now(&b.tag));
         }
     }
     see(
@@ -1189,7 +1243,7 @@ pub fn see_waiting(
         (true, Some(p)) if all => {
             // None waits now, as Orbit read them.
             p.waiting.clear();
-            p.close(&at, "No runs wait for a runner now.".into());
+            p.close(&at, NO_RUNS_WAIT.into());
         }
         // A run Orbit didn't read may still wait.
         (true, _) => {}
@@ -1501,6 +1555,7 @@ fn see(problems: &mut Vec<Problem>, seen: Seen, now: DateTime<Utc>) {
                     p.closed_at = None;
                     p.closed_reason = None;
                     p.closed_sha.clear();
+                    p.superseded_by.clear();
                     p.sha = seen.ci.sha.clone();
                     // It passed in between, so whatever broke it now came
                     // after that.

@@ -870,6 +870,8 @@ fn runs_waiting_for_a_runner_tell_you_once_and_close_when_none_wait() {
         problems[0].closed_reason.as_deref(),
         Some("No runs wait for a runner now.")
     );
+    // None waits now.
+    assert!(problems[0].waiting.is_empty());
     // Another repository's runs are another problem.
     see_waiting(&mut problems, "a/c", &[run(7, "CI")], true, at(24 * 60 + 5));
     assert_eq!(open(&problems)[0].key, "wait:a/c");
@@ -2210,6 +2212,9 @@ mod tags {
             problems[0].closed_reason.as_deref(),
             Some("v0.4.0 came out on the right commit since, so Orbit stops raising v0.3.0.")
         );
+        // A newer version took its place.
+        assert!(problems[0].superseded());
+        assert_eq!(problems[0].superseded_by, "v0.4.0");
         // Turning Watch CI off closes one still open, as for every CI problem.
         let mut problems = vec![];
         see_tags(&mut problems, &wrong, Some(&head("0.3.0")), at(0));
@@ -2297,6 +2302,7 @@ fn a_failing_release_build_tells_you_once_until_it_passes_or_a_newer_tag_comes()
         older.closed_reason.as_deref(),
         Some("v1.1.0 is the newest version tag now.")
     );
+    assert_eq!(older.superseded_by, "v1.1.0");
     // Nothing to do with a default branch's problem.
     observe(&mut problems, &failing(C, &["CI / Rust"]), &[], at(220));
     see_build(
@@ -2362,6 +2368,7 @@ fn a_release_build_closes_once_its_tag_is_no_longer_the_newest() {
         problems[0].closed_reason.as_deref(),
         Some("v1.1.0 is the newest version tag now.")
     );
+    assert_eq!(problems[0].superseded_by, "v1.1.0");
     see_build(&mut problems, &build("v1.0.0", red), at(300));
     close_old_builds(&mut problems, &tags(&[]), at(301));
     assert!(open(&problems).is_empty());

@@ -1474,6 +1474,9 @@ export interface Problem {
    * versions the files there say. */
   tag?: string;
   tagSays?: string[];
+  /** For a release build or a version tag on the wrong commit: the newer
+   * version that took its place, when it closed as that came out. */
+  supersededBy?: string;
   /** For something failing that passed before, as a problem of its own
    * that closed by passing: when it passed, and at which commit. */
   fixedBefore?: { at: string; sha: string } | null;
