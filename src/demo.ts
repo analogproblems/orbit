@@ -1774,6 +1774,11 @@ export function demoCi(
   // on, and a rebase waits.
   const at = failingPr.headSha.slice(0, 7);
   const where = `${failingPr.repo} #${failingPr.number}`;
+  // Read the clock once for what happened at the same time, as the check
+  // due later keeps the time of the one that held: two reads can be a
+  // millisecond apart, and the newest is listed first.
+  const turnedOn = ago(27 * 60);
+  const ran = ago(19);
   const outcomes: Outcome[] = [
     {
       id: "demo-outcome-1",
@@ -1782,7 +1787,7 @@ export function demoCi(
       what: "Orbit turned on secret scanning in acme/orbit.",
       expect: "it reads as on",
       url: "https://github.com/acme/orbit/settings/security_analysis",
-      at: ago(27 * 60),
+      at: turnedOn,
       verdict: "held",
       why: "It reads as on.",
       settledAt: ago(27 * 60 - 5),
@@ -1795,7 +1800,7 @@ export function demoCi(
       what: `Orbit reran CI / End-to-end at ${at} on ${where}.`,
       expect: "the job passes the second time",
       url: e2eFirst,
-      at: ago(19),
+      at: ran,
       verdict: "missed",
       why: "It failed again after the rerun.",
       settledAt: ago(9),
@@ -1808,7 +1813,7 @@ export function demoCi(
       what: `${failingPr.author} said I1 (CI / Frontend) is fixed in ${at} on ${where}.`,
       expect: `its checks pass at ${at}`,
       url: `${failingPr.url}#issuecomment-905`,
-      at: ago(19),
+      at: ran,
       verdict: "missed",
       why: `Its checks fail at ${at}.`,
       settledAt: ago(17),
@@ -1833,7 +1838,7 @@ export function demoCi(
       what: "Orbit turned on secret scanning in acme/orbit.",
       expect: "it's still on a week later",
       url: "https://github.com/acme/orbit/settings/security_analysis",
-      at: ago(27 * 60),
+      at: turnedOn,
       verdict: "waiting",
       due: ago(27 * 60 - 7 * 24 * 60),
     },

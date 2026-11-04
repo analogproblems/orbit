@@ -700,7 +700,11 @@ describe("operations page", () => {
   });
 
   it("lists how what Orbit and the agents did turned out, newest first", () => {
+    // In the same order however far the clock moves while the demo is made.
+    let t = Date.now();
+    const tick = vi.spyOn(Date, "now").mockImplementation(() => (t += 1));
     const s = freshDemo();
+    tick.mockRestore();
     show(s);
     const list = screen.getByRole("list", { name: "How it turned out" });
     const items = within(list).getAllByRole("listitem");
