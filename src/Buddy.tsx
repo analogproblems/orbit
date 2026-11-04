@@ -52,6 +52,7 @@ import {
   fixDescriptions,
   fixLabel,
   fixRuleLabels,
+  lookers,
   maxQuestion,
   memoryChangeText,
   memoryLimits,
@@ -78,6 +79,7 @@ import {
   type RuledAction,
   type RuledFix,
   type RuledPost,
+  type SecondLookBy,
   type SettingsPatch,
   type Snapshot,
 } from "./types";
@@ -832,11 +834,12 @@ function QuickCallSettings() {
         its yes, no or unsure.
       </Text>
       <Text color="secondary">
-        The same model can take a second look at something new {buddy.name}{" "}
-        posts in a repository where your GitHub account isn&rsquo;t an admin: is
-        it about that repository&rsquo;s problem, does it match what Orbit read,
-        does it hold nothing private, and is it needed now? Orbit posts it only
-        when all four answers are yes; otherwise it waits for you.
+        The same model, or whoever answers your questions, can take a second
+        look at something new {buddy.name} posts in a repository where your
+        GitHub account isn&rsquo;t an admin: is it about that repository&rsquo;s
+        problem, does it match what Orbit read, does it hold nothing private,
+        and is it needed now? Orbit posts it only when all four answers are yes;
+        otherwise it waits for you.
       </Text>
       {callQuestions.map(({ question, label, field }) => (
         <VStack gap={2} key={question}>
@@ -876,9 +879,34 @@ function QuickCallSettings() {
         />
         <SaveFeedback saveKey="buddy.secondLook" />
       </VStack>
+      {buddy.secondLook !== "off" && (
+        <VStack gap={2}>
+          <Selector
+            label="Who takes the second look"
+            description={
+              buddy.secondLookBy === "answerer"
+                ? `${buddyAnswerers[buddy.answerer]} answers your questions, so it takes the look, with the model chosen for it. It can read nothing but the post and what Orbit read, and its answer is the same four yes, no or unsure.`
+                : "The quick call model on Ollama takes the look, as it makes the quick calls."
+            }
+            value={buddy.secondLookBy}
+            isDisabled={saves["buddy.secondLookBy"]?.state === "saving"}
+            options={(Object.entries(lookers) as [SecondLookBy, string][]).map(
+              ([value, label]) => ({ value, label }),
+            )}
+            onChange={(by) =>
+              void updateSettings(
+                { buddy: { secondLookBy: by as SecondLookBy } },
+                "buddy.secondLookBy",
+              )
+            }
+          />
+          <SaveFeedback saveKey="buddy.secondLookBy" />
+        </VStack>
+      )}
       {(buddy.luckCall !== "off" ||
         buddy.faultCall !== "off" ||
-        buddy.secondLook !== "off") && (
+        (buddy.secondLook !== "off" &&
+          buddy.secondLookBy === "quick_model")) && (
         <OllamaSettings
           field="quickModel"
           address={buddy.answerer !== "ollama"}

@@ -1,6 +1,8 @@
 //! The second look: before Bit posts a new comment or issue in a
 //! repository where Orbit's sign-in isn't an admin, so someone else runs
-//! it, a model answers four yes-or-no questions about the post (`QUESTIONS`).
+//! it, a model answers four yes-or-no questions about the post (`QUESTIONS`):
+//! the quick call model on Ollama, or whoever answers the questions you
+//! type, as you choose (`Buddy.second_look_by`, `who`).
 //! Code turns the answers into a verdict: post it only when all four are
 //! yes, otherwise wait for you.
 //!
@@ -32,7 +34,9 @@
 //! GitHub or posts.
 use crate::{
     broker::clean,
+    buddy::Answerer,
     calls::Said,
+    models::ModelSelection,
     ops::{self, Action, Planned, Thread, ThreadKind},
     problems::{stamp, time},
     types::{credential_kinds, same_repo, Snapshot},
@@ -41,8 +45,10 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-/// How long Orbit waits for the model's answers.
+/// How long Orbit waits for the answers: from Ollama, and from Bit's
+/// answerer, which may start a program or a thread first.
 pub const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+pub const BIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 /// How long a look is kept, and the most kept, the newest first.
 pub const KEEP_DAYS: i64 = 90;
 pub const MAX_LOOKS: usize = 200;
@@ -98,9 +104,10 @@ pub struct Look {
     /// hadn't said.
     pub permission: String,
     pub asked_at: String,
-    /// `watch` or `on`, when Orbit looked, and the model it asked; empty
-    /// when no model was chosen.
+    /// `watch` or `on`, when Orbit looked, who it asked, such as Ollama
+    /// or Codex, and the model; empty when no model was chosen.
     pub mode: String,
+    pub by: String,
     pub model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub answers: Option<Answers>,
@@ -141,9 +148,11 @@ pub fn mode(s: &Snapshot) -> &str {
         "off"
     }
 }
-/// Whether Orbit takes second looks on Ollama, with a model chosen.
+/// Whether Orbit takes second looks with the quick call model on Ollama,
+/// with a model chosen.
 pub fn used(s: &Snapshot) -> bool {
-    mode(s) != "off" && !s.settings.buddy.quick_model.is_empty()
+    let buddy = &s.settings.buddy;
+    mode(s) != "off" && buddy.second_look_by == "quick_model" && !buddy.quick_model.is_empty()
 }
 /// What GitHub said Orbit's sign-in may do in `repo`, or empty.
 pub fn permission<'a>(s: &'a Snapshot, repo: &str) -> &'a str {
@@ -166,6 +175,49 @@ fn post_hash(p: &Planned) -> String {
         .collect()
 }
 
+/// Who takes a look: the quick call model on Ollama, or whoever answers
+/// the questions you type (`Buddy.second_look_by`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Who {
+    Quick,
+    Bit(Answerer),
+}
+impl Who {
+    /// Its name in messages, such as Ollama or Codex.
+    pub fn label(self) -> &'static str {
+        match self {
+            Who::Quick => "Ollama",
+            Who::Bit(a) => a.label(),
+        }
+    }
+}
+/// Who takes the second look as set now, and with which model; or why it
+/// can't now (no model chosen, or Bit's answerer isn't ready).
+pub fn who(s: &Snapshot) -> (Who, ModelSelection, Option<String>) {
+    let buddy = &s.settings.buddy;
+    if buddy.second_look_by == "answerer" {
+        let by = buddy.answered_by();
+        let selection = crate::guide::bit_selection(s, by);
+        let why = crate::guide::bit_ready(s, by).err().map(|e| {
+            format!(
+                "{} answers your questions, but isn't ready: {}",
+                by.label(),
+                crate::text::sentence(&clean(&e, 300))
+            )
+        });
+        return (Who::Bit(by), selection, why);
+    }
+    let selection = ModelSelection {
+        model: buddy.quick_model.clone(),
+        effort: String::new(),
+    };
+    let why = buddy
+        .quick_model
+        .is_empty()
+        .then(|| "No quick call model is chosen in Settings, so Orbit couldn't ask.".to_string());
+    (Who::Quick, selection, why)
+}
+
 /// A look Orbit plans to take of a post.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Wanted {
@@ -173,42 +225,40 @@ pub struct Wanted {
     pub post: String,
     pub permission: String,
     pub on: bool,
-    /// Ollama's address, the model and what it is asked; none when Orbit
-    /// can't ask, with why in `why`.
-    pub ask: Option<Ask>,
-    pub why: String,
-}
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Ask {
+    /// Who answers, with which model.
+    pub by: Who,
+    pub selection: ModelSelection,
+    /// Ollama's address, for Ollama, and what the model is asked; none
+    /// when Orbit can't ask, with why in `why`.
     pub url: String,
-    pub model: String,
-    pub prompt: String,
+    pub prompt: Option<String>,
+    pub why: String,
 }
 impl Wanted {
     /// Whether two plans are for the same look, set up the same way, as
     /// the time in what Orbit read moves on while the model answers.
     pub fn same(&self, other: &Wanted) -> bool {
-        let at = |w: &Wanted| w.ask.as_ref().map(|a| (a.url.clone(), a.model.clone()));
-        (
-            &self.thread,
-            &self.post,
-            &self.permission,
-            self.on,
-            &self.why,
-        ) == (
-            &other.thread,
-            &other.post,
-            &other.permission,
-            other.on,
-            &other.why,
-        ) && at(self) == at(other)
+        let key = |w: &Wanted| {
+            (
+                w.thread.clone(),
+                w.post.clone(),
+                w.permission.clone(),
+                w.on,
+                w.by,
+                w.selection.clone(),
+                w.url.clone(),
+                w.prompt.is_some(),
+                w.why.clone(),
+            )
+        };
+        key(self) == key(other)
     }
 }
 
 /// The look a planned write needs before it goes: a new post, where
 /// Orbit's sign-in isn't an admin, while the second look isn't off, and
-/// it hasn't had one. In Watch with no model, Orbit takes none; in On with
-/// no model, the look is recorded without asking, so the post waits.
+/// it hasn't had one. In Watch, Orbit takes none while it can't ask (`who`);
+/// in On, the look is then recorded without asking, so the post waits.
 pub fn wanted(s: &Snapshot, p: &Planned, now: DateTime<Utc>) -> Option<Wanted> {
     if !new_post(p.action) {
         return None;
@@ -224,32 +274,36 @@ pub fn wanted(s: &Snapshot, p: &Planned, now: DateTime<Utc>) -> Option<Wanted> {
     if had {
         return None;
     }
-    let buddy = &s.settings.buddy;
     let on = mode == "on";
-    if buddy.quick_model.is_empty() && !on {
+    let (by, selection, cant) = who(s);
+    if cant.is_some() && !on {
         return None;
     }
+    let buddy = &s.settings.buddy;
+    let url = match by {
+        Who::Quick | Who::Bit(Answerer::Ollama) => buddy.ollama_url.clone(),
+        Who::Bit(_) => String::new(),
+    };
     let mut w = Wanted {
         thread: t.key.clone(),
         post,
         permission: permission.to_string(),
         on,
-        ask: None,
+        by,
+        selection,
+        url,
+        prompt: None,
         why: String::new(),
     };
     let text = format!("{}\n{}", p.title, p.body);
-    w.why = if buddy.quick_model.is_empty() {
-        "No quick call model is chosen in Settings, so Orbit couldn't ask.".into()
+    w.why = if let Some(why) = cant {
+        why
     } else if !credential_kinds(&text).is_empty() {
         "It looks like it holds a credential, so Orbit didn't send it to the model.".into()
     } else if unmarked(&p.body).chars().count() > MAX_POST {
         "It's too long for the model to read whole.".into()
     } else {
-        w.ask = Some(Ask {
-            url: buddy.ollama_url.clone(),
-            model: buddy.quick_model.clone(),
-            prompt: prompt(s, t, p, now),
-        });
+        w.prompt = Some(prompt(s, t, p, now));
         String::new()
     };
     Some(w)
@@ -416,15 +470,15 @@ pub fn schema() -> Value {
         "additionalProperties": false,
     })
 }
-/// The model's answers, from what Ollama sent back.
+/// The model's answers, from what it sent back.
 pub fn parse(content: &str) -> Result<Answers, String> {
     let v: Value = serde_json::from_str(content.trim())
-        .map_err(|_| "Ollama's answer wasn't in the shape asked for.".to_string())?;
+        .map_err(|_| "The model's answer wasn't in the shape asked for.".to_string())?;
     let said = |name: &str| match v[name].as_str() {
         Some("yes") => Ok(Said::Yes),
         Some("no") => Ok(Said::No),
         Some("unsure") => Ok(Said::Unsure),
-        _ => Err("Ollama's answer wasn't yes, no or unsure to each question.".to_string()),
+        _ => Err("The model's answer wasn't yes, no or unsure to each question.".to_string()),
     };
     Ok(Answers {
         about: said("about")?,
@@ -503,7 +557,8 @@ pub fn record(
         permission: w.permission.clone(),
         asked_at: stamp(now),
         mode: if w.on { "on" } else { "watch" }.into(),
-        model: w.ask.as_ref().map(|a| a.model.clone()).unwrap_or_default(),
+        by: w.by.label().into(),
+        model: w.selection.model.clone(),
         error: answers.as_ref().err().map(|e| clean(e, 300)),
         answers: answers.ok(),
         verdict,

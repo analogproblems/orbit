@@ -1631,11 +1631,59 @@ describe("Bit", () => {
     expect(
       screen.queryByRole("combobox", { name: /^Quick call model/ }),
     ).toBeNull();
+    expect(
+      screen.queryByRole("combobox", { name: /^Who takes the second look/ }),
+    ).toBeNull();
     expect(buddyOf(snapshot.settings)).toMatchObject({
       luckCall: "off",
       faultCall: "off",
       secondLook: "off",
     });
+  });
+
+  it("chooses who takes the second look in Settings", async () => {
+    snapshot.ollama = { ready: true };
+    snapshot.ollamaModels = ["llama3.2:3b", "qwen3:8b"];
+    snapshot.settings.buddy = {
+      ...buddyOf(snapshot.settings),
+      quickModel: "llama3.2:3b",
+      luckCall: "off",
+      faultCall: "off",
+      secondLook: "on",
+    };
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Settings" }));
+    await openSettingsTab("Buddy");
+    await screen.findByRole("combobox", { name: /^Who takes the second look/ });
+    // Whoever answers your questions can take it instead, with no quick
+    // call model needed.
+    expect(
+      screen.getByText(
+        "The quick call model on Ollama takes the look, as it makes the quick calls.",
+      ),
+    ).toBeTruthy();
+    await chooseOption(
+      screen.getByRole("combobox", { name: /^Who takes the second look/ }),
+      "Whoever answers your questions",
+    );
+    expect(invoke).toHaveBeenCalledWith("update_settings", {
+      patch: { buddy: { secondLookBy: "answerer" } },
+    });
+    expect(
+      await screen.findByText(
+        /^Codex answers your questions, so it takes the look/,
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("combobox", { name: /^Quick call model/ }),
+    ).toBeNull();
+    await chooseOption(
+      screen.getByRole("combobox", { name: /^Who takes the second look/ }),
+      "The quick call model on Ollama",
+    );
+    expect(
+      await screen.findByRole("combobox", { name: /^Quick call model/ }),
+    ).toBeTruthy();
   });
 
   it("says when the computer running Orbit has nowhere to keep API keys", async () => {

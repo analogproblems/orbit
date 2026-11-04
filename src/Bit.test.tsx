@@ -20,6 +20,7 @@ import {
   buddyMood,
   buddyTones,
   callModes,
+  lookers,
   defaultBuddy,
   ENOUGH_CALLS,
   fixLabels,
@@ -141,8 +142,12 @@ describe("Bit", () => {
     expect(describePatch({ buddy: { secondLook: "on" } }, [])).toBe(
       "Second look before posting: On",
     );
+    expect(describePatch({ buddy: { secondLookBy: "answerer" } }, [])).toBe(
+      "Who takes the second look: Whoever answers your questions",
+    );
     expect(Object.keys(fixRuleLabels)).toEqual(options.rules);
     expect(Object.keys(callModes)).toEqual(options.callModes);
+    expect(Object.keys(lookers)).toEqual(options.lookers);
     expect(ENOUGH_CALLS).toBe(options.enoughCalls);
     expect(Object.keys(fixLabels)).toEqual(options.fixes);
     expect(Object.keys(questionLabels)).toEqual(options.questions);

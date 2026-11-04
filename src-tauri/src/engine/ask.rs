@@ -420,18 +420,78 @@ impl Engine {
         instructions: &str,
         selection: &ModelSelection,
     ) -> Result<(), String> {
+        let (running, init, outputs) = self.start_cli(
+            by,
+            "bit",
+            prompt,
+            instructions,
+            &ask::output_schema(),
+            selection,
+        )?;
+        // A question that was dropped meanwhile drops its process too.
+        self.asking_mut(note, |a| a.running = Some(running))
+            .ok_or("The question was dropped.")?;
+        let e = self.clone();
+        let model = selection.model.clone();
+        tokio::spawn(async move {
+            let reply = cli_answer(by, &model, init, outputs).await;
+            e.answer_done(note, reply).await;
+        });
+        Ok(())
+    }
+    /// Asks Claude or Antigravity one thing, with no tools and none of
+    /// your settings, as Bit's questions are, answering in `schema`, and
+    /// waits up to `timeout` for the answer as text.
+    pub(super) async fn cli_once(
+        &self,
+        by: Provider,
+        prompt: &str,
+        instructions: &str,
+        schema: &Value,
+        selection: &ModelSelection,
+        timeout: std::time::Duration,
+    ) -> Result<String, String> {
+        let (running, init, outputs) =
+            self.start_cli(by, "looks", prompt, instructions, schema, selection)?;
+        let reply = tokio::time::timeout(timeout, cli_answer(by, &selection.model, init, outputs))
+            .await
+            .unwrap_or_else(|_| Err(format!("{} took too long.", by.label())));
+        // Stops it, if it still runs.
+        drop(running);
+        reply
+    }
+    /// Starts Claude or Antigravity on one prompt in Orbit's folder `name`
+    /// (for Antigravity, a fresh one), as `start_cli_answer` and `cli_once`
+    /// ask.
+    #[allow(clippy::type_complexity)]
+    fn start_cli(
+        &self,
+        by: Provider,
+        name: &str,
+        prompt: &str,
+        instructions: &str,
+        schema: &Value,
+        selection: &ModelSelection,
+    ) -> Result<
+        (
+            crate::cli::Running,
+            tokio::sync::oneshot::Receiver<Result<Init, String>>,
+            tokio::sync::mpsc::Receiver<Output>,
+        ),
+        String,
+    > {
         let folder = match by {
             Provider::Antigravity => {
-                let folder = self.root.join("bit-antigravity");
+                let folder = self.root.join(format!("{name}-antigravity"));
                 if folder.exists() {
                     std::fs::remove_dir_all(&folder).map_err(|e| e.to_string())?;
                 }
                 folder
             }
-            _ => self.root.join("bit"),
+            _ => self.root.join(name),
         };
         std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
-        let (running, init, outputs) = match by {
+        Ok(match by {
             Provider::Antigravity => {
                 let setup = self.antigravity.lock().unwrap().clone();
                 // Antigravity has no separate instructions, so they lead
@@ -444,7 +504,7 @@ impl Engine {
                     model: selection.model.clone(),
                     effort: selection.effort.clone(),
                     prompt: format!("{instructions}\n\n{prompt}"),
-                    schema: Some(ask::output_schema()),
+                    schema: Some(schema.clone()),
                     tool: None,
                 };
                 antigravity::start(&setup, &turn)?
@@ -454,22 +514,12 @@ impl Engine {
                 let args = claude::write_up_args(
                     &selection.model,
                     &selection.effort,
-                    &ask::output_schema(),
+                    schema,
                     instructions,
                 );
                 claude::start_write_up(&launcher, args, &folder, prompt.to_string())?
             }
-        };
-        // A question that was dropped meanwhile drops its process too.
-        self.asking_mut(note, |a| a.running = Some(running))
-            .ok_or("The question was dropped.")?;
-        let e = self.clone();
-        let model = selection.model.clone();
-        tokio::spawn(async move {
-            let reply = cli_answer(by, &model, init, outputs).await;
-            e.answer_done(note, reply).await;
-        });
-        Ok(())
+        })
     }
     /// Lists Ollama's models at Bit's address while Ollama answers Bit, or
     /// makes quick calls (`crate::calls`), recording whether it can.
