@@ -253,48 +253,46 @@ fn from_thread(t: Option<&Thread>, sha: &str) -> (String, bool, bool, String) {
     (step, reran, !answers.is_empty(), fix)
 }
 
-/// Whether the checks a case last saw failing passed at the commit they
-/// failed at, as Orbit last read it: each one by its name passed there,
-/// and none still fails or runs, from a read that saw every check; for a
-/// release build, the run of each succeeded, and every run is a success
-/// or skipped (`builds::publishable`). A check GitHub cancelled or skipped
-/// doesn't fail, so its problem closes, but it didn't pass either.
+/// Whether the checks a problem last saw failing passed at the commit they
+/// failed at, as Orbit last read it. GitHub reruns a job as a new attempt
+/// in the same workflow run, so each failed job counts only by its own
+/// run, from its link: for a default branch or a pull request, the one
+/// check by its name in that run passed there (with no run in its link,
+/// the one check by its name), none by its name still fails or runs, and
+/// the read saw every check; for a release build, its run succeeded, and
+/// every run is a success or skipped (`builds::publishable`). Two checks
+/// by one name in its run can't be told apart, and a check GitHub
+/// cancelled or skipped doesn't fail, so its problem closes, but it didn't
+/// pass either.
 fn passed_again(
     ci: &[crate::ci::RepoCi],
     builds: &[crate::builds::Build],
     p: &Problem,
-    c: &Case,
+    number: Option<u64>,
 ) -> bool {
-    let names = if c.last.is_empty() {
-        &c.checks
-    } else {
-        &c.last
-    };
-    if names.is_empty() {
+    use crate::outcomes::run_of;
+    if p.failing.is_empty() {
         return false;
     }
     if p.kind == ProblemKind::ReleaseBuild {
-        // A failed job is named for its run: `Run / job`, or the run's.
-        let of = |name: &str, run: &crate::builds::Run| {
-            let run = clean(&run.name, 160);
-            !run.is_empty() && (name == run || name.starts_with(&format!("{run} / ")))
-        };
         return builds.iter().any(|b| {
             same_repo(&b.repo, &p.repo)
                 && b.tag == p.branch
                 && b.sha == p.sha
                 && crate::builds::publishable(b).is_ok()
-                && names.iter().all(|name| {
-                    b.runs
-                        .iter()
-                        .any(|run| of(name, run) && run.conclusion == "success")
+                && p.failing.iter().all(|f| {
+                    run_of(&f.url).is_some_and(|id| {
+                        b.runs
+                            .iter()
+                            .any(|run| run.id == id && run.conclusion == "success")
+                    })
                 })
         });
     }
     let Some(read) = ci.iter().find(|r| same_repo(&r.repo, &p.repo)) else {
         return false;
     };
-    let commit = match c.number {
+    let commit = match number {
         Some(n) => read.pull(n).map(|pull| &pull.ci),
         None => Some(&read.head),
     };
@@ -303,17 +301,24 @@ fn passed_again(
     else {
         return false;
     };
-    names.iter().all(|name| {
-        let states: Vec<CiState> = commit
+    p.failing.iter().all(|failed| {
+        let same: Vec<&(crate::ci::Check, CiState)> = commit
             .checks
             .iter()
-            .filter(|(check, _)| clean(&check.name, 160) == *name)
-            .map(|(_, state)| *state)
+            .filter(|(check, _)| check.name == failed.name)
             .collect();
-        states.contains(&CiState::Passing)
-            && !states
+        let busy = same
+            .iter()
+            .any(|(_, s)| matches!(s, CiState::Failing | CiState::Running));
+        let own: Vec<CiState> = match run_of(&failed.url) {
+            Some(run) => same
                 .iter()
-                .any(|s| matches!(s, CiState::Failing | CiState::Running))
+                .filter(|(check, _)| run_of(&check.url) == Some(run))
+                .map(|(_, s)| *s)
+                .collect(),
+            None => same.iter().map(|(_, s)| *s).collect(),
+        };
+        !busy && own == [CiState::Passing]
     })
 }
 
@@ -346,7 +351,7 @@ pub fn record(s: &mut Snapshot) -> bool {
             && s.cases[i].end == End::Open
             && p.passed()
             && p.closed_sha == p.sha
-            && passed_again(&s.ci, &s.builds, p, &s.cases[i]);
+            && passed_again(&s.ci, &s.builds, p, s.cases[i].number);
         let c = &mut s.cases[i];
         let before = c.clone();
         if p.is_open() {

@@ -29,6 +29,10 @@ fn check(name: &str) -> Check {
         url: String::new(),
     }
 }
+/// A job's link: `.../actions/runs/<run>/job/<id>`.
+fn job(run: u64, id: u64) -> String {
+    format!("https://github.com/a/b/actions/runs/{run}/job/{id}")
+}
 fn main_ci(sha: &str, state: CiState, failing: &[&str]) -> RepoCi {
     RepoCi {
         repo: "a/b".into(),
@@ -306,25 +310,20 @@ fn a_failed_check_orbit_didnt_see_pass_isnt_bad_luck() {
     assert!(learn(&mut s, now()).is_empty());
 
     // A release build, by the run each failed job is in.
-    let build = |conclusion: &str| crate::builds::Build {
+    let run = |id: u64, name: &str, conclusion: &str| crate::builds::Run {
+        id,
+        name: name.into(),
+        url: format!("https://github.com/a/b/actions/runs/{id}"),
+        state: CiState::Passing,
+        conclusion: conclusion.into(),
+        ..Default::default()
+    };
+    let build = |runs: Vec<crate::builds::Run>| crate::builds::Build {
         repo: "a/b".into(),
         tag: "v1.0.0".into(),
         sha: A.into(),
         read_at: stamp(at(30)),
-        runs: vec![
-            crate::builds::Run {
-                name: "Release".into(),
-                state: CiState::Passing,
-                conclusion: conclusion.into(),
-                ..Default::default()
-            },
-            crate::builds::Run {
-                name: "Docs".into(),
-                state: CiState::Passing,
-                conclusion: "success".into(),
-                ..Default::default()
-            },
-        ],
+        runs,
         ..Default::default()
     };
     let release = |b: crate::builds::Build| {
@@ -333,7 +332,10 @@ fn a_failed_check_orbit_didnt_see_pass_isnt_bad_luck() {
             kind: ProblemKind::ReleaseBuild,
             key: "build:a/b:v1.0.0".into(),
             branch: "v1.0.0".into(),
-            failing: vec![check("Release / build")],
+            failing: vec![Check {
+                name: "Release / Linux / build".into(),
+                url: job(11, 5),
+            }],
             ..problem("p1", A)
         });
         record(&mut s);
@@ -342,15 +344,89 @@ fn a_failed_check_orbit_didnt_see_pass_isnt_bad_luck() {
         record(&mut s);
         s.cases[0].end
     };
-    assert_eq!(release(build("success")), End::Again);
-    assert_eq!(release(build("skipped")), End::Unclear);
+    let docs = run(13, "Docs", "success");
+    assert_eq!(
+        release(build(vec![
+            run(11, "Release / Linux", "success"),
+            docs.clone()
+        ])),
+        End::Again
+    );
+    assert_eq!(
+        release(build(vec![
+            run(11, "Release / Linux", "skipped"),
+            docs.clone()
+        ])),
+        End::Unclear
+    );
+    // Its own workflow's newest run was skipped, and another workflow
+    // whose name starts the same passed: that isn't its run passing.
+    assert_eq!(
+        release(build(vec![
+            run(12, "Release / Linux", "skipped"),
+            run(14, "Release", "success")
+        ])),
+        End::Unclear
+    );
     assert_eq!(
         release(crate::builds::Build {
             tag: "v1.1.0".into(),
-            ..build("success")
+            ..build(vec![run(11, "Release / Linux", "success")])
         }),
         End::Unclear
     );
+}
+
+/// GitHub reruns a job as a new attempt in its workflow run, so a check
+/// passing counts only in the failed job's own run, and only when it is
+/// the one check by its name there.
+#[test]
+fn a_check_counts_as_passing_again_only_in_the_failed_jobs_own_run() {
+    use CiState::{None as Neither, Passing};
+    let ending = |checks: Vec<(Check, CiState)>| {
+        let mut s = Snapshot::default();
+        s.problems.push(Problem {
+            failing: vec![Check {
+                name: RUST.into(),
+                url: job(7, 6),
+            }],
+            ..problem("p1", A)
+        });
+        record(&mut s);
+        close(&mut s.problems[0], 30, A, "Passed at 1111111.");
+        let mut ci = read(A, &[]);
+        ci.head.checks = checks;
+        s.ci = vec![ci];
+        record(&mut s);
+        s.cases[0].end
+    };
+    let at = |name: &str, run: u64, id: u64, state: CiState| {
+        (
+            Check {
+                name: name.into(),
+                url: job(run, id),
+            },
+            state,
+        )
+    };
+    // Its rerun passed.
+    assert_eq!(ending(vec![at(RUST, 7, 9, Passing)]), End::Again);
+    // Two jobs in its run share its name: one passed, but the rerun was
+    // cancelled or skipped, and they can't be told apart.
+    assert_eq!(
+        ending(vec![at(RUST, 7, 8, Passing), at(RUST, 7, 9, Neither)]),
+        End::Unclear
+    );
+    assert_eq!(
+        ending(vec![at(RUST, 7, 8, Passing), at(RUST, 7, 9, Passing)]),
+        End::Unclear
+    );
+    // One by its name passed in another run, and its own didn't.
+    assert_eq!(
+        ending(vec![at(RUST, 8, 9, Passing), at(RUST, 7, 10, Neither)]),
+        End::Unclear
+    );
+    assert_eq!(ending(vec![at(RUST, 8, 9, Passing)]), End::Unclear);
 }
 
 /// Orbit says it reran a check only when it did: one it found already

@@ -612,7 +612,7 @@ fn build_rerun(s: &Snapshot, t: &Thread, o: &Outcome) -> Found {
     }
 }
 /// The workflow run a job's link is in: `.../actions/runs/<id>/job/<id>`.
-fn run_of(job: &str) -> Option<u64> {
+pub(crate) fn run_of(job: &str) -> Option<u64> {
     job.split("/actions/runs/")
         .nth(1)?
         .split('/')
