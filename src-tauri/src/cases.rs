@@ -334,7 +334,7 @@ pub fn follow(s: &mut Snapshot, now: DateTime<Utc>) -> (bool, Vec<Lesson>) {
     (changed, learned)
 }
 
-fn pr_number(pr_id: Option<&str>) -> Option<u64> {
+pub(crate) fn pr_number(pr_id: Option<&str>) -> Option<u64> {
     pr_id?.rsplit_once('#')?.1.parse().ok()
 }
 

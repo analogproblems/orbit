@@ -20,6 +20,8 @@ import { AskWhy } from "./AskWhy";
 import {
   alertNeedsYou,
   buddyOf,
+  callScore,
+  callsReady,
   checkNames,
   lastChange,
   ownerOf,
@@ -46,6 +48,7 @@ import {
   type Outcome,
   type PlaybookMark,
   type Problem,
+  type QuickCall,
   type RepoCi,
   type RepoReleases,
   type RepoSettings,
@@ -417,6 +420,27 @@ export function answerText(t: OpsThread, item: OpsItem, p?: Problem) {
 }
 
 /** Why a failing check failed, as Orbit read its job's log. */
+/** What a quick call's answer means, in a line. */
+const saidText = {
+  yes: "bad luck",
+  no: "not bad luck",
+  unsure: "unsure",
+} as const;
+/** What Ollama's quick call said about a failing job, and whether it
+ * decides, while Orbit has one. */
+export function callLine(s: Snapshot, f: CiFailure) {
+  const c = s.calls?.find((c) => c.url === f.url);
+  if (!c) return undefined;
+  const buddy = buddyOf(s.settings);
+  const said = c.said ? saidText[c.said] : "no answer";
+  const decides =
+    buddy.enabled && buddy.luckCall === "on" && buddy.quickModel !== "";
+  const who =
+    decides && (c.said === "yes" || c.said === "no")
+      ? "It decides."
+      : "The rules decide.";
+  return `Quick call on Ollama: ${said}. ${who}`;
+}
 export function whyText(f: CiFailure) {
   if (f.held)
     return `${f.check}: Orbit held back its log, as it looks like it holds a secret.`;
@@ -487,12 +511,14 @@ function Why({ s, p, t }: { s: Snapshot; p: Problem; t?: OpsThread }) {
   return read.map((f) => {
     const item = t?.items.find((i) => i.failing && i.url === f.url);
     const rerun = item && rerunText(s, p, item);
+    const call = callLine(s, f);
     return (
       <VStack key={`${f.check} ${f.url}`} gap={1}>
         <Text color="secondary">{whyText(f)}</Text>
         {f.flaky && (
           <Text color="secondary">Looks like bad luck: {f.flaky}</Text>
         )}
+        {call && <Text color="secondary">{call}</Text>}
         {f.quota && <Text color="secondary">{quotaText}</Text>}
         {rerun && <Text color="secondary">{rerun}</Text>}
         {!f.held && !f.error && f.lines.length > 0 && (
@@ -2137,6 +2163,105 @@ function TurnedOut() {
   );
 }
 
+/** How a quick call turned out, as a dot: whether Ollama was right, or
+ * Orbit still checks or couldn't tell. */
+function callDot(c: QuickCall): {
+  variant: "success" | "error" | "neutral" | "warning";
+  label: string;
+} {
+  if (!c.settledAt) return { variant: "neutral", label: "Waiting" };
+  if (c.truth === undefined || c.truth === null)
+    return { variant: "warning", label: "Couldn’t tell" };
+  if (c.said !== "yes" && c.said !== "no")
+    return { variant: "warning", label: "No clear answer" };
+  return (c.said === "yes") === c.truth
+    ? { variant: "success", label: "Ollama was right" }
+    : { variant: "error", label: "Ollama was wrong" };
+}
+/** What the rules and Ollama said about a job, and how it turned out. */
+export function callText(c: QuickCall) {
+  const said = c.said
+    ? saidText[c.said]
+    : `no answer${c.error ? ` (${c.error})` : ""}`;
+  const rules = c.rules ? "bad luck" : "not bad luck";
+  const turned = c.settledAt ? c.how : "Orbit checks how it turns out.";
+  return `Rules: ${rules}. Ollama: ${said}. ${turned}`;
+}
+/** The scorecard in plain words. */
+export function scoreLines(calls: QuickCall[]) {
+  const n = callScore(calls);
+  const times = (k: number) => (k === 1 ? "1 call" : `${k} calls`);
+  const lines = [
+    `${times(n.asked)} so far. Ollama agreed with the rules on ${n.agreed}, was unsure on ${n.unsure} and didn’t answer ${n.noAnswer}.`,
+  ];
+  if (n.scored)
+    lines.push(
+      `Of the ${times(n.scored)} Orbit could check, the rules were right on ${n.rulesRight}, and Ollama on ${n.modelRight} of the ${n.modelScored} it answered clearly.`,
+    );
+  if (callsReady(n))
+    lines.push(
+      "Ollama has been right at least as often as the rules on enough calls. You can let it decide in Settings, under Buddy.",
+    );
+  return lines;
+}
+/** Bit's quick calls on Ollama, newest first, with the scorecard. */
+function QuickCalls() {
+  const { snapshot: s } = useOrbit();
+  const calls = [...(s.calls ?? [])].sort((a, b) =>
+    b.askedAt.localeCompare(a.askedAt),
+  );
+  if (!calls.length) return null;
+  const buddy = buddyOf(s.settings);
+  const mode =
+    buddy.luckCall === "on"
+      ? "Its clear yes or no decides whether Orbit reruns a job; your rules for reruns still apply."
+      : buddy.luckCall === "watch"
+        ? "Orbit keeps its answer while its own rules decide."
+        : "Quick calls are off now.";
+  return (
+    <VStack gap={3}>
+      <Heading level={3}>Quick calls</Heading>
+      <Text color="secondary">
+        Before a rerun, Orbit asks a small model on Ollama whether a failed job
+        was bad luck, as well as its own rules, then checks who was right.{" "}
+        {mode}
+      </Text>
+      {scoreLines(calls).map((line) => (
+        <Text key={line}>{line}</Text>
+      ))}
+      <Card padding={0}>
+        <List hasDividers aria-label="Quick calls">
+          {calls.slice(0, RECENT).map((c) => {
+            const dot = callDot(c);
+            const where = c.number ? `${c.repo} #${c.number}` : c.repo;
+            return (
+              <ListItem
+                key={c.id}
+                startContent={
+                  <StatusDot variant={dot.variant} label={dot.label} />
+                }
+                label={
+                  <Text weight="medium" maxLines={2}>
+                    {c.check} on {where}
+                  </Text>
+                }
+                description={<Text color="secondary">{callText(c)}</Text>}
+                onClick={() => openLink(c.url)}
+                endContent={
+                  <Timestamp
+                    value={c.settledAt ?? c.askedAt}
+                    format="relative_short"
+                  />
+                }
+              />
+            );
+          })}
+        </List>
+      </Card>
+    </VStack>
+  );
+}
+
 /** What Orbit learned from things that happened more than once, the
  * latest seen first, each with a button to forget it. */
 function Learned() {
@@ -2315,6 +2440,7 @@ export function Operations(go: AttentionHandlers) {
           <StorageUse />
           <RecentlyFixed />
           <TurnedOut />
+          <QuickCalls />
           <Learned />
           <Posted />
         </>

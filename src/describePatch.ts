@@ -1,6 +1,8 @@
 import { bitColours, bitHats, bitLooks } from "./Bit";
 import {
   buddyAnswerers,
+  callModes,
+  type CallMode,
   fixRuleLabels,
   providerLabels,
   securitySettings,
@@ -61,6 +63,8 @@ const buddyLabels: Record<keyof Buddy, string> = {
   brief: "Morning brief",
   briefAt: "Brief time",
   timeZone: "Time zone",
+  quickModel: "Quick call model",
+  luckCall: "Quick call on bad luck",
 };
 
 /** A buddy setting's value as the settings page names it, such as Pink. */
@@ -74,11 +78,13 @@ function buddyValue(field: string, v: unknown): unknown {
           ? bitHats[v as BuddyHat]
           : field === "look"
             ? bitLooks[v as BuddyLook]?.label
-            : field === "timeZone"
-              ? (v as string) === ""
-                ? "Orbit’s computer"
-                : (v as string).replace(/_/g, " ")
-              : undefined;
+            : field === "luckCall"
+              ? callModes[v as CallMode]
+              : field === "timeZone"
+                ? (v as string) === ""
+                  ? "Orbit’s computer"
+                  : (v as string).replace(/_/g, " ")
+                : undefined;
   return name ?? v;
 }
 

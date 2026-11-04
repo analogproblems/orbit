@@ -440,6 +440,9 @@ export type BuddyTone = "cheerful" | "calm" | "dry";
 export type ApiProvider = "openai" | "anthropic" | "google";
 /** Who answers the questions you type to Bit. */
 export type BuddyAnswerer = Provider | "ollama" | ApiProvider;
+/** What Orbit does with a quick call's answer: asks no model, keeps the
+ * answer while its rules decide, or lets a clear answer decide. */
+export type CallMode = "off" | "watch" | "on";
 export interface Buddy {
   enabled: boolean;
   name: string;
@@ -470,6 +473,11 @@ export interface Buddy {
   /** The time zone the brief comes by, such as Europe/London. Empty: the
    * clock of the computer Orbit runs on. */
   timeZone: string;
+  /** The Ollama model, at ollamaUrl, that makes quick calls. Empty: Orbit
+   * makes none. */
+  quickModel: string;
+  /** The quick call "Is this failure bad luck?". */
+  luckCall: CallMode;
 }
 /** One of Orbit's own controls, offered for something that needs you. */
 export type Fix =
@@ -581,6 +589,14 @@ export const defaultBuddy: Buddy = {
   brief: true,
   briefAt: "09:00",
   timeZone: "",
+  quickModel: "",
+  luckCall: "watch",
+};
+/** How Settings names each quick call mode. */
+export const callModes: Record<CallMode, string> = {
+  off: "Off",
+  watch: "Watch",
+  on: "On",
 };
 export const buddyTones: Record<BuddyTone, string> = {
   cheerful: "Cheerful",
@@ -1205,6 +1221,8 @@ export interface Snapshot {
   /** Why the jobs still failing on open problems failed, as Orbit read
    * them. */
   failures?: CiFailure[];
+  /** Quick calls a model on Ollama made, and how each turned out. */
+  calls?: QuickCall[];
   /** What each connected repository's files say about its CI. */
   setups?: CiSetup[];
   /** The self-hosted runners of each connected repository, and of each
@@ -2318,6 +2336,83 @@ export interface CiFailure {
   /** The step couldn't upload an artifact as the account's artifact
    * storage is full, which only a person can change. */
   quota?: boolean;
+}
+/** One quick call: what the rules and the model said about a failed job,
+ * and, once Orbit can tell, whether it was bad luck. */
+export interface QuickCall {
+  /** `luck:<job>`. */
+  id: string;
+  question: "luck";
+  repo: string;
+  number?: number;
+  check: string;
+  /** The job's link, and the commit and problem it failed on. */
+  url: string;
+  sha: string;
+  problem: string;
+  askedAt: string;
+  mode: "watch" | "on";
+  model: string;
+  /** Whether the rules said it looks like bad luck. */
+  rules: boolean;
+  said?: "yes" | "no" | "unsure";
+  /** Why the model didn't answer. */
+  error?: string;
+  /** Whether it was bad luck, once Orbit can tell, and how it knows, or
+   * why it couldn't tell. */
+  truth?: boolean;
+  how?: string;
+  settledAt?: string;
+}
+/** How the quick calls did: how many were asked, how Ollama answered,
+ * and, of those Orbit could check, how often the rules and Ollama were
+ * right. Ollama only counts where it gave a clear answer. */
+export interface CallScore {
+  asked: number;
+  unsure: number;
+  noAnswer: number;
+  agreed: number;
+  scored: number;
+  rulesRight: number;
+  modelScored: number;
+  modelRight: number;
+}
+/** How many checked calls the scorecard needs before it compares Ollama
+ * with the rules. */
+export const ENOUGH_CALLS = 10;
+export function callScore(calls: QuickCall[]): CallScore {
+  const score: CallScore = {
+    asked: 0,
+    unsure: 0,
+    noAnswer: 0,
+    agreed: 0,
+    scored: 0,
+    rulesRight: 0,
+    modelScored: 0,
+    modelRight: 0,
+  };
+  for (const c of calls) {
+    score.asked += 1;
+    if (!c.said) score.noAnswer += 1;
+    else if (c.said === "unsure") score.unsure += 1;
+    else if ((c.said === "yes") === c.rules) score.agreed += 1;
+    if (c.truth === undefined || c.truth === null) continue;
+    score.scored += 1;
+    if (c.rules === c.truth) score.rulesRight += 1;
+    if (c.said === "yes" || c.said === "no") {
+      score.modelScored += 1;
+      if ((c.said === "yes") === c.truth) score.modelRight += 1;
+    }
+  }
+  return score;
+}
+/** Whether Ollama has been right at least as often as the rules, on
+ * enough calls Orbit could check. */
+export function callsReady(s: CallScore) {
+  return (
+    s.modelScored >= ENOUGH_CALLS &&
+    s.modelRight * s.scored >= s.rulesRight * s.modelScored
+  );
 }
 /** One rerun of an item's job, or Orbit's tries at one. */
 export interface OpsRerun {

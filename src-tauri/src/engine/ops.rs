@@ -102,7 +102,9 @@ impl Engine {
             changed |= crate::playbooks::follow(s);
             changed |= crate::buddy::observe_lessons(s, &learned);
             changed |= ops::refresh(&mut s.ops, &s.problems, now);
-            changed |= ops::explain(&mut s.ops, &s.failures);
+            // As a quick call that decides says, while it does.
+            let read = crate::calls::decided(s);
+            changed |= ops::explain(&mut s.ops, &read);
             let mut again = reruns::noticed(s);
             again.extend(ops::offer(s));
             changed |= !again.is_empty();

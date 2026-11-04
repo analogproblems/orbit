@@ -37,12 +37,16 @@ import {
   updatesSummary,
   waitingText,
   whyText,
+  callText,
+  scoreLines,
   writeSummary,
 } from "./Operations";
 import { freshDemo } from "./demo";
 import { useOrbit } from "./store";
 import {
   checkNames,
+  ENOUGH_CALLS,
+  type QuickCall,
   type Broke,
   type Build,
   type CiState,
@@ -796,6 +800,94 @@ describe("operations page", () => {
     expect(
       screen.queryByRole("list", { name: "What Orbit learned" }),
     ).toBeNull();
+  });
+
+  it("lists Bit's quick calls with the scorecard, and says what each call said on its job", () => {
+    let t = Date.now();
+    const tick = vi.spyOn(Date, "now").mockImplementation(() => (t += 1));
+    const s = freshDemo();
+    tick.mockRestore();
+    show(s);
+    const list = screen.getByRole("list", { name: "Quick calls" });
+    const items = within(list).getAllByRole("listitem");
+    expect(items).toHaveLength(6);
+    const pr = s.prs[2].id.replace("#", " #");
+    // Newest first: still waiting to see how it turns out.
+    expect(items[0].textContent).toContain(
+      `CI / End-to-end on ${pr}Rules: bad luck. Ollama: unsure. Orbit checks how it turns out.`,
+    );
+    expect(within(items[0]).getByLabelText("Waiting")).toBeTruthy();
+    expect(items[3].textContent).toContain(
+      "Rules: bad luck. Ollama: bad luck. It failed again after a rerun.",
+    );
+    expect(within(items[3]).getByLabelText("Ollama was wrong")).toBeTruthy();
+    expect(within(items[4]).getByLabelText("Ollama was right")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "6 calls so far. Ollama agreed with the rules on 4, was unsure on 1 and didn’t answer 0.",
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Of the 3 calls Orbit could check, the rules were right on 2, and Ollama on 1 of the 3 it answered clearly.",
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/Orbit keeps its answer while its own rules decide\./),
+    ).toBeTruthy();
+    // On each failing job, what the call said and who decides.
+    const row = within(
+      screen.getByRole("list", { name: "Open problems" }),
+    ).getAllByRole("listitem")[1];
+    expect(row.textContent).toContain(
+      "Quick call on Ollama: unsure. The rules decide.",
+    );
+    expect(row.textContent).toContain(
+      "Quick call on Ollama: not bad luck. The rules decide.",
+    );
+    cleanup();
+    s.settings.buddy!.luckCall = "on";
+    show(s);
+    expect(
+      within(screen.getByRole("list", { name: "Open problems" })).getAllByRole(
+        "listitem",
+      )[1].textContent,
+    ).toContain("Quick call on Ollama: not bad luck. It decides.");
+    // None until Orbit makes one.
+    cleanup();
+    s.calls = [];
+    show(s);
+    expect(screen.queryByRole("list", { name: "Quick calls" })).toBeNull();
+  });
+
+  it("says when Ollama has been right as often as the rules on enough calls", () => {
+    const call = (n: number): QuickCall => ({
+      id: `luck:${n}`,
+      question: "luck",
+      repo: "a/b",
+      check: "CI / Rust",
+      url: `https://github.com/a/b/actions/runs/1/job/${n}`,
+      sha: "5".repeat(40),
+      problem: "p1",
+      askedAt: "2026-11-04T12:00:00Z",
+      mode: "watch",
+      model: "small",
+      rules: true,
+      said: n % 2 ? "yes" : "no",
+      truth: n % 2 === 1,
+      how: "It passed after a rerun.",
+      settledAt: "2026-11-04T13:00:00Z",
+    });
+    const calls = Array.from({ length: ENOUGH_CALLS }, (_, n) => call(n));
+    expect(scoreLines(calls).at(-1)).toBe(
+      "Ollama has been right at least as often as the rules on enough calls. You can let it decide in Settings, under Buddy.",
+    );
+    expect(scoreLines(calls.slice(1)).at(-1)).not.toMatch(/^Ollama has been/);
+    expect(
+      callText({ ...calls[0], said: undefined, error: "Nothing answered." }),
+    ).toBe(
+      "Rules: bad luck. Ollama: no answer (Nothing answered.). It passed after a rerun.",
+    );
   });
 
   it("shows no outcomes until Orbit has some", () => {

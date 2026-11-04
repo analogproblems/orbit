@@ -471,12 +471,13 @@ impl Engine {
         });
         Ok(())
     }
-    /// Lists Ollama's models at Bit's address while Ollama answers Bit,
-    /// recording whether it can.
+    /// Lists Ollama's models at Bit's address while Ollama answers Bit, or
+    /// makes quick calls (`crate::calls`), recording whether it can.
     pub async fn check_ollama(&self) {
         let asked = |s: &Snapshot| {
             let buddy = &s.settings.buddy;
-            (buddy.answered_by() == Answerer::Ollama).then(|| buddy.ollama_url.clone())
+            let uses = buddy.answered_by() == Answerer::Ollama || buddy.wants_quick_calls();
+            uses.then(|| buddy.ollama_url.clone())
         };
         let url = asked(&*self.state.lock().await);
         let result = match &url {

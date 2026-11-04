@@ -86,7 +86,10 @@ impl Engine {
         self.commit_settings(&mut *self.state.lock().await, settings)
     }
     pub async fn update_settings(&self, patch: SettingsPatch) -> Result<Settings, String> {
-        let ollama = |s: &Settings| (s.buddy.answered_by(), s.buddy.ollama_url.clone());
+        let ollama = |s: &Settings| {
+            let b = &s.buddy;
+            (b.answered_by(), b.ollama_url.clone(), b.wants_quick_calls())
+        };
         let (saved, recheck) = {
             let mut s = self.state.lock().await;
             let before = ollama(&s.settings);
@@ -95,8 +98,9 @@ impl Engine {
             self.commit_settings(&mut s, settings)?;
             (s.settings.clone(), ollama(&s.settings) != before)
         };
-        // A new answerer for Bit, or Ollama at a new address, is checked
-        // straight away, so Settings can list its models.
+        // A new answerer for Bit, Ollama at a new address, or quick calls
+        // turned on or off, is checked straight away, so Settings can list
+        // its models.
         if recheck {
             self.check_bit_answerer().await;
         }

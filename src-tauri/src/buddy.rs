@@ -123,6 +123,10 @@ pub const MAX_NOTES: usize = 50;
 /// What Bit does about a fix it offers when something needs you: do it and
 /// say so, offer a button, or leave it to you.
 pub const RULES: [&str; 3] = ["do_it", "ask_first", "leave_it"];
+/// What Orbit does with a quick call's answer (`crate::calls`): asks no
+/// model, asks and keeps the answer while the rules decide, or lets a
+/// clear answer decide.
+pub const CALL_MODES: [&str; 3] = ["off", "watch", "on"];
 /// Rounds a fix's Continue loop allows, as the button on the loops page does.
 pub const CONTINUE_ROUNDS: u32 = 2;
 /// Lines Bit's general memory holds.
@@ -309,6 +313,11 @@ pub struct Buddy {
     /// Orbit on a computer set to another zone (`crate::clock`). Empty: the
     /// clock of the computer Orbit runs on.
     pub time_zone: String,
+    /// The Ollama model, at `ollama_url`, that makes quick calls
+    /// (`crate::calls`). Empty: Orbit makes none.
+    pub quick_model: String,
+    /// One of `CALL_MODES`, for the quick call "Is this failure bad luck?".
+    pub luck_call: String,
 }
 impl Default for Buddy {
     fn default() -> Self {
@@ -330,6 +339,8 @@ impl Default for Buddy {
             brief: true,
             brief_at: crate::brief::DEFAULT_AT.into(),
             time_zone: String::new(),
+            quick_model: String::new(),
+            luck_call: "watch".into(),
         }
     }
 }
@@ -391,7 +402,19 @@ impl Buddy {
                 self.time_zone
             ));
         }
+        crate::ollama::validate_model(&self.quick_model)?;
+        if !CALL_MODES.contains(&self.luck_call.as_str()) {
+            return Err(format!(
+                "'{}' isn't off, watch or on, for the quick call.",
+                self.luck_call
+            ));
+        }
         Ok(())
+    }
+    /// Whether Orbit makes quick calls on Ollama, or would once a model is
+    /// chosen: Settings then lists Ollama's models.
+    pub fn wants_quick_calls(&self) -> bool {
+        self.enabled && self.luck_call != "off"
     }
     /// Who answers the questions you type.
     pub fn answered_by(&self) -> Answerer {
@@ -468,6 +491,12 @@ impl Buddy {
         if !crate::clock::valid(&self.time_zone) {
             self.time_zone = default.time_zone;
         }
+        if crate::ollama::validate_model(&self.quick_model).is_err() {
+            self.quick_model.clear();
+        }
+        if !CALL_MODES.contains(&self.luck_call.as_str()) {
+            self.luck_call = default.luck_call;
+        }
     }
 }
 /// Only supplied fields change.
@@ -491,6 +520,8 @@ pub struct BuddyPatch {
     pub brief: Option<bool>,
     pub brief_at: Option<String>,
     pub time_zone: Option<String>,
+    pub quick_model: Option<String>,
+    pub luck_call: Option<String>,
 }
 impl BuddyPatch {
     pub fn apply(self, buddy: &mut Buddy) {
@@ -532,6 +563,12 @@ impl BuddyPatch {
         }
         if let Some(v) = self.time_zone {
             buddy.time_zone = v.trim().to_string();
+        }
+        if let Some(v) = self.quick_model {
+            buddy.quick_model = v.trim().to_string();
+        }
+        if let Some(v) = self.luck_call {
+            buddy.luck_call = v.trim().to_string();
         }
         for (api, v) in [
             (Api::OpenAi, self.openai_model),

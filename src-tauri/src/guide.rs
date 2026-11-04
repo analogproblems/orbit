@@ -189,8 +189,9 @@ pub fn pick_answerer(s: &Snapshot) -> Option<Answerer> {
 }
 
 /// What Orbit connects to: GitHub and Codex always, Claude, Antigravity
-/// and dev containers while a repository or Bit uses them, and Ollama or an
-/// API key while Bit answers with it.
+/// and dev containers while a repository or Bit uses them, Ollama while Bit
+/// answers or makes quick calls with it, and an API key while Bit answers
+/// with it.
 pub fn connections(s: &Snapshot) -> Vec<Connection> {
     let mut out = all_connections(s);
     out.retain(|c| matches!(c.key, "github" | "codex") || !c.needed_by.is_empty() || c.for_bit);
@@ -288,7 +289,8 @@ pub fn all_connections(s: &Snapshot) -> Vec<Connection> {
         "ollama",
         &s.ollama,
         vec![],
-        for_bit(Answerer::Ollama),
+        // Or for Bit's quick calls.
+        for_bit(Answerer::Ollama) || crate::calls::setup(s).is_some(),
         "Start Ollama on this computer or another one on your network, then check its address in Settings, under Buddy.",
         "Ollama",
         PAGES[6],

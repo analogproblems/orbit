@@ -2716,6 +2716,179 @@ async fn a_rerun_github_never_got_waits_for_the_rules() {
     );
 }
 
+/// A fake Ollama that answers every quick call `answer`, and the chats it
+/// was sent.
+async fn quick(answer: &str) -> (String, Arc<std::sync::Mutex<Vec<Value>>>) {
+    let fake = crate::ollama::tests::Fake {
+        content: json!({ "answer": answer }).to_string(),
+        ..Default::default()
+    };
+    let chats = fake.chats.clone();
+    (crate::ollama::tests::serve(fake).await, chats)
+}
+/// The pull request at commit `at` failing `CI / Rust` by job `id` of run
+/// `run`, which failed at `step` with this log.
+fn quick_failure(dir: &Path, (run, at): (u32, char), id: u32, step: &str, log: &[&str]) {
+    answer(
+        dir,
+        '1',
+        &[("Rust", "SUCCESS")],
+        Some((at, &[("Rust", "FAILURE")])),
+    );
+    links(
+        dir,
+        &[(
+            "Rust",
+            &format!("https://github.com/a/b/actions/runs/{run}/job/{id}"),
+        )],
+    );
+    in_run(dir, (run, at), id, "Rust", 1, step, log);
+}
+const NO_HOST: [&str; 2] = [
+    "fatal: unable to access 'https://github.com/a/b/': Could not resolve host: github.com",
+    "##[error]Process completed with exit code 128.",
+];
+
+/// In Watch, Orbit asks Ollama once about each failed job, with its check,
+/// step and log, and keeps the answer while the rules decide; once the
+/// rerun fails again, it scores both.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_quick_call_in_watch_is_kept_while_the_rules_decide() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let (url, chats) = quick("no").await;
+    let e = connected(d.path()).await;
+    e.update(|s| {
+        s.prs = vec![pr('5')];
+        s.settings.buddy.ollama_url = url.clone();
+        s.settings.buddy.quick_model = "small".into();
+    })
+    .await;
+    quick_failure(d.path(), (1, '5'), 2, "Run actions/checkout@v4", &NO_HOST);
+    watch(&e, &gh).await;
+    assert_eq!(
+        reruns_sent(d.path()),
+        ["POST repos/a/b/actions/jobs/2/rerun"],
+        "the rules decide"
+    );
+    let s = e.snapshot().await;
+    assert_eq!(s.calls.len(), 1);
+    let c = &s.calls[0];
+    assert_eq!(
+        (c.url.as_str(), c.number, c.mode.as_str(), c.model.as_str()),
+        (&*job_url(2), Some(12), "watch", "small")
+    );
+    assert_eq!((c.rules, c.said), (true, Some(crate::calls::Said::No)));
+    let sent = chats.lock().unwrap().clone();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["model"], "small");
+    assert_eq!(sent[0]["format"], crate::calls::schema());
+    let asked = sent[0]["messages"][1]["content"].as_str().unwrap();
+    assert!(
+        asked.starts_with("Check: CI / Rust\nStep that failed: Run actions/checkout@v4\n")
+            && asked.contains("Could not resolve host"),
+        "{asked}"
+    );
+    watch(&e, &gh).await;
+    assert_eq!(chats.lock().unwrap().len(), 1, "once");
+
+    // The rerun fails again: the rules were wrong, and the model right. The
+    // new job gets a call of its own.
+    rerun_lost(d.path(), 1002, 2);
+    watch(&e, &gh).await;
+    e.flush().await.unwrap();
+    let s = e.snapshot().await;
+    let c = s.calls.iter().find(|c| c.url == job_url(2)).unwrap();
+    assert_eq!(
+        (c.truth, c.how.as_str()),
+        (Some(false), "It failed again after a rerun.")
+    );
+    assert_eq!(s.calls.len(), 2);
+    let score = crate::calls::score(&s.calls, crate::calls::LUCK);
+    assert_eq!(
+        (score.scored, score.rules_right, score.model_right),
+        (1, 0, 1)
+    );
+}
+
+/// In On, a clear answer decides: a no keeps Orbit from rerunning what the
+/// rules call bad luck, and a yes reruns what they don't, by Bit's rule.
+/// With no answer, the rules decide.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_quick_call_that_is_on_decides_whether_a_job_is_rerun() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let (no, _) = quick("no").await;
+    let (yes, _) = quick("yes").await;
+    let e = connected(d.path()).await;
+    e.update(|s| {
+        s.prs = vec![pr('5')];
+        s.settings.buddy.ollama_url = no.clone();
+        s.settings.buddy.quick_model = "small".into();
+        s.settings.buddy.luck_call = "on".into();
+    })
+    .await;
+    quick_failure(d.path(), (1, '5'), 2, "Run actions/checkout@v4", &NO_HOST);
+    watch(&e, &gh).await;
+    assert!(reruns_sent(d.path()).is_empty());
+    assert!(!comment(d.path()).contains("Orbit reran"));
+    let s = e.snapshot().await;
+    assert_eq!(s.calls[0].mode, "on");
+    // The rules' own answer still shows.
+    assert!(s.failures[0].flaky.is_some());
+
+    // A test fails at a new commit: the rules don't call it bad luck, the
+    // model does.
+    e.update(|s| {
+        s.prs = vec![pr('6')];
+        s.settings.buddy.ollama_url = yes.clone();
+    })
+    .await;
+    quick_failure(
+        d.path(),
+        (3, '6'),
+        3,
+        "Run cargo test",
+        &[
+            "test parses ... FAILED",
+            "##[error]Process completed with exit code 101.",
+        ],
+    );
+    watch(&e, &gh).await;
+    assert_eq!(
+        reruns_sent(d.path()),
+        ["POST repos/a/b/actions/jobs/3/rerun"]
+    );
+    assert!(
+        noted(
+            &e,
+            "as it looks like bad luck: Orbit's quick call on Ollama said so."
+        )
+        .await
+    );
+
+    // Nothing answers: the rules decide.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let gone = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    e.update(|s| {
+        s.prs = vec![pr('7')];
+        s.settings.buddy.ollama_url = gone.clone();
+    })
+    .await;
+    quick_failure(d.path(), (4, '7'), 4, "Run actions/checkout@v4", &NO_HOST);
+    watch(&e, &gh).await;
+    assert_eq!(
+        reruns_sent(d.path()).last().unwrap(),
+        "POST repos/a/b/actions/jobs/4/rerun"
+    );
+    let s = e.snapshot().await;
+    let c = s.calls.iter().find(|c| c.url.ends_with("/job/4")).unwrap();
+    assert!(c.said.is_none() && c.error.as_deref().unwrap().contains("Nothing answered"));
+}
+
 /// A check whose link is a job at another commit, or another check's job,
 /// isn't Orbit's to rerun.
 #[cfg(unix)]

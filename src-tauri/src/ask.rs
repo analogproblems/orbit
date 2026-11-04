@@ -57,6 +57,8 @@ const MAX_DECISIONS: usize = 6;
 const MAX_RULES: usize = 60;
 /// The most lessons the summary names.
 const SHOWN_LESSONS: usize = 10;
+/// The most quick calls the summary names, the newest first.
+const SHOWN_CALLS: usize = 5;
 
 /// What a button in an answer does: one of Orbit's own controls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -166,7 +168,7 @@ impl Proposal {
 /// Trusted accounts aren't among them: they decide which pull requests are
 /// published automatically. A repository's own settings are changed with
 /// Set up repository instead.
-pub const SETTINGS: [&str; 41] = [
+pub const SETTINGS: [&str; 42] = [
     "automatic",
     "autoPost",
     "pollSeconds",
@@ -197,6 +199,7 @@ pub const SETTINGS: [&str; 41] = [
     "buddy.brief",
     "buddy.briefAt",
     "buddy.timeZone",
+    "buddy.luckCall",
     "buddy.rules.continue_loop",
     "buddy.rules.review_again",
     "buddy.rules.publish",
@@ -232,6 +235,7 @@ Looking things up:
 - changes, with repository and either pr or commit: a pull request's or a commit's changes, file by file. The commits and pull requests that broke a default branch are in the summary's `ci.problems`.
 - The summary's `outcomes` says how what Orbit did lately turned out, such as a setting it turned on or a job it reran, and how agents' fixes went: held, missed, waiting or unclear, with why.
 - The summary's `lessons` says what Orbit learned from things that happened more than once, such as a check that keeps failing by bad luck or a problem that keeps coming back, with what to do next time; a CI problem's `lastTime` says what happened the last time something like it failed, and its `lessons` say what Orbit learned about it. Its `playbook` says what done looks like: each step in order, who does it (`orbit`, `agent` or `you`), and whether it is `todo`, `done`, `skipped` (not needed, or Orbit couldn't tell) or `missed`, with a note and, while Orbit waits to see a default branch stay fixed, when it will know (`due`). Use it to say what's left on a problem. A repository's `otherProblems` (a base that moved on, no CI on pull requests, runs waiting for a runner, risky workflow settings, version files that disagree, a tag on the wrong commit) and each kind of its security alerts have a `playbook` too. They are guidance: they never change Orbit's rules.
+- The summary's `quickCalls` says how a small model on Ollama does at the quick call \"Is this failure bad luck?\", asked about failed jobs before a rerun. Its `mode` is off (no calls), watch (Orbit keeps the model's yes, no or unsure while its own rules decide) or on (a clear yes or no decides whether a job looks like bad luck; your rules for reruns still apply). Its `score` says how often the rules and the model were right on the calls Orbit could check, and `readyToDecide` is true when the model has been right at least as often as the rules on enough of them. Offer to change buddy.luckCall only when the person asks about it.
 - Only connected repositories. Leave the fields a kind doesn't use null. While you look things up, `answer` is one short line saying what you're looking at, and `proposals` and `memory` stay empty: Orbit shows the person your next answer instead.
 
 Keep answers short: a few sentences, or a short list. Name pull requests by repository and number, like orbit#12.
@@ -242,7 +246,7 @@ In `proposals` you can offer up to {MAX_PROPOSALS} buttons for Orbit's own contr
 - review_again, with pr: starts a new review of a pull request.
 - publish, with pr: publishes a pull request's report that is ready to publish.
 - sync_now: syncs with GitHub now.
-- change_settings, with changes: changes settings named in the summary's `settings`, each with its new value written as text, such as \"true\" or \"120\". buddy.answerer is who answers these questions: codex, claude, antigravity, ollama, or openai, anthropic or google with the user's API key. buddy.brief is whether you send a morning brief, and buddy.briefAt its time on a 24-hour clock, such as \"07:30\", in buddy.timeZone: a time zone name such as \"Europe/London\", or empty for the clock of the computer Orbit runs on, whose zone is the summary's clockZone.
+- change_settings, with changes: changes settings named in the summary's `settings`, each with its new value written as text, such as \"true\" or \"120\". buddy.answerer is who answers these questions: codex, claude, antigravity, ollama, or openai, anthropic or google with the user's API key. buddy.brief is whether you send a morning brief, and buddy.briefAt its time on a 24-hour clock, such as \"07:30\", in buddy.timeZone: a time zone name such as \"Europe/London\", or empty for the clock of the computer Orbit runs on, whose zone is the summary's clockZone. buddy.luckCall is the quick call on Ollama, off, watch or on (see `quickCalls`).
 - set_up_repository, with repository and changes: connects a repository from the summary's `connectableRepositories`, or changes the settings of one in `repositories`. Orbit downloads its own copy of a repository it connects, and starts it with autopilot off, no setup command and no network, plus your changes. Its changes use the repository settings named in the summary's repositories: setupCommand, checkCommand, networkAccess, devContainer, reviewer (codex, claude or antigravity), roundLimit ({round_limits}), approvalMinutes ({approval_minutes}, where 0 waits for the person), keepCloneUpdated and autopilot.
 - check_connections: checks the connections to GitHub, Codex and the other reviewers again, once the person has fixed one, such as by signing in.
 Use pull request ids and repository names from the summary. Leave pr and repository null, and changes empty, when an action doesn't use them. You can't change trusted accounts: say they can do that themselves in Orbit's Settings.
@@ -787,6 +791,37 @@ pub fn briefing(s: &Snapshot, lookups: &Lookups) -> Value {
             })
         })
         .collect();
+    // How the quick calls did, and the latest of them.
+    let buddy = &s.settings.buddy;
+    let score = crate::calls::score(&s.calls, crate::calls::LUCK);
+    let mut calls: Vec<&crate::calls::Call> = s.calls.iter().collect();
+    calls.sort_by(|a, b| b.asked_at.cmp(&a.asked_at));
+    let calls: Vec<Value> = calls
+        .into_iter()
+        .take(SHOWN_CALLS)
+        .map(|c| {
+            json!({
+                "repository": c.repo,
+                "pr": c.number,
+                "check": clean(&c.check, 200),
+                "rulesSaidBadLuck": c.rules,
+                "modelSaid": c.said.map(|s| key(&s)),
+                "error": c.error,
+                "wasBadLuck": c.truth,
+                "howOrbitKnows": (!c.how.is_empty()).then(|| c.how.clone()),
+                "askedAt": c.asked_at,
+            })
+        })
+        .collect();
+    let quick_calls = json!({
+        "badLuck": {
+            "mode": buddy.luck_call,
+            "model": (!buddy.quick_model.is_empty()).then(|| buddy.quick_model.clone()),
+            "score": score,
+            "readyToDecide": score.ready(),
+            "recent": calls,
+        },
+    });
     json!({
         "now": now(),
         "clockZone": crate::clock::computer_zone(),
@@ -834,6 +869,7 @@ pub fn briefing(s: &Snapshot, lookups: &Lookups) -> Value {
         "needsYou": needs_you,
         "outcomes": outcomes,
         "lessons": lessons,
+        "quickCalls": quick_calls,
         "recentNotes": recent,
         "earlierConversation": earlier,
         "memory": {

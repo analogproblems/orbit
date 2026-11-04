@@ -19,7 +19,9 @@ import {
   buddyAnswerers,
   buddyMood,
   buddyTones,
+  callModes,
   defaultBuddy,
+  ENOUGH_CALLS,
   fixLabels,
   fixRuleLabels,
   postLabels,
@@ -130,7 +132,12 @@ describe("Bit", () => {
     expect(describePatch({ buddy: { timeZone: "" } }, [])).toBe(
       "Time zone: Orbit’s computer",
     );
+    expect(describePatch({ buddy: { luckCall: "on" } }, [])).toBe(
+      "Quick call on bad luck: On",
+    );
     expect(Object.keys(fixRuleLabels)).toEqual(options.rules);
+    expect(Object.keys(callModes)).toEqual(options.callModes);
+    expect(ENOUGH_CALLS).toBe(options.enoughCalls);
     expect(Object.keys(fixLabels)).toEqual(options.fixes);
     expect(Object.keys(questionLabels)).toEqual(options.questions);
     expect(Object.keys(actionLabels)).toEqual([

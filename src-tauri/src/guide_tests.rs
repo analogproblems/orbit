@@ -474,6 +474,15 @@ fn bits_answerer_is_checked_even_when_no_repository_uses_it() {
         Some("https://ollama.com/download")
     );
     assert!(may_open("https://ollama.com/download"));
+    // Or for quick calls, once a model is chosen, while they aren't off.
+    s.settings.buddy.answerer = "codex".into();
+    assert_eq!(names(&s), ["GitHub", "Codex"]);
+    s.settings.buddy.quick_model = "small".into();
+    assert_eq!(names(&s), ["GitHub", "Codex", "Ollama"]);
+    s.settings.buddy.luck_call = "off".into();
+    assert_eq!(names(&s), ["GitHub", "Codex"]);
+    s.settings.buddy.luck_call = "on".into();
+    s.settings.buddy.answerer = "ollama".into();
     // Not while Bit is off.
     s.settings.buddy.enabled = false;
     assert_eq!(names(&s), ["GitHub", "Codex"]);

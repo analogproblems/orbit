@@ -47,6 +47,7 @@ import {
   buddyMood,
   buddyOf,
   buddyAnswerers,
+  callModes,
   buddyTones,
   fixDescriptions,
   fixLabel,
@@ -63,6 +64,7 @@ import {
   withPatch,
   type ApiProvider,
   type Buddy,
+  type CallMode,
   type BuddyHat,
   type BuddyLook,
   type BuddyNote,
@@ -672,8 +674,15 @@ export function BuddyPage({
 
 const previewMoods: Mood[] = ["happy", "busy", "worried", "sleepy"];
 
-/** Where Ollama is and which of its models answers Bit. */
-function OllamaSettings() {
+/** Where Ollama is and which of its models answers Bit, or makes quick
+ * calls (`field`). The address shows once, where Ollama is first used. */
+function OllamaSettings({
+  field = "ollamaModel",
+  address = true,
+}: {
+  field?: "ollamaModel" | "quickModel";
+  address?: boolean;
+}) {
   const { snapshot: s, updateSettings, saves } = useOrbit();
   const buddy = useBuddy();
   const [connecting, reconnect] = useReconnect();
@@ -689,12 +698,39 @@ function OllamaSettings() {
     if (result.ok) setUrl(null);
   };
   const models = s.ollamaModels ?? [];
+  const quick = field === "quickModel";
+  const model = (
+    <>
+      <Selector
+        label={quick ? "Quick call model" : "Ollama model"}
+        description={
+          !models.length
+            ? "Ollama's models show here once Orbit reaches it."
+            : quick
+              ? "The models Ollama has at that address. A small, fast one is enough."
+              : "The models Ollama has at that address."
+        }
+        value={buddy[field]}
+        isDisabled={!models.length || saving(field)}
+        options={models.map((m) => ({ value: m, label: m }))}
+        onChange={(value) =>
+          void updateSettings({ buddy: { [field]: value } }, `buddy.${field}`)
+        }
+      />
+      <SaveFeedback saveKey={`buddy.${field}`} />
+    </>
+  );
+  if (!address) return <VStack gap={2}>{model}</VStack>;
   return (
     <VStack gap={2}>
       <HStack gap={2} vAlign="end">
         <TextInput
           label="Ollama address"
-          description={`${buddy.name} sends each question, with what Orbit knows, to this address.`}
+          description={
+            quick
+              ? "Orbit sends each quick call to this address."
+              : `${buddy.name} sends each question, with what Orbit knows, to this address.`
+          }
           width="100%"
           value={typedUrl}
           onChange={setUrl}
@@ -719,7 +755,9 @@ function OllamaSettings() {
       <SaveFeedback saveKey="buddy.ollamaUrl" />
       {s.ollama?.error && (
         <Banner
-          status="warning"
+          // Quick calls watch from the start: until you choose a model,
+          // Ollama not answering is only news.
+          status={quick && !buddy.quickModel ? "info" : "warning"}
           title={s.ollama.error}
           endContent={
             <Button
@@ -732,21 +770,55 @@ function OllamaSettings() {
           }
         />
       )}
+      {model}
+    </VStack>
+  );
+}
+
+/** What each quick call mode does, as Settings says it. */
+const callModeHelp: Record<CallMode, string> = {
+  off: "Orbit asks no model.",
+  watch:
+    "Orbit asks, and keeps the answer while its own rules decide. Operations shows who was right.",
+  on: "A clear yes or no decides whether a job looks like bad luck; unsure, or no answer, leaves it to the rules. Your rules for reruns, and at most two reruns of a check at a commit, still apply.",
+};
+
+/** Bit's quick calls on Ollama: what Orbit does with the answer to "Is
+ * this failure bad luck?", and the model that answers. */
+function QuickCallSettings() {
+  const { updateSettings, saves } = useOrbit();
+  const buddy = useBuddy();
+  return (
+    <VStack gap={2}>
+      <Text weight="semibold">Quick calls</Text>
+      <Text color="secondary">
+        Before a rerun, {buddy.name} can ask a small model on Ollama whether a
+        failed job was bad luck, as well as Orbit&rsquo;s own rules. Orbit sends
+        it the check&rsquo;s name, the step that failed and the end of its log,
+        never your code, and keeps only its yes, no or unsure.
+      </Text>
       <Selector
-        label="Ollama model"
-        description={
-          models.length
-            ? "The models Ollama has at that address."
-            : "Ollama's models show here once Orbit reaches it."
-        }
-        value={buddy.ollamaModel}
-        isDisabled={!models.length || saving("ollamaModel")}
-        options={models.map((m) => ({ value: m, label: m }))}
-        onChange={(ollamaModel) =>
-          void updateSettings({ buddy: { ollamaModel } }, "buddy.ollamaModel")
+        label="Is this failure bad luck?"
+        description={callModeHelp[buddy.luckCall]}
+        value={buddy.luckCall}
+        isDisabled={saves["buddy.luckCall"]?.state === "saving"}
+        options={(Object.entries(callModes) as [CallMode, string][]).map(
+          ([value, label]) => ({ value, label }),
+        )}
+        onChange={(luckCall) =>
+          void updateSettings(
+            { buddy: { luckCall: luckCall as CallMode } },
+            "buddy.luckCall",
+          )
         }
       />
-      <SaveFeedback saveKey="buddy.ollamaModel" />
+      <SaveFeedback saveKey="buddy.luckCall" />
+      {buddy.luckCall !== "off" && (
+        <OllamaSettings
+          field="quickModel"
+          address={buddy.answerer !== "ollama"}
+        />
+      )}
     </VStack>
   );
 }
@@ -1184,6 +1256,7 @@ export function BuddySettings() {
           <SaveFeedback saveKey="buddy.personality" />
         </VStack>
         <BuddyRules />
+        {buddy.enabled && <QuickCallSettings />}
         <BuddyMemory />
       </VStack>
     </Card>

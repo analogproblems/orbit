@@ -15,7 +15,8 @@ pub(super) const KEEP_CHAT_DAYS: i64 = 30;
 /// with a worktree to clean up is never touched. Closed CI problems go
 /// after `problems::KEEP_CLOSED`, settled outcome checks after
 /// `outcomes::KEEP_DAYS` (misses after `outcomes::KEEP_MISSED_DAYS`), cases
-/// and lessons after `cases::KEEP_DAYS`, and
+/// and lessons after `cases::KEEP_DAYS`, quick calls after
+/// `calls::KEEP_DAYS`, and
 /// what Orbit read about other Orbits on a pull request once it closes. Says whether anything changed.
 pub(super) fn prune(s: &mut Snapshot, now: chrono::DateTime<chrono::Utc>) -> bool {
     let open: HashSet<&str> = s.prs.iter().map(|p| p.id.as_str()).collect();
@@ -74,6 +75,7 @@ pub(super) fn prune(s: &mut Snapshot, now: chrono::DateTime<chrono::Utc>) -> boo
     changed |= crate::ops::prune(&mut s.ops, &mut s.journal, &s.problems, &s.prs, now);
     changed |= crate::outcomes::prune(&mut s.outcomes, now);
     changed |= crate::cases::prune(s, now);
+    changed |= crate::calls::prune(&mut s.calls, now);
     changed
 }
 
