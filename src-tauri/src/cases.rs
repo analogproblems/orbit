@@ -22,7 +22,8 @@
 //! checks of the last `LEARN_DAYS` (see `crate::outcomes`). A case counts
 //! once its problem can no longer come back as the same one (`FLAP_QUIET`
 //! after it closed), and once per lesson however many of its checks the
-//! lesson's name covers. Orbit keeps each repeat as a `Lesson`: what happened,
+//! lesson's name covers. Checks are told apart by their full names, which
+//! text only shortens (`check_key`). Orbit keeps each repeat as a `Lesson`: what happened,
 //! and what to do next time (`learn`). A lesson applies to the open
 //! problems it is about (`apply`), which then say it to the agent and to
 //! you. You can forget one, and it is learned again only from what
@@ -100,7 +101,8 @@ pub struct Case {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub number: Option<u64>,
     /// Every check that failed while it was open, and those failing when
-    /// Orbit last saw it open.
+    /// Orbit last saw it open, each once by its full name as GitHub sends
+    /// it: Orbit tells checks apart by it, and shortens it only to show.
     pub checks: Vec<String>,
     pub last: Vec<String>,
     /// The step that failed, from the first job log Orbit read for it.
@@ -172,14 +174,14 @@ pub enum LessonKind {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Lesson {
-    /// The same for the same repeat: `luck:<repo>:<check>`,
-    /// `back:<problem key>` (a default branch's), `fix:<repo>`,
-    /// `setting:<repo>:<setting>` or `build:<repo>`, in lower case but for
-    /// the check, as GitHub tells checks apart by case.
+    /// The same for the same repeat: `luck:<repo>:<check key>`
+    /// (`check_key`), `back:<problem key>` (a default branch's),
+    /// `fix:<repo>`, `setting:<repo>:<setting>` or `build:<repo>`, in lower
+    /// case but for the check, as GitHub tells checks apart by case.
     pub id: String,
     pub kind: LessonKind,
     pub repo: String,
-    /// The check, for bad luck.
+    /// The check, for bad luck, by its full name.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub check: String,
     /// The default branch, for one that keeps coming back there.
@@ -220,6 +222,27 @@ pub fn tracked(kind: ProblemKind) -> bool {
         kind,
         ProblemKind::DefaultBranch | ProblemKind::PullRequest | ProblemKind::ReleaseBuild
     )
+}
+
+/// A check's name as it goes in a lesson's id: the name itself when it is
+/// short and plain enough to show as it is, else its start and a hash of
+/// the whole name, so two checks are never one.
+pub fn check_key(name: &str) -> String {
+    use sha2::{Digest, Sha256};
+    if clean(name, 160) == name {
+        return name.to_string();
+    }
+    let hash: String = Sha256::digest(name.as_bytes())
+        .iter()
+        .take(8)
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    format!("{} #{hash}", clean(name, 100))
+}
+
+/// The id of the lesson about a check failing by bad luck.
+fn luck_id(repo: &str, check: &str) -> String {
+    format!("luck:{}:{}", repo.to_lowercase(), check_key(check))
 }
 
 /// Keeps the cases up to date, says what happened last time on each new
@@ -456,11 +479,10 @@ pub fn record(s: &mut Snapshot) -> bool {
             for f in failing {
                 keep_failed(c, f);
             }
-            // Names alike in their first 160 characters are one to show.
             c.last.clear();
-            for name in p.failing.iter().map(|f| clean(&f.name, 160)) {
-                if !c.last.contains(&name) {
-                    c.last.push(name);
+            for f in &p.failing {
+                if !c.last.contains(&f.name) {
+                    c.last.push(f.name.clone());
                 }
             }
             for name in &c.last {
@@ -509,7 +531,7 @@ pub fn record(s: &mut Snapshot) -> bool {
 type Show<'a> = &'a dyn Fn(&str) -> String;
 
 fn list(names: &[String], show: Show) -> String {
-    let shown: Vec<String> = names.iter().take(3).map(|n| show(n)).collect();
+    let shown: Vec<String> = names.iter().take(3).map(|n| show(&clean(n, 160))).collect();
     let more = names.len().saturating_sub(shown.len());
     match (shown.as_slice(), more) {
         ([], _) => "Its checks".into(),
@@ -592,7 +614,7 @@ pub fn last_time_text(l: &LastTime, show: Show) -> String {
 /// its key, or else one in its repository of the same group (checks, or
 /// release builds) where one of the same checks failed.
 fn like<'a>(cases: &'a [Case], p: &Problem) -> Option<&'a Case> {
-    let names: Vec<String> = p.failing.iter().map(|f| clean(&f.name, 160)).collect();
+    let names: Vec<&str> = p.failing.iter().map(|f| f.name.as_str()).collect();
     let build = |k: ProblemKind| k == ProblemKind::ReleaseBuild;
     let closed = cases.iter().filter(|c| {
         c.id != p.id
@@ -611,7 +633,7 @@ fn like<'a>(cases: &'a [Case], p: &Problem) -> Option<&'a Case> {
                 .filter(|c| {
                     same_repo(&c.repo, &p.repo)
                         && build(c.kind) == build(p.kind)
-                        && c.checks.iter().any(|n| names.contains(n))
+                        && c.checks.iter().any(|n| names.contains(&n.as_str()))
                 })
                 .max_by(newest)
         })
@@ -662,7 +684,7 @@ pub fn lesson_text(l: &Lesson, show: Show) -> (String, String) {
         LessonKind::Luck => (
             format!(
                 "{} in {} failed and then passed when it ran again at the same commit {n} times in {days} days.",
-                show(&l.check),
+                show(&clean(&l.check, 160)),
                 l.repo
             ),
             "When it fails again, running it again will likely pass, but it may need fixing so it stops failing by chance.".into(),
@@ -762,7 +784,7 @@ fn repeats(s: &Snapshot, now: DateTime<Utc>) -> BTreeMap<String, (Lesson, Vec<Se
                 for check in &c.last {
                     add(
                         Lesson {
-                            id: format!("luck:{}:{check}", c.repo.to_lowercase()),
+                            id: luck_id(&c.repo, check),
                             kind: LessonKind::Luck,
                             repo: c.repo.clone(),
                             check: check.clone(),
@@ -909,7 +931,7 @@ pub fn about(l: &Lesson, p: &Problem) -> bool {
         return false;
     }
     match l.kind {
-        LessonKind::Luck => p.failing.iter().any(|f| clean(&f.name, 160) == l.check),
+        LessonKind::Luck => p.failing.iter().any(|f| l.id == luck_id(&p.repo, &f.name)),
         LessonKind::Back => l.id == format!("back:{}", p.key).to_lowercase(),
         LessonKind::Fix => true,
         LessonKind::Build => p.kind == ProblemKind::ReleaseBuild,

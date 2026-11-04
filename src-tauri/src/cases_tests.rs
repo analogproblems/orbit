@@ -512,38 +512,39 @@ fn two_jobs_failing_by_one_name_both_have_to_pass_again() {
     assert_eq!(ending(&[passed, ("Rust", 8, 81, "SUCCESS")]), End::Again);
 }
 
+/// One incident on `main` at `A`, read as GitHub sends it: `jobs` fail at
+/// `start`, each in a run of its own, and pass again in the same runs ten
+/// minutes later.
+fn incident(s: &mut Snapshot, jobs: &[&str], start: i64) {
+    let base = 1000 * (start as u64 + 1);
+    for (later, conclusion) in [(0, "FAILURE"), (10, "SUCCESS")] {
+        let read: Vec<(&str, u64, u64, &str)> = (0..)
+            .zip(jobs)
+            .map(|(n, job)| (*job, base + n, base + 100 + n + later, conclusion))
+            .collect();
+        see(s, graphql(A, &read), start + later as i64);
+    }
+}
+
 /// One failure counts once for a lesson, however its jobs are named: by
 /// one name in another case, as GitHub tells them apart, or alike in
-/// their first 160 characters, which show as one.
+/// their first 160 characters.
 #[test]
 fn one_failure_counts_once_however_its_jobs_are_named() {
     let long = "x".repeat(200);
     let (one, two) = (format!("{long} 1"), format!("{long} 2"));
-    let jobs = ["Rust", "rust", "RUST", one.as_str(), two.as_str()];
-    let at_runs = |conclusion: &'static str| -> Vec<(&str, u64, u64, &str)> {
-        (0..)
-            .zip(jobs)
-            .map(|(n, job)| (job, 7 + n, 70 + n, conclusion))
-            .collect()
-    };
     let mut s = Snapshot::default();
-    see(&mut s, graphql(A, &at_runs("FAILURE")), 0);
-    assert_eq!(s.cases[0].failed.len(), 5);
-    see(&mut s, graphql(A, &at_runs("SUCCESS")), 10);
+    incident(&mut s, &["Rust", "rust", "RUST", &one, &two], 0);
     let c = &s.cases[0];
-    assert_eq!(c.end, End::Again);
-    assert_eq!(c.last.len(), 4, "the long ones show as one");
+    assert_eq!((c.end, c.failed.len()), (End::Again, 5));
+    assert_eq!(c.last.len(), 5, "each by its full name");
     assert_eq!(c.last[..3], ["CI / Rust", "CI / rust", "CI / RUST"]);
-    let (_, learned) = see(&mut s, graphql(A, &at_runs("SUCCESS")), 80);
+    let (_, learned) = follow(&mut s, at(80));
     assert!(learned.is_empty() && s.lessons.is_empty());
     // Two more times for one of them, and that one is a lesson.
-    for start in [100, 200] {
-        let failed = graphql(A, &[("Rust", 20 + start as u64, 1, "FAILURE")]);
-        see(&mut s, failed, start);
-        let passed = graphql(A, &[("Rust", 20 + start as u64, 2, "SUCCESS")]);
-        see(&mut s, passed, start + 10);
-    }
-    let (_, learned) = see(&mut s, graphql(A, &[("Rust", 220, 2, "SUCCESS")]), 280);
+    incident(&mut s, &["Rust"], 100);
+    incident(&mut s, &["Rust"], 200);
+    let (_, learned) = follow(&mut s, at(280));
     assert_eq!(ids(&learned), ["luck:a/b:CI / Rust"]);
     assert_eq!(learned[0].count, 3);
     assert_eq!(s.lessons.len(), 1);
@@ -554,6 +555,42 @@ fn one_failure_counts_once_however_its_jobs_are_named() {
         ..case("c1", End::Again, 1)
     });
     assert!(learn(&mut s, now()).is_empty());
+}
+
+/// Checks alike in their first 160 characters are still told apart, each
+/// by its full name: a lesson counts only its own, and applies only to it.
+#[test]
+fn checks_alike_in_their_first_160_characters_are_told_apart() {
+    let long = |n: u32| format!("{} {n}", "x".repeat(200));
+    let mut s = Snapshot::default();
+    for (n, start) in [(1, 0), (2, 100), (3, 200)] {
+        incident(&mut s, &[&long(n)], start);
+    }
+    assert!(s.cases.iter().all(|c| c.end == End::Again));
+    let (_, learned) = follow(&mut s, at(280));
+    assert!(learned.is_empty() && s.lessons.is_empty(), "each once");
+    // Two more times for the first, and it is a lesson of its own.
+    incident(&mut s, &[&long(1)], 300);
+    incident(&mut s, &[&long(1)], 400);
+    let (_, learned) = follow(&mut s, at(480));
+    assert_eq!(learned.len(), 1);
+    let l = &learned[0];
+    let name = format!("CI / {}", long(1));
+    assert_eq!((l.check.as_str(), l.count), (name.as_str(), 3));
+    assert_eq!(l.id, format!("luck:a/b:{}", check_key(&name)));
+    assert_ne!(check_key(&name), check_key(&format!("CI / {}", long(2))));
+    assert!(l.id.len() < 140, "a long name's id is its start and a hash");
+    assert!(l.what.starts_with(&format!("{}… in a/b", &name[..160])));
+    // It applies to that check failing, not to another named alike.
+    let failing = |job: &str| Problem {
+        failing: vec![check(&format!("CI / {job}"))],
+        ..problem(job, A)
+    };
+    assert!(about(l, &failing(&long(1))));
+    assert!(!about(l, &failing(&long(9))));
+    // A short, plain name is its own key.
+    assert_eq!(check_key(RUST), RUST);
+    assert_ne!(check_key("CI /\nRust"), "CI /\nRust");
 }
 
 #[cfg(unix)]
