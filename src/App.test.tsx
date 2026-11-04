@@ -1474,9 +1474,13 @@ describe("Bit", () => {
     await mount();
     await user().click(screen.getByRole("button", { name: "Settings" }));
     await openSettingsTab("Buddy");
+    // Only quick calls use Ollama so far.
     expect(
-      screen.queryByRole("textbox", { name: /^Ollama address/ }),
-    ).toBeNull();
+      await screen.findAllByRole("textbox", { name: /^Ollama address/ }),
+    ).toHaveLength(1);
+    expect(
+      screen.getByText("Orbit sends each quick call to this address."),
+    ).toBeTruthy();
     await chooseOption(
       await screen.findByRole("combobox", {
         name: /^Who answers your questions/,
@@ -1486,7 +1490,9 @@ describe("Bit", () => {
     expect(invoke).toHaveBeenCalledWith("update_settings", {
       patch: { buddy: { answerer: "ollama" } },
     });
-    const address = await screen.findByRole("textbox", {
+    // One address, where Bit uses it first.
+    await screen.findByText(/^Bit sends each question, with what Orbit knows/);
+    const address = screen.getByRole("textbox", {
       name: /^Ollama address/,
     });
     expect((address as HTMLInputElement).value).toBe("http://localhost:11434");
@@ -1507,6 +1513,49 @@ describe("Bit", () => {
       ollamaUrl: "http://jupiter:11434",
       ollamaModel: "qwen3:8b",
     });
+  });
+
+  it("chooses the model for Bit's quick calls and what they decide", async () => {
+    snapshot.ollama = { ready: true };
+    snapshot.ollamaModels = ["llama3.2:3b", "qwen3:8b"];
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Settings" }));
+    await openSettingsTab("Buddy");
+    const mode = await screen.findByRole("combobox", {
+      name: /^Is this failure bad luck\?/,
+    });
+    expect(
+      screen.getByText(/^Orbit asks, and keeps the answer while its own rules/),
+    ).toBeTruthy();
+    await chooseOption(
+      screen.getByRole("combobox", { name: /^Quick call model/ }),
+      "llama3.2:3b",
+    );
+    expect(invoke).toHaveBeenCalledWith("update_settings", {
+      patch: { buddy: { quickModel: "llama3.2:3b" } },
+    });
+    await chooseOption(mode, "On");
+    expect(invoke).toHaveBeenCalledWith("update_settings", {
+      patch: { buddy: { luckCall: "on" } },
+    });
+    expect(
+      await screen.findByText(/^A clear yes or no decides whether a job/),
+    ).toBeTruthy();
+    expect(buddyOf(snapshot.settings)).toMatchObject({
+      quickModel: "llama3.2:3b",
+      luckCall: "on",
+      // Bit still answers with Codex.
+      answerer: "codex",
+    });
+    // Off asks nothing, so there's no model to choose.
+    await chooseOption(
+      screen.getByRole("combobox", { name: /^Is this failure bad luck\?/ }),
+      "Off",
+    );
+    expect(await screen.findByText("Orbit asks no model.")).toBeTruthy();
+    expect(
+      screen.queryByRole("combobox", { name: /^Quick call model/ }),
+    ).toBeNull();
   });
 
   it("says when the computer running Orbit has nowhere to keep API keys", async () => {

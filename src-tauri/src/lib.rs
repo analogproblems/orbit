@@ -11,6 +11,7 @@ pub mod broke;
 pub mod broker;
 pub mod buddy;
 pub mod builds;
+pub mod calls;
 pub mod cases;
 pub mod ci;
 pub mod claude;

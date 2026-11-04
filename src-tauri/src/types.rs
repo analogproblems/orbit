@@ -1396,6 +1396,9 @@ pub struct Snapshot {
     pub cases: Vec<crate::cases::Case>,
     pub lessons: Vec<crate::cases::Lesson>,
     pub forgotten_lessons: Vec<crate::cases::Forgot>,
+    /// Quick calls a model on Ollama made, and how each turned out (see
+    /// `crate::calls`).
+    pub calls: Vec<crate::calls::Call>,
     /// Why the jobs still failing on open problems failed, as Orbit read
     /// them (see `crate::logs`).
     pub failures: Vec<crate::logs::Failure>,

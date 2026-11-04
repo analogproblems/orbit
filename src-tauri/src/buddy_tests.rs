@@ -490,6 +490,11 @@ fn settings_check_the_name_and_choices() {
             "Mars/Olympus",
             "'Mars/Olympus' isn't a time zone Orbit knows. Choose one from the list, such as Europe/London.",
         ),
+        (
+            "luck_call",
+            "always",
+            "'always' isn't off, watch or on, for the quick call.",
+        ),
     ] {
         let mut bad = b.clone();
         match field {
@@ -501,6 +506,7 @@ fn settings_check_the_name_and_choices() {
             "ollama_url" => bad.ollama_url = value.into(),
             "brief_at" => bad.brief_at = value.into(),
             "time_zone" => bad.time_zone = value.into(),
+            "luck_call" => bad.luck_call = value.into(),
             _ => bad.tone = value.into(),
         }
         assert_eq!(bad.validate().unwrap_err(), error, "{field}");
@@ -539,6 +545,25 @@ fn settings_check_the_name_and_choices() {
     b.answerer = "ollama".into();
     assert_eq!(b.answered_by(), Answerer::Ollama);
     assert_eq!(b.answered_by().provider(), None);
+    // Quick calls watch, once you choose a model.
+    assert_eq!(
+        (b.luck_call.as_str(), b.quick_model.as_str()),
+        ("watch", "")
+    );
+    assert!(b.wants_quick_calls());
+    let patch: BuddyPatch =
+        serde_json::from_value(json!({"quickModel": " small ", "luckCall": "on"})).unwrap();
+    patch.apply(&mut b);
+    assert_eq!(
+        (b.luck_call.as_str(), b.quick_model.as_str()),
+        ("on", "small")
+    );
+    assert!(b.validate().is_ok());
+    let mut bad = b.clone();
+    bad.quick_model = "a\nb".into();
+    assert!(bad.validate().is_err());
+    b.luck_call = "off".into();
+    assert!(!b.wants_quick_calls());
 
     // Every rule starts on Ask first; a patch changes only the rules it names.
     assert!(RULES
@@ -611,6 +636,17 @@ fn saved_state_from_another_version_falls_back_to_defaults() {
         (b.ollama_url.as_str(), b.ollama_model.as_str()),
         (crate::ollama::DEFAULT_URL, "")
     );
+    // A quick call this version doesn't know, a model Orbit can't use, and
+    // none from before quick calls.
+    let mut b: Buddy =
+        serde_json::from_value(json!({"luckCall": "always", "quickModel": "a\nb"})).unwrap();
+    b.normalize();
+    assert_eq!(
+        (b.luck_call.as_str(), b.quick_model.as_str()),
+        ("watch", "")
+    );
+    let b: Buddy = serde_json::from_value(json!({"name": "Sprocket"})).unwrap();
+    assert_eq!(b.luck_call, "watch");
     // Older state has no rules; newer state may name a rule or a fix this
     // version doesn't know.
     let mut b: Buddy = serde_json::from_value(
@@ -644,6 +680,8 @@ fn the_app_offers_the_same_choices() {
     assert_eq!(list("tones"), TONES);
     assert_eq!(list("answerers"), ANSWERERS);
     assert_eq!(list("rules"), RULES);
+    assert_eq!(list("callModes"), CALL_MODES);
+    assert_eq!(fixture["enoughCalls"], crate::calls::ENOUGH);
     let names = |values: Vec<serde_json::Value>| -> Vec<String> {
         values
             .into_iter()

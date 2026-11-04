@@ -2716,6 +2716,316 @@ async fn a_rerun_github_never_got_waits_for_the_rules() {
     );
 }
 
+/// A fake Ollama that answers every quick call `answer`, and the chats it
+/// was sent.
+async fn quick(answer: &str) -> (String, Arc<std::sync::Mutex<Vec<Value>>>) {
+    let fake = crate::ollama::tests::Fake {
+        content: json!({ "answer": answer }).to_string(),
+        ..Default::default()
+    };
+    let chats = fake.chats.clone();
+    (crate::ollama::tests::serve(fake).await, chats)
+}
+/// The pull request at commit `at` failing `CI / Rust` by job `id` of run
+/// `run`, which failed at `step` with this log.
+fn quick_failure(dir: &Path, (run, at): (u32, char), id: u32, step: &str, log: &[&str]) {
+    answer(
+        dir,
+        '1',
+        &[("Rust", "SUCCESS")],
+        Some((at, &[("Rust", "FAILURE")])),
+    );
+    links(
+        dir,
+        &[(
+            "Rust",
+            &format!("https://github.com/a/b/actions/runs/{run}/job/{id}"),
+        )],
+    );
+    in_run(dir, (run, at), id, "Rust", 1, step, log);
+}
+const NO_HOST: [&str; 2] = [
+    "fatal: unable to access 'https://github.com/a/b/': Could not resolve host: github.com",
+    "##[error]Process completed with exit code 128.",
+];
+
+/// In Watch, Orbit asks Ollama once about each failed job, with its check,
+/// step and log, and keeps the answer while the rules decide; once the
+/// rerun fails again, it scores both.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_quick_call_in_watch_is_kept_while_the_rules_decide() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let (url, chats) = quick("no").await;
+    let e = connected(d.path()).await;
+    e.update(|s| {
+        s.prs = vec![pr('5')];
+        s.settings.buddy.ollama_url = url.clone();
+        s.settings.buddy.quick_model = "small".into();
+    })
+    .await;
+    quick_failure(d.path(), (1, '5'), 2, "Run actions/checkout@v4", &NO_HOST);
+    watch(&e, &gh).await;
+    assert_eq!(
+        reruns_sent(d.path()),
+        ["POST repos/a/b/actions/jobs/2/rerun"],
+        "the rules decide"
+    );
+    let s = e.snapshot().await;
+    assert_eq!(s.calls.len(), 1);
+    let c = &s.calls[0];
+    assert_eq!(
+        (c.url.as_str(), c.number, c.mode.as_str(), c.model.as_str()),
+        (&*job_url(2), Some(12), "watch", "small")
+    );
+    assert_eq!((c.rules, c.said), (true, Some(crate::calls::Said::No)));
+    let sent = chats.lock().unwrap().clone();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["model"], "small");
+    assert_eq!(sent[0]["format"], crate::calls::schema());
+    let asked = sent[0]["messages"][1]["content"].as_str().unwrap();
+    assert!(
+        asked.starts_with("Check: CI / Rust\nStep that failed: Run actions/checkout@v4\n")
+            && asked.contains("Could not resolve host"),
+        "{asked}"
+    );
+    watch(&e, &gh).await;
+    assert_eq!(chats.lock().unwrap().len(), 1, "once");
+
+    // The rerun fails again: the rules were wrong, and the model right. The
+    // new job gets a call of its own.
+    rerun_lost(d.path(), 1002, 2);
+    watch(&e, &gh).await;
+    e.flush().await.unwrap();
+    let s = e.snapshot().await;
+    let c = s.calls.iter().find(|c| c.url == job_url(2)).unwrap();
+    assert_eq!(
+        (c.truth, c.how.as_str()),
+        (Some(false), "It failed again after a rerun.")
+    );
+    assert_eq!(s.calls.len(), 2);
+    let score = crate::calls::score(&s.calls, crate::calls::LUCK, "small");
+    assert_eq!(
+        (
+            score.scored,
+            score.rules_right,
+            score.model_right,
+            score.on_right
+        ),
+        (1, 0, 1, 1)
+    );
+}
+
+/// In On, a clear answer decides: a no keeps Orbit from rerunning what the
+/// rules call bad luck, and a yes reruns what they don't, by Bit's rule.
+/// With no answer, the rules decide.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_quick_call_that_is_on_decides_whether_a_job_is_rerun() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let (no, _) = quick("no").await;
+    let (yes, _) = quick("yes").await;
+    let e = connected(d.path()).await;
+    e.update(|s| {
+        s.prs = vec![pr('5')];
+        s.settings.buddy.ollama_url = no.clone();
+        s.settings.buddy.quick_model = "small".into();
+        s.settings.buddy.luck_call = "on".into();
+    })
+    .await;
+    quick_failure(d.path(), (1, '5'), 2, "Run actions/checkout@v4", &NO_HOST);
+    watch(&e, &gh).await;
+    assert!(reruns_sent(d.path()).is_empty());
+    assert!(!comment(d.path()).contains("Orbit reran"));
+    let s = e.snapshot().await;
+    assert_eq!(s.calls[0].mode, "on");
+    // The rules' own answer still shows.
+    assert!(s.failures[0].flaky.is_some());
+    // Back in Watch the rules decide again at once, before the next pass,
+    // and the call does again in On.
+    let why = |s: &Snapshot| {
+        let mut items = s.ops.iter().flat_map(|t| &t.items);
+        let item = items.find(|i| i.url == job_url(2)).unwrap();
+        item.why.as_ref().and_then(|w| w.flaky.clone())
+    };
+    assert_eq!(why(&s), None);
+    let mode = |mode: &str| {
+        serde_json::from_value::<SettingsPatch>(json!({"buddy": {"luckCall": mode}})).unwrap()
+    };
+    e.update_settings(mode("watch")).await.unwrap();
+    assert!(why(&e.snapshot().await).is_some());
+    e.update_settings(mode("on")).await.unwrap();
+    assert_eq!(why(&e.snapshot().await), None);
+
+    // A test fails at a new commit: the rules don't call it bad luck, the
+    // model does.
+    e.update(|s| {
+        s.prs = vec![pr('6')];
+        s.settings.buddy.ollama_url = yes.clone();
+    })
+    .await;
+    quick_failure(
+        d.path(),
+        (3, '6'),
+        3,
+        "Run cargo test",
+        &[
+            "test parses ... FAILED",
+            "##[error]Process completed with exit code 101.",
+        ],
+    );
+    watch(&e, &gh).await;
+    assert_eq!(
+        reruns_sent(d.path()),
+        ["POST repos/a/b/actions/jobs/3/rerun"]
+    );
+    assert!(
+        noted(
+            &e,
+            "as it looks like bad luck: Orbit's quick call on Ollama said so."
+        )
+        .await
+    );
+
+    // Nothing answers: the rules decide.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let gone = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    e.update(|s| {
+        s.prs = vec![pr('7')];
+        s.settings.buddy.ollama_url = gone.clone();
+    })
+    .await;
+    quick_failure(d.path(), (4, '7'), 4, "Run actions/checkout@v4", &NO_HOST);
+    watch(&e, &gh).await;
+    assert_eq!(
+        reruns_sent(d.path()).last().unwrap(),
+        "POST repos/a/b/actions/jobs/4/rerun"
+    );
+    let s = e.snapshot().await;
+    let c = s.calls.iter().find(|c| c.url.ends_with("/job/4")).unwrap();
+    assert!(c.said.is_none() && c.error.as_deref().unwrap().contains("Nothing answered"));
+}
+
+/// Quick calls go one at a time, and each reads the settings again first:
+/// once Ollama moves, the answer from the old address is dropped and the
+/// job is asked about again at the new one; once the calls or Watch CI are
+/// off, or the repository is disconnected, no other log is sent and the
+/// answer is dropped.
+#[tokio::test]
+async fn each_quick_call_reads_the_settings_again_before_it_sends_a_log() {
+    use crate::ollama::tests::{serve, Fake};
+    let slow = |answer: &str| Fake {
+        content: json!({ "answer": answer }).to_string(),
+        delay: std::time::Duration::from_millis(300),
+        ..Default::default()
+    };
+    let job = |id: u32| format!("https://github.com/a/b/actions/runs/1/job/{id}");
+    let failing = |s: &mut Snapshot| {
+        s.settings.buddy.quick_model = "small".into();
+        s.problems = vec![crate::problems::Problem {
+            id: "p1".into(),
+            key: "ci:a/b#12".into(),
+            kind: crate::problems::ProblemKind::PullRequest,
+            repo: "a/b".into(),
+            pr_id: Some("a/b#12".into()),
+            sha: "5".repeat(40),
+            failing: [2, 3]
+                .map(|id| crate::ci::Check {
+                    name: format!("CI / {id}"),
+                    url: job(id),
+                })
+                .to_vec(),
+            opened_at: crate::problems::stamp(chrono::Utc::now()),
+            ..Default::default()
+        }];
+        s.failures = [2, 3]
+            .map(|id| crate::logs::Failure {
+                url: job(id),
+                check: format!("CI / {id}"),
+                step: "Run cargo test".into(),
+                lines: vec![format!("line of job {id}")],
+                read_at: crate::problems::stamp(chrono::Utc::now()),
+                ..Default::default()
+            })
+            .to_vec();
+    };
+    let sent = |chats: &Arc<std::sync::Mutex<Vec<Value>>>| -> Vec<String> {
+        let chats = chats.lock().unwrap();
+        let asked = chats
+            .iter()
+            .map(|c| c["messages"][1]["content"].to_string());
+        asked.collect()
+    };
+    async fn first(chats: &Arc<std::sync::Mutex<Vec<Value>>>) {
+        for _ in 0..500 {
+            if !chats.lock().unwrap().is_empty() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("nothing was asked");
+    }
+
+    // Ollama moves while the first call waits.
+    let d = tempfile::tempdir().unwrap();
+    let (old, new) = (slow("yes"), slow("no"));
+    let (old_chats, new_chats) = (old.chats.clone(), new.chats.clone());
+    let (old, new) = (serve(old).await, serve(new).await);
+    let e = connected(d.path()).await;
+    e.update(|s| {
+        failing(s);
+        s.settings.buddy.ollama_url = old.clone();
+    })
+    .await;
+    let calls = tokio::spawn({
+        let e = e.clone();
+        async move { e.make_calls().await }
+    });
+    first(&old_chats).await;
+    e.update(|s| s.settings.buddy.ollama_url = new.clone())
+        .await;
+    calls.await.unwrap();
+    assert_eq!(sent(&old_chats).len(), 1);
+    assert_eq!(sent(&new_chats), sent(&old_chats), "the same job again");
+    let s = e.snapshot().await;
+    assert_eq!(s.calls.len(), 1);
+    assert_eq!(
+        (s.calls[0].url.as_str(), s.calls[0].said),
+        (&*job(2), Some(crate::calls::Said::No))
+    );
+
+    // The calls, or Watch CI, go off while the first waits, or the
+    // repository is disconnected.
+    for change in [
+        (|s: &mut Snapshot| s.settings.buddy.luck_call = "off".into()) as fn(&mut Snapshot),
+        |s| s.settings.watch_ci = false,
+        |s| s.settings.repositories.clear(),
+    ] {
+        let d = tempfile::tempdir().unwrap();
+        let fake = slow("yes");
+        let chats = fake.chats.clone();
+        let url = serve(fake).await;
+        let e = connected(d.path()).await;
+        e.update(|s| {
+            failing(s);
+            s.settings.buddy.ollama_url = url.clone();
+        })
+        .await;
+        let calls = tokio::spawn({
+            let e = e.clone();
+            async move { e.make_calls().await }
+        });
+        first(&chats).await;
+        e.update(change).await;
+        calls.await.unwrap();
+        assert_eq!(sent(&chats).len(), 1, "no other log");
+        assert!(e.snapshot().await.calls.is_empty());
+    }
+}
+
 /// A check whose link is a job at another commit, or another check's job,
 /// isn't Orbit's to rerun.
 #[cfg(unix)]

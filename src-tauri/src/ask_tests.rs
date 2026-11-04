@@ -1094,6 +1094,77 @@ fn bit_is_told_what_orbit_learned_latest_seen_first() {
 }
 
 #[test]
+fn bit_is_told_how_the_quick_calls_did_newest_first() {
+    use crate::calls::{Call, Said, LUCK};
+    let mut s = snapshot();
+    let b = briefing(&s, &Lookups::default());
+    assert_eq!(
+        b["quickCalls"]["badLuck"],
+        json!({
+            "mode": "watch", "model": null, "readyToDecide": false, "recent": [],
+            "score": {
+                "asked": 0, "unsure": 0, "noAnswer": 0, "agreed": 0,
+                "scored": 0, "rulesRight": 0, "modelScored": 0, "modelRight": 0,
+                "onRight": 0,
+            },
+        })
+    );
+    assert_eq!(b["settings"]["buddy.luckCall"], "watch");
+    s.settings.buddy.quick_model = "small".into();
+    s.calls = (0..SHOWN_CALLS + 2)
+        .map(|n| Call {
+            id: format!("luck:job {n}"),
+            question: LUCK.into(),
+            repo: "a/b".into(),
+            number: Some(12),
+            check: format!("CI / check {n}"),
+            asked_at: format!("2026-11-04T{n:02}:00:00Z"),
+            model: "small".into(),
+            rules: true,
+            said: Some(Said::No),
+            truth: Some(false),
+            how: "It failed again after a rerun.".into(),
+            ..Default::default()
+        })
+        .collect();
+    s.calls[0].model = "big".into();
+    let told = briefing(&s, &Lookups::default())["quickCalls"]["badLuck"].clone();
+    assert_eq!(told["model"], "small");
+    assert_eq!(told["score"]["modelRight"], SHOWN_CALLS + 1);
+    let recent = told["recent"].as_array().unwrap();
+    assert_eq!(recent.len(), SHOWN_CALLS);
+    assert_eq!(
+        recent[0],
+        json!({
+            "repository": "a/b", "pr": 12, "check": "CI / check 6", "model": "small",
+            "rulesSaidBadLuck": true, "modelSaid": "no", "error": null,
+            "wasBadLuck": false, "howOrbitKnows": "It failed again after a rerun.",
+            "askedAt": "2026-11-04T06:00:00Z",
+        })
+    );
+    assert!(instructions(&s.settings.buddy).contains("The summary's `quickCalls` says how"));
+    // Calls asked of an earlier model don't make a new one ready to decide.
+    s.calls = (0..crate::calls::ENOUGH)
+        .map(|n| Call {
+            question: LUCK.into(),
+            model: "small".into(),
+            said: Some(Said::Yes),
+            truth: Some(true),
+            asked_at: format!("2026-11-04T{n:02}:00:00Z"),
+            ..Default::default()
+        })
+        .collect();
+    let ready = |s: &Snapshot| {
+        briefing(s, &Lookups::default())["quickCalls"]["badLuck"]["readyToDecide"].clone()
+    };
+    assert_eq!(ready(&s), true);
+    s.settings.buddy.quick_model = "untried".into();
+    assert_eq!(ready(&s), false);
+    s.settings.buddy.quick_model.clear();
+    assert_eq!(ready(&s), false);
+}
+
+#[test]
 fn what_orbit_looked_up_is_data_that_cant_close_its_block() {
     let found = |text: &str, error: Option<&str>| Found {
         lookup: None,

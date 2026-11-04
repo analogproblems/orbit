@@ -12,8 +12,8 @@
 //! `crate::baseline`); then Bit's morning brief once a day (`crate::brief`).
 use super::Engine;
 use crate::{
-    actions_storage as storage, broke, builds, ci, logs, problems, readiness, releases, runners,
-    security, types::*, workflows,
+    actions_storage as storage, broke, builds, calls, ci, logs, problems, readiness, releases,
+    runners, security, types::*, workflows,
 };
 use std::sync::atomic::Ordering;
 
@@ -34,6 +34,9 @@ impl Engine {
         }
         self.watch_ci_now().await;
         self.read_failures().await;
+        // Before telling agents, so a call that decides is in before a
+        // rerun.
+        self.make_calls().await;
         self.read_breaks().await;
         self.read_setups().await;
         self.read_merges().await;
@@ -176,6 +179,50 @@ impl Engine {
         };
         if pruned {
             self.dirty.store(true, Ordering::SeqCst);
+        }
+        let _ = self.flush().await;
+    }
+}
+impl Engine {
+    /// Makes the quick calls this pass wants (`crate::calls`), one at a
+    /// time, and stops at the first that fails. Before each, it reads the
+    /// settings and what's wanted again, so a log goes nowhere once the
+    /// calls, Bit or the model are off, or Ollama moved; an answer to a
+    /// call whose address or model changed meanwhile is dropped.
+    pub(super) async fn make_calls(&self) {
+        for _ in 0..calls::PER_PASS {
+            let next = {
+                let s = self.state.lock().await;
+                calls::setup(&s).zip(calls::wanted(&s).into_iter().next())
+            };
+            let Some(((url, model, _), w)) = next else {
+                break;
+            };
+            let prompt = calls::prompt(&w.failure);
+            let schema = calls::schema();
+            let answer = crate::ollama::answer(
+                &url,
+                &model,
+                calls::INSTRUCTIONS,
+                &prompt,
+                &schema,
+                calls::TIMEOUT,
+            )
+            .await
+            .and_then(|content| calls::parse(&content));
+            let failed = answer.is_err();
+            self.update(|s| {
+                let Some((now_url, now_model, on)) = calls::setup(s) else {
+                    return;
+                };
+                if now_url == url && now_model == model {
+                    calls::record(s, &w, &model, on, answer, chrono::Utc::now());
+                }
+            })
+            .await;
+            if failed {
+                break;
+            }
         }
         let _ = self.flush().await;
     }

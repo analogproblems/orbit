@@ -63,7 +63,16 @@ fn on_pr(s: &Snapshot, planned: &Planned) -> Option<(String, u64)> {
 fn ready_now(s: &mut Snapshot, now: chrono::DateTime<chrono::Utc>) -> bool {
     let answers = crate::readiness::all(s);
     let watch = s.settings.watch_ci;
-    ops::ready(&mut s.ops, &answers, &s.prs, &s.problems, &s.ci, watch, now)
+    let ready = ops::ready(&mut s.ops, &answers, &s.prs, &s.problems, &s.ci, watch, now);
+    // A quick call decides by the settings now, not as they were when the
+    // pass began.
+    decide(s) || ready
+}
+/// Gives each failing item why its job failed, as a quick call that
+/// decides says (`crate::calls::decided`). Says whether any changed.
+pub(super) fn decide(s: &mut Snapshot) -> bool {
+    let read = crate::calls::decided(s);
+    ops::explain(&mut s.ops, &read)
 }
 
 impl Engine {
@@ -102,7 +111,8 @@ impl Engine {
             changed |= crate::playbooks::follow(s);
             changed |= crate::buddy::observe_lessons(s, &learned);
             changed |= ops::refresh(&mut s.ops, &s.problems, now);
-            changed |= ops::explain(&mut s.ops, &s.failures);
+            // As a quick call that decides says, while it does.
+            changed |= decide(s);
             let mut again = reruns::noticed(s);
             again.extend(ops::offer(s));
             changed |= !again.is_empty();

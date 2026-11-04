@@ -75,6 +75,8 @@
     "google"
   ],
   "rules": ["do_it", "ask_first", "leave_it"],
+  "callModes": ["off", "watch", "on"],
+  "enoughCalls": 10,
   "fixes": [
     "continue_loop",
     "review_again",

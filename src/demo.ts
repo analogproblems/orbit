@@ -1,6 +1,7 @@
 import {
   activeStatuses,
   checkNames,
+  defaultBuddy,
   defaults,
   loopStatusLabels,
   readinessLine,
@@ -27,6 +28,7 @@ import {
   type OpsWrite,
   type Outcome,
   type Lesson,
+  type QuickCall,
   type PlaybookStep,
   type Problem,
   type PullRequest,
@@ -854,6 +856,12 @@ export function freshDemo(): Snapshot {
     },
     settings: {
       ...defaults,
+      // Quick calls watch with a small model on Ollama.
+      buddy: {
+        ...defaultBuddy,
+        rules: { ...defaultBuddy.rules },
+        quickModel: "llama3.2:3b",
+      },
       model: "demo-review-model",
       effort: "medium",
       writeUps: { enabled: true, writer: "codex" },
@@ -898,6 +906,8 @@ export function freshDemo(): Snapshot {
       isDefault: isDefault as boolean,
     })),
     antigravity: { ready: true },
+    ollama: { ready: true, version: null },
+    ollamaModels: ["llama3.2:3b", "qwen3:8b"],
     antigravityModels: [
       ["gemini-3.1-pro-high", "Gemini 3.1 Pro (High)"],
       ["gemini-3.8-flash-medium", "Gemini 3.8 Flash (Medium)"],
@@ -1083,6 +1093,7 @@ export function demoCi(
   | "outcomes"
   | "lessons"
   | "failures"
+  | "calls"
   | "setups"
   | "runners"
   | "actionsStorage"
@@ -1893,6 +1904,105 @@ export function demoCi(
   for (const t of ops)
     for (const i of t.items)
       if (i.failing) i.why = failures.find((f) => f.url === i.url) ?? null;
+  // Quick calls on Ollama, watching: what it said about each failed job
+  // and, once Orbit could tell, who was right. The first end-to-end try
+  // failed again after its rerun, so both were wrong there.
+  const [redProblem, failingProblem] = problems;
+  const quick = (
+    call: Pick<QuickCall, "repo" | "check" | "url" | "rules"> &
+      Partial<QuickCall>,
+    minutes: number,
+  ): QuickCall => ({
+    id: `luck:${call.url}`,
+    question: "luck",
+    sha: failingPr.headSha,
+    problem: failingProblem.id,
+    askedAt: ago(minutes),
+    mode: "watch",
+    model: "llama3.2:3b",
+    ...call,
+  });
+  const calls: QuickCall[] = [
+    quick(
+      {
+        repo: "acme/orbit",
+        check: "CI / Rust tests",
+        url: rustJob,
+        sha: redProblem.sha,
+        problem: redProblem.id,
+        rules: false,
+        said: "no",
+      },
+      16,
+    ),
+    quick(
+      {
+        repo: failingPr.repo,
+        number: failingPr.number,
+        check: "CI / Frontend",
+        url: frontendJob,
+        rules: false,
+        said: "no",
+      },
+      18,
+    ),
+    quick(
+      {
+        repo: failingPr.repo,
+        number: failingPr.number,
+        check: "CI / End-to-end",
+        url: e2eJob,
+        rules: true,
+        said: "unsure",
+      },
+      8,
+    ),
+    quick(
+      {
+        repo: failingPr.repo,
+        number: failingPr.number,
+        check: "CI / End-to-end",
+        url: e2eFirst,
+        rules: true,
+        said: "yes",
+        truth: false,
+        how: "It failed again after a rerun.",
+        settledAt: ago(9),
+      },
+      20,
+    ),
+    quick(
+      {
+        repo: failingPr.repo,
+        number: 197,
+        check: "CI / End-to-end",
+        url: `https://github.com/${failingPr.repo}/actions/runs/905/job/1905`,
+        sha: sha("8d2f6e1"),
+        problem: "demo-problem-197",
+        rules: true,
+        said: "yes",
+        truth: true,
+        how: "It passed after a rerun.",
+        settledAt: ago(2 * 24 * 60 - 12),
+      },
+      2 * 24 * 60,
+    ),
+    quick(
+      {
+        repo: "acme/orbit",
+        check: "CI / Rust tests",
+        url: "https://github.com/acme/orbit/actions/runs/880/job/1880",
+        sha: sha("41c8d07"),
+        problem: "demo-problem-main",
+        rules: false,
+        said: "yes",
+        truth: false,
+        how: "An agent fixed it, and no other check was failing.",
+        settledAt: ago(6 * 24 * 60 + 60),
+      },
+      6 * 24 * 60 + 4 * 60,
+    ),
+  ];
   // What Orbit learned from repeats: the end-to-end job keeps passing when
   // it runs again, and main keeps breaking. The failing problems say so,
   // with what happened the last time each failed.
@@ -2083,6 +2193,7 @@ export function demoCi(
     outcomes,
     lessons,
     failures,
+    calls,
     setups,
     runners,
     actionsStorage,

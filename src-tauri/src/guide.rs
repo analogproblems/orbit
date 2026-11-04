@@ -26,6 +26,8 @@ pub struct Connection {
     pub needed_by: Vec<String>,
     /// Whether Bit answers the questions you type with it.
     pub for_bit: bool,
+    /// Whether Bit's quick calls use it (`crate::calls`).
+    pub for_calls: bool,
     /// How to connect it, when there's no error that says.
     pub how: &'static str,
     /// What to install, by name, and the page that has it.
@@ -189,11 +191,14 @@ pub fn pick_answerer(s: &Snapshot) -> Option<Answerer> {
 }
 
 /// What Orbit connects to: GitHub and Codex always, Claude, Antigravity
-/// and dev containers while a repository or Bit uses them, and Ollama or an
-/// API key while Bit answers with it.
+/// and dev containers while a repository or Bit uses them, Ollama while Bit
+/// answers or makes quick calls with it, and an API key while Bit answers
+/// with it.
 pub fn connections(s: &Snapshot) -> Vec<Connection> {
     let mut out = all_connections(s);
-    out.retain(|c| matches!(c.key, "github" | "codex") || !c.needed_by.is_empty() || c.for_bit);
+    out.retain(|c| {
+        matches!(c.key, "github" | "codex") || !c.needed_by.is_empty() || c.for_bit || c.for_calls
+    });
     out
 }
 
@@ -216,6 +221,7 @@ pub fn all_connections(s: &Snapshot) -> Vec<Connection> {
         error: status.error.clone(),
         needed_by,
         for_bit,
+        for_calls: false,
         how,
         program,
         page,
@@ -228,6 +234,7 @@ pub fn all_connections(s: &Snapshot) -> Vec<Connection> {
             error: s.github_error.clone(),
             needed_by: using(|_| true),
             for_bit: false,
+            for_calls: false,
             how: "Run gh auth login in a terminal on the computer running Orbit.",
             program: "GitHub CLI",
             page: PAGES[0],
@@ -239,6 +246,7 @@ pub fn all_connections(s: &Snapshot) -> Vec<Connection> {
             error: s.codex_error.clone(),
             needed_by: using(|r| r.provider == Provider::Codex),
             for_bit: for_bit(Answerer::Codex),
+            for_calls: false,
             how: "Run codex login in a terminal on the computer running Orbit.",
             program: "Codex CLI",
             page: PAGES[1],
@@ -283,16 +291,19 @@ pub fn all_connections(s: &Snapshot) -> Vec<Connection> {
         c.program = "Dev Container CLI";
         c.page = PAGES[5];
     }
-    out.push(cli(
-        "Ollama",
-        "ollama",
-        &s.ollama,
-        vec![],
-        for_bit(Answerer::Ollama),
-        "Start Ollama on this computer or another one on your network, then check its address in Settings, under Buddy.",
-        "Ollama",
-        PAGES[6],
-    ));
+    out.push(Connection {
+        for_calls: crate::calls::setup(s).is_some(),
+        ..cli(
+            "Ollama",
+            "ollama",
+            &s.ollama,
+            vec![],
+            for_bit(Answerer::Ollama),
+            "Start Ollama on this computer or another one on your network, then check its address in Settings, under Buddy.",
+            "Ollama",
+            PAGES[6],
+        )
+    });
     for (api, page) in Api::ALL.into_iter().zip(&PAGES[7..]) {
         let key = s.api_keys.get(api);
         let (name, key_name, program, how) = match api {

@@ -884,9 +884,16 @@ async fn ollama_answers_with_bits_instructions_and_the_answer_form() {
         .starts_with("The person asks: What's up with b#1?"));
     assert!(sent(&rpc, "thread/start").await.is_empty());
 
-    // Back to Codex, Ollama is no longer checked.
+    // Back to Codex, Ollama is still checked for quick calls, which watch
+    // until you turn them off; then it isn't.
     let patch: SettingsPatch =
         serde_json::from_value(json!({"buddy": {"answerer": "codex"}})).unwrap();
+    e.update_settings(patch).await.unwrap();
+    let s = e.snapshot().await;
+    assert!(s.ollama.ready);
+    assert_eq!(s.ollama_models.len(), 2);
+    let patch: SettingsPatch =
+        serde_json::from_value(json!({"buddy": {"luckCall": "off"}})).unwrap();
     e.update_settings(patch).await.unwrap();
     let s = e.snapshot().await;
     assert_eq!(s.ollama, CliStatus::default());
