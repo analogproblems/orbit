@@ -306,9 +306,13 @@ function noteLink(note: BuddyNote) {
   )
     return undefined;
   if (note.kind === "decide") return "Open decisions";
-  // A CI problem's note, and how something Orbit did turned out, are on
-  // Operations, even when they name a pull request.
-  if (note.key?.startsWith("problem:") || note.key?.startsWith("outcome:"))
+  // A CI problem's note, how something Orbit did turned out, and what it
+  // learned, are on Operations, even when they name a pull request.
+  if (
+    note.key?.startsWith("problem:") ||
+    note.key?.startsWith("outcome:") ||
+    note.key?.startsWith("lesson:")
+  )
     return "Open operations";
   if (note.prId) return "Open loop";
   if (note.repo) return "Open repositories";

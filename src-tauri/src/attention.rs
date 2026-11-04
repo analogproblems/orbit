@@ -301,15 +301,13 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
             continue;
         }
         if p.kind == crate::problems::ProblemKind::ReleaseBuild {
+            let mut reason = crate::problems::build_text(p);
+            if let Some(last) = &p.last_time {
+                reason.push_str(&format!(" {}", last.text));
+            }
             out.push(Attention {
                 repo: Some(p.repo.clone()),
-                ..item(
-                    p.item_key(),
-                    AttentionKind::CiFailing,
-                    None,
-                    None,
-                    crate::problems::build_text(p),
-                )
+                ..item(p.item_key(), AttentionKind::CiFailing, None, None, reason)
             });
             continue;
         }
@@ -341,8 +339,14 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
         if let Some(found) = p.broke.as_ref().and_then(crate::broke::text) {
             reason.push_str(&format!(" {found}"));
         }
-        if let Some(before) = crate::problems::fixed_before_text(p, str::to_string) {
-            reason.push_str(&format!(" {before}"));
+        // What happened last time says when it was fixed before, and more.
+        match &p.last_time {
+            Some(last) => reason.push_str(&format!(" {}", last.text)),
+            None => {
+                if let Some(before) = crate::problems::fixed_before_text(p, str::to_string) {
+                    reason.push_str(&format!(" {before}"));
+                }
+            }
         }
         out.push(Attention {
             repo: Some(p.repo.clone()),

@@ -304,6 +304,24 @@ describe("demo security settings", () => {
   });
 });
 
+describe("demo lessons", () => {
+  it("forgets a lesson once, taking it off the problems it was about", async () => {
+    const id = "back:ci:acme/orbit";
+    const forget = () => useOrbit.getState().action("forget_lesson", { id });
+    expect((await forget()).ok).toBe(true);
+    const s = useOrbit.getState().snapshot;
+    expect(s.lessons!.map((l) => l.id)).not.toContain(id);
+    expect(s.forgottenLessons!.map((f) => f.id)).toContain(id);
+    expect(s.problems!.some((p) => p.lessons?.some((l) => l.id === id))).toBe(
+      false,
+    );
+    expect(await forget()).toEqual({
+      ok: false,
+      error: "Error: Orbit doesn't have that lesson any more.",
+    });
+  });
+});
+
 describe("demo Dependabot updates", () => {
   it("asks Dependabot to rebase the one that conflicts, once", async () => {
     const args = { prId: "acme/api#64" };

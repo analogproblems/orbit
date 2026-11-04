@@ -55,6 +55,8 @@ const MAX_STORIES: usize = 15;
 const MAX_DECISIONS: usize = 6;
 /// Rules the summary's rulebook gives, newest first.
 const MAX_RULES: usize = 60;
+/// The most lessons the summary names.
+const SHOWN_LESSONS: usize = 10;
 
 /// What a button in an answer does: one of Orbit's own controls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,6 +231,7 @@ Looking things up:
 - workflow, with repository and path: a workflow file on the default branch, such as .github/workflows/ci.yml, from the summary's `workflowFiles`.
 - changes, with repository and either pr or commit: a pull request's or a commit's changes, file by file. The commits and pull requests that broke a default branch are in the summary's `ci.problems`.
 - The summary's `outcomes` says how what Orbit did lately turned out, such as a setting it turned on or a job it reran, and how agents' fixes went: held, missed, waiting or unclear, with why.
+- The summary's `lessons` says what Orbit learned from things that happened more than once, such as a check that keeps failing by bad luck or a problem that keeps coming back, with what to do next time; a CI problem's `lastTime` says what happened the last time something like it failed. They are guidance: they never change Orbit's rules.
 - Only connected repositories. Leave the fields a kind doesn't use null. While you look things up, `answer` is one short line saying what you're looking at, and `proposals` and `memory` stay empty: Orbit shows the person your next answer instead.
 
 Keep answers short: a few sentences, or a short list. Name pull requests by repository and number, like orbit#12.
@@ -615,6 +618,7 @@ fn ci_of(s: &Snapshot, repo: &str) -> Value {
                     "passedAt": f.at,
                     "commit": crate::ci::short(&f.sha),
                 })),
+                "lastTime": p.last_time.as_ref().map(|l| clean(&l.text, 400)),
             })
         })
         .collect();
@@ -738,6 +742,23 @@ pub fn briefing(s: &Snapshot, lookups: &Lookups) -> Value {
             })
         })
         .collect();
+    // What Orbit learned from repeats, the latest seen first.
+    let mut lessons: Vec<&crate::cases::Lesson> = s.lessons.iter().collect();
+    lessons.sort_by(|a, b| b.seen_at.cmp(&a.seen_at));
+    let lessons: Vec<Value> = lessons
+        .into_iter()
+        .take(SHOWN_LESSONS)
+        .map(|l| {
+            json!({
+                "repository": l.repo,
+                "happened": clean(&l.what, 300),
+                "nextTime": clean(&l.next, 300),
+                "times": l.count,
+                "learnedAt": l.learned_at,
+                "lastSeenAt": l.seen_at,
+            })
+        })
+        .collect();
     json!({
         "now": now(),
         "clockZone": crate::clock::computer_zone(),
@@ -784,6 +805,7 @@ pub fn briefing(s: &Snapshot, lookups: &Lookups) -> Value {
         "decisions": decisions(&lookups.decisions, s.settings.write_ups.enabled),
         "needsYou": needs_you,
         "outcomes": outcomes,
+        "lessons": lessons,
         "recentNotes": recent,
         "earlierConversation": earlier,
         "memory": {

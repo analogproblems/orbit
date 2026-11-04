@@ -935,6 +935,10 @@ fn bit_is_told_each_repositorys_ci_and_how_to_look_things_up() {
             at: "2026-11-01T09:00:00Z".into(),
             sha: "f".repeat(40),
         }),
+        last_time: Some(crate::cases::LastTime {
+            text: "Last time, 2 days earlier: CI / test failed on main.".into(),
+            ..Default::default()
+        }),
         ..Default::default()
     };
     let pull = Problem {
@@ -945,6 +949,7 @@ fn bit_is_told_each_repositorys_ci_and_how_to_look_things_up() {
         since_sha: "e".repeat(40),
         broke: None,
         fixed_before: None,
+        last_time: None,
         ..red.clone()
     };
     let closed = Problem {
@@ -967,12 +972,13 @@ fn bit_is_told_each_repositorys_ci_and_how_to_look_things_up() {
              "broke": {"lastPassing": "aaaaaaa", "firstFailing": "bbbbbbb",
                        "commits": ["bbbbbbb", "ddddddd"], "pullRequests": [7],
                        "directCommits": 1, "error": null},
-             "fixedBefore": {"passedAt": "2026-11-01T09:00:00Z", "commit": "fffffff"}},
+             "fixedBefore": {"passedAt": "2026-11-01T09:00:00Z", "commit": "fffffff"},
+             "lastTime": "Last time, 2 days earlier: CI / test failed on main."},
             {"kind": "pull_request", "branch": "fix", "pr": 1,
              "failingSince": "eeeeeee", "stillFailingAt": null,
              "openedAt": "2026-11-03T09:00:00Z",
              "failing": [{"check": "CI / test", "job": 5}],
-             "broke": null, "fixedBefore": null},
+             "broke": null, "fixedBefore": null, "lastTime": null},
         ])
     );
     // Nothing while Watch CI is off.
@@ -1034,6 +1040,42 @@ fn bit_is_told_how_what_orbit_did_turned_out_newest_first() {
     assert_eq!(told[1]["doneAt"], "2026-11-03T10:00:00Z");
     assert_eq!(told[1]["why"], Value::Null);
     assert!(instructions(&s.settings.buddy).contains("The summary's `outcomes` says how"));
+}
+
+#[test]
+fn bit_is_told_what_orbit_learned_latest_seen_first() {
+    use crate::cases::{Lesson, LessonKind};
+    let mut s = snapshot();
+    s.lessons = (0..SHOWN_LESSONS + 2)
+        .map(|n| Lesson {
+            id: format!("luck:a/b:check {n}"),
+            kind: LessonKind::Luck,
+            repo: "a/b".into(),
+            check: format!("check {n}"),
+            count: 3,
+            learned_at: "2026-11-01T09:00:00Z".into(),
+            seen_at: format!("2026-11-03T{n:02}:00:00Z"),
+            what: format!("check {n} in a/b failed and then passed."),
+            next: "Run it again.".into(),
+            ..Default::default()
+        })
+        .collect();
+    let told = briefing(&s, &Lookups::default())["lessons"].clone();
+    let told = told.as_array().unwrap();
+    assert_eq!(told.len(), SHOWN_LESSONS);
+    assert_eq!(
+        told[0],
+        json!({
+            "repository": "a/b",
+            "happened": "check 11 in a/b failed and then passed.",
+            "nextTime": "Run it again.",
+            "times": 3,
+            "learnedAt": "2026-11-01T09:00:00Z",
+            "lastSeenAt": "2026-11-03T11:00:00Z",
+        })
+    );
+    assert!(instructions(&s.settings.buddy)
+        .contains("They are guidance: they never change Orbit's rules."));
 }
 
 #[test]
