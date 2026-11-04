@@ -1,6 +1,6 @@
 use super::*;
 use crate::cases::{Case, End};
-use crate::ci::Check;
+use crate::ci::{Check, CiState};
 use crate::outcomes::Outcome;
 use crate::problems::Problem;
 use chrono::TimeZone;
@@ -629,10 +629,57 @@ fn on_lets_a_clear_answer_decide_whether_it_was_failing_already() {
     let mut s = fault_state("on");
     s.failures.retain(|f| f.url != job(7));
     assert_eq!(of(&s).as_deref(), Some(NOTE));
+    // An answer only decides about main's job it was compared with: once
+    // main fails the check by another job, whose log Orbit read or not, the
+    // rule decides, and Orbit doesn't ask about the job again.
+    let mut s = fault_state("on");
+    let w = wanted(&s);
+    assert!(record(&mut s, &w[0], "small", true, Ok(Said::No), t0()));
+    assert_eq!(s.calls[0].base, job(7));
+    assert_eq!(of(&s), None);
+    s.problems[1].failing = vec![check(8, "CI / Rust")];
+    s.ci[0].head.failing = vec![check(8, "CI / Rust")];
+    assert_eq!(of(&s).as_deref(), Some(NOTE));
+    s.failures.push(failure(8, "CI / Rust", None));
+    assert_eq!(of(&s).as_deref(), Some(NOTE));
+    assert!(told_already(&s, &job(2)));
+    assert!(wanted(&s).is_empty());
 }
+
+/// A CI read `minutes` after `t0`, with how `CI / Rust` stands on main's
+/// latest commit, by job 7, and on pull request 12's at commit `at`, by
+/// job 2: None for no checks read, as after a restart.
+fn read(s: &mut Snapshot, minutes: i64, main: Option<CiState>, pr: (char, Option<CiState>)) {
+    let commit = |sha_of: char, id: u32, state: Option<CiState>| crate::ci::CommitCi {
+        sha: sha(sha_of),
+        failing: if state == Some(CiState::Failing) {
+            vec![check(id, "CI / Rust")]
+        } else {
+            vec![]
+        },
+        checks: state
+            .map(|st| (check(id, "CI / Rust"), st))
+            .into_iter()
+            .collect(),
+        named: state.is_some(),
+        ..Default::default()
+    };
+    let ci = &mut s.ci[0];
+    ci.checked_at = stamp(t0() + Duration::minutes(minutes));
+    ci.head = commit('9', 7, main);
+    ci.pulls = vec![crate::ci::PullCi {
+        number: 12,
+        draft: false,
+        ci: commit(pr.0, 2, pr.1),
+    }];
+}
+
+/// A read for `read`: when, main's state and the pull request's.
+type CiRead = (i64, Option<CiState>, (char, Option<CiState>));
 
 #[test]
 fn a_failing_already_call_is_scored_by_how_both_ended() {
+    use CiState::{Failing, Passing, Running};
     let later = t0() + Duration::hours(3);
     let asked = || {
         let mut s = fault_state("watch");
@@ -640,91 +687,157 @@ fn a_failing_already_call_is_scored_by_how_both_ended() {
         assert!(record(&mut s, &w[0], "small", false, Ok(Said::Yes), t0()));
         s
     };
-    let at = |minutes: i64| stamp(t0() + Duration::minutes(minutes));
-    let main = |end: End, closed: Option<i64>| Case {
-        id: "p0".into(),
-        kind: ProblemKind::DefaultBranch,
-        repo: "a/b".into(),
-        checks: vec!["CI / Rust".into()],
-        opened_at: at(-60),
-        closed_at: closed.map(at),
-        end,
-        ..Default::default()
+    // The reads after Orbit asked, settled after each; then the call.
+    let after = |s: &mut Snapshot, reads: &[CiRead]| {
+        for (minutes, main, pr) in reads {
+            read(s, *minutes, *main, *pr);
+            settle(s, later);
+        }
+        (
+            s.calls[0].truth,
+            s.calls[0].how.clone(),
+            s.calls[0].settled_at.is_some(),
+        )
     };
-    let pr = |end: End, closed: i64| Case {
-        id: "p1".into(),
-        kind: ProblemKind::PullRequest,
-        repo: "a/b".into(),
-        checks: vec!["CI / Rust".into()],
-        sha: sha('5'),
-        opened_at: at(0),
-        closed_at: Some(at(closed)),
-        end,
-        ..Default::default()
-    };
-    let settled = |cases: Vec<Case>| {
+    let scored = |reads: &[CiRead]| {
         let mut s = asked();
-        s.cases = cases;
-        settle(&mut s, later);
-        (s.calls[0].truth, s.calls[0].how.clone())
+        after(&mut s, reads)
     };
-    // Nothing to go on yet, or only a case that closed before Orbit asked.
-    for cases in [
-        vec![main(End::Open, None)],
-        vec![main(End::Open, None), pr(End::Passed, -10)],
-    ] {
-        let mut s = asked();
-        s.cases = cases;
-        assert!(!settle(&mut s, later));
-    }
-    // The pull request passed while main still failed it: its own.
     let own = (
         Some(false),
         "It passed on the pull request while the default branch still failed it.".to_string(),
+        true,
     );
+    let already = (
+        Some(true),
+        "It passed once the default branch was fixed, with no fix of its own.".to_string(),
+        true,
+    );
+    let couldnt = (
+        None,
+        "Orbit couldn't tell how it turned out.".to_string(),
+        true,
+    );
+    let waits = (None, String::new(), false);
+
+    // Nothing to go on yet; a read from before Orbit asked adds nothing.
+    let mut s = asked();
+    read(&mut s, -1, Some(Passing), ('6', Some(Passing)));
+    assert!(!settle(&mut s, later));
+    assert_eq!(scored(&[(10, Some(Failing), ('5', Some(Failing)))]), waits);
+
+    // The pull request passed while main still failed it, in the same
+    // read or once main's next read says so: its own.
     assert_eq!(
-        settled(vec![main(End::Open, None), pr(End::Passed, 30)]),
+        scored(&[
+            (10, Some(Failing), ('5', Some(Failing))),
+            (20, Some(Failing), ('6', Some(Passing))),
+        ]),
         own
     );
+    let mut s = asked();
     assert_eq!(
-        settled(vec![main(End::Passed, Some(60)), pr(End::Fixed, 30)]),
-        own
+        after(
+            &mut s,
+            &[
+                (10, Some(Failing), ('5', Some(Failing))),
+                (20, Some(Running), ('6', Some(Passing))),
+            ]
+        ),
+        waits
     );
-    // Main was fixed first, then it passed at a newer commit with no fix
-    // of its own named: failing already.
+    assert_eq!(after(&mut s, &[(30, Some(Failing), ('6', None))]), own);
+
+    // Main passed the check first, then the pull request did at a newer
+    // commit with no fix of its own named: failing already. That holds by
+    // the one check, while another still fails main.
     assert_eq!(
-        settled(vec![main(End::Passed, Some(20)), pr(End::Passed, 30)]),
-        (
-            Some(true),
-            "It passed once the default branch was fixed, with no fix of its own.".into()
-        )
+        scored(&[
+            (10, Some(Passing), ('5', Some(Failing))),
+            (20, Some(Passing), ('6', Some(Passing))),
+        ]),
+        already
     );
-    // Orbit can't tell when an agent named a fix after main was fixed, it
-    // passed when it ran again, the pull request closed, there's no case
-    // for main from before Orbit asked, or after a week.
-    let couldnt = (None, "Orbit couldn't tell how it turned out.".to_string());
-    let mut late = main(End::Passed, Some(20));
-    late.opened_at = at(10);
-    for cases in [
-        vec![main(End::Passed, Some(20)), pr(End::Fixed, 30)],
-        vec![main(End::Passed, Some(20)), pr(End::Again, 30)],
-        vec![main(End::Open, None), pr(End::Closed, 30)],
-        vec![late, pr(End::Passed, 30)],
-        vec![pr(End::Passed, 30)],
+    let mut s = asked();
+    read(&mut s, 10, Some(Passing), ('5', Some(Failing)));
+    s.ci[0].head.failing = vec![check(8, "CI / Lint")];
+    s.ci[0].head.checks.push((check(8, "CI / Lint"), Failing));
+    settle(&mut s, later);
+    assert_eq!(after(&mut s, &[(20, None, ('6', Some(Passing)))]), already);
+
+    // Orbit can't tell when both passed in the same read, main passed only
+    // after, the pull request passed when it ran again at the same commit,
+    // or an agent named a fix of its own.
+    for reads in [
+        &[(10, Some(Passing), ('6', Some(Passing)))][..],
+        &[
+            (10, Some(Failing), ('5', Some(Failing))),
+            (20, Some(Running), ('6', Some(Passing))),
+            (30, Some(Passing), ('6', Some(Passing))),
+        ],
+        &[
+            (10, Some(Passing), ('5', Some(Failing))),
+            (20, Some(Passing), ('5', Some(Passing))),
+        ],
     ] {
-        assert_eq!(settled(cases), couldnt);
+        assert_eq!(scored(reads), couldnt);
     }
     let mut s = asked();
-    s.cases = vec![main(End::Open, None)];
+    s.cases = vec![Case {
+        id: "p1".into(),
+        fixed: true,
+        ..case(End::Open, '5', &["CI / Rust"])
+    }];
+    assert_eq!(
+        after(
+            &mut s,
+            &[
+                (10, Some(Passing), ('5', Some(Failing))),
+                (20, Some(Passing), ('6', Some(Passing))),
+            ]
+        ),
+        couldnt
+    );
+
+    // A check cancelled or skipped, or in a read with checks left to read,
+    // didn't pass.
+    let mut s = asked();
+    after(
+        &mut s,
+        &[(10, Some(CiState::None), ('6', Some(CiState::None)))],
+    );
+    assert!(s.calls[0].base_passed_at.is_empty() && s.calls[0].passed_at.is_empty());
+    let mut s = asked();
+    read(&mut s, 10, Some(Passing), ('6', Some(Passing)));
+    s.ci[0].head.incomplete = true;
+    s.ci[0].pulls[0].ci.cursor = Some("next".into());
+    settle(&mut s, later);
+    assert!(s.calls[0].base_passed_at.is_empty() && s.calls[0].passed_at.is_empty());
+    // Once its problem closes without Orbit seeing the check pass, or after
+    // a week with nothing more from main, Orbit can't tell.
+    let result = |s: &Snapshot| {
+        let c = &s.calls[0];
+        (c.truth, c.how.clone(), c.settled_at.is_some())
+    };
+    let mut s = asked();
+    after(&mut s, &[(10, Some(Failing), ('6', Some(CiState::None)))]);
+    s.cases = vec![case(End::Unclear, '5', &["CI / Rust"])];
+    settle(&mut s, later);
+    assert_eq!(result(&s), couldnt);
+    let mut s = asked();
+    assert_eq!(
+        after(&mut s, &[(10, Some(CiState::None), ('6', Some(Passing)))]),
+        waits
+    );
     settle(
         &mut s,
         t0() + Duration::days(GIVE_UP_DAYS) + Duration::minutes(1),
     );
-    assert_eq!((s.calls[0].truth, s.calls[0].how.clone()), couldnt);
+    assert_eq!(result(&s), couldnt);
+
     // The scorecard counts it as its own question.
     let mut s = asked();
-    s.cases = vec![main(End::Open, None), pr(End::Passed, 30)];
-    settle(&mut s, later);
+    after(&mut s, &[(10, Some(Failing), ('6', Some(Passing)))]);
     let score = score(&s.calls, FAULT, "small");
     assert_eq!(
         (score.asked, score.rules_right, score.model_right),

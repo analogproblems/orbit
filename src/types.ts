@@ -2374,6 +2374,17 @@ export interface QuickCall {
   truth?: boolean;
   how?: string;
   settledAt?: string;
+  /** For failing already: the default branch's job the model compared it
+   * with, by its link. */
+  base?: string;
+  /** For failing already, by the CI reads after Orbit asked: the latest in
+   * which the default branch still failed the check, while none had seen
+   * it pass; the first in which it passed it; and the first in which the
+   * pull request passed it, with that commit. */
+  baseFailingAt?: string;
+  basePassedAt?: string;
+  passedAt?: string;
+  passedSha?: string;
 }
 /** How the quick calls about one question asked of one model did: how many were asked, how
  * it answered, and, of those Orbit could check, how often the rules, the

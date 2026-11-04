@@ -452,17 +452,19 @@ function saidText(question: CallQuestion, said: QuickCall["said"]) {
   return said === "unsure" ? "unsure" : callQuestions[question][said];
 }
 /** What each of Ollama's quick calls said about a failing job, bad luck
- * first, and whether it decides. */
-export function callLines(s: Snapshot, f: CiFailure) {
+ * first, and whether it decides. `already` is the note Orbit tells the pull
+ * request now: a no that left it there was about another of the default
+ * branch's jobs, so the rule decides. */
+export function callLines(s: Snapshot, f: CiFailure, already?: string | null) {
   const order: CallQuestion[] = ["luck", "fault"];
   return order.flatMap((question) => {
     const c = s.calls?.find((c) => c.url === f.url && c.question === question);
     if (!c) return [];
-    const decides = callsMode(s.settings, question) === "on";
-    const who =
-      decides && (c.said === "yes" || c.said === "no")
-        ? "It decides."
-        : "The rules decide.";
+    const on = callsMode(s.settings, question) === "on";
+    const counts =
+      c.said === "yes" ||
+      (c.said === "no" && !(question === "fault" && already));
+    const who = on && counts ? "It decides." : "The rules decide.";
     return [
       `${callQuestions[question].line}: ${saidText(question, c.said)}. ${who}`,
     ];
@@ -548,7 +550,7 @@ function Why({ s, p, t }: { s: Snapshot; p: Problem; t?: OpsThread }) {
           <Text color="secondary">Looks like bad luck: {f.flaky}</Text>
         )}
         {already && <Text color="secondary">{already}</Text>}
-        {callLines(s, f).map((line) => (
+        {callLines(s, f, already).map((line) => (
           <Text key={line} color="secondary">
             {line}
           </Text>

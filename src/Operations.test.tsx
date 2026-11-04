@@ -985,11 +985,21 @@ describe("operations page", () => {
     expect(row()).toContain(
       "Quick call on Ollama: not bad luck. The rules decide.Quick call on Ollama about the default branch: failing already. It decides.",
     );
-    // With no note, as when On took it back, none shows.
+    // A no takes the note away; one that left it was about another of
+    // main's jobs, so the rule decides.
+    s.calls!.at(-1)!.said = "no";
+    cleanup();
+    show(s);
+    expect(row()).toContain(
+      "Quick call on Ollama about the default branch: from the pull request. The rules decide.",
+    );
     cleanup();
     item.why = { ...item.why!, already: null };
     show(s);
     expect(row()).not.toContain(note);
+    expect(row()).toContain(
+      "Quick call on Ollama about the default branch: from the pull request. It decides.",
+    );
   });
 
   it("says when On would have been right as often as the rules on enough calls of the chosen model", () => {

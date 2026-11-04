@@ -22,7 +22,9 @@
 //! nothing. Watch, the default, asks and keeps the answer while the rules
 //! decide. On lets a clear yes or no decide (`decided`): whether a job
 //! looks like bad luck, or whether Orbit says it fails on the default
-//! branch too. Unsure, or no answer, leaves it to the rules, and Orbit
+//! branch too. An answer about failing already only decides while the
+//! default branch fails the check by the job it was compared with
+//! (`Call.base`). Unsure, or no answer, leaves it to the rules, and Orbit
 //! waits for a call it can still make. Either way Bit's rules for reruns,
 //! and at most two reruns of a check at a commit (`crate::reruns`), still
 //! apply.
@@ -32,10 +34,12 @@
 //! that passed, or a check that passed when it ran again at the same
 //! commit, was bad luck; a job that failed again after its rerun, or a
 //! check an agent fixed while it was the only one failing, wasn't. For
-//! `FAULT`: a pull request whose check passed while the default branch
-//! still failed it wasn't failing already; one that passed at a newer
-//! commit, with no fix of its own named, after the default branch was
-//! fixed, was. Anything else stays unscored. `score` sums up how often the
+//! `FAULT`, by that one check, as each CI read after Orbit asked saw it
+//! (`seen`): a pull request whose check passed while the default branch
+//! still failed it, in every read until then, wasn't failing already; one
+//! whose check passed at a newer commit, with no fix of its own named,
+//! after a read in which the default branch passed it, was. A check
+//! cancelled or skipped didn't pass. Anything else stays unscored. `score` sums up how often the
 //! rules, the model and On would have been right, for one question and
 //! one model at a time.
 //!
@@ -116,6 +120,24 @@ pub struct Call {
     pub how: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub settled_at: Option<String>,
+    /// For `FAULT`: the default branch's job the model compared it with,
+    /// by its link. Once the check fails there by another job, or Orbit
+    /// hasn't read that one's log, the answer no longer decides.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub base: String,
+    /// For `FAULT`, by the CI reads after Orbit asked (`seen`): the latest
+    /// in which the default branch's latest commit failed the check, while
+    /// none had seen it pass; the first in which it passed it; and the
+    /// first in which the pull request's latest commit passed it, with that
+    /// commit.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub base_failing_at: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub base_passed_at: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub passed_at: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub passed_sha: String,
 }
 impl Call {
     /// Whether the model gave a clear answer, and it was right.
@@ -241,6 +263,19 @@ fn on_default<'a>(s: &'a Snapshot, repo: &str, name: &str) -> Option<&'a Failure
         .flat_map(|p| p.failing.iter())
         .filter(|c| c.name == name && !c.url.is_empty())
         .find_map(|c| s.failures.iter().find(|f| f.url == c.url && askable(f)))
+}
+/// The default branch's job that a pull request's job, by its link, is
+/// compared with now (see `on_default`).
+fn baseline<'a>(s: &'a Snapshot, url: &str) -> Option<&'a Failure> {
+    failing(s)
+        .filter(|p| p.kind == ProblemKind::PullRequest)
+        .find_map(|p| {
+            let c = p
+                .failing
+                .iter()
+                .find(|c| !c.url.is_empty() && c.url == url)?;
+            on_default(s, &p.repo, &c.name)
+        })
 }
 
 /// The call Orbit would make about `question` on problem `p`'s failing
@@ -428,6 +463,7 @@ pub fn record(
         rules: w.question == FAULT || w.failure.flaky.is_some(),
         said,
         error,
+        base: w.other.as_ref().map(|o| o.url.clone()).unwrap_or_default(),
         ..Default::default()
     });
     true
@@ -462,10 +498,13 @@ pub fn decided_one(s: &Snapshot, f: &Failure) -> Failure {
     }
     out.already = already(s, &f.url);
     if on(FAULT) && out.already.is_some() {
-        match said(FAULT) {
-            Some(Said::No) => out.already = None,
+        let call = s.calls.iter().find(|c| c.id == id(FAULT, &f.url));
+        // Only about the default branch's job failing the check now.
+        let same = |c: &Call| baseline(s, &f.url).is_some_and(|b| b.url == c.base);
+        match call {
+            Some(c) if same(c) && c.said == Some(Said::No) => out.already = None,
             None if will_ask(s, FAULT, &f.url) => out.already = None,
-            Some(Said::Yes | Said::Unsure) | None => {}
+            Some(_) | None => {}
         }
     }
     out
@@ -478,12 +517,16 @@ pub fn told_already(s: &Snapshot, url: &str) -> bool {
 }
 
 /// Checks each call not yet settled against what Orbit read since (see the
-/// module's docs). Says whether any settled.
+/// module's docs). Says whether any changed.
 pub fn settle(s: &mut Snapshot, now: DateTime<Utc>) -> bool {
     let mut changed = false;
     for i in 0..s.calls.len() {
         if s.calls[i].settled_at.is_some() {
             continue;
+        }
+        if let Some(seen) = seen(s, &s.calls[i]) {
+            s.calls[i] = seen;
+            changed = true;
         }
         let Some((truth, how)) = found(s, &s.calls[i], now) else {
             continue;
@@ -553,52 +596,89 @@ fn found(s: &Snapshot, c: &Call, now: DateTime<Utc>) -> Option<(Option<bool>, St
 /// branch: from its case, once it closed after Orbit asked, and the default
 /// branch's case for the same check from before then.
 fn found_fault(s: &Snapshot, c: &Call, now: DateTime<Utc>) -> Option<(Option<bool>, String)> {
-    use crate::cases::{Case, End};
+    use crate::cases::End;
     let asked = time(&c.asked_at);
-    let closed = |k: &Case| k.closed_at.as_deref().and_then(time);
-    let since = |k: &Case| closed(k).zip(asked).is_some_and(|(k, a)| k > a);
-    let passed = |k: &Case| matches!(k.end, End::Again | End::Unclear | End::Passed | End::Fixed);
-    let pr = s
-        .cases
-        .iter()
-        .find(|k| k.id == c.problem && k.end != End::Open && since(k));
-    // The default branch's newest case for the check, opened before Orbit
-    // asked.
-    let main = s
-        .cases
-        .iter()
-        .filter(|k| {
-            k.kind == ProblemKind::DefaultBranch
-                && same_repo(&k.repo, &c.repo)
-                && k.checks.contains(&c.check)
-                && time(&k.opened_at).zip(asked).is_some_and(|(o, a)| o <= a)
-        })
-        .max_by(|a, b| a.opened_at.cmp(&b.opened_at));
-    if let Some(k) = pr.filter(|k| passed(k)) {
-        let at = closed(k);
-        let failing_then =
-            main.is_some_and(|m| closed(m).is_none_or(|m| at.is_some_and(|k| m > k)));
-        if failing_then {
+    let old = asked.is_none_or(|at| now.signed_duration_since(at) > Duration::days(GIVE_UP_DAYS));
+    let couldnt = || Some((None, "Orbit couldn't tell how it turned out.".into()));
+    let case = s.cases.iter().find(|k| k.id == c.problem);
+    if let Some(passed) = time(&c.passed_at) {
+        // The default branch still failed it in a read as late, with none
+        // before seeing it pass.
+        if time(&c.base_failing_at).is_some_and(|m| m >= passed) {
             return Some((
                 Some(false),
                 "It passed on the pull request while the default branch still failed it.".into(),
             ));
         }
-        let fixed_first = main.is_some_and(|m| {
-            passed(m) && since(m) && closed(m).zip(at).is_some_and(|(m, k)| m <= k)
-        });
-        if fixed_first && k.end == End::Passed {
+        let Some(fixed) = time(&c.base_passed_at) else {
+            // Waits for the default branch's next read.
+            return if old { couldnt() } else { None };
+        };
+        let newer = !c.passed_sha.is_empty() && c.passed_sha != c.sha;
+        let own_fix = case.is_some_and(|k| k.fixed);
+        if fixed < passed && newer && !own_fix {
             return Some((
                 Some(true),
                 "It passed once the default branch was fixed, with no fix of its own.".into(),
             ));
         }
+        return couldnt();
     }
-    let old = asked.is_none_or(|at| now.signed_duration_since(at) > Duration::days(GIVE_UP_DAYS));
-    if pr.is_some() || old {
-        return Some((None, "Orbit couldn't tell how it turned out.".into()));
+    // Its problem closed since Orbit asked without Orbit seeing the check
+    // pass, such as when it was cancelled.
+    let closed = case.is_some_and(|k| {
+        let at = k.closed_at.as_deref().and_then(time);
+        k.end != End::Open && at.zip(asked).is_some_and(|(at, asked)| at > asked)
+    });
+    if closed || old {
+        return couldnt();
     }
     None
+}
+
+/// Whether a commit's checks, all read, include `name` passing, by every
+/// job of that name: one cancelled or skipped didn't pass.
+fn passes(ci: &crate::ci::CommitCi, name: &str) -> bool {
+    use crate::ci::CiState;
+    let jobs: Vec<&CiState> = ci
+        .checks
+        .iter()
+        .filter(|(c, _)| c.name == name)
+        .map(|(_, state)| state)
+        .collect();
+    ci.named
+        && !ci.incomplete
+        && ci.cursor.is_none()
+        && !jobs.is_empty()
+        && jobs.iter().all(|state| **state == CiState::Passing)
+}
+/// What the latest CI read, when it came after Orbit asked a `FAULT` call,
+/// adds to it: whether the default branch's latest commit still failed the
+/// check or passed it, and whether the pull request's passed it. None when
+/// it adds nothing.
+fn seen(s: &Snapshot, c: &Call) -> Option<Call> {
+    if c.question != FAULT {
+        return None;
+    }
+    let ci = s.ci.iter().find(|ci| same_repo(&ci.repo, &c.repo))?;
+    let read = time(&ci.checked_at)?;
+    if time(&c.asked_at).is_none_or(|asked| read <= asked) {
+        return None;
+    }
+    let mut out = c.clone();
+    if out.base_passed_at.is_empty() {
+        if ci.head.failing.iter().any(|f| f.name == c.check) {
+            out.base_failing_at = stamp(read);
+        } else if passes(&ci.head, &c.check) {
+            out.base_passed_at = stamp(read);
+        }
+    }
+    let pull = c.number.and_then(|n| ci.pull(n));
+    if let Some(pr) = pull.filter(|pr| out.passed_at.is_empty() && passes(&pr.ci, &c.check)) {
+        out.passed_at = stamp(read);
+        out.passed_sha = pr.ci.sha.clone();
+    }
+    (out != *c).then_some(out)
 }
 
 /// Lets go of calls asked more than `KEEP_DAYS` ago, and of the oldest
