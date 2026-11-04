@@ -481,6 +481,9 @@ export interface Buddy {
   /** The quick call "Was this failure already failing on the default
    * branch?". */
   faultCall: CallMode;
+  /** The second look before Bit posts something new where Orbit's
+   * sign-in isn't an admin. */
+  secondLook: CallMode;
 }
 /** One of Orbit's own controls, offered for something that needs you. */
 export type Fix =
@@ -595,6 +598,7 @@ export const defaultBuddy: Buddy = {
   quickModel: "",
   luckCall: "watch",
   faultCall: "watch",
+  secondLook: "watch",
 };
 /** How Settings names each quick call mode. */
 export const callModes: Record<CallMode, string> = {
@@ -1227,6 +1231,9 @@ export interface Snapshot {
   failures?: CiFailure[];
   /** Quick calls a model on Ollama made, and how each turned out. */
   calls?: QuickCall[];
+  /** Second looks at Bit's new posts where Orbit's sign-in isn't an
+   * admin, and what happened to each. */
+  looks?: SecondLook[];
   /** What each connected repository's files say about its CI. */
   setups?: CiSetup[];
   /** The self-hosted runners of each connected repository, and of each
@@ -1414,6 +1421,11 @@ export interface RepoCi {
   checkedAt: string;
   /** Why the latest read failed; what was read before is kept. */
   error?: string | null;
+  /** What Orbit's sign-in may do there, as GitHub says: ADMIN, MAINTAIN,
+   * WRITE, TRIAGE or READ. */
+  permission?: string;
+  /** Whether the repository is private, when GitHub said. */
+  private?: boolean | null;
 }
 export type ProblemKind =
   | "default_branch"
@@ -2474,6 +2486,76 @@ export function scoredModel(
     .filter((c) => c.question === question)
     .sort((a, b) => b.askedAt.localeCompare(a.askedAt));
   return newest[0]?.model ?? "";
+}
+/** A second look's answer to one question. */
+export type LookSaid = "yes" | "no" | "unsure";
+/** One second look a model took at a new post of Bit's, where Orbit's
+ * sign-in isn't an admin, and what happened to the post. */
+export interface SecondLook {
+  /** The thread whose post it looked at. */
+  thread: string;
+  kind: "comment" | "issue";
+  repo: string;
+  /** The pull request, for a comment. */
+  number?: number;
+  problem: string;
+  /** A hash of what it looked at. */
+  post: string;
+  /** What GitHub said Orbit's sign-in may do there, or empty. */
+  permission: string;
+  askedAt: string;
+  mode: "watch" | "on";
+  /** The model asked, or empty when none was chosen. */
+  model: string;
+  answers?: {
+    about: LookSaid;
+    matches: LookSaid;
+    nothingPrivate: LookSaid;
+    needed: LookSaid;
+  } | null;
+  /** Why the model gave no answers, or Orbit didn't ask. */
+  error?: string | null;
+  verdict: "post" | "wait";
+  /** Why it waits, in a sentence. */
+  why?: string;
+  /** On held the post for you. */
+  held?: boolean;
+  /** When Orbit saw it on GitHub, and where. */
+  postedAt?: string;
+  url?: string;
+  /** When an agent first answered on it. */
+  answeredAt?: string;
+  /** It was deleted from GitHub. */
+  gone?: boolean;
+  /** It never went up, as its problem ended first. */
+  dropped?: boolean;
+}
+/** What the second look does now, as Orbit's `looks::mode` says, with no
+ * model chosen counting as off in Watch: in On, a post then waits. */
+export function lookMode(settings: Settings): CallMode {
+  const buddy = buddyOf(settings);
+  return buddy.enabled ? buddy.secondLook : "off";
+}
+/** The look of a thread's post for the problem it is about now, unless
+ * its thread has nothing left to say. */
+export function lookOf(s: Snapshot, t: OpsThread | undefined) {
+  if (!t) return undefined;
+  return (s.looks ?? []).find(
+    (l) => l.thread === t.key && l.problem === t.problemId && !l.dropped,
+  );
+}
+/** Whether the second look holds a thread's new post for you now, as
+ * Orbit's `looks::waiting` says: On, not on GitHub yet, its look said
+ * wait, and you haven't said to post it. */
+export function heldByLook(s: Snapshot, t: OpsThread | undefined) {
+  const posted = t?.kind === "issue" ? !!t?.number : !!t?.commentId;
+  return (
+    !!t &&
+    lookMode(s.settings) === "on" &&
+    !t.allowed &&
+    !posted &&
+    lookOf(s, t)?.verdict === "wait"
+  );
 }
 /** One rerun of an item's job, or Orbit's tries at one. */
 export interface OpsRerun {

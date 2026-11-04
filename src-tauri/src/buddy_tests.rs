@@ -573,7 +573,15 @@ fn settings_check_the_name_and_choices() {
     let patch: BuddyPatch = serde_json::from_value(json!({"faultCall": " off "})).unwrap();
     patch.apply(&mut b);
     assert_eq!(b.fault_call, "off");
+    assert!(b.wants_quick_calls(), "the second look still asks");
+    assert_eq!(b.second_look, "watch", "the second look starts in Watch");
+    let patch: BuddyPatch = serde_json::from_value(json!({"secondLook": " off "})).unwrap();
+    patch.apply(&mut b);
+    assert_eq!(b.second_look, "off");
     assert!(!b.wants_quick_calls());
+    let mut bad = b.clone();
+    bad.second_look = "always".into();
+    assert!(bad.validate().is_err());
 
     // Every rule starts on Ask first; a patch changes only the rules it names.
     assert!(RULES
@@ -649,7 +657,7 @@ fn saved_state_from_another_version_falls_back_to_defaults() {
     // A quick call this version doesn't know, a model Orbit can't use, and
     // none from before quick calls.
     let mut b: Buddy = serde_json::from_value(
-        json!({"luckCall": "always", "faultCall": "never", "quickModel": "a\nb"}),
+        json!({"luckCall": "always", "faultCall": "never", "secondLook": "twice", "quickModel": "a\nb"}),
     )
     .unwrap();
     b.normalize();
@@ -657,14 +665,19 @@ fn saved_state_from_another_version_falls_back_to_defaults() {
         (
             b.luck_call.as_str(),
             b.fault_call.as_str(),
+            b.second_look.as_str(),
             b.quick_model.as_str()
         ),
-        ("watch", "watch", "")
+        ("watch", "watch", "watch", "")
     );
     let b: Buddy = serde_json::from_value(json!({"name": "Sprocket"})).unwrap();
     assert_eq!(
-        (b.luck_call.as_str(), b.fault_call.as_str()),
-        ("watch", "watch")
+        (
+            b.luck_call.as_str(),
+            b.fault_call.as_str(),
+            b.second_look.as_str()
+        ),
+        ("watch", "watch", "watch")
     );
     // Older state has no rules; newer state may name a rule or a fix this
     // version doesn't know.

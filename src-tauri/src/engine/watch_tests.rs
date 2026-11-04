@@ -2208,6 +2208,91 @@ fn comment(dir: &Path) -> String {
     comments[0]["body"].as_str().unwrap().to_string()
 }
 
+/// In On, a pull request's clear to merge comment, which has no problem of
+/// its own, that the second look says should wait stays off GitHub pass
+/// after pass, with one look, even once it isn't clear for a while and is
+/// again, and only your tap posts it.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_held_clear_to_merge_comment_waits_for_your_tap() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fixture_gh(d.path());
+    let fake = crate::ollama::tests::Fake {
+        content: json!({
+            "about": "yes",
+            "matches": "yes",
+            "nothingPrivate": "yes",
+            "needed": "unsure",
+        })
+        .to_string(),
+        ..Default::default()
+    };
+    let chats = fake.chats.clone();
+    let url = crate::ollama::tests::serve(fake).await;
+    let e = connected(d.path()).await;
+    e.update(|s| {
+        s.github_user = Some("me".into());
+        s.settings.buddy.ollama_url = url.clone();
+        s.settings.buddy.quick_model = "small".into();
+        s.settings.buddy.second_look = "on".into();
+    })
+    .await;
+    let p = reviewed(&e).await;
+    let watch = || crate::github::GH.scope(gh.clone(), e.watch_ci());
+    passing_pull(d.path(), &p.head_sha);
+    mergeable(d.path(), &p.head_sha, json!(true), "clean");
+    for pass in 0..3 {
+        watch().await;
+        assert!(writes(d.path()).is_empty(), "posted on pass {pass}");
+    }
+    assert_eq!(chats.lock().unwrap().len(), 1, "one look");
+    let s = e.snapshot().await;
+    let t = s.ops.iter().find(|t| t.ready.is_some()).unwrap();
+    assert!(t.problem_id.is_empty());
+    assert!(crate::looks::holds(&s, t));
+    assert!(s.looks[0].held && !s.looks[0].dropped);
+    // A commit Orbit hasn't reviewed makes it Orbit's move for a while,
+    // then it is clear again: still held, with no new look.
+    let new = "b".repeat(40);
+    e.update(|s| s.prs[0].head_sha = new.clone()).await;
+    passing_pull(d.path(), &new);
+    watch().await;
+    let s = e.snapshot().await;
+    let t = s.ops.iter().find(|t| t.ready.is_some()).unwrap();
+    let ready = t.ready.as_ref().unwrap();
+    assert!(!ready.clear, "{ready:?}");
+    assert_eq!(
+        ready.turn,
+        Some(crate::readiness::Turn::Working),
+        "{ready:?}"
+    );
+    assert!(!crate::looks::waiting(&s, t));
+    e.update(|s| {
+        s.prs[0].head_sha = p.head_sha.clone();
+        for m in &mut s.merges {
+            m.read_at = "2020-01-01T00:00:00.000Z".into();
+            m.retry_at = Some("2020-01-01T00:00:00.000Z".into());
+        }
+    })
+    .await;
+    passing_pull(d.path(), &p.head_sha);
+    mergeable(d.path(), &p.head_sha, json!(true), "clean");
+    for pass in 0..2 {
+        watch().await;
+        assert!(writes(d.path()).is_empty(), "posted on pass {pass} after");
+    }
+    let s = e.snapshot().await;
+    let t = s.ops.iter().find(|t| t.ready.is_some()).unwrap();
+    assert!(t.ready.as_ref().unwrap().clear);
+    assert!(crate::looks::waiting(&s, t));
+    assert_eq!(chats.lock().unwrap().len(), 1, "asked again");
+    e.allow_telling(&t.key).await.unwrap();
+    crate::github::GH.scope(gh.clone(), e.tell_agents()).await;
+    assert_eq!(writes(d.path()), ["POST repos/a/b/issues/1/comments"]);
+    assert_eq!(chats.lock().unwrap().len(), 1);
+    assert!(!e.snapshot().await.looks[0].posted_at.is_empty());
+}
+
 /// The agent's view, end to end: Orbit's comment on the pull request comes
 /// once it is clear to merge, a push takes it back with one edit, and it
 /// turns clear again with one more, however many steps Orbit, CI and

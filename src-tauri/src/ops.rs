@@ -565,11 +565,14 @@ pub struct Posted {
 pub fn rule_allows(rule: &str, allowed: bool, bit_on: bool) -> bool {
     bit_on && (rule == "do_it" || (rule == "ask_first" && allowed))
 }
-/// Whether Bit may post something new for a thread now: its rule allows it
-/// and Orbit is `watching`. Checked again right before each post.
+/// Whether Bit may post something new for a thread now: its rule allows it,
+/// Orbit is `watching`, and no second look holds it for you
+/// (`crate::looks::holds`). Checked again right before each post.
 pub fn may_post(s: &Snapshot, t: &Thread) -> bool {
     let buddy = &s.settings.buddy;
-    rule_allows(rule_of(s, t), t.allowed, buddy.enabled) && watching(s, t)
+    rule_allows(rule_of(s, t), t.allowed, buddy.enabled)
+        && watching(s, t)
+        && !crate::looks::holds(s, t)
 }
 /// The rule for posting a thread: proposing CI for a repository with none
 /// on pull requests, opening an issue about a default branch, or
@@ -1335,6 +1338,15 @@ pub fn verified(
     })
 }
 
+/// Whether a thread has something new to post: its problem is open, or for
+/// a comment, its pull request's answer to whether it is clear to merge is
+/// worth one (`Ready::tells`). What `next` posts, and what keeps a second
+/// look's post waiting (`crate::looks::follow`).
+pub fn has_news(t: &Thread, problem: Option<&Problem>) -> bool {
+    problem.is_some_and(Problem::is_open)
+        || (t.kind == ThreadKind::Comment && t.ready.as_ref().is_some_and(Ready::tells))
+}
+
 /// The next write a thread needs, if any: post it, keep it up to date, and
 /// for an issue, close it with a note once its problem is over. Something
 /// new is posted only while `may_post`; what is already on GitHub is kept
@@ -1388,9 +1400,8 @@ pub fn next(
                 return None;
             }
             if t.comment_id.is_none() {
-                let tells =
-                    p.is_some_and(Problem::is_open) || t.ready.as_ref().is_some_and(Ready::tells);
-                return (tells && may_post).then(|| plan(Action::PostComment, comment_body(t, p)));
+                return (has_news(t, p) && may_post)
+                    .then(|| plan(Action::PostComment, comment_body(t, p)));
             }
             // A closed pull request has nobody left to tell.
             if p.and_then(|p| p.closed_reason.as_deref()) == Some(PR_CLOSED) {
@@ -1408,7 +1419,7 @@ pub fn next(
                 return None;
             }
             if t.number.is_none() {
-                return (p.is_open() && may_post).then(|| Planned {
+                return (has_news(t, Some(p)) && may_post).then(|| Planned {
                     title: issue_title(t, p),
                     ..plan(Action::OpenIssue, issue_body(t, p, false))
                 });
@@ -2757,6 +2768,9 @@ pub enum Event {
     /// Bit can propose CI for a repository with none on pull requests, once
     /// you tap.
     Offered(String),
+    /// The second look holds a thread's new post until you tap, and why
+    /// (see `crate::looks`).
+    Held { thread: String, why: String },
 }
 /// Where a thread is, in plain words: `acme/api #12` for a pull request's
 /// comment, `main in acme/api` for a default branch's issue.
@@ -2784,7 +2798,9 @@ pub fn event_text(
     let key = match e {
         Event::Posted(key) | Event::Closed(key) | Event::Offered(key) => key,
         Event::Heard(h) => &h.thread,
-        Event::Reran { thread, .. } | Event::FailedAgain { thread, .. } => thread,
+        Event::Reran { thread, .. }
+        | Event::FailedAgain { thread, .. }
+        | Event::Held { thread, .. } => thread,
     };
     let t = threads.iter().find(|t| &t.key == key)?;
     let p = problems.iter().find(|p| p.id == t.problem_id);
@@ -2794,6 +2810,15 @@ pub fn event_text(
     };
     let proposal = p.is_some_and(|p| p.kind == ProblemKind::NoCi);
     let text = match e {
+        Event::Held { why, .. } => {
+            let (what, tap) = match t.kind {
+                ThreadKind::Comment => (format!("comment on {}", place(t)), "Post comment"),
+                ThreadKind::Issue => (format!("issue for {}", place(t)), "Open issue"),
+            };
+            format!(
+                "The second look held Orbit's {what} for you, as you don't run that repository. {why} Tap {tap} on Operations to post it anyway."
+            )
+        }
         Event::Offered(_) => format!(
             "No CI runs on {}'s pull requests. Tap Propose CI on Operations and Orbit opens an issue for its agent, with a workflow to start from.",
             t.repo

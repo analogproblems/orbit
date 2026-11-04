@@ -28,6 +28,7 @@ pub mod guide;
 pub mod ledger;
 pub mod lint;
 pub mod logs;
+pub mod looks;
 pub mod milestones;
 pub mod models;
 pub mod moving;

@@ -50,7 +50,10 @@ pub(super) fn answer(
             })
         })
         .collect();
+    // Orbit's sign-in is an admin, so its posts get no second look.
     let v = json!({ "data": { "repository": {
+        "viewerPermission": "ADMIN",
+        "isPrivate": false,
         "defaultBranchRef": { "name": "main", "target": {
             "oid": sha(head),
             "messageHeadline": "Update the build",
@@ -3010,6 +3013,195 @@ async fn a_pull_request_failing_a_check_main_fails_too_hears_so() {
         .find(|b| b.contains("`CI / Rust`"))
         .unwrap();
     assert!(!edited.contains("fails on main"), "{edited}");
+}
+
+/// Says Orbit's sign-in may only `permission` in the repository, in the
+/// CI read `answer` wrote.
+fn may_only(dir: &Path, permission: &str) {
+    let path = dir.join("answer.json");
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    v["data"]["repository"]["viewerPermission"] = json!(permission);
+    std::fs::write(path, v.to_string()).unwrap();
+}
+/// A fake Ollama that answers every second look `about`, and yes to the
+/// other questions, and the chats it was sent.
+async fn looks_at(about: &str) -> (String, Arc<std::sync::Mutex<Vec<Value>>>) {
+    let fake = crate::ollama::tests::Fake {
+        content: json!({
+            "about": about,
+            "matches": "yes",
+            "nothingPrivate": "yes",
+            "needed": "yes",
+        })
+        .to_string(),
+        ..Default::default()
+    };
+    let chats = fake.chats.clone();
+    (crate::ollama::tests::serve(fake).await, chats)
+}
+/// Orbit's comments on GitHub about `CI / Rust`.
+fn rust_comments(dir: &Path) -> usize {
+    github(dir)["comments"].as_array().map_or(0, |c| {
+        c.iter()
+            .filter(|c| c["body"].as_str().unwrap_or("").contains("`CI / Rust`"))
+            .count()
+    })
+}
+
+/// A new comment in a repository where Orbit's sign-in isn't an admin gets
+/// a second look first: in Watch it is recorded and posted, and it shows
+/// what happened next. One where it's an admin gets none.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_post_where_you_arent_an_admin_gets_a_second_look() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let (url, chats) = looks_at("yes").await;
+    let e = connected(d.path()).await;
+    e.update(|s| {
+        s.prs = vec![pr('5')];
+        s.settings.buddy.ollama_url = url.clone();
+        s.settings.buddy.quick_model = "small".into();
+        s.settings.buddy.luck_call = "off".into();
+        s.settings.buddy.fault_call = "off".into();
+    })
+    .await;
+    quick_failure(
+        d.path(),
+        (1, '5'),
+        2,
+        "Run cargo test",
+        &["##[error]exit code 1"],
+    );
+    may_only(d.path(), "WRITE");
+    watch(&e, &gh).await;
+    assert_eq!(rust_comments(d.path()), 1, "Watch posts it");
+    let s = e.snapshot().await;
+    assert_eq!(s.ci[0].permission, "WRITE");
+    assert_eq!(s.looks.len(), 1);
+    let l = &s.looks[0];
+    assert_eq!(
+        (l.repo.as_str(), l.number, l.mode.as_str(), l.model.as_str()),
+        ("a/b", Some(12), "watch", "small")
+    );
+    assert_eq!(l.verdict, crate::looks::Verdict::Post);
+    assert_eq!(l.permission, "WRITE");
+    assert!(
+        !l.posted_at.is_empty() && l.url.contains("/12#issuecomment-"),
+        "{l:?}"
+    );
+    let sent = chats.lock().unwrap().clone();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        sent[0]["messages"][0]["content"],
+        crate::looks::INSTRUCTIONS
+    );
+    let asked = sent[0]["messages"][1]["content"].as_str().unwrap();
+    assert!(
+        asked.contains("Where it goes: a new comment on pull request #12")
+            && asked.contains("Failing checks: CI / Rust")
+            && asked.contains("`CI / Rust`")
+            && !asked.contains("<!--"),
+        "{asked}"
+    );
+    assert_eq!(sent[0]["format"], crate::looks::schema());
+    // Edits to it get none.
+    quick_failure(
+        d.path(),
+        (1, '6'),
+        3,
+        "Run cargo test",
+        &["##[error]exit code 1"],
+    );
+    may_only(d.path(), "WRITE");
+    watch(&e, &gh).await;
+    assert_eq!(chats.lock().unwrap().len(), 1, "no look at an edit");
+
+    // Where Orbit's sign-in is an admin, none.
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let (url, chats) = looks_at("yes").await;
+    let e = connected(d.path()).await;
+    e.update(|s| {
+        s.prs = vec![pr('5')];
+        s.settings.buddy.ollama_url = url.clone();
+        s.settings.buddy.quick_model = "small".into();
+        s.settings.buddy.luck_call = "off".into();
+        s.settings.buddy.fault_call = "off".into();
+        s.settings.buddy.second_look = "on".into();
+    })
+    .await;
+    quick_failure(
+        d.path(),
+        (1, '5'),
+        2,
+        "Run cargo test",
+        &["##[error]exit code 1"],
+    );
+    watch(&e, &gh).await;
+    assert_eq!(rust_comments(d.path()), 1);
+    assert!(e.snapshot().await.looks.is_empty());
+    assert!(chats.lock().unwrap().is_empty());
+}
+
+/// In On, a post the second look says should wait stays off GitHub, Bit
+/// says why, and your tap posts it.
+#[cfg(unix)]
+#[tokio::test]
+async fn on_holds_a_post_the_second_look_says_should_wait() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let (url, chats) = looks_at("no").await;
+    let e = connected(d.path()).await;
+    e.update(|s| {
+        s.prs = vec![pr('5')];
+        s.settings.buddy.ollama_url = url.clone();
+        s.settings.buddy.quick_model = "small".into();
+        s.settings.buddy.luck_call = "off".into();
+        s.settings.buddy.fault_call = "off".into();
+        s.settings.buddy.second_look = "on".into();
+    })
+    .await;
+    quick_failure(
+        d.path(),
+        (1, '5'),
+        2,
+        "Run cargo test",
+        &["##[error]exit code 1"],
+    );
+    may_only(d.path(), "MAINTAIN");
+    watch(&e, &gh).await;
+    assert_eq!(rust_comments(d.path()), 0, "it waits");
+    let s = e.snapshot().await;
+    let l = &s.looks[0];
+    assert_eq!(l.verdict, crate::looks::Verdict::Wait);
+    assert!(l.held);
+    assert_eq!(
+        l.why,
+        "The model said it isn't about this repository's problem."
+    );
+    let told = s
+        .buddy_feed
+        .notes
+        .iter()
+        .find(|n| n.text.contains("second look held"))
+        .map(|n| n.text.clone());
+    assert!(
+        told.as_deref()
+            .is_some_and(|t| t.contains("a/b #12") && t.contains("Post comment")),
+        "{told:?}"
+    );
+    watch(&e, &gh).await;
+    assert_eq!(rust_comments(d.path()), 0, "still waiting");
+    assert_eq!(chats.lock().unwrap().len(), 1, "one look");
+    let key = s.ops[0].key.clone();
+    e.allow_telling(&key).await.unwrap();
+    crate::github::GH.scope(gh.clone(), e.tell_agents()).await;
+    assert_eq!(rust_comments(d.path()), 1, "your tap posts it");
+    let s = e.snapshot().await;
+    assert!(!s.looks[0].posted_at.is_empty());
+    assert!(s.looks[0].held);
+    assert_eq!(chats.lock().unwrap().len(), 1);
 }
 
 /// A fix the agent named counts against "failing already" as soon as

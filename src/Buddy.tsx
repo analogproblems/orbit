@@ -792,6 +792,14 @@ const callModeHelp: Record<CallQuestion, Record<CallMode, string>> = {
   },
 };
 
+/** What each mode of the second look does, as Settings says it. */
+const secondLookHelp: Record<CallMode, string> = {
+  off: "Orbit takes no second look.",
+  watch:
+    "Orbit asks the model, and keeps its verdict with the post on Operations, but never holds a post back.",
+  on: "A post the model doesn’t pass on all four questions, or that gets no answer, waits until you tap Post comment or Open issue on Operations. It can only make a post wait.",
+};
+
 /** The quick calls, as Settings asks them, and the setting for each. */
 const callQuestions: {
   question: CallQuestion;
@@ -823,6 +831,13 @@ function QuickCallSettings() {
         second, the default branch&rsquo;s too), never your code, and keeps only
         its yes, no or unsure.
       </Text>
+      <Text color="secondary">
+        The same model can take a second look at something new {buddy.name}{" "}
+        posts in a repository where your GitHub account isn&rsquo;t an admin: is
+        it about that repository&rsquo;s problem, does it match what Orbit read,
+        does it hold nothing private, and is it needed now? Orbit posts it only
+        when all four answers are yes; otherwise it waits for you.
+      </Text>
       {callQuestions.map(({ question, label, field }) => (
         <VStack gap={2} key={question}>
           <Selector
@@ -843,7 +858,27 @@ function QuickCallSettings() {
           <SaveFeedback saveKey={`buddy.${field}`} />
         </VStack>
       ))}
-      {(buddy.luckCall !== "off" || buddy.faultCall !== "off") && (
+      <VStack gap={2}>
+        <Selector
+          label="Second look before posting where you aren’t an admin"
+          description={secondLookHelp[buddy.secondLook]}
+          value={buddy.secondLook}
+          isDisabled={saves["buddy.secondLook"]?.state === "saving"}
+          options={(Object.entries(callModes) as [CallMode, string][]).map(
+            ([value, label]) => ({ value, label }),
+          )}
+          onChange={(mode) =>
+            void updateSettings(
+              { buddy: { secondLook: mode as CallMode } },
+              "buddy.secondLook",
+            )
+          }
+        />
+        <SaveFeedback saveKey="buddy.secondLook" />
+      </VStack>
+      {(buddy.luckCall !== "off" ||
+        buddy.faultCall !== "off" ||
+        buddy.secondLook !== "off") && (
         <OllamaSettings
           field="quickModel"
           address={buddy.answerer !== "ollama"}

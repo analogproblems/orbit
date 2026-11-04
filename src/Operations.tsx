@@ -23,6 +23,9 @@ import {
   callScore,
   callsMode,
   callsReady,
+  heldByLook,
+  lookMode,
+  lookOf,
   scoredModel,
   checkNames,
   lastChange,
@@ -55,6 +58,7 @@ import {
   type RepoCi,
   type RepoReleases,
   type RepoSettings,
+  type SecondLook,
   type SecuritySetting,
   type Runner,
   type RunnerPlace,
@@ -175,7 +179,8 @@ function withheld(p: Problem) {
   return (p.kind === "security" || p.kind === "workflow_risks") && !p.private;
 }
 
-/** Whether Bit waits for your tap before it posts about a problem. */
+/** Whether Bit waits for your tap before it posts about a problem: its
+ * rule asks first, or a second look holds the post for you. */
 function asksFirst(s: Snapshot, p: Problem, t: OpsThread | undefined) {
   const buddy = buddyOf(s.settings);
   const rule = ruleOf(s, p);
@@ -185,8 +190,8 @@ function asksFirst(s: Snapshot, p: Problem, t: OpsThread | undefined) {
     !t.url &&
     !t.unsure &&
     buddy.enabled &&
-    rule === "ask_first" &&
-    !t.allowed
+    ((rule === "ask_first" && !t.allowed) ||
+      (rule === "do_it" && heldByLook(s, t)))
   );
 }
 
@@ -255,6 +260,12 @@ export function toldText(s: Snapshot, p: Problem, t: OpsThread | undefined) {
     return `${buddy.name} is off, so Orbit doesn’t tell the agent.`;
   if (rule === "leave_it")
     return "Your rule is Leave it to me, so Orbit doesn’t tell the agent.";
+  const held = rule === "do_it" && heldByLook(s, t);
+  if (held) {
+    const what = issue ? "issue" : "comment";
+    const tap = issue ? "Open issue" : "Post comment";
+    return `The second look held this ${what} for you, as you aren’t an admin of this repository. ${lookOf(s, t)?.why ?? ""} Tap ${tap} to post it anyway.`;
+  }
   if (asksFirst(s, p, t))
     return proposal
       ? `${buddy.name} asks before opening an issue with a workflow for the repository’s agent.`
@@ -262,6 +273,54 @@ export function toldText(s: Snapshot, p: Problem, t: OpsThread | undefined) {
         ? `${buddy.name} asks before opening an issue for the repository’s agent.`
         : `${buddy.name} asks before commenting for the pull request’s agent.`;
   return "Orbit tells the agent on GitHub after this sync.";
+}
+
+/** What a second look said about a post, and what happened to it next,
+ * such as "Second look by small on Ollama, in Watch: post it. Orbit posted
+ * it." `held` is whether it holds the post now. */
+export function lookText(l: SecondLook, held: boolean) {
+  const by = l.model ? ` by ${l.model} on Ollama` : "";
+  const mode = l.mode === "on" ? "On" : "Watch";
+  const said =
+    l.verdict === "post" ? "post it." : `wait for you. ${l.why ?? ""}`.trim();
+  let next: string;
+  if (l.dropped)
+    next = l.problem
+      ? "It never went up, as the problem ended first."
+      : "It never went up, as Orbit had nothing left to say there.";
+  else if (l.gone)
+    next = "Orbit posted it, and someone deleted it from GitHub.";
+  else if (l.answeredAt) next = "Orbit posted it, and the agent answered.";
+  else if (l.postedAt)
+    next = l.held
+      ? "It waited for you, then Orbit posted it."
+      : l.verdict === "wait"
+        ? "In Watch, Orbit posted it anyway."
+        : "Orbit posted it.";
+  else if (held) next = "It waits for your tap.";
+  else next = "It isn’t on GitHub yet.";
+  return `Second look${by}, in ${mode}: ${said} ${next}`;
+}
+
+/** The second look a thread's post had, as a line on its problem. */
+function LookLine({ t }: { t: OpsThread | undefined }) {
+  const { snapshot: s } = useOrbit();
+  const l = lookOf(s, t);
+  if (!l) return null;
+  return <Text color="secondary">{lookText(l, heldByLook(s, t))}</Text>;
+}
+
+/** What the second look does now, in a sentence. */
+export function lookModeText(settings: Settings) {
+  const mode = lookMode(settings);
+  if (mode === "off") return "It’s off, so Orbit takes no second look.";
+  if (!buddyOf(settings).quickModel)
+    return mode === "on"
+      ? "It’s on, but no quick call model is chosen, so each new post there waits for your tap."
+      : "It’s in Watch, but no quick call model is chosen, so Orbit takes no look yet.";
+  return mode === "on"
+    ? "It’s on: a post it says should wait, or that gets no answer, waits for your tap."
+    : "It’s in Watch: Orbit keeps each verdict, but never holds a post back.";
 }
 
 /** What an item is about: its check, "main moved on", "CI on pull
@@ -762,6 +821,7 @@ function Repositories({ go }: { go: AttentionHandlers }) {
                         <Text>{noCiText(noCi)}</Text>
                         <Playbook p={noCi} />
                         {told && <Text color="secondary">{told}</Text>}
+                        <LookLine t={t} />
                         {t?.items
                           .filter((i) => i.failing && i.answer)
                           .map((i) => (
@@ -1071,6 +1131,7 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
                   <Playbook p={p} />
                   <Why s={s} p={p} t={t} />
                   {told && <Text color="secondary">{told}</Text>}
+                  <LookLine t={t} />
                   {t?.items
                     .filter((i) => i.failing && i.answer)
                     .map((i) => (
@@ -1332,6 +1393,7 @@ function Security() {
                               )}
                               {p && !kind.unseen && <Playbook p={p} />}
                               {told && <Text color="secondary">{told}</Text>}
+                              {told && <LookLine t={t} />}
                               {told &&
                                 t?.items
                                   .filter((i) => i.failing && i.answer)
@@ -2473,6 +2535,87 @@ function Posted() {
   );
 }
 
+/** The latest second looks at Bit's new posts where you aren't an admin,
+ * newest first, each with what happened to its post. */
+function SecondLooks() {
+  const { snapshot: s, action } = useOrbit();
+  const threadOfLook = (l: SecondLook) =>
+    (s.ops ?? []).find((t) => t.key === l.thread);
+  const holds = (l: SecondLook) => !l.dropped && heldByLook(s, threadOfLook(l));
+  // Every post that waits for you is listed first, as some, such as a pull
+  // request's answer to whether it is clear to merge, have no problem of
+  // their own to tap on; then the latest of the rest.
+  const newest = [...(s.looks ?? [])].sort((a, b) =>
+    b.askedAt.localeCompare(a.askedAt),
+  );
+  const looks = [
+    ...newest.filter(holds),
+    ...newest.filter((l) => !holds(l)).slice(0, RECENT),
+  ];
+  if (!looks.length) return null;
+  return (
+    <VStack gap={3}>
+      <Heading level={3}>Second looks</Heading>
+      <Text color="secondary">
+        Before {buddyOf(s.settings).name} posts something new in a repository
+        where your GitHub account isn’t an admin, a model checks it is about
+        that repository’s problem, matches what Orbit read, holds nothing
+        private and is needed now. {lookModeText(s.settings)}
+      </Text>
+      <Card padding={0}>
+        <List hasDividers aria-label="Second looks">
+          {looks.map((l) => {
+            const t = threadOfLook(l);
+            const held = holds(l);
+            const tap = held && t && !t.unsure;
+            const where =
+              l.kind === "comment"
+                ? `Comment on ${l.repo}${l.number ? ` #${l.number}` : ""}`
+                : `Issue in ${l.repo}`;
+            return (
+              <ListItem
+                key={l.thread}
+                startContent={
+                  <StatusDot
+                    variant={l.verdict === "post" ? "success" : "warning"}
+                    label={l.verdict === "post" ? "Post it" : "Wait"}
+                  />
+                }
+                label={
+                  <Text weight="medium" maxLines={2}>
+                    {where}
+                  </Text>
+                }
+                description={<Text color="secondary">{lookText(l, held)}</Text>}
+                onClick={
+                  l.url && !tap ? () => openLink(l.url ?? "") : undefined
+                }
+                endContent={
+                  <VStack gap={2} hAlign="end">
+                    {tap && (
+                      <Button
+                        label={
+                          l.kind === "issue" ? "Open issue" : "Post comment"
+                        }
+                        size="sm"
+                        variant="primary"
+                        onClick={() =>
+                          void action("tell_agent", { key: t.key })
+                        }
+                      />
+                    )}
+                    <Timestamp value={l.askedAt} format="relative_short" />
+                  </VStack>
+                }
+              />
+            );
+          })}
+        </List>
+      </Card>
+    </VStack>
+  );
+}
+
 /** CI on every connected repository, and what is failing. */
 export function Operations(go: AttentionHandlers) {
   const { snapshot: s, updateSettings } = useOrbit();
@@ -2529,6 +2672,7 @@ export function Operations(go: AttentionHandlers) {
           <RecentlyFixed />
           <TurnedOut />
           <QuickCalls />
+          <SecondLooks />
           <Learned />
           <Posted />
         </>
