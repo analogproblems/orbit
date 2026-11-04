@@ -284,7 +284,10 @@ export function lookText(l: SecondLook, held: boolean) {
   const said =
     l.verdict === "post" ? "post it." : `wait for you. ${l.why ?? ""}`.trim();
   let next: string;
-  if (l.dropped) next = "It never went up, as the problem ended first.";
+  if (l.dropped)
+    next = l.problem
+      ? "It never went up, as the problem ended first."
+      : "It never went up, as Orbit had nothing left to say there.";
   else if (l.gone)
     next = "Orbit posted it, and someone deleted it from GitHub.";
   else if (l.answeredAt) next = "Orbit posted it, and the agent answered.";
@@ -2535,9 +2538,16 @@ function Posted() {
 /** The latest second looks at Bit's new posts where you aren't an admin,
  * newest first, each with what happened to its post. */
 function SecondLooks() {
-  const { snapshot: s } = useOrbit();
-  const looks = [...(s.looks ?? [])].sort((a, b) =>
-    b.askedAt.localeCompare(a.askedAt),
+  const { snapshot: s, action } = useOrbit();
+  const threadOfLook = (l: SecondLook) =>
+    (s.ops ?? []).find((t) => t.key === l.thread);
+  const holds = (l: SecondLook) => !l.dropped && heldByLook(s, threadOfLook(l));
+  // A post that waits for you comes first, as some, such as a pull
+  // request's answer to whether it is clear to merge, have no problem of
+  // their own to tap on.
+  const looks = [...(s.looks ?? [])].sort(
+    (a, b) =>
+      Number(holds(b)) - Number(holds(a)) || b.askedAt.localeCompare(a.askedAt),
   );
   if (!looks.length) return null;
   return (
@@ -2552,8 +2562,9 @@ function SecondLooks() {
       <Card padding={0}>
         <List hasDividers aria-label="Second looks">
           {looks.slice(0, RECENT).map((l) => {
-            const t = (s.ops ?? []).find((t) => t.key === l.thread);
-            const held = !l.dropped && heldByLook(s, t);
+            const t = threadOfLook(l);
+            const held = holds(l);
+            const tap = held && t && !t.unsure;
             const where =
               l.kind === "comment"
                 ? `Comment on ${l.repo}${l.number ? ` #${l.number}` : ""}`
@@ -2573,9 +2584,25 @@ function SecondLooks() {
                   </Text>
                 }
                 description={<Text color="secondary">{lookText(l, held)}</Text>}
-                onClick={l.url ? () => openLink(l.url ?? "") : undefined}
+                onClick={
+                  l.url && !tap ? () => openLink(l.url ?? "") : undefined
+                }
                 endContent={
-                  <Timestamp value={l.askedAt} format="relative_short" />
+                  <VStack gap={2} hAlign="end">
+                    {tap && (
+                      <Button
+                        label={
+                          l.kind === "issue" ? "Open issue" : "Post comment"
+                        }
+                        size="sm"
+                        variant="primary"
+                        onClick={() =>
+                          void action("tell_agent", { key: t.key })
+                        }
+                      />
+                    )}
+                    <Timestamp value={l.askedAt} format="relative_short" />
+                  </VStack>
                 }
               />
             );

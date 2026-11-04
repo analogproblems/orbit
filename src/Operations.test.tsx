@@ -1051,6 +1051,80 @@ describe("operations page", () => {
     }
   });
 
+  it("lets you post a held post that has no problem of its own", () => {
+    const action = vi.fn().mockResolvedValue({ ok: true });
+    useOrbit.setState({ action });
+    const s = freshDemo();
+    s.problems = [];
+    s.settings.buddy = { ...s.settings.buddy!, secondLook: "on" };
+    const ready: OpsThread = {
+      key: "pr:demo-pr-9",
+      kind: "comment",
+      repo: "acme/api",
+      number: 9,
+      prId: "demo-pr-9",
+      url: "",
+      branch: "",
+      problemId: "",
+      items: [],
+      posted: "",
+      closed: false,
+      allowed: false,
+      gone: false,
+      tries: 0,
+      updatedAt: new Date().toISOString(),
+      ready: {
+        clear: true,
+        headSha: "a".repeat(40),
+        base: "main",
+        baseSha: "b".repeat(40),
+        text: "",
+      },
+    };
+    s.ops = [...(s.ops ?? []), ready];
+    s.looks = [
+      ...(s.looks ?? []),
+      {
+        thread: ready.key,
+        kind: "comment",
+        repo: ready.repo,
+        number: 9,
+        problem: "",
+        post: "0a1b2c3d4e5f6a7b",
+        permission: "WRITE",
+        // Older than the rest: one that waits for you still comes first.
+        askedAt: new Date(Date.now() - 86_400_000).toISOString(),
+        mode: "on",
+        model: "llama3.2:3b",
+        verdict: "wait",
+        why: "The model said it couldn’t tell whether it’s needed now.",
+        held: true,
+      },
+    ];
+    show(s);
+    const first = () =>
+      within(screen.getByRole("list", { name: "Second looks" })).getAllByRole(
+        "listitem",
+      )[0];
+    expect(first().textContent).toContain(
+      "Comment on acme/api #9Second look by llama3.2:3b on Ollama, in On: wait for you. The model said it couldn’t tell whether it’s needed now. It waits for your tap.",
+    );
+    fireEvent.click(
+      within(first()).getByRole("button", { name: "Post comment" }),
+    );
+    expect(action).toHaveBeenCalledWith("tell_agent", { key: "pr:demo-pr-9" });
+    // Once you said to post it, there's nothing to tap.
+    cleanup();
+    ready.allowed = true;
+    show(s);
+    expect(
+      within(screen.getByRole("list", { name: "Second looks" })).queryByRole(
+        "button",
+        { name: "Post comment" },
+      ),
+    ).toBeNull();
+  });
+
   it("says what each second look said, and what happened next", () => {
     const look: SecondLook = {
       thread: "pr:acme/orbit#12",

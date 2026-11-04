@@ -28,11 +28,12 @@
 //!
 //! **What happened next.** Each look keeps what happened to its post
 //! (`follow`): posted, answered by the agent, deleted from GitHub, or never
-//! posted as its problem ended first. Nothing here reads GitHub or posts.
+//! posted as its thread had nothing left to say first. Nothing here reads
+//! GitHub or posts.
 use crate::{
     broker::clean,
     calls::Said,
-    ops::{Action, Planned, Thread, ThreadKind},
+    ops::{self, Action, Planned, Thread, ThreadKind},
     problems::{stamp, time},
     types::{credential_kinds, same_repo, Snapshot},
 };
@@ -124,7 +125,9 @@ pub struct Look {
     /// It was deleted from GitHub.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub gone: bool,
-    /// It never went up, as its problem ended first.
+    /// It isn't going up: its thread had nothing left to say first, such
+    /// as its problem ended, or the thread went before it was posted. A
+    /// post with something to say again takes this back (`follow`).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub dropped: bool,
 }
@@ -533,26 +536,34 @@ pub fn of<'a>(s: &'a Snapshot, t: &Thread) -> Option<&'a Look> {
 /// the post isn't on GitHub yet, its look said wait or had no answer, and
 /// you haven't said to post it.
 pub fn holds(s: &Snapshot, t: &Thread) -> bool {
-    mode(s) == "on"
-        && !t.allowed
-        && !t.is_posted()
-        && of(s, t).is_some_and(|l| l.verdict == Verdict::Wait)
+    of(s, t).is_some_and(|l| holds_with(s, t, l))
+}
+/// Whether `l`, a look at a thread's post, holds it for you.
+fn holds_with(s: &Snapshot, t: &Thread, l: &Look) -> bool {
+    mode(s) == "on" && !t.allowed && !t.is_posted() && l.verdict == Verdict::Wait
 }
 
 /// Keeps what happened next to each look's post, from its thread: once
-/// it's on GitHub, the agent's first answer and whether it was deleted;
-/// before, whether On held it, or its problem ended first. Says whether
-/// any changed.
+/// it's on GitHub, where and when, the agent's first answer and whether it
+/// was deleted, which a thread Orbit stopped keeping doesn't undo; before,
+/// whether On held it, or it never went up as its thread had nothing left
+/// to say about the problem it was looked at for (`ops::has_news`). A post
+/// that has something to say again, such as a pull request's answer that
+/// stopped being worth a comment and is again, keeps its look, so On keeps
+/// holding it rather than asking again. Says whether any changed.
 pub fn follow(s: &mut Snapshot) -> bool {
     let mut changed = false;
     for i in 0..s.looks.len() {
         let l = &s.looks[i];
-        if l.dropped || l.gone {
+        if l.gone {
             continue;
         }
         let t = s.ops.iter().find(|t| t.key == l.thread);
         let mut next = l.clone();
         match t {
+            // A post that went up after its look was dropped isn't the one
+            // it looked at: its thread's next post gets a look of its own.
+            Some(t) if t.is_posted() && l.dropped => continue,
             Some(t) if t.is_posted() => {
                 if next.posted_at.is_empty() {
                     next.posted_at = if t.updated_at.is_empty() {
@@ -580,14 +591,11 @@ pub fn follow(s: &mut Snapshot) -> bool {
                 next.gone = t.gone;
             }
             Some(t) => {
-                let open = s
-                    .problems
-                    .iter()
-                    .any(|p| p.id == t.problem_id && p.is_open());
-                next.dropped = !open;
-                next.held |= holds(s, t);
+                let problem = ops::problem_of(t, &s.problems, &s.ci);
+                next.dropped = l.problem != t.problem_id || !ops::has_news(t, problem);
+                next.held |= !next.dropped && holds_with(s, t, l);
             }
-            None => next.dropped = true,
+            None => next.dropped |= l.posted_at.is_empty(),
         }
         if next != s.looks[i] {
             s.looks[i] = next;

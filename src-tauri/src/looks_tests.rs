@@ -339,6 +339,89 @@ fn a_look_keeps_what_happened_next() {
     assert!(of(&s, &s.ops[0]).is_none());
 }
 
+/// A post with no problem, a pull request's answer to whether it is clear
+/// to merge, stays held in On while it is worth a comment, even after it
+/// stops being worth one for a while, and no model is asked again; once
+/// you tap and it goes up, where it went stays after Orbit stops keeping
+/// its thread.
+#[test]
+fn a_held_post_with_no_problem_stays_held_and_a_posted_one_stays_posted() {
+    let mut s = state("on", "WRITE");
+    s.problems.clear();
+    s.ops = vec![Thread {
+        key: "pr:PR_1".into(),
+        kind: ThreadKind::Comment,
+        repo: "a/b".into(),
+        number: Some(12),
+        pr_id: Some("PR_1".into()),
+        ready: Some(ops::Ready {
+            clear: true,
+            ..Default::default()
+        }),
+        ..Default::default()
+    }];
+    let p = Planned {
+        thread: "pr:PR_1".into(),
+        action: Action::PostComment,
+        repo: "a/b".into(),
+        number: Some(12),
+        comment_id: None,
+        title: String::new(),
+        body: "Clear to merge.".into(),
+        marker: s.ops[0].tag(),
+        completed: false,
+        closed_at: None,
+        rerun: None,
+    };
+    let w = wanted(&s, &p, t0()).expect("a look");
+    let wait = Answers {
+        needed: Said::Unsure,
+        ..yes()
+    };
+    assert!(record(&mut s, &w, Ok(wait), t0()));
+    let held = |s: &Snapshot| holds(s, &s.ops[0]) && !ops::may_post(s, &s.ops[0]);
+    for pass in 0..3 {
+        follow(&mut s);
+        assert!(held(&s), "pass {pass}");
+        assert!(!s.looks[0].dropped, "pass {pass}");
+        assert!(wanted(&s, &p, t0()).is_none(), "asked again on pass {pass}");
+    }
+    // Not worth a comment for a while: it isn't going up.
+    s.ops[0].ready.as_mut().unwrap().clear = false;
+    assert!(follow(&mut s));
+    assert!(s.looks[0].dropped);
+    assert!(!holds(&s, &s.ops[0]));
+    // Worth one again: the same look holds it, and no model is asked.
+    s.ops[0].ready.as_mut().unwrap().clear = true;
+    assert!(follow(&mut s));
+    assert!(!s.looks[0].dropped);
+    assert!(held(&s));
+    assert!(wanted(&s, &p, t0()).is_none(), "asked again");
+
+    // Your tap lets it go, and it goes up.
+    s.ops[0].allowed = true;
+    assert!(!holds(&s, &s.ops[0]));
+    s.ops[0].comment_id = Some(100);
+    s.ops[0].url = "https://github.com/a/b/pull/12#issuecomment-100".into();
+    s.ops[0].updated_at = "2026-11-04T12:01:00Z".into();
+    assert!(follow(&mut s));
+    let posted = s.looks[0].clone();
+    assert_eq!(posted.posted_at, "2026-11-04T12:01:00Z");
+    assert!(posted.held, "it waited for you first");
+    // Orbit stops keeping its thread, which takes nothing back.
+    s.ops.clear();
+    assert!(!follow(&mut s));
+    assert_eq!(s.looks[0], posted);
+    assert!(!s.looks[0].dropped);
+
+    // A thread that goes before its post went up drops its look.
+    let mut s = state("watch", "WRITE");
+    assert!(!look(&mut s, Ok(yes())));
+    s.ops.clear();
+    assert!(follow(&mut s));
+    assert!(s.looks[0].dropped);
+}
+
 /// Looks go after 90 days, and at most a few hundred stay, the newest.
 #[test]
 fn old_looks_go_and_at_most_a_few_hundred_stay() {

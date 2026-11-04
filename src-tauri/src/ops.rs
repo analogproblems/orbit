@@ -1338,6 +1338,15 @@ pub fn verified(
     })
 }
 
+/// Whether a thread has something new to post: its problem is open, or for
+/// a comment, its pull request's answer to whether it is clear to merge is
+/// worth one (`Ready::tells`). What `next` posts, and what keeps a second
+/// look's post waiting (`crate::looks::follow`).
+pub fn has_news(t: &Thread, problem: Option<&Problem>) -> bool {
+    problem.is_some_and(Problem::is_open)
+        || (t.kind == ThreadKind::Comment && t.ready.as_ref().is_some_and(Ready::tells))
+}
+
 /// The next write a thread needs, if any: post it, keep it up to date, and
 /// for an issue, close it with a note once its problem is over. Something
 /// new is posted only while `may_post`; what is already on GitHub is kept
@@ -1391,9 +1400,8 @@ pub fn next(
                 return None;
             }
             if t.comment_id.is_none() {
-                let tells =
-                    p.is_some_and(Problem::is_open) || t.ready.as_ref().is_some_and(Ready::tells);
-                return (tells && may_post).then(|| plan(Action::PostComment, comment_body(t, p)));
+                return (has_news(t, p) && may_post)
+                    .then(|| plan(Action::PostComment, comment_body(t, p)));
             }
             // A closed pull request has nobody left to tell.
             if p.and_then(|p| p.closed_reason.as_deref()) == Some(PR_CLOSED) {
@@ -1411,7 +1419,7 @@ pub fn next(
                 return None;
             }
             if t.number.is_none() {
-                return (p.is_open() && may_post).then(|| Planned {
+                return (has_news(t, Some(p)) && may_post).then(|| Planned {
                     title: issue_title(t, p),
                     ..plan(Action::OpenIssue, issue_body(t, p, false))
                 });
