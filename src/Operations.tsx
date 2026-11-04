@@ -40,6 +40,7 @@ import {
   type AttentionHandlers,
   type Broke,
   type Build,
+  type CallQuestion,
   type CiFailure,
   type CiState,
   type DependabotUpdate,
@@ -422,26 +423,52 @@ export function answerText(t: OpsThread, item: OpsItem, p?: Problem) {
   }
 }
 
-/** Why a failing check failed, as Orbit read its job's log. */
+/** Each quick call's question as Operations asks it, what its answers
+ * mean in a line, and where Operations says what it said on a job. */
+const callQuestions: Record<
+  CallQuestion,
+  { ask: string; yes: string; no: string; line: string; about: string }
+> = {
+  luck: {
+    ask: "Is this failure bad luck?",
+    yes: "bad luck",
+    no: "not bad luck",
+    line: "Quick call on Ollama",
+    about:
+      "Before a rerun, Orbit asks a small model on Ollama whether a failed job was bad luck, as well as its own rules, then checks who was right.",
+  },
+  fault: {
+    ask: "Was this failure already failing on the default branch?",
+    yes: "failing already",
+    no: "from the pull request",
+    line: "Quick call on Ollama about the default branch",
+    about:
+      "When a pull request’s check fails on the default branch too, Orbit asks a small model on Ollama, with both logs, whether it was failing already, then checks who was right.",
+  },
+};
 /** What a quick call's answer means, in a line. */
-const saidText = {
-  yes: "bad luck",
-  no: "not bad luck",
-  unsure: "unsure",
-} as const;
-/** What Ollama's quick call said about a failing job, and whether it
- * decides, while Orbit has one. */
-export function callLine(s: Snapshot, f: CiFailure) {
-  const c = s.calls?.find((c) => c.url === f.url);
-  if (!c) return undefined;
-  const said = c.said ? saidText[c.said] : "no answer";
-  const decides = callsMode(s.settings) === "on";
-  const who =
-    decides && (c.said === "yes" || c.said === "no")
-      ? "It decides."
-      : "The rules decide.";
-  return `Quick call on Ollama: ${said}. ${who}`;
+function saidText(question: CallQuestion, said: QuickCall["said"]) {
+  if (!said) return "no answer";
+  return said === "unsure" ? "unsure" : callQuestions[question][said];
 }
+/** What each of Ollama's quick calls said about a failing job, bad luck
+ * first, and whether it decides. */
+export function callLines(s: Snapshot, f: CiFailure) {
+  const order: CallQuestion[] = ["luck", "fault"];
+  return order.flatMap((question) => {
+    const c = s.calls?.find((c) => c.url === f.url && c.question === question);
+    if (!c) return [];
+    const decides = callsMode(s.settings, question) === "on";
+    const who =
+      decides && (c.said === "yes" || c.said === "no")
+        ? "It decides."
+        : "The rules decide.";
+    return [
+      `${callQuestions[question].line}: ${saidText(question, c.said)}. ${who}`,
+    ];
+  });
+}
+/** Why a failing check failed, as Orbit read its job's log. */
 export function whyText(f: CiFailure) {
   if (f.held)
     return `${f.check}: Orbit held back its log, as it looks like it holds a secret.`;
@@ -512,14 +539,20 @@ function Why({ s, p, t }: { s: Snapshot; p: Problem; t?: OpsThread }) {
   return read.map((f) => {
     const item = t?.items.find((i) => i.failing && i.url === f.url);
     const rerun = item && rerunText(s, p, item);
-    const call = callLine(s, f);
+    // What Orbit tells the pull request, once the calls had their say.
+    const already = item?.why?.already;
     return (
       <VStack key={`${f.check} ${f.url}`} gap={1}>
         <Text color="secondary">{whyText(f)}</Text>
         {f.flaky && (
           <Text color="secondary">Looks like bad luck: {f.flaky}</Text>
         )}
-        {call && <Text color="secondary">{call}</Text>}
+        {already && <Text color="secondary">{already}</Text>}
+        {callLines(s, f).map((line) => (
+          <Text key={line} color="secondary">
+            {line}
+          </Text>
+        ))}
         {f.quota && <Text color="secondary">{quotaText}</Text>}
         {rerun && <Text color="secondary">{rerun}</Text>}
         {!f.held && !f.error && f.lines.length > 0 && (
@@ -2182,17 +2215,23 @@ function callDot(c: QuickCall): {
 /** What the rules and Ollama said about a job, and how it turned out. */
 export function callText(c: QuickCall) {
   const said = c.said
-    ? saidText[c.said]
+    ? saidText(c.question, c.said)
     : `no answer${c.error ? ` (${c.error})` : ""}`;
-  const rules = c.rules ? "bad luck" : "not bad luck";
+  const words = callQuestions[c.question];
+  const rules = c.rules ? words.yes : words.no;
   const turned = c.settledAt ? c.how : "Orbit checks how it turns out.";
   return `Rules: ${rules}. Ollama (${c.model}): ${said}. ${turned}`;
 }
-/** The scorecard of the calls asked of `model` in plain words, and, when
- * it's the model chosen now and On would have done as well as the rules,
- * that you can let it decide. */
-export function scoreLines(calls: QuickCall[], model: string, chosen: boolean) {
-  const n = callScore(calls, model);
+/** The scorecard of the calls about `question` asked of `model` in plain
+ * words, and, when it's the model chosen now and On would have done as
+ * well as the rules, that you can let it decide. */
+export function scoreLines(
+  calls: QuickCall[],
+  question: CallQuestion,
+  model: string,
+  chosen: boolean,
+) {
+  const n = callScore(calls, question, model);
   if (!n.asked) return [`Orbit hasn’t asked ${model} yet.`];
   const times = (k: number) => (k === 1 ? "1 call" : `${k} calls`);
   const lines = [
@@ -2208,15 +2247,18 @@ export function scoreLines(calls: QuickCall[], model: string, chosen: boolean) {
     );
   return lines;
 }
-/** What quick calls do now, or why they don't, in plain words. */
-export function callModeText(settings: Settings) {
+/** What a quick call does now, or why it doesn't, in plain words. */
+export function callModeText(settings: Settings, question: CallQuestion) {
   const buddy = buddyOf(settings);
-  const mode = callsMode(settings);
+  const mode = callsMode(settings, question);
   if (mode === "on")
-    return "Its clear yes or no decides whether Orbit reruns a job; your rules for reruns still apply.";
+    return question === "fault"
+      ? "Its clear no stops Orbit telling the pull request its check fails on the default branch too."
+      : "Its clear yes or no decides whether Orbit reruns a job; your rules for reruns still apply.";
   if (mode === "watch")
     return "Orbit keeps its answer while its own rules decide.";
-  if (buddy.luckCall === "off") return "Quick calls are off now.";
+  const chosen = question === "fault" ? buddy.faultCall : buddy.luckCall;
+  if (chosen === "off") return "This quick call is off now.";
   const why = !buddy.enabled
     ? `while ${buddy.name} is off`
     : settings.watchCi === false
@@ -2224,32 +2266,33 @@ export function callModeText(settings: Settings) {
       : "until you choose a model in Settings, under Buddy";
   return `Orbit asks nothing ${why}, and its own rules decide.`;
 }
-/** Bit's quick calls on Ollama, newest first, with the scorecard. */
-function QuickCalls() {
+/** One question's quick calls, newest first, with its scorecard. */
+function QuickCallList({
+  question,
+  calls,
+}: {
+  question: CallQuestion;
+  calls: QuickCall[];
+}) {
   const { snapshot: s } = useOrbit();
-  const calls = [...(s.calls ?? [])].sort((a, b) =>
-    b.askedAt.localeCompare(a.askedAt),
-  );
-  if (!calls.length) return null;
   const buddy = buddyOf(s.settings);
-  const mode = callModeText(s.settings);
+  const words = callQuestions[question];
   return (
-    <VStack gap={3}>
-      <Heading level={3}>Quick calls</Heading>
+    <VStack gap={2}>
+      <Text weight="semibold">{words.ask}</Text>
       <Text color="secondary">
-        Before a rerun, Orbit asks a small model on Ollama whether a failed job
-        was bad luck, as well as its own rules, then checks who was right.{" "}
-        {mode}
+        {words.about} {callModeText(s.settings, question)}
       </Text>
       {scoreLines(
         calls,
-        scoredModel(buddy.quickModel, calls),
+        question,
+        scoredModel(buddy.quickModel, calls, question),
         !!buddy.quickModel,
       ).map((line) => (
         <Text key={line}>{line}</Text>
       ))}
       <Card padding={0}>
-        <List hasDividers aria-label="Quick calls">
+        <List hasDividers aria-label={`Quick calls: ${words.ask}`}>
           {calls.slice(0, RECENT).map((c) => {
             const dot = callDot(c);
             const where = c.number ? `${c.repo} #${c.number}` : c.repo;
@@ -2277,6 +2320,30 @@ function QuickCalls() {
           })}
         </List>
       </Card>
+    </VStack>
+  );
+}
+/** Bit's quick calls on Ollama, by question, newest first, each with its
+ * scorecard. */
+function QuickCalls() {
+  const { snapshot: s } = useOrbit();
+  const calls = [...(s.calls ?? [])].sort((a, b) =>
+    b.askedAt.localeCompare(a.askedAt),
+  );
+  if (!calls.length) return null;
+  const questions = (Object.keys(callQuestions) as CallQuestion[]).filter((q) =>
+    calls.some((c) => c.question === q),
+  );
+  return (
+    <VStack gap={3}>
+      <Heading level={3}>Quick calls</Heading>
+      {questions.map((question) => (
+        <QuickCallList
+          key={question}
+          question={question}
+          calls={calls.filter((c) => c.question === question)}
+        />
+      ))}
     </VStack>
   );
 }

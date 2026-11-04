@@ -478,6 +478,9 @@ export interface Buddy {
   quickModel: string;
   /** The quick call "Is this failure bad luck?". */
   luckCall: CallMode;
+  /** The quick call "Was this failure already failing on the default
+   * branch?". */
+  faultCall: CallMode;
 }
 /** One of Orbit's own controls, offered for something that needs you. */
 export type Fix =
@@ -591,6 +594,7 @@ export const defaultBuddy: Buddy = {
   timeZone: "",
   quickModel: "",
   luckCall: "watch",
+  faultCall: "watch",
 };
 /** How Settings names each quick call mode. */
 export const callModes: Record<CallMode, string> = {
@@ -2336,13 +2340,19 @@ export interface CiFailure {
   /** The step couldn't upload an artifact as the account's artifact
    * storage is full, which only a person can change. */
   quota?: boolean;
+  /** On a pull request's job, the note Orbit adds when its check fails on
+   * the default branch too, so it may not come from the pull request. */
+  already?: string | null;
 }
+/** The quick calls' questions: "Is this failure bad luck?" and "Was this
+ * failure already failing on the default branch?". */
+export type CallQuestion = "luck" | "fault";
 /** One quick call: what the rules and the model said about a failed job,
- * and, once Orbit can tell, whether it was bad luck. */
+ * and, once Orbit can tell, whether it was bad luck, or failing already. */
 export interface QuickCall {
-  /** `luck:<job>`. */
+  /** `<question>:<job>`. */
   id: string;
-  question: "luck";
+  question: CallQuestion;
   repo: string;
   number?: number;
   check: string;
@@ -2353,18 +2363,19 @@ export interface QuickCall {
   askedAt: string;
   mode: "watch" | "on";
   model: string;
-  /** Whether the rules said it looks like bad luck. */
+  /** Whether the rules said it looks like bad luck, or fails on the
+   * default branch too. */
   rules: boolean;
   said?: "yes" | "no" | "unsure";
   /** Why the model didn't answer. */
   error?: string;
-  /** Whether it was bad luck, once Orbit can tell, and how it knows, or
-   * why it couldn't tell. */
+  /** Whether it was bad luck, or failing already, once Orbit can tell,
+   * and how it knows, or why it couldn't tell. */
   truth?: boolean;
   how?: string;
   settledAt?: string;
 }
-/** How the quick calls asked of one model did: how many were asked, how
+/** How the quick calls about one question asked of one model did: how many were asked, how
  * it answered, and, of those Orbit could check, how often the rules, the
  * model and On (its clear answer, else the rules) were right. The model
  * only counts where it gave a clear answer. */
@@ -2382,9 +2393,13 @@ export interface CallScore {
 /** How many clearly answered calls Orbit has to check before the
  * scorecard compares On with the rules. */
 export const ENOUGH_CALLS = 10;
-/** Sums up the calls asked of `model`, so a score is only ever the
- * model's that earned it. */
-export function callScore(calls: QuickCall[], model: string): CallScore {
+/** Sums up the calls about `question` asked of `model`, so a score is only
+ * ever the model's that earned it. */
+export function callScore(
+  calls: QuickCall[],
+  question: CallQuestion,
+  model: string,
+): CallScore {
   const score: CallScore = {
     asked: 0,
     unsure: 0,
@@ -2396,7 +2411,8 @@ export function callScore(calls: QuickCall[], model: string): CallScore {
     modelRight: 0,
     onRight: 0,
   };
-  for (const c of calls.filter((c) => c.model === model)) {
+  for (const c of calls) {
+    if (c.question !== question || c.model !== model) continue;
     score.asked += 1;
     if (!c.said) score.noAnswer += 1;
     else if (c.said === "unsure") score.unsure += 1;
@@ -2420,22 +2436,32 @@ export function callScore(calls: QuickCall[], model: string): CallScore {
 export function callsReady(s: CallScore) {
   return s.modelScored >= ENOUGH_CALLS && s.onRight >= s.rulesRight;
 }
-/** What quick calls do now, as Orbit's `calls::setup` says: nothing
+/** What a quick call does now, as Orbit's `calls::setup` says: nothing
  * while Watch CI or Bit is off, the call is off or no model is chosen. */
-export function callsMode(settings: Settings): CallMode {
+export function callsMode(
+  settings: Settings,
+  question: CallQuestion,
+): CallMode {
   const buddy = buddyOf(settings);
+  const mode = question === "fault" ? buddy.faultCall : buddy.luckCall;
   const asks =
     settings.watchCi !== false &&
     buddy.enabled &&
-    buddy.luckCall !== "off" &&
+    mode !== "off" &&
     buddy.quickModel !== "";
-  return asks ? buddy.luckCall : "off";
+  return asks ? mode : "off";
 }
-/** The model the scorecard counts: the one Orbit asks now, else the one
- * it asked last. */
-export function scoredModel(quickModel: string, calls: QuickCall[]) {
+/** The model a question's scorecard counts: the one Orbit asks now, else
+ * the one it asked that question of last. */
+export function scoredModel(
+  quickModel: string,
+  calls: QuickCall[],
+  question: CallQuestion,
+) {
   if (quickModel) return quickModel;
-  const newest = [...calls].sort((a, b) => b.askedAt.localeCompare(a.askedAt));
+  const newest = calls
+    .filter((c) => c.question === question)
+    .sort((a, b) => b.askedAt.localeCompare(a.askedAt));
   return newest[0]?.model ?? "";
 }
 /** One rerun of an item's job, or Orbit's tries at one. */

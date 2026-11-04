@@ -1524,9 +1524,12 @@ describe("Bit", () => {
     const mode = await screen.findByRole("combobox", {
       name: /^Is this failure bad luck\?/,
     });
+    // Both questions watch from the start.
     expect(
-      screen.getByText(/^Orbit asks, and keeps the answer while its own rules/),
-    ).toBeTruthy();
+      screen.getAllByText(
+        /^Orbit asks, and keeps the answer while its own rules/,
+      ),
+    ).toHaveLength(2);
     await chooseOption(
       screen.getByRole("combobox", { name: /^Quick call model/ }),
       "llama3.2:3b",
@@ -1547,15 +1550,42 @@ describe("Bit", () => {
       // Bit still answers with Codex.
       answerer: "codex",
     });
-    // Off asks nothing, so there's no model to choose.
+    const fault = screen.getByRole("combobox", {
+      name: /^Was this failure already failing on the default branch\?/,
+    });
+    await chooseOption(fault, "On");
+    expect(invoke).toHaveBeenCalledWith("update_settings", {
+      patch: { buddy: { faultCall: "on" } },
+    });
+    expect(
+      await screen.findByText(/^A clear no stops Orbit telling a pull request/),
+    ).toBeTruthy();
+    // Off asks nothing; once both are off, there's no model to choose.
     await chooseOption(
       screen.getByRole("combobox", { name: /^Is this failure bad luck\?/ }),
       "Off",
     );
     expect(await screen.findByText("Orbit asks no model.")).toBeTruthy();
     expect(
+      screen.getByRole("combobox", { name: /^Quick call model/ }),
+    ).toBeTruthy();
+    await chooseOption(
+      screen.getByRole("combobox", {
+        name: /^Was this failure already failing on the default branch\?/,
+      }),
+      "Off",
+    );
+    expect(invoke).toHaveBeenCalledWith("update_settings", {
+      patch: { buddy: { faultCall: "off" } },
+    });
+    expect(await screen.findAllByText("Orbit asks no model.")).toHaveLength(2);
+    expect(
       screen.queryByRole("combobox", { name: /^Quick call model/ }),
     ).toBeNull();
+    expect(buddyOf(snapshot.settings)).toMatchObject({
+      luckCall: "off",
+      faultCall: "off",
+    });
   });
 
   it("says when the computer running Orbit has nowhere to keep API keys", async () => {

@@ -53,6 +53,12 @@ pub struct Failure {
     /// The step couldn't upload an artifact as the account's artifact
     /// storage is full (see `QUOTA`), which only a person can change.
     pub quota: bool,
+    /// For a pull request's job, that its check fails on the default
+    /// branch too, such as "It fails on main too, at 1a2b3c4.". Only ever
+    /// set on what Orbit tells agents and shows (`crate::calls::decided`),
+    /// never on what it read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub already: Option<String>,
 }
 
 /// The job a check's link names, when it is a GitHub Actions job in

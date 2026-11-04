@@ -318,6 +318,9 @@ pub struct Buddy {
     pub quick_model: String,
     /// One of `CALL_MODES`, for the quick call "Is this failure bad luck?".
     pub luck_call: String,
+    /// One of `CALL_MODES`, for the quick call "Was this failure already
+    /// failing on the default branch?".
+    pub fault_call: String,
 }
 impl Default for Buddy {
     fn default() -> Self {
@@ -341,6 +344,7 @@ impl Default for Buddy {
             time_zone: String::new(),
             quick_model: String::new(),
             luck_call: "watch".into(),
+            fault_call: "watch".into(),
         }
     }
 }
@@ -403,18 +407,19 @@ impl Buddy {
             ));
         }
         crate::ollama::validate_model(&self.quick_model)?;
-        if !CALL_MODES.contains(&self.luck_call.as_str()) {
-            return Err(format!(
-                "'{}' isn't off, watch or on, for the quick call.",
-                self.luck_call
-            ));
+        for mode in [&self.luck_call, &self.fault_call] {
+            if !CALL_MODES.contains(&mode.as_str()) {
+                return Err(format!(
+                    "'{mode}' isn't off, watch or on, for the quick call."
+                ));
+            }
         }
         Ok(())
     }
     /// Whether Orbit makes quick calls on Ollama, or would once a model is
     /// chosen: Settings then lists Ollama's models.
     pub fn wants_quick_calls(&self) -> bool {
-        self.enabled && self.luck_call != "off"
+        self.enabled && (self.luck_call != "off" || self.fault_call != "off")
     }
     /// Who answers the questions you type.
     pub fn answered_by(&self) -> Answerer {
@@ -497,6 +502,9 @@ impl Buddy {
         if !CALL_MODES.contains(&self.luck_call.as_str()) {
             self.luck_call = default.luck_call;
         }
+        if !CALL_MODES.contains(&self.fault_call.as_str()) {
+            self.fault_call = default.fault_call;
+        }
     }
 }
 /// Only supplied fields change.
@@ -522,6 +530,7 @@ pub struct BuddyPatch {
     pub time_zone: Option<String>,
     pub quick_model: Option<String>,
     pub luck_call: Option<String>,
+    pub fault_call: Option<String>,
 }
 impl BuddyPatch {
     pub fn apply(self, buddy: &mut Buddy) {
@@ -569,6 +578,9 @@ impl BuddyPatch {
         }
         if let Some(v) = self.luck_call {
             buddy.luck_call = v.trim().to_string();
+        }
+        if let Some(v) = self.fault_call {
+            buddy.fault_call = v.trim().to_string();
         }
         for (api, v) in [
             (Api::OpenAi, self.openai_model),

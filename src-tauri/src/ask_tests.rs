@@ -986,7 +986,7 @@ fn bit_is_told_each_repositorys_ci_and_how_to_look_things_up() {
             {"kind": "pull_request", "branch": "fix", "pr": 1,
              "failingSince": "eeeeeee", "stillFailingAt": null,
              "openedAt": "2026-11-03T09:00:00Z",
-             "failing": [{"check": "CI / test", "job": 5}],
+             "failing": [{"check": "CI / test", "job": 5, "failsOnDefaultBranchToo": false}],
              "broke": null, "fixedBefore": null, "lastTime": null,
              "lessons": [], "playbook": []},
         ])
@@ -1110,6 +1110,11 @@ fn bit_is_told_how_the_quick_calls_did_newest_first() {
         })
     );
     assert_eq!(b["settings"]["buddy.luckCall"], "watch");
+    assert_eq!(
+        b["quickCalls"]["failingAlready"],
+        b["quickCalls"]["badLuck"]
+    );
+    assert_eq!(b["settings"]["buddy.faultCall"], "watch");
     s.settings.buddy.quick_model = "small".into();
     s.calls = (0..SHOWN_CALLS + 2)
         .map(|n| Call {
@@ -1162,6 +1167,35 @@ fn bit_is_told_how_the_quick_calls_did_newest_first() {
     assert_eq!(ready(&s), false);
     s.settings.buddy.quick_model.clear();
     assert_eq!(ready(&s), false);
+    // The other question's calls are its own.
+    s.settings.buddy.quick_model = "small".into();
+    s.calls.push(Call {
+        id: "fault:job".into(),
+        question: crate::calls::FAULT.into(),
+        repo: "a/b".into(),
+        number: Some(12),
+        check: "CI / Rust".into(),
+        asked_at: "2026-11-05T00:00:00Z".into(),
+        model: "small".into(),
+        rules: true,
+        said: Some(Said::Yes),
+        truth: Some(true),
+        how: "It passed once the default branch was fixed, with no fix of its own.".into(),
+        ..Default::default()
+    });
+    let told = briefing(&s, &Lookups::default())["quickCalls"].clone();
+    assert_eq!(
+        told["failingAlready"]["recent"],
+        json!([{
+            "repository": "a/b", "pr": 12, "check": "CI / Rust", "model": "small",
+            "rulesSaidFailingAlready": true, "modelSaid": "yes", "error": null,
+            "wasFailingAlready": true,
+            "howOrbitKnows": "It passed once the default branch was fixed, with no fix of its own.",
+            "askedAt": "2026-11-05T00:00:00Z",
+        }])
+    );
+    assert_eq!(told["failingAlready"]["score"]["asked"], 1);
+    assert_eq!(told["badLuck"]["score"]["asked"], crate::calls::ENOUGH);
 }
 
 #[test]

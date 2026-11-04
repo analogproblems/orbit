@@ -1296,6 +1296,30 @@ fn held_unread_and_passing_jobs_show_no_log() {
     assert_eq!(threads[0].items[0].why, None);
 }
 
+/// A pull request's check that fails on the default branch too says so
+/// under its item, before its log, while it fails.
+#[test]
+fn a_pull_request_hears_its_check_fails_on_the_default_branch_too() {
+    let p = pull("p2", &["CI / Rust"], '5', t0());
+    let mut threads = vec![];
+    refresh(&mut threads, std::slice::from_ref(&p), t0());
+    let url = threads[0].items[0].url.clone();
+    let note = "It fails on main too, at 9999999, so it may not come from this pull request.";
+    let read = [crate::logs::Failure {
+        already: Some(note.into()),
+        ..failure(&url, "Run cargo test", &["boom"])
+    }];
+    assert!(explain(&mut threads, &read));
+    let body = comment_body(&threads[0], Some(&p));
+    assert!(
+        body.contains(&format!("\n  {note}\n  Failed at step `Run cargo test`:")),
+        "{body}"
+    );
+    // Not once main passes it.
+    explain(&mut threads, &[failure(&url, "Run cargo test", &["boom"])]);
+    assert!(!comment_body(&threads[0], Some(&p)).contains("fails on main"));
+}
+
 /// Only the first few failing items show their logs; the rest are on
 /// Operations.
 #[test]

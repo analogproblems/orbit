@@ -1891,6 +1891,10 @@ fn items_text(t: &Thread, p: &Problem) -> String {
         .map(|(n, i)| {
             let mut line = item_line(i, t, p);
             if i.failing && p.is_open() {
+                // Its check fails on the default branch too.
+                if let Some(already) = i.why.as_ref().and_then(|w| w.already.as_deref()) {
+                    line = format!("{line}\n  {already}");
+                }
                 if let Some(rerun) = crate::reruns::text(i) {
                     line = format!("{line}\n  {rerun}");
                 }

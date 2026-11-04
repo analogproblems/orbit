@@ -135,6 +135,9 @@ describe("Bit", () => {
     expect(describePatch({ buddy: { luckCall: "on" } }, [])).toBe(
       "Quick call on bad luck: On",
     );
+    expect(describePatch({ buddy: { faultCall: "off" } }, [])).toBe(
+      "Quick call on failing already: Off",
+    );
     expect(Object.keys(fixRuleLabels)).toEqual(options.rules);
     expect(Object.keys(callModes)).toEqual(options.callModes);
     expect(ENOUGH_CALLS).toBe(options.enoughCalls);

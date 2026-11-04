@@ -193,26 +193,21 @@ impl Engine {
         for _ in 0..calls::PER_PASS {
             let next = {
                 let s = self.state.lock().await;
-                calls::setup(&s).zip(calls::wanted(&s).into_iter().next())
+                let w = calls::wanted(&s).into_iter().next();
+                w.and_then(|w| calls::setup(&s, w.question).map(|set| (set, w)))
             };
             let Some(((url, model, _), w)) = next else {
                 break;
             };
-            let prompt = calls::prompt(&w.failure);
+            let (instructions, prompt) = calls::asked(&w);
             let schema = calls::schema();
-            let answer = crate::ollama::answer(
-                &url,
-                &model,
-                calls::INSTRUCTIONS,
-                &prompt,
-                &schema,
-                calls::TIMEOUT,
-            )
-            .await
-            .and_then(|content| calls::parse(&content));
+            let answer =
+                crate::ollama::answer(&url, &model, instructions, &prompt, &schema, calls::TIMEOUT)
+                    .await
+                    .and_then(|content| calls::parse(&content));
             let failed = answer.is_err();
             self.update(|s| {
-                let Some((now_url, now_model, on)) = calls::setup(s) else {
+                let Some((now_url, now_model, on)) = calls::setup(s, w.question) else {
                     return;
                 };
                 if now_url == url && now_model == model {
