@@ -698,6 +698,7 @@ function Repositories({ go }: { go: AttentionHandlers }) {
                       <StatusDot variant="warning" label="No CI" />
                       <VStack gap={1}>
                         <Text>{noCiText(noCi)}</Text>
+                        <Playbook p={noCi} />
                         {told && <Text color="secondary">{told}</Text>}
                         {t?.items
                           .filter((i) => i.failing && i.answer)
@@ -1267,6 +1268,7 @@ function Security() {
                                   reads.
                                 </Text>
                               )}
+                              {p && !kind.unseen && <Playbook p={p} />}
                               {told && <Text color="secondary">{told}</Text>}
                               {told &&
                                 t?.items

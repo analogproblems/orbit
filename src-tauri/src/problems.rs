@@ -1186,7 +1186,11 @@ pub fn see_waiting(
     let key = waiting_key(repo);
     let open = problems.iter_mut().find(|p| p.key == key && p.is_open());
     match (waiting.is_empty(), open) {
-        (true, Some(p)) if all => p.close(&at, "No runs wait for a runner now.".into()),
+        (true, Some(p)) if all => {
+            // None waits now, as Orbit read them.
+            p.waiting.clear();
+            p.close(&at, "No runs wait for a runner now.".into());
+        }
         // A run Orbit didn't read may still wait.
         (true, _) => {}
         (false, Some(p)) => {

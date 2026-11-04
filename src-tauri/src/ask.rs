@@ -231,7 +231,7 @@ Looking things up:
 - workflow, with repository and path: a workflow file on the default branch, such as .github/workflows/ci.yml, from the summary's `workflowFiles`.
 - changes, with repository and either pr or commit: a pull request's or a commit's changes, file by file. The commits and pull requests that broke a default branch are in the summary's `ci.problems`.
 - The summary's `outcomes` says how what Orbit did lately turned out, such as a setting it turned on or a job it reran, and how agents' fixes went: held, missed, waiting or unclear, with why.
-- The summary's `lessons` says what Orbit learned from things that happened more than once, such as a check that keeps failing by bad luck or a problem that keeps coming back, with what to do next time; a CI problem's `lastTime` says what happened the last time something like it failed, and its `lessons` say what Orbit learned about it. Its `playbook` says what done looks like: each step in order, who does it (`orbit`, `agent` or `you`), and whether it is `todo`, `done`, `skipped` (not needed) or `missed`, with a note and, while Orbit waits to see a default branch stay fixed, when it will know (`due`). Use it to say what's left on a problem. They are guidance: they never change Orbit's rules.
+- The summary's `lessons` says what Orbit learned from things that happened more than once, such as a check that keeps failing by bad luck or a problem that keeps coming back, with what to do next time; a CI problem's `lastTime` says what happened the last time something like it failed, and its `lessons` say what Orbit learned about it. Its `playbook` says what done looks like: each step in order, who does it (`orbit`, `agent` or `you`), and whether it is `todo`, `done`, `skipped` (not needed, or Orbit couldn't tell) or `missed`, with a note and, while Orbit waits to see a default branch stay fixed, when it will know (`due`). Use it to say what's left on a problem. A repository's `otherProblems` (a base that moved on, no CI on pull requests, runs waiting for a runner, risky workflow settings, version files that disagree, a tag on the wrong commit) and each kind of its security alerts have a `playbook` too. They are guidance: they never change Orbit's rules.
 - Only connected repositories. Leave the fields a kind doesn't use null. While you look things up, `answer` is one short line saying what you're looking at, and `proposals` and `memory` stay empty: Orbit shows the person your next answer instead.
 
 Keep answers short: a few sentences, or a short list. Name pull requests by repository and number, like orbit#12.
@@ -514,17 +514,15 @@ fn security_of(s: &Snapshot, repo: &str) -> Value {
         .iter()
         .map(|&source| {
             let key = crate::problems::security_key(repo, source);
-            let alerts = s
-                .problems
-                .iter()
-                .find(|p| p.is_open() && p.key == key)
-                .map_or(&[][..], |p| &p.security_alerts[..]);
+            let problem = s.problems.iter().find(|p| p.is_open() && p.key == key);
+            let alerts = problem.map_or(&[][..], |p| &p.security_alerts[..]);
             json!({
                 "kind": source.key(),
                 "unseen": read.kind(source).and_then(|k| k.unseen.clone()),
                 "open": alerts.len(),
                 "needYou": alerts.iter().filter(|a| a.needs_you()).count(),
                 "first": alerts.iter().take(MAX_ALERTS).map(|a| shorten(&a.name(), 200)).collect::<Vec<_>>(),
+                "playbook": problem.map(crate::playbooks::summary).unwrap_or_default(),
             })
         })
         .collect();
@@ -624,10 +622,38 @@ fn ci_of(s: &Snapshot, repo: &str) -> Value {
             })
         })
         .collect();
+    // The repository's other open problems Watch CI covers, with what's
+    // left of each.
+    let other: Vec<Value> = s
+        .problems
+        .iter()
+        .filter(|p| p.is_open() && same_repo(&p.repo, repo))
+        .filter(|p| {
+            matches!(
+                p.kind,
+                ProblemKind::BaseMoved
+                    | ProblemKind::NoCi
+                    | ProblemKind::Waiting
+                    | ProblemKind::WorkflowRisks
+                    | ProblemKind::Versions
+                    | ProblemKind::Tag
+            )
+        })
+        .take(MAX_PRS)
+        .map(|p| {
+            json!({
+                "kind": key(&p.kind),
+                "pr": p.pr_id.as_deref().and_then(|id| id.rsplit_once('#')?.1.parse::<u64>().ok()),
+                "openedAt": p.opened_at,
+                "playbook": crate::playbooks::summary(p),
+            })
+        })
+        .collect();
     json!({
         "defaultBranch": clean(&c.branch, 200),
         "defaultBranchChecks": checks(&c.head),
         "problems": problems,
+        "otherProblems": other,
         "pullRequests": c.pulls.iter().take(MAX_PRS).map(|p| json!({
             "number": p.number,
             "checks": checks(&p.ci),

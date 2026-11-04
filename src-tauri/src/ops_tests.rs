@@ -1382,7 +1382,7 @@ fn a_repository_with_no_ci_gets_an_issue_with_a_workflow_to_start_from() {
     let (text, data) = open.body.split_once("<!-- orbit-ops").unwrap();
     assert_eq!(
         text,
-        "## Orbit · CI\n\nThis repository has no workflows on `main`, so nothing checks a change before it merges.\n\nHere is a workflow to start from, as `.github/workflows/ci.yml`. Orbit built it from `package.json` and `Cargo.toml` at `1111111`, so check its commands are the ones this project uses.\n\n```yaml\nname: CI\non:\n  pull_request:\n```\n\n- **I1** · add a workflow that runs on pull requests\n\nOrbit opened this issue because no CI runs on pull requests here. It edits this issue as it reads new commits on `main`, and closes it once a workflow there runs on pull requests.\n\n"
+        "## Orbit · CI\n\nThis repository has no workflows on `main`, so nothing checks a change before it merges.\n\nHere is a workflow to start from, as `.github/workflows/ci.yml`. Orbit built it from `package.json` and `Cargo.toml` at `1111111`, so check its commands are the ones this project uses.\n\n```yaml\nname: CI\non:\n  pull_request:\n```\n\nWhat done looks like:\n\n1. An agent takes each item.\n2. A workflow that runs on pull requests lands on `main`.\n3. Orbit reads a workflow on `main` that runs on pull requests.\n\n- **I1** · add a workflow that runs on pull requests\n\nOrbit opened this issue because no CI runs on pull requests here. It edits this issue as it reads new commits on `main`, and closes it once a workflow there runs on pull requests.\n\n"
     );
     assert!(data.starts_with(" thread=issue:p9 "));
     let v = hidden(&open.body, "issue:p9");
