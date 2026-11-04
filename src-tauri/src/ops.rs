@@ -2085,9 +2085,10 @@ fn checks(n: usize) -> String {
 pub fn comment_body(t: &Thread, p: Option<&Problem>) -> String {
     let ci = p.map(|p| {
         format!(
-            "{}\n\n{}{}",
+            "{}\n\n{}{}{}",
             ci_status(t, p),
             seen_text(p),
+            crate::playbooks::done_text(p, &code),
             items_text(t, p)
         )
     });
@@ -2227,8 +2228,9 @@ pub fn issue_body(t: &Thread, p: &Problem, closing: bool) -> String {
         .map(|text| format!("{text}\n\n"))
         .unwrap_or_default();
     let seen = seen_text(p);
+    let done = crate::playbooks::done_text(p, &code);
     format!(
-        "## Orbit · CI\n\n{status}\n\n{before}{seen}{broke}{}\n\nOrbit opened this issue because CI fails on {on}. It edits this issue as CI changes, and closes it once every check has passed for an hour.\n\n{}",
+        "## Orbit · CI\n\n{status}\n\n{before}{seen}{broke}{done}{}\n\nOrbit opened this issue because CI fails on {on}. It edits this issue as CI changes, and closes it once every check has passed for an hour.\n\n{}",
         items_text(t, p),
         data(t, Some(p))
     )
@@ -2257,8 +2259,9 @@ fn build_body(t: &Thread, p: &Problem) -> String {
         )
     };
     format!(
-        "## Orbit · Release build\n\n{status}\n\n{}{}\n\nOrbit opened this issue because the runs the tag {tag} started fail. Fix what fails on the default branch, so the next version's tag builds with it. Orbit edits this issue as the runs change, and closes it once each of them passes or a newer version is tagged.\n\n{}",
+        "## Orbit · Release build\n\n{status}\n\n{}{}{}\n\nOrbit opened this issue because the runs the tag {tag} started fail. Fix what fails on the default branch, so the next version's tag builds with it. Orbit edits this issue as the runs change, and closes it once each of them passes or a newer version is tagged.\n\n{}",
         seen_text(p),
+        crate::playbooks::done_text(p, &code),
         items_text(t, p),
         data(t, Some(p))
     )

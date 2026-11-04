@@ -577,8 +577,9 @@ fn checks_alike_in_their_first_160_characters_are_told_apart() {
     let l = &learned[0];
     let name = format!("CI / {}", long(1));
     assert_eq!((l.check.as_str(), l.count), (name.as_str(), 3));
-    assert_eq!(l.id, format!("luck:a/b:{}", check_key(&name)));
-    assert_ne!(check_key(&name), check_key(&format!("CI / {}", long(2))));
+    assert_eq!(l.id, luck_id("A/B", &name));
+    assert!(l.id.starts_with("luck:a/b#"), "{}", l.id);
+    assert_ne!(l.id, luck_id("a/b", &format!("CI / {}", long(2))));
     assert!(l.id.len() < 140, "a long name's id is its start and a hash");
     assert!(l.what.starts_with(&format!("{}… in a/b", &name[..160])));
     // It applies to that check failing, not to another named alike.
@@ -589,8 +590,11 @@ fn checks_alike_in_their_first_160_characters_are_told_apart() {
     assert!(about(l, &failing(&long(1))));
     assert!(!about(l, &failing(&long(9))));
     // A short, plain name is its own key.
-    assert_eq!(check_key(RUST), RUST);
-    assert_ne!(check_key("CI /\nRust"), "CI /\nRust");
+    assert_eq!(luck_id("a/b", RUST), "luck:a/b:CI / Rust");
+    assert!(luck_id("a/b", "CI /\nRust").starts_with("luck:a/b#"));
+    // A short name that spells a hashed id's end is still its own.
+    let hashed = l.id.trim_start_matches("luck:a/b");
+    assert_ne!(luck_id("a/b", hashed), l.id);
 }
 
 #[cfg(unix)]

@@ -973,12 +973,14 @@ fn bit_is_told_each_repositorys_ci_and_how_to_look_things_up() {
                        "commits": ["bbbbbbb", "ddddddd"], "pullRequests": [7],
                        "directCommits": 1, "error": null},
              "fixedBefore": {"passedAt": "2026-11-01T09:00:00Z", "commit": "fffffff"},
-             "lastTime": "Last time, 2 days earlier: CI / test failed on main."},
+             "lastTime": "Last time, 2 days earlier: CI / test failed on main.",
+             "lessons": [], "playbook": []},
             {"kind": "pull_request", "branch": "fix", "pr": 1,
              "failingSince": "eeeeeee", "stillFailingAt": null,
              "openedAt": "2026-11-03T09:00:00Z",
              "failing": [{"check": "CI / test", "job": 5}],
-             "broke": null, "fixedBefore": null, "lastTime": null},
+             "broke": null, "fixedBefore": null, "lastTime": null,
+             "lessons": [], "playbook": []},
         ])
     );
     // Nothing while Watch CI is off.

@@ -34,6 +34,7 @@ pub mod ollama;
 pub mod ops;
 pub mod orbits;
 pub mod outcomes;
+pub mod playbooks;
 pub mod problems;
 pub mod push;
 pub mod readiness;

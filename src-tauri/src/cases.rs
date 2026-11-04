@@ -23,7 +23,7 @@
 //! once its problem can no longer come back as the same one (`FLAP_QUIET`
 //! after it closed), and once per lesson however many of its checks the
 //! lesson's name covers. Checks are told apart by their full names, which
-//! text only shortens (`check_key`). Orbit keeps each repeat as a `Lesson`: what happened,
+//! text only shortens (`luck_id`). Orbit keeps each repeat as a `Lesson`: what happened,
 //! and what to do next time (`learn`). A lesson applies to the open
 //! problems it is about (`apply`), which then say it to the agent and to
 //! you. You can forget one, and it is learned again only from what
@@ -174,8 +174,8 @@ pub enum LessonKind {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Lesson {
-    /// The same for the same repeat: `luck:<repo>:<check key>`
-    /// (`check_key`), `back:<problem key>` (a default branch's),
+    /// The same for the same repeat: bad luck by its check (`luck_id`),
+    /// `back:<problem key>` (a default branch's),
     /// `fix:<repo>`, `setting:<repo>:<setting>` or `build:<repo>`, in lower
     /// case but for the check, as GitHub tells checks apart by case.
     pub id: String,
@@ -224,25 +224,23 @@ pub fn tracked(kind: ProblemKind) -> bool {
     )
 }
 
-/// A check's name as it goes in a lesson's id: the name itself when it is
-/// short and plain enough to show as it is, else its start and a hash of
-/// the whole name, so two checks are never one.
-pub fn check_key(name: &str) -> String {
+/// The id of the lesson about a check failing by bad luck, by the check's
+/// full name: `luck:<repo>:<check>` when the name is short and plain
+/// enough to show as it is, else `luck:<repo>#<hash>:<start>`, with a hash
+/// of the whole name, so two checks are never one. A repository's name
+/// holds no `#` or `:`, so the two never meet, whatever a check is named.
+pub fn luck_id(repo: &str, check: &str) -> String {
     use sha2::{Digest, Sha256};
-    if clean(name, 160) == name {
-        return name.to_string();
+    let repo = repo.to_lowercase();
+    if clean(check, 160) == check {
+        return format!("luck:{repo}:{check}");
     }
-    let hash: String = Sha256::digest(name.as_bytes())
+    let hash: String = Sha256::digest(check.as_bytes())
         .iter()
         .take(8)
         .map(|b| format!("{b:02x}"))
         .collect();
-    format!("{} #{hash}", clean(name, 100))
-}
-
-/// The id of the lesson about a check failing by bad luck.
-fn luck_id(repo: &str, check: &str) -> String {
-    format!("luck:{}:{}", repo.to_lowercase(), check_key(check))
+    format!("luck:{repo}#{hash}:{}", clean(check, 100))
 }
 
 /// Keeps the cases up to date, says what happened last time on each new
