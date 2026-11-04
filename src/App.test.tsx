@@ -148,6 +148,10 @@ async function backend(
   }
 }
 let remoteAccess: RemoteAccessStatus;
+// These tests click through whole pages of the app, such as Settings, which
+// takes a few seconds in jsdom, and up to half as long again on a busy CI
+// runner: more than the 5 seconds a unit test gets.
+vi.setConfig({ testTimeout: 15_000 });
 beforeEach(() => {
   remoteAccess = { enabled: false, port: 4317, running: false };
   snapshot = freshDemo();
