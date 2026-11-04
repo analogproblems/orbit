@@ -1813,7 +1813,7 @@ fn the_comment_changes_only_when_the_answer_does() {
         "## Orbit\n\n**Not clear to merge yet.** {both}\n\n<!-- orbit-ready "
     )));
     assert!(body.contains(
-        " -->\n\n### CI\n\n2 checks fail on this pull request at `bbbbbbb`.\n\n- **I1** · `CI / Test`"
+        " -->\n\n### CI\n\n2 checks fail on this pull request at `bbbbbbb`.\n\nWhat done looks like:\n\n1. An agent takes each item.\n2. A fix lands on this branch.\n3. Every check passes.\n\n- **I1** · `CI / Test`"
     ));
     assert!(body.ends_with("\"open\":true,\"passed\":false,\"repo\":\"a/b\",\"version\":1} -->"));
     // With CI unchanged, new words wait again.

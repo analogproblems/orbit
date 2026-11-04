@@ -44,6 +44,7 @@ import {
   type OpsThread,
   type OpsWrite,
   type Outcome,
+  type PlaybookMark,
   type Problem,
   type RepoCi,
   type RepoReleases,
@@ -750,6 +751,66 @@ function Repositories({ go }: { go: AttentionHandlers }) {
   );
 }
 
+const markDot: Record<
+  PlaybookMark,
+  { variant: "success" | "warning" | "neutral"; label: string }
+> = {
+  done: { variant: "success", label: "Done" },
+  todo: { variant: "neutral", label: "To do" },
+  skipped: { variant: "neutral", label: "Skipped" },
+  missed: { variant: "warning", label: "Missed" },
+};
+
+/** A problem's playbook: the steps to done, in order, each ticked from
+ * what Orbit saw. The first one left to do is next while the problem is
+ * open; once it closed, only one Orbit waits on, to see it stay fixed, is
+ * next, and any other left is not done. The count leaves out steps
+ * skipped, and a missed step isn't done. */
+export function Playbook({ p }: { p: Problem }) {
+  const steps = p.playbook ?? [];
+  if (!steps.length) return null;
+  const open = !p.closedAt;
+  const next = steps.findIndex(
+    (st) => st.mark === "todo" && (open || !!st.due),
+  );
+  const done = steps.filter((st) => st.mark === "done").length;
+  const counted = steps.filter((st) => st.mark !== "skipped").length;
+  return (
+    <VStack gap={1}>
+      <Text type="supporting" weight="medium">
+        Playbook: {done} of {counted} steps done.
+      </Text>
+      {steps.map((st, i) => {
+        const dot =
+          i === next
+            ? { variant: "accent" as const, label: "Next" }
+            : st.mark === "todo" && !open
+              ? { variant: "neutral" as const, label: "Not done" }
+              : markDot[st.mark];
+        return (
+          <HStack key={st.step} gap={2} vAlign="start">
+            <StatusDot variant={dot.variant} label={dot.label} />
+            <VStack gap={0}>
+              <Text type="supporting">{st.text}</Text>
+              <Text type="supporting" color="secondary">
+                {dot.label}
+                {st.note ? `: ${st.note}` : "."}
+                {st.due && (
+                  <>
+                    {" "}
+                    Orbit checks by{" "}
+                    <Timestamp value={st.due} format="date_time" />.
+                  </>
+                )}
+              </Text>
+            </VStack>
+          </HStack>
+        );
+      })}
+    </VStack>
+  );
+}
+
 function Timeline({ p }: { p: Problem }) {
   return (
     <VStack gap={1}>
@@ -816,8 +877,12 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
           const tools = risky ? toolsText(s, p) : "";
           const t = threadOf(s, p);
           const told = toldText(s, p, t);
+          // The playbook says what broke it, once Orbit found it.
+          const found = p.playbook?.find((st) => st.step === "found");
           const broke =
-            p.kind === "default_branch" ? brokeText(p.broke) : undefined;
+            p.kind === "default_branch" && (!found || found.mark === "todo")
+              ? brokeText(p.broke)
+              : undefined;
           // The run that has waited longest, to open on GitHub.
           const longest = waiting ? p.waiting?.find((r) => r.url) : undefined;
           // Whether Orbit's latest read missed some queued runs.
@@ -940,6 +1005,7 @@ function OpenProblems({ go }: { go: AttentionHandlers }) {
                       Orbit learned: {l.what} {l.next}
                     </Text>
                   ))}
+                  <Playbook p={p} />
                   <Why s={s} p={p} t={t} />
                   {told && <Text color="secondary">{told}</Text>}
                   {t?.items
@@ -1980,7 +2046,14 @@ function RecentlyFixed() {
                   {title(s, p)}
                 </Text>
               }
-              description={<Text color="secondary">{p.closedReason}</Text>}
+              description={
+                // The playbook says why it closed, at passing.
+                p.playbook?.length ? (
+                  <Playbook p={p} />
+                ) : (
+                  <Text color="secondary">{p.closedReason}</Text>
+                )
+              }
               endContent={
                 p.closedAt ? (
                   <Timestamp value={p.closedAt} format="relative_short" />

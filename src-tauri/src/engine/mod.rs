@@ -736,6 +736,7 @@ pub(crate) fn recover(state: &mut Snapshot) -> Result<Vec<String>, String> {
     state.settings.repositories = repositories;
     state.settings.buddy.normalize();
     crate::buddy::recover(&mut state.buddy_feed);
+    crate::cases::upgrade(state);
     for p in state.prs.iter_mut().chain(state.history_prs.iter_mut()) {
         p.id = p.id.to_ascii_lowercase();
     }

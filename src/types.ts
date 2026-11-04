@@ -1483,6 +1483,10 @@ export interface Problem {
   lastTime?: LastTime | null;
   lookedBack?: boolean;
   lessons?: Lesson[];
+  /** For failing checks: the steps to done, and where each stands, and
+   * whether they were ticked since it closed. */
+  playbook?: PlaybookStep[];
+  playbookClosed?: boolean;
 }
 /** How a case ended (`cases.rs`). */
 export type CaseEnd =
@@ -1539,6 +1543,26 @@ export interface Lesson {
   /** What happened, and what to do next time. */
   what: string;
   next: string;
+}
+/** A step of a problem's playbook (`playbooks.rs`). */
+export type PlaybookStepKind =
+  "found" | "told" | "taken" | "fixed" | "passes" | "holds";
+/** Where a step stands. `skipped`: no fix was needed, as it passed at the
+ * commit it failed at, or Orbit couldn't tell whether it stayed fixed.
+ * `missed`: it failed again, or Orbit stopped following it. */
+export type PlaybookMark = "todo" | "done" | "skipped" | "missed";
+/** One step to done for a problem, in order, ticked from what Orbit saw:
+ * who does it, where it stands and when that happened, how, and for
+ * staying fixed, when Orbit is sure. Guidance only. */
+export interface PlaybookStep {
+  step: PlaybookStepKind;
+  who: "orbit" | "agent" | "you";
+  /** What the step is, in a sentence. */
+  text: string;
+  mark: PlaybookMark;
+  at?: string;
+  note?: string;
+  due?: string;
 }
 /** What a version file is, as the engine has it (`versions.rs`). */
 export type VersionFileKind =

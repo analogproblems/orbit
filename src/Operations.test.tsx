@@ -519,6 +519,118 @@ describe("operations page", () => {
     expect(pull.textContent).not.toContain("It started failing");
   });
 
+  it("shows each problem's playbook, with the next step to do", () => {
+    const s = freshDemo();
+    show(s);
+    const open = screen.getByRole("list", { name: "Open problems" });
+    const [branch] = within(open).getAllByRole("listitem");
+    expect(branch.textContent).toContain("Playbook: 3 of 6 steps done.");
+    expect(branch.textContent).toContain(
+      "Orbit finds the commit that broke it.Done: It started failing with #208, merged as 7d41e09; 3b8e6f4 before it passed.",
+    );
+    expect(branch.textContent).toContain(
+      "The agent takes it.Done: acme-bot said they're on it.",
+    );
+    // The first step left is next, and the rest are to do.
+    expect(branch.textContent).toContain("A fix lands on main.Next.");
+    expect(within(branch).getAllByLabelText("Next")).toHaveLength(1);
+    expect(branch.textContent).toContain("It stays fixed for 3 days.To do.");
+    // What broke it shows once, in its step.
+    expect(
+      branch.textContent?.split("It started failing with #208").length,
+    ).toBe(2);
+    // A fix that still fails isn't done.
+    const pull = within(open)
+      .getAllByRole("listitem")
+      .find((i) => i.textContent?.includes(s.prs[2].id))!;
+    expect(pull.textContent).toContain(
+      `A fix lands on the pull request.Next: The agent said it fixed it in ${s.prs[2].headSha.slice(0, 7)}, but checks still fail there.`,
+    );
+  });
+
+  it("says what a closed problem's playbook did, and when Orbit checks it stayed fixed", () => {
+    const s = freshDemo();
+    show(s);
+    const closed = screen.getByRole("list", { name: "Recently closed" });
+    expect(closed.textContent).toContain("Playbook: 5 of 6 steps done.");
+    expect(closed.textContent).toContain(
+      "Every check passes on main.Done: Passed at 4be81aa.",
+    );
+    expect(closed.textContent).toContain(
+      "It stays fixed for 3 days.Next. Orbit checks by",
+    );
+    cleanup();
+    // Once Orbit stopped following it, what's left is not done.
+    const api = s.problems!.find((p) => p.id === "demo-problem-3")!;
+    api.playbook = api.playbook!.map((st) =>
+      st.step === "passes"
+        ? {
+            ...st,
+            mark: "missed" as const,
+            note: "Orbit stopped following it. Orbit no longer watches acme/api.",
+          }
+        : st.step === "holds"
+          ? { ...st, due: undefined }
+          : st,
+    );
+    show(s);
+    const after = screen.getByRole("list", { name: "Recently closed" });
+    expect(after.textContent).toContain(
+      "Every check passes on main.Missed: Orbit stopped following it.",
+    );
+    expect(after.textContent).toContain("It stays fixed for 3 days.Not done.");
+    expect(within(after).queryByLabelText("Next")).toBeNull();
+    // It passed with no answer from the agent: staying fixed is still
+    // next, though an earlier step was never done.
+    cleanup();
+    api.playbook = freshDemo()
+      .problems!.find((p) => p.id === "demo-problem-3")!
+      .playbook!.map((st) =>
+        st.step === "taken" || st.step === "fixed"
+          ? { ...st, mark: "todo" as const, at: undefined, note: undefined }
+          : st,
+      );
+    show(s);
+    const quiet = screen.getByRole("list", { name: "Recently closed" });
+    expect(quiet.textContent).toContain("The agent takes it.Not done.");
+    expect(quiet.textContent).toContain(
+      "It stays fixed for 3 days.Next. Orbit checks by",
+    );
+    expect(within(quiet).getAllByLabelText("Next")).toHaveLength(1);
+    expect(quiet.textContent).toContain("Playbook: 3 of 6 steps done.");
+    // A step missed isn't done, and one skipped isn't counted.
+    cleanup();
+    api.playbook = api.playbook.map((st) =>
+      st.step === "holds"
+        ? {
+            ...st,
+            mark: "missed" as const,
+            due: undefined,
+            note: "It failed again 2 days later.",
+          }
+        : st.step === "taken" || st.step === "fixed"
+          ? {
+              ...st,
+              mark:
+                st.step === "fixed" ? ("skipped" as const) : ("done" as const),
+            }
+          : st,
+    );
+    show(s);
+    const missed = screen.getByRole("list", { name: "Recently closed" });
+    expect(missed.textContent).toContain("Playbook: 4 of 5 steps done.");
+    expect(missed.textContent).toContain(
+      "It stays fixed for 3 days.Missed: It failed again 2 days later.",
+    );
+    // A problem with no playbook says why it closed.
+    cleanup();
+    api.playbook = [];
+    show(s);
+    expect(
+      screen.getByRole("list", { name: "Recently closed" }).textContent,
+    ).toContain("Passed at 4be81aa.");
+  });
+
   it("lists what Orbit did on GitHub, newest first", () => {
     const s = freshDemo();
     s.journal!.push({
@@ -558,7 +670,7 @@ describe("operations page", () => {
     show(s);
     const list = screen.getByRole("list", { name: "How it turned out" });
     const items = within(list).getAllByRole("listitem");
-    expect(items).toHaveLength(5);
+    expect(items).toHaveLength(6);
     // A rebase still waiting says what Orbit checks, and by when.
     expect(items[0].textContent).toContain(
       "Orbit asked Dependabot to rebase acme/api #64.Orbit checks that Dependabot rebases it within a day, by",
@@ -572,12 +684,16 @@ describe("operations page", () => {
       ),
       expect.stringContaining(`Its checks fail at ${at}.`),
     ]);
+    // A default branch that passed again, waiting to stay fixed.
     expect(items[3].textContent).toContain(
+      "CI on main in acme/api passed at 4be81aa after failing.Orbit checks that it stays fixed for 3 days, by",
+    );
+    expect(items[4].textContent).toContain(
       "Orbit turned on secret scanning in acme/orbit.It reads as on.",
     );
-    expect(within(items[3]).getByLabelText("Held")).toBeTruthy();
+    expect(within(items[4]).getByLabelText("Held")).toBeTruthy();
     // Then checked again a week on.
-    expect(items[4].textContent).toContain(
+    expect(items[5].textContent).toContain(
       "Orbit turned on secret scanning in acme/orbit.Orbit checks that it's still on a week later, by",
     );
     expect(screen.getByText(/A miss is a note from Bit\./)).toBeTruthy();

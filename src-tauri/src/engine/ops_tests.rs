@@ -477,6 +477,92 @@ async fn a_branch_that_breaks_again_says_what_happened_last_time() {
     assert_eq!(notes.count(), 1);
 }
 
+/// A broken default branch's playbook, ticked as Orbit follows it, with
+/// what done looks like in its issue while it is open.
+#[tokio::test]
+async fn a_broken_branch_follows_its_playbook_to_staying_fixed() {
+    use crate::playbooks::{Mark::*, StepKind::*};
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    answer(d.path(), '1', &[("Rust", "FAILURE")], None);
+    let e = connected(d.path()).await;
+    e.update(|s| s.settings.buddy.enabled = true).await;
+    watch(&e, &gh).await;
+    watch(&e, &gh).await;
+    let marks = |p: &crate::problems::Problem| {
+        p.playbook
+            .iter()
+            .map(|s| (s.step, s.mark))
+            .collect::<Vec<_>>()
+    };
+    // The fake GitHub has no history, so Orbit couldn't tell what broke it.
+    let s = e.snapshot().await;
+    assert_eq!(
+        marks(&s.problems[0]),
+        [
+            (Found, Missed),
+            (Told, Done),
+            (Taken, Todo),
+            (Fixed, Todo),
+            (Passes, Todo),
+            (Holds, Todo)
+        ]
+    );
+    let body = github(d.path())["issues"][0]["body"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        body.contains("What done looks like:\n\n1. An agent takes each item.\n2. A fix lands on `main`.\n3. Every check passes on `main`.\n4. It stays fixed for 3 days.\n\n"),
+        "{body}"
+    );
+
+    answer(d.path(), '2', &[("Rust", "SUCCESS")], None);
+    watch(&e, &gh).await;
+    let s = e.snapshot().await;
+    let p = &s.problems[0];
+    assert_eq!(
+        marks(p),
+        [
+            (Found, Missed),
+            (Told, Done),
+            (Taken, Todo),
+            (Fixed, Done),
+            (Passes, Done),
+            (Holds, Todo)
+        ]
+    );
+    assert_eq!(p.playbook[3].note, "It passed at 2222222.");
+    let due = p.playbook[5]
+        .due
+        .clone()
+        .expect("Orbit checks it stays fixed");
+    assert!(due > p.closed_at.clone().unwrap());
+
+    // Three days on, it still passes.
+    e.update(|s| {
+        let ago = crate::problems::stamp(chrono::Utc::now() - chrono::Duration::minutes(1));
+        for o in &mut s.outcomes {
+            o.due = Some(ago.clone());
+        }
+    })
+    .await;
+    watch(&e, &gh).await;
+    let s = e.snapshot().await;
+    let held = &s.problems[0].playbook[5];
+    assert_eq!(
+        (held.mark, held.note.as_str(), held.due.as_deref()),
+        (Done, "It stayed fixed for 3 days.", None)
+    );
+    assert_eq!(held.at, s.outcomes[0].settled_at);
+    // A closed problem's issue no longer says what done looks like.
+    let body = github(d.path())["issues"][0]["body"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(!body.contains("What done looks like"), "{body}");
+}
+
 /// Adds to the CI `answer` gave when `main`'s latest commit was made and
 /// when pull request 12's checks began.
 fn timed(dir: &Path, made: &str, began: &str) {

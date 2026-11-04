@@ -99,6 +99,7 @@ impl Engine {
             // last time before Orbit first tells its agent.
             let (followed, learned) = crate::cases::follow(s, now);
             changed |= followed;
+            changed |= crate::playbooks::follow(s);
             changed |= crate::buddy::observe_lessons(s, &learned);
             changed |= ops::refresh(&mut s.ops, &s.problems, now);
             changed |= ops::explain(&mut s.ops, &s.failures);

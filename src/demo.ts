@@ -27,6 +27,7 @@ import {
   type OpsWrite,
   type Outcome,
   type Lesson,
+  type PlaybookStep,
   type Problem,
   type PullRequest,
   type RepoCi,
@@ -1953,6 +1954,100 @@ export function demoCi(
       reran: true,
     },
   };
+  // Each playbook, ticked from what Orbit saw: main broke with #208 and
+  // the agent took it; the pull request's fix still fails; the agent hasn't
+  // merged main in yet; and acme/api passed again, so Orbit waits to see
+  // it stay fixed.
+  const step = (
+    kind: PlaybookStep["step"],
+    who: PlaybookStep["who"],
+    text: string,
+    mark: PlaybookStep["mark"] = "todo",
+    more: Partial<PlaybookStep> = {},
+  ): PlaybookStep => ({ step: kind, who, text, mark, ...more });
+  red.playbook = [
+    step("found", "orbit", "Orbit finds the commit that broke it.", "done", {
+      note: "It started failing with #208, merged as 7d41e09; 3b8e6f4 before it passed.",
+    }),
+    step("told", "orbit", "Orbit tells the agent in an issue.", "done", {
+      at: ago(44),
+    }),
+    step("taken", "agent", "The agent takes it.", "done", {
+      at: ago(12),
+      note: "acme-bot said they're on it.",
+    }),
+    step("fixed", "agent", "A fix lands on main."),
+    step("passes", "orbit", "Every check passes on main."),
+    step("holds", "orbit", "It stays fixed for 3 days."),
+  ];
+  failing.playbook = [
+    step(
+      "told",
+      "orbit",
+      "Orbit tells the agent in its comment on the pull request.",
+      "done",
+      { at: ago(19) },
+    ),
+    step("taken", "agent", "The agent takes it.", "done", {
+      at: ago(19),
+      note: `${failingPr.author} said they're on it.`,
+    }),
+    step("fixed", "agent", "A fix lands on the pull request.", "todo", {
+      note: `The agent said it fixed it in ${at}, but checks still fail there.`,
+    }),
+    step("passes", "orbit", "Every check passes."),
+  ];
+  const behind = problems.find((p) => p.id === "demo-problem-4");
+  if (behind)
+    behind.playbook = [
+      step(
+        "told",
+        "orbit",
+        "Orbit tells the agent in its comment on the pull request.",
+        "done",
+        { at: ago(44) },
+      ),
+      step("taken", "agent", "The agent takes it."),
+      step("fixed", "agent", "The agent merges main in."),
+      step("passes", "orbit", "Every check passes again with main's latest."),
+    ];
+  const api = problems.find((p) => p.id === "demo-problem-3");
+  if (api && api.closedAt) {
+    api.closedSha = sha("4be81aa");
+    const due = ago(26 * 60 - 3 * 24 * 60);
+    api.playbook = [
+      step("found", "orbit", "Orbit finds the commit that broke it.", "done", {
+        note: "It started failing at c19e4d2, pushed without a pull request; 4a7f0e2 before it passed.",
+      }),
+      step("told", "orbit", "Orbit tells the agent in an issue.", "done", {
+        at: ago(26 * 60 + 39),
+      }),
+      step("taken", "agent", "The agent takes it.", "done", {
+        at: ago(26 * 60 + 30),
+        note: "acme-bot said they're on it.",
+      }),
+      step("fixed", "agent", "A fix lands on main.", "done", {
+        at: ago(26 * 60 + 5),
+        note: "The agent said it fixed it in 4be81aa.",
+      }),
+      step("passes", "orbit", "Every check passes on main.", "done", {
+        at: api.closedAt,
+        note: "Passed at 4be81aa.",
+      }),
+      step("holds", "orbit", "It stays fixed for 3 days.", "todo", { due }),
+    ];
+    outcomes.push({
+      id: `holds:${api.id}:${api.closedSha}`,
+      kind: "holds",
+      repo: api.repo,
+      what: "CI on main in acme/api passed at 4be81aa after failing.",
+      expect: "it stays fixed for 3 days",
+      url: `https://github.com/acme/api/commit/${api.closedSha}`,
+      at: api.closedAt,
+      verdict: "waiting",
+      due,
+    });
+  }
   return {
     ci,
     problems,

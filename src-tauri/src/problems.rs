@@ -194,6 +194,14 @@ pub struct Problem {
     pub looked_back: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub lessons: Vec<crate::cases::Lesson>,
+    /// What done looks like for it, and how far along it is, for a kind
+    /// with a playbook (see `crate::playbooks`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub playbook: Vec<crate::playbooks::Step>,
+    /// Whether the playbook was ticked since the problem closed: what its
+    /// comment or issue showed then stays (see `crate::playbooks`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub playbook_closed: bool,
 }
 /// When something failing again passed before (`Problem.fixed_before`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

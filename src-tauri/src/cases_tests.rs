@@ -577,8 +577,9 @@ fn checks_alike_in_their_first_160_characters_are_told_apart() {
     let l = &learned[0];
     let name = format!("CI / {}", long(1));
     assert_eq!((l.check.as_str(), l.count), (name.as_str(), 3));
-    assert_eq!(l.id, format!("luck:a/b:{}", check_key(&name)));
-    assert_ne!(check_key(&name), check_key(&format!("CI / {}", long(2))));
+    assert_eq!(l.id, luck_id("A/B", &name));
+    assert!(l.id.starts_with("luck:a/b#"), "{}", l.id);
+    assert_ne!(l.id, luck_id("a/b", &format!("CI / {}", long(2))));
     assert!(l.id.len() < 140, "a long name's id is its start and a hash");
     assert!(l.what.starts_with(&format!("{}… in a/b", &name[..160])));
     // It applies to that check failing, not to another named alike.
@@ -589,8 +590,11 @@ fn checks_alike_in_their_first_160_characters_are_told_apart() {
     assert!(about(l, &failing(&long(1))));
     assert!(!about(l, &failing(&long(9))));
     // A short, plain name is its own key.
-    assert_eq!(check_key(RUST), RUST);
-    assert_ne!(check_key("CI /\nRust"), "CI /\nRust");
+    assert_eq!(luck_id("a/b", RUST), "luck:a/b:CI / Rust");
+    assert!(luck_id("a/b", "CI /\nRust").starts_with("luck:a/b#"));
+    // A short name that spells a hashed id's end is still its own.
+    let hashed = l.id.trim_start_matches("luck:a/b");
+    assert_ne!(luck_id("a/b", hashed), l.id);
 }
 
 #[cfg(unix)]
@@ -1119,6 +1123,84 @@ fn fixes_settings_and_builds_that_miss_twice_are_lessons() {
         ..problem("p3", A)
     };
     assert!(!about(lesson("fix:a/b"), &elsewhere));
+}
+
+/// Lessons about a long check's bad luck, and what you forgot, saved
+/// before their ids changed, keep who they are as Orbit loads them: one
+/// it has isn't learned again beside it, and one you forgot stays
+/// forgotten.
+#[test]
+fn lessons_saved_before_their_ids_changed_stay_who_they_are() {
+    let long = format!("CI / {}", "x".repeat(200));
+    let old = old_luck_id("a/b", &long);
+    let new = luck_id("a/b", &long);
+    assert_ne!(old, new);
+    assert!(old.starts_with(&format!("luck:a/b:CI / {}", "x".repeat(95))));
+    let saved = || {
+        let mut s = Snapshot::default();
+        for (id, days) in [("c1", 6), ("c2", 5), ("c3", 4)] {
+            s.cases.push(Case {
+                checks: vec![long.clone()],
+                last: vec![long.clone()],
+                ..case(id, End::Again, days)
+            });
+        }
+        s
+    };
+    // A lesson Orbit has.
+    let mut s = saved();
+    s.problems.push(Problem {
+        failing: vec![check(&long)],
+        ..problem("p1", A)
+    });
+    let (_, learned) = follow(&mut s, now());
+    assert_eq!(ids(&learned), [new.as_str()]);
+    s.lessons[0].id = old.clone();
+    s.problems[0].lessons[0].id = old.clone();
+    crate::engine::recover(&mut s).unwrap();
+    assert_eq!(ids(&s.lessons), [new.as_str()]);
+    assert_eq!(ids(&s.problems[0].lessons), [new.as_str()]);
+    let (changed, learned) = follow(&mut s, at(10));
+    assert!(learned.is_empty() && !changed);
+    assert_eq!(s.lessons.len(), 1);
+    assert!(!upgrade(&mut s), "once");
+
+    // A lesson you forgot, matched by the check the cases name. The old id
+    // stays forgotten too, as a check could be named like it.
+    let mut s = saved();
+    s.forgotten_lessons.push(Forgot {
+        id: old.clone(),
+        at: stamp(now()),
+    });
+    crate::engine::recover(&mut s).unwrap();
+    assert_eq!(
+        s.forgotten_lessons,
+        [
+            Forgot {
+                id: old.clone(),
+                at: stamp(now()),
+            },
+            Forgot {
+                id: new.clone(),
+                at: stamp(now()),
+            },
+        ]
+    );
+    assert!(learn(&mut s, at(60)).is_empty(), "still forgotten");
+    assert!(!upgrade(&mut s), "once");
+    // Forgotten later than a copy already there: the later counts.
+    s.forgotten_lessons[0].at = stamp(at(5));
+    assert!(upgrade(&mut s));
+    assert_eq!(s.forgotten_lessons[1].at, stamp(at(5)));
+    // A short, plain name's id never changed.
+    let mut s = Snapshot::default();
+    s.forgotten_lessons.push(Forgot {
+        id: luck_id("a/b", RUST),
+        at: stamp(now()),
+    });
+    s.cases.push(case("c1", End::Again, 1));
+    assert!(!upgrade(&mut s));
+    assert_eq!(s.forgotten_lessons.len(), 1);
 }
 
 #[test]
