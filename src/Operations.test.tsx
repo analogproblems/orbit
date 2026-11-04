@@ -44,8 +44,11 @@ import {
 import { freshDemo } from "./demo";
 import { useOrbit } from "./store";
 import {
+  callScore,
+  callsReady,
   checkNames,
   ENOUGH_CALLS,
+  scoredModel,
   type QuickCall,
   type Broke,
   type Build,
@@ -814,22 +817,22 @@ describe("operations page", () => {
     const pr = s.prs[2].id.replace("#", " #");
     // Newest first: still waiting to see how it turns out.
     expect(items[0].textContent).toContain(
-      `CI / End-to-end on ${pr}Rules: bad luck. Ollama: unsure. Orbit checks how it turns out.`,
+      `CI / End-to-end on ${pr}Rules: bad luck. Ollama (llama3.2:3b): unsure. Orbit checks how it turns out.`,
     );
     expect(within(items[0]).getByLabelText("Waiting")).toBeTruthy();
     expect(items[3].textContent).toContain(
-      "Rules: bad luck. Ollama: bad luck. It failed again after a rerun.",
+      "Rules: bad luck. Ollama (llama3.2:3b): bad luck. It failed again after a rerun.",
     );
     expect(within(items[3]).getByLabelText("Ollama was wrong")).toBeTruthy();
     expect(within(items[4]).getByLabelText("Ollama was right")).toBeTruthy();
     expect(
       screen.getByText(
-        "6 calls so far. Ollama agreed with the rules on 4, was unsure on 1 and didn’t answer 0.",
+        "Orbit asked llama3.2:3b 6 calls. It agreed with the rules on 4, was unsure on 1 and didn’t answer 0.",
       ),
     ).toBeTruthy();
     expect(
       screen.getByText(
-        "Of the 3 calls Orbit could check, the rules were right on 2, and Ollama on 1 of the 3 it answered clearly.",
+        "Of the 3 calls Orbit could check, the rules were right on 2, and llama3.2:3b on 1 of the 3 it answered clearly. With On, Orbit would have been right on 1.",
       ),
     ).toBeTruthy();
     expect(
@@ -860,7 +863,7 @@ describe("operations page", () => {
     expect(screen.queryByRole("list", { name: "Quick calls" })).toBeNull();
   });
 
-  it("says when Ollama has been right as often as the rules on enough calls", () => {
+  it("says when On would have been right as often as the rules on enough calls of the chosen model", () => {
     const call = (n: number): QuickCall => ({
       id: `luck:${n}`,
       question: "luck",
@@ -879,14 +882,44 @@ describe("operations page", () => {
       settledAt: "2026-11-04T13:00:00Z",
     });
     const calls = Array.from({ length: ENOUGH_CALLS }, (_, n) => call(n));
-    expect(scoreLines(calls).at(-1)).toBe(
-      "Ollama has been right at least as often as the rules on enough calls. You can let it decide in Settings, under Buddy.",
-    );
-    expect(scoreLines(calls.slice(1)).at(-1)).not.toMatch(/^Ollama has been/);
+    const ready =
+      "On would have been right at least as often as the rules on enough calls. You can let it decide in Settings, under Buddy.";
+    expect(scoreLines(calls, "small", true).at(-1)).toBe(ready);
+    expect(scoreLines(calls.slice(1), "small", true)).not.toContain(ready);
+    // Only for the model chosen now, and only its own calls count.
+    expect(scoreLines(calls, "small", false)).not.toContain(ready);
+    expect(scoreLines(calls, "big", true)).toEqual([
+      "Orbit hasn’t asked big yet.",
+    ]);
+    expect(scoredModel("", calls)).toBe("small");
+    expect(scoredModel("big", calls)).toBe("big");
+    // Where the model was unsure, On counts the rules too: right on 8 of
+    // the 10 it answered clearly, where the rules were right on 9, On
+    // would have done worse, however the rules did on the rest.
+    const close = calls.map((c, n) => ({
+      ...c,
+      rules: n !== 0,
+      said: "yes" as const,
+      truth: n > 1,
+    }));
+    const unsure = calls.map((c, n) => ({
+      ...c,
+      id: `luck:u${n}`,
+      said: "unsure" as const,
+      truth: false,
+    }));
+    const score = callScore([...close, ...unsure], "small");
+    expect([
+      score.modelRight,
+      score.modelScored,
+      score.rulesRight,
+      score.onRight,
+    ]).toEqual([8, 10, 9, 8]);
+    expect(callsReady(score)).toBe(false);
     expect(
       callText({ ...calls[0], said: undefined, error: "Nothing answered." }),
     ).toBe(
-      "Rules: bad luck. Ollama: no answer (Nothing answered.). It passed after a rerun.",
+      "Rules: bad luck. Ollama (small): no answer (Nothing answered.). It passed after a rerun.",
     );
   });
 

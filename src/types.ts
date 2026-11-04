@@ -2364,9 +2364,10 @@ export interface QuickCall {
   how?: string;
   settledAt?: string;
 }
-/** How the quick calls did: how many were asked, how Ollama answered,
- * and, of those Orbit could check, how often the rules and Ollama were
- * right. Ollama only counts where it gave a clear answer. */
+/** How the quick calls asked of one model did: how many were asked, how
+ * it answered, and, of those Orbit could check, how often the rules, the
+ * model and On (its clear answer, else the rules) were right. The model
+ * only counts where it gave a clear answer. */
 export interface CallScore {
   asked: number;
   unsure: number;
@@ -2376,11 +2377,14 @@ export interface CallScore {
   rulesRight: number;
   modelScored: number;
   modelRight: number;
+  onRight: number;
 }
-/** How many checked calls the scorecard needs before it compares Ollama
- * with the rules. */
+/** How many clearly answered calls Orbit has to check before the
+ * scorecard compares On with the rules. */
 export const ENOUGH_CALLS = 10;
-export function callScore(calls: QuickCall[]): CallScore {
+/** Sums up the calls asked of `model`, so a score is only ever the
+ * model's that earned it. */
+export function callScore(calls: QuickCall[], model: string): CallScore {
   const score: CallScore = {
     asked: 0,
     unsure: 0,
@@ -2390,29 +2394,38 @@ export function callScore(calls: QuickCall[]): CallScore {
     rulesRight: 0,
     modelScored: 0,
     modelRight: 0,
+    onRight: 0,
   };
-  for (const c of calls) {
+  for (const c of calls.filter((c) => c.model === model)) {
     score.asked += 1;
     if (!c.said) score.noAnswer += 1;
     else if (c.said === "unsure") score.unsure += 1;
     else if ((c.said === "yes") === c.rules) score.agreed += 1;
     if (c.truth === undefined || c.truth === null) continue;
     score.scored += 1;
-    if (c.rules === c.truth) score.rulesRight += 1;
+    const rules = c.rules === c.truth;
+    if (rules) score.rulesRight += 1;
+    let right = rules;
     if (c.said === "yes" || c.said === "no") {
+      right = (c.said === "yes") === c.truth;
       score.modelScored += 1;
-      if ((c.said === "yes") === c.truth) score.modelRight += 1;
+      if (right) score.modelRight += 1;
     }
+    if (right) score.onRight += 1;
   }
   return score;
 }
-/** Whether Ollama has been right at least as often as the rules, on
- * enough calls Orbit could check. */
+/** Whether On would have been right at least as often as the rules
+ * alone, on the same calls, with enough of them answered clearly. */
 export function callsReady(s: CallScore) {
-  return (
-    s.modelScored >= ENOUGH_CALLS &&
-    s.modelRight * s.scored >= s.rulesRight * s.modelScored
-  );
+  return s.modelScored >= ENOUGH_CALLS && s.onRight >= s.rulesRight;
+}
+/** The model the scorecard counts: the one Orbit asks now, else the one
+ * it asked last. */
+export function scoredModel(quickModel: string, calls: QuickCall[]) {
+  if (quickModel) return quickModel;
+  const newest = [...calls].sort((a, b) => b.askedAt.localeCompare(a.askedAt));
+  return newest[0]?.model ?? "";
 }
 /** One rerun of an item's job, or Orbit's tries at one. */
 export interface OpsRerun {

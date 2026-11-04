@@ -22,8 +22,9 @@
 //! (`settle`): a rerun that passed, or a check that passed when it ran
 //! again at the same commit, was bad luck; a job that failed again after
 //! its rerun, or a check an agent fixed while it was the only one failing,
-//! wasn't. Anything else stays unscored. `score` sums up how often the
-//! rules and the model were right.
+//! wasn't. Only what happened after Orbit asked counts. Anything else stays
+//! unscored. `score` sums up how often the rules, the model and On would
+//! have been right, for one model at a time.
 //!
 //! Nothing here posts anything or reads GitHub.
 use crate::{
@@ -353,10 +354,22 @@ fn found(s: &Snapshot, c: &Call, now: DateTime<Utc>) -> Option<(Option<bool>, St
         }
         _ => {}
     }
-    let case = s.cases.iter().find(|k| k.id == c.problem);
+    use crate::cases::End;
+    // Only a case that closed after Orbit asked says how this failure
+    // turned out. One that closed before is about an earlier failure of the
+    // same problem, back again within the hour as the same one, until Orbit
+    // opens its case again.
+    let asked = time(&c.asked_at);
+    let case = s.cases.iter().find(|k| {
+        let closed = k.closed_at.as_deref().and_then(time);
+        k.id == c.problem
+            && k.end != End::Open
+            && closed
+                .zip(asked)
+                .is_some_and(|(closed, asked)| closed > asked)
+    });
     let same = case.filter(|k| k.sha == c.sha);
     let ended = |end| same.is_some_and(|k| k.end == end);
-    use crate::cases::End;
     if ended(End::Again) {
         return Some((
             Some(true),
@@ -369,11 +382,9 @@ fn found(s: &Snapshot, c: &Call, now: DateTime<Utc>) -> Option<(Option<bool>, St
             "An agent fixed it, and no other check was failing.".into(),
         ));
     }
-    let closed = case.is_some_and(|k| k.end != End::Open);
-    let old = time(&c.asked_at)
-        .is_none_or(|at| now.signed_duration_since(at) > Duration::days(GIVE_UP_DAYS));
+    let old = asked.is_none_or(|at| now.signed_duration_since(at) > Duration::days(GIVE_UP_DAYS));
     let rerun_open = rerun.is_some_and(|o| o.verdict == Verdict::Waiting);
-    if (closed && !rerun_open) || old {
+    if (case.is_some() && !rerun_open) || old {
         return Some((None, "Orbit couldn't tell how it turned out.".into()));
     }
     None
@@ -393,7 +404,7 @@ pub fn prune(calls: &mut Vec<Call>, now: DateTime<Utc>) -> bool {
     calls.len() != before
 }
 
-/// How the calls about a question did.
+/// How the calls about a question did, asked of one model.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Score {
@@ -409,34 +420,45 @@ pub struct Score {
     pub rules_right: usize,
     pub model_scored: usize,
     pub model_right: usize,
+    /// How often On would have been right on the same calls: the model's
+    /// clear answer, else the rules'.
+    pub on_right: usize,
 }
 impl Score {
-    /// Whether the model has been right at least as often as the rules,
-    /// on at least `ENOUGH` calls Orbit could check.
+    /// Whether On would have been right at least as often as the rules
+    /// alone, on the same calls, with at least `ENOUGH` of them answered
+    /// clearly. Where the model was unsure both count the rules, so this
+    /// compares the model and the rules on the calls it answered clearly.
     pub fn ready(&self) -> bool {
-        self.model_scored >= ENOUGH
-            && self.model_right * self.scored >= self.rules_right * self.model_scored
+        self.model_scored >= ENOUGH && self.on_right >= self.rules_right
     }
 }
 
-/// Sums up the calls about `question`.
-pub fn score(calls: &[Call], question: &str) -> Score {
+/// Sums up the calls about `question` asked of `model`, so a score is
+/// only ever the model's that earned it.
+pub fn score(calls: &[Call], question: &str, model: &str) -> Score {
     let mut out = Score::default();
-    for c in calls.iter().filter(|c| c.question == question) {
+    for c in calls
+        .iter()
+        .filter(|c| c.question == question && c.model == model)
+    {
         out.asked += 1;
         match c.said {
             None => out.no_answer += 1,
             Some(Said::Unsure) => out.unsure += 1,
             Some(said) => out.agreed += usize::from((said == Said::Yes) == c.rules),
         }
-        if let Some(right) = c.rules_right() {
-            out.scored += 1;
-            out.rules_right += usize::from(right);
-        }
-        if let Some(right) = c.model_right() {
+        let Some(rules) = c.rules_right() else {
+            continue;
+        };
+        out.scored += 1;
+        out.rules_right += usize::from(rules);
+        let model = c.model_right();
+        if let Some(right) = model {
             out.model_scored += 1;
             out.model_right += usize::from(right);
         }
+        out.on_right += usize::from(model.unwrap_or(rules));
     }
     out
 }

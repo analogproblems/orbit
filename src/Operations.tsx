@@ -22,6 +22,7 @@ import {
   buddyOf,
   callScore,
   callsReady,
+  scoredModel,
   checkNames,
   lastChange,
   ownerOf,
@@ -2185,22 +2186,25 @@ export function callText(c: QuickCall) {
     : `no answer${c.error ? ` (${c.error})` : ""}`;
   const rules = c.rules ? "bad luck" : "not bad luck";
   const turned = c.settledAt ? c.how : "Orbit checks how it turns out.";
-  return `Rules: ${rules}. Ollama: ${said}. ${turned}`;
+  return `Rules: ${rules}. Ollama (${c.model}): ${said}. ${turned}`;
 }
-/** The scorecard in plain words. */
-export function scoreLines(calls: QuickCall[]) {
-  const n = callScore(calls);
+/** The scorecard of the calls asked of `model` in plain words, and, when
+ * it's the model chosen now and On would have done as well as the rules,
+ * that you can let it decide. */
+export function scoreLines(calls: QuickCall[], model: string, chosen: boolean) {
+  const n = callScore(calls, model);
+  if (!n.asked) return [`Orbit hasn’t asked ${model} yet.`];
   const times = (k: number) => (k === 1 ? "1 call" : `${k} calls`);
   const lines = [
-    `${times(n.asked)} so far. Ollama agreed with the rules on ${n.agreed}, was unsure on ${n.unsure} and didn’t answer ${n.noAnswer}.`,
+    `Orbit asked ${model} ${times(n.asked)}. It agreed with the rules on ${n.agreed}, was unsure on ${n.unsure} and didn’t answer ${n.noAnswer}.`,
   ];
   if (n.scored)
     lines.push(
-      `Of the ${times(n.scored)} Orbit could check, the rules were right on ${n.rulesRight}, and Ollama on ${n.modelRight} of the ${n.modelScored} it answered clearly.`,
+      `Of the ${times(n.scored)} Orbit could check, the rules were right on ${n.rulesRight}, and ${model} on ${n.modelRight} of the ${n.modelScored} it answered clearly. With On, Orbit would have been right on ${n.onRight}.`,
     );
-  if (callsReady(n))
+  if (chosen && callsReady(n))
     lines.push(
-      "Ollama has been right at least as often as the rules on enough calls. You can let it decide in Settings, under Buddy.",
+      "On would have been right at least as often as the rules on enough calls. You can let it decide in Settings, under Buddy.",
     );
   return lines;
 }
@@ -2226,7 +2230,11 @@ function QuickCalls() {
         was bad luck, as well as its own rules, then checks who was right.{" "}
         {mode}
       </Text>
-      {scoreLines(calls).map((line) => (
+      {scoreLines(
+        calls,
+        scoredModel(buddy.quickModel, calls),
+        !!buddy.quickModel,
+      ).map((line) => (
         <Text key={line}>{line}</Text>
       ))}
       <Card padding={0}>

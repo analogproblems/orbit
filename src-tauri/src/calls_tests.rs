@@ -225,11 +225,13 @@ fn rerun(id: u32, verdict: Verdict) -> Outcome {
         ..Default::default()
     }
 }
-/// The problem's case, ended `end`, at commit `at`, with these checks.
+/// The problem's case, ended `end` half an hour after Orbit asked, at
+/// commit `at`, with these checks.
 fn case(end: End, at: char, checks: &[&str]) -> Case {
     Case {
         id: "p1".into(),
         sha: sha(at),
+        closed_at: (end != End::Open).then(|| stamp(t0() + Duration::minutes(30))),
         end,
         checks: checks.iter().map(|c| c.to_string()).collect(),
         ..Default::default()
@@ -309,6 +311,20 @@ fn each_call_is_scored_by_what_happened_next() {
         s.cases = vec![c];
         assert_eq!(settled(&mut s), couldnt);
     }
+    // A case that closed before Orbit asked is about an earlier failure: it
+    // passed at commit 5, then failed there again as the same problem, so
+    // its case still says how the last one ended until Orbit opens it again.
+    let mut s = state("watch");
+    ask(&mut s, Ok(Said::No));
+    let mut before = case(End::Again, '5', &["CI / Rust"]);
+    before.closed_at = Some(stamp(t0() - Duration::minutes(10)));
+    s.cases = vec![before];
+    assert!(!settle(&mut s, later), "nothing about this failure yet");
+    s.cases[0].end = End::Open;
+    s.cases[0].closed_at = None;
+    assert!(!settle(&mut s, later));
+    s.cases = vec![case(End::Fixed, '5', &["CI / Rust"])];
+    assert_eq!(settled(&mut s).0, Some(false));
     // While its case is open it waits, at most a week.
     let mut s = state("watch");
     ask(&mut s, Ok(Said::No));
@@ -328,6 +344,7 @@ fn each_call_is_scored_by_what_happened_next() {
 fn the_scorecard_counts_who_was_right() {
     let made = |rules: bool, said: Option<Said>, truth: Option<bool>| Call {
         question: LUCK.into(),
+        model: "small".into(),
         rules,
         said,
         truth,
@@ -344,8 +361,13 @@ fn the_scorecard_counts_who_was_right() {
             question: "other".into(),
             ..made(true, Some(Said::Yes), Some(true))
         },
+        // Another model's calls are its own.
+        Call {
+            model: "big".into(),
+            ..made(true, Some(Said::Yes), Some(true))
+        },
     ];
-    let score = score(&calls, LUCK);
+    let score = score(&calls, LUCK, "small");
     assert_eq!(
         score,
         Score {
@@ -357,18 +379,44 @@ fn the_scorecard_counts_who_was_right() {
             rules_right: 2,
             model_scored: 3,
             model_right: 3,
+            on_right: 4,
         }
     );
     assert!(!score.ready(), "too few");
-    // Right as often as the rules on enough calls.
+    assert_eq!(super::score(&calls, LUCK, "big").asked, 1);
+    assert_eq!(super::score(&calls, LUCK, "").asked, 0);
+    // On would have been right as often as the rules on enough calls.
     let calls: Vec<Call> = (0..ENOUGH)
         .map(|n| made(true, Some(Said::Yes), Some(n % 2 == 0)))
         .collect();
-    assert!(super::score(&calls, LUCK).ready());
+    assert!(super::score(&calls, LUCK, "small").ready());
+    assert!(!super::score(&calls, LUCK, "big").ready(), "not this one");
     let calls: Vec<Call> = (0..ENOUGH)
         .map(|n| made(n % 2 == 0, Some(Said::Yes), Some(n % 2 == 0)))
         .collect();
-    assert!(!super::score(&calls, LUCK).ready(), "the rules did better");
+    assert!(
+        !super::score(&calls, LUCK, "small").ready(),
+        "the rules did better"
+    );
+    // Where the model was unsure, On and the rules both count the rules, so
+    // the rules doing badly there doesn't make the model look better: it
+    // was right on 8 of the 10 it answered clearly, where the rules were
+    // right on 9.
+    let mut calls: Vec<Call> = (0..ENOUGH)
+        .map(|n| made(n != 0, Some(Said::Yes), Some(n > 1)))
+        .collect();
+    calls.extend((0..ENOUGH).map(|_| made(true, Some(Said::Unsure), Some(false))));
+    let score = super::score(&calls, LUCK, "small");
+    assert_eq!(
+        (
+            score.model_right,
+            score.model_scored,
+            score.rules_right,
+            score.on_right
+        ),
+        (8, 10, 9, 8)
+    );
+    assert!(!score.ready());
 }
 
 #[test]

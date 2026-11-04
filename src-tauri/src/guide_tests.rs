@@ -479,6 +479,38 @@ fn bits_answerer_is_checked_even_when_no_repository_uses_it() {
     assert_eq!(names(&s), ["GitHub", "Codex"]);
     s.settings.buddy.quick_model = "small".into();
     assert_eq!(names(&s), ["GitHub", "Codex", "Ollama"]);
+    let ollama = connections(&s).pop().unwrap();
+    assert!(ollama.for_calls && !ollama.for_bit);
+    // Setup help says so though Bit answers with Codex, with buttons to get
+    // Ollama and to check again.
+    let g = setup(&s, &Lookups::default());
+    assert!(
+        g.lines.contains(
+            &"Ollama isn't connected. Nothing answered at http://localhost:11434.".to_string()
+        ),
+        "{:?}",
+        g.lines
+    );
+    let offered = labels(&g);
+    assert!(
+        offered.contains(&"OpenPage Get Ollama".to_string()),
+        "{offered:?}"
+    );
+    assert!(
+        offered.contains(&"CheckConnections - ".to_string()),
+        "{offered:?}"
+    );
+    s.ollama = CliStatus {
+        ready: true,
+        ..Default::default()
+    };
+    assert!(setup(&s, &Lookups::default())
+        .lines
+        .contains(&"Ollama: connected.".to_string()));
+    s.ollama = CliStatus {
+        error: Some("Nothing answered at http://localhost:11434.".into()),
+        ..Default::default()
+    };
     s.settings.buddy.luck_call = "off".into();
     assert_eq!(names(&s), ["GitHub", "Codex"]);
     s.settings.buddy.luck_call = "on".into();

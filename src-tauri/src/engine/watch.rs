@@ -185,17 +185,19 @@ impl Engine {
 }
 impl Engine {
     /// Makes the quick calls this pass wants (`crate::calls`), one at a
-    /// time, and stops at the first Ollama didn't answer. An answer to a
+    /// time, and stops at the first that fails. Before each, it reads the
+    /// settings and what's wanted again, so a log goes nowhere once the
+    /// calls, Bit or the model are off, or Ollama moved; an answer to a
     /// call whose address or model changed meanwhile is dropped.
-    async fn make_calls(&self) {
-        let (wanted, setup) = {
-            let s = self.state.lock().await;
-            (calls::wanted(&s), calls::setup(&s))
-        };
-        let Some((url, model, _)) = setup else {
-            return;
-        };
-        for w in &wanted {
+    pub(super) async fn make_calls(&self) {
+        for _ in 0..calls::PER_PASS {
+            let next = {
+                let s = self.state.lock().await;
+                calls::setup(&s).zip(calls::wanted(&s).into_iter().next())
+            };
+            let Some(((url, model, _), w)) = next else {
+                break;
+            };
             let prompt = calls::prompt(&w.failure);
             let schema = calls::schema();
             let answer = crate::ollama::answer(
@@ -214,7 +216,7 @@ impl Engine {
                     return;
                 };
                 if now_url == url && now_model == model {
-                    calls::record(s, w, &model, on, answer, chrono::Utc::now());
+                    calls::record(s, &w, &model, on, answer, chrono::Utc::now());
                 }
             })
             .await;

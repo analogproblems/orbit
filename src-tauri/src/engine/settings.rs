@@ -63,6 +63,8 @@ impl Engine {
                 }
                 next.settings = settings;
                 crate::brief::settings_changed(next);
+                // Whether a quick call decides follows the settings at once.
+                super::ops::decide(next);
                 if ModelSelection::workspace(&next.settings)
                     .validate_execution(next)
                     .is_ok()
