@@ -2911,8 +2911,9 @@ async fn a_quick_call_that_is_on_decides_whether_a_job_is_rerun() {
 
 /// Quick calls go one at a time, and each reads the settings again first:
 /// once Ollama moves, the answer from the old address is dropped and the
-/// job is asked about again at the new one; once the calls are off, no
-/// other log is sent and the answer is dropped.
+/// job is asked about again at the new one; once the calls or Watch CI are
+/// off, or the repository is disconnected, no other log is sent and the
+/// answer is dropped.
 #[tokio::test]
 async fn each_quick_call_reads_the_settings_again_before_it_sends_a_log() {
     use crate::ollama::tests::{serve, Fake};
@@ -2996,27 +2997,33 @@ async fn each_quick_call_reads_the_settings_again_before_it_sends_a_log() {
         (&*job(2), Some(crate::calls::Said::No))
     );
 
-    // The calls go off while the first waits.
-    let d = tempfile::tempdir().unwrap();
-    let fake = slow("yes");
-    let chats = fake.chats.clone();
-    let url = serve(fake).await;
-    let e = connected(d.path()).await;
-    e.update(|s| {
-        failing(s);
-        s.settings.buddy.ollama_url = url.clone();
-    })
-    .await;
-    let calls = tokio::spawn({
-        let e = e.clone();
-        async move { e.make_calls().await }
-    });
-    first(&chats).await;
-    e.update(|s| s.settings.buddy.luck_call = "off".into())
+    // The calls, or Watch CI, go off while the first waits, or the
+    // repository is disconnected.
+    for change in [
+        (|s: &mut Snapshot| s.settings.buddy.luck_call = "off".into()) as fn(&mut Snapshot),
+        |s| s.settings.watch_ci = false,
+        |s| s.settings.repositories.clear(),
+    ] {
+        let d = tempfile::tempdir().unwrap();
+        let fake = slow("yes");
+        let chats = fake.chats.clone();
+        let url = serve(fake).await;
+        let e = connected(d.path()).await;
+        e.update(|s| {
+            failing(s);
+            s.settings.buddy.ollama_url = url.clone();
+        })
         .await;
-    calls.await.unwrap();
-    assert_eq!(sent(&chats).len(), 1, "no other log");
-    assert!(e.snapshot().await.calls.is_empty());
+        let calls = tokio::spawn({
+            let e = e.clone();
+            async move { e.make_calls().await }
+        });
+        first(&chats).await;
+        e.update(change).await;
+        calls.await.unwrap();
+        assert_eq!(sent(&chats).len(), 1, "no other log");
+        assert!(e.snapshot().await.calls.is_empty());
+    }
 }
 
 /// A check whose link is a job at another commit, or another check's job,

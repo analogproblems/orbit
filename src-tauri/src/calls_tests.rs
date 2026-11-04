@@ -17,10 +17,11 @@ fn job(id: u32) -> String {
 const LOST: &str = "The runner went away.";
 
 /// Bit on, quick calls in `mode` with a model, and pull request 12 of
-/// `a/b` failing at commit 5 by jobs 2 and 3, whose logs Orbit read: job 2
+/// connected `a/b` failing at commit 5 by jobs 2 and 3, whose logs Orbit read: job 2
 /// like bad luck, job 3 not.
 fn state(mode: &str) -> Snapshot {
     let mut s = Snapshot::default();
+    s.settings.repositories = vec![crate::types::Repository::new("a/b", "/tmp/a-b")];
     s.settings.buddy.quick_model = "small".into();
     s.settings.buddy.luck_call = mode.into();
     s.problems = vec![Problem {
@@ -110,10 +111,13 @@ fn asks_once_about_each_job_whose_log_it_kept() {
     s.failures[1].error = Some("GitHub no longer has this job's log.".into());
     assert!(wanted(&s).is_empty());
 
-    // Nothing while Bit is off, the call is off or no model is chosen, or
-    // for a problem that isn't about failing checks or is closed.
+    // Nothing while Watch CI or Bit is off, the call is off or no model is
+    // chosen, for a repository no longer connected, or for a problem that
+    // isn't about failing checks or is closed.
     for change in [
         (|s: &mut Snapshot| s.settings.buddy.enabled = false) as fn(&mut Snapshot),
+        |s| s.settings.watch_ci = false,
+        |s| s.settings.repositories.clear(),
         |s| s.settings.buddy.luck_call = "off".into(),
         |s| s.settings.buddy.quick_model.clear(),
         |s| s.problems[0].kind = ProblemKind::BaseMoved,
@@ -156,6 +160,18 @@ fn an_answer_about_a_log_read_again_or_gone_is_dropped() {
     assert!(!record(&mut s, &w[0], "small", false, Ok(Said::Yes), t0()));
     assert!(!record(&mut s, &w[1], "small", false, Ok(Said::Yes), t0()));
     assert!(s.calls.is_empty());
+    // Nor once its repository is disconnected.
+    let mut gone = state("watch");
+    let w = wanted(&gone);
+    gone.settings.repositories.clear();
+    assert!(!record(
+        &mut gone,
+        &w[0],
+        "small",
+        false,
+        Ok(Said::Yes),
+        t0()
+    ));
     // What it reads now is asked about.
     assert_eq!(wanted(&s).len(), 1);
     // An error is kept, cut and without a credential.

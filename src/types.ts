@@ -2420,6 +2420,17 @@ export function callScore(calls: QuickCall[], model: string): CallScore {
 export function callsReady(s: CallScore) {
   return s.modelScored >= ENOUGH_CALLS && s.onRight >= s.rulesRight;
 }
+/** What quick calls do now, as Orbit's `calls::setup` says: nothing
+ * while Watch CI or Bit is off, the call is off or no model is chosen. */
+export function callsMode(settings: Settings): CallMode {
+  const buddy = buddyOf(settings);
+  const asks =
+    settings.watchCi !== false &&
+    buddy.enabled &&
+    buddy.luckCall !== "off" &&
+    buddy.quickModel !== "";
+  return asks ? buddy.luckCall : "off";
+}
 /** The model the scorecard counts: the one Orbit asks now, else the one
  * it asked last. */
 export function scoredModel(quickModel: string, calls: QuickCall[]) {

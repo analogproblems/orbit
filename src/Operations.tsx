@@ -21,6 +21,7 @@ import {
   alertNeedsYou,
   buddyOf,
   callScore,
+  callsMode,
   callsReady,
   scoredModel,
   checkNames,
@@ -57,6 +58,7 @@ import {
   type Runner,
   type RunnerPlace,
   type SecurityAlert,
+  type Settings,
   type Snapshot,
   type VersionMismatch,
   type WorkflowRisk,
@@ -432,10 +434,8 @@ const saidText = {
 export function callLine(s: Snapshot, f: CiFailure) {
   const c = s.calls?.find((c) => c.url === f.url);
   if (!c) return undefined;
-  const buddy = buddyOf(s.settings);
   const said = c.said ? saidText[c.said] : "no answer";
-  const decides =
-    buddy.enabled && buddy.luckCall === "on" && buddy.quickModel !== "";
+  const decides = callsMode(s.settings) === "on";
   const who =
     decides && (c.said === "yes" || c.said === "no")
       ? "It decides."
@@ -2208,6 +2208,22 @@ export function scoreLines(calls: QuickCall[], model: string, chosen: boolean) {
     );
   return lines;
 }
+/** What quick calls do now, or why they don't, in plain words. */
+export function callModeText(settings: Settings) {
+  const buddy = buddyOf(settings);
+  const mode = callsMode(settings);
+  if (mode === "on")
+    return "Its clear yes or no decides whether Orbit reruns a job; your rules for reruns still apply.";
+  if (mode === "watch")
+    return "Orbit keeps its answer while its own rules decide.";
+  if (buddy.luckCall === "off") return "Quick calls are off now.";
+  const why = !buddy.enabled
+    ? `while ${buddy.name} is off`
+    : settings.watchCi === false
+      ? "while Watch CI is off"
+      : "until you choose a model in Settings, under Buddy";
+  return `Orbit asks nothing ${why}, and its own rules decide.`;
+}
 /** Bit's quick calls on Ollama, newest first, with the scorecard. */
 function QuickCalls() {
   const { snapshot: s } = useOrbit();
@@ -2216,12 +2232,7 @@ function QuickCalls() {
   );
   if (!calls.length) return null;
   const buddy = buddyOf(s.settings);
-  const mode =
-    buddy.luckCall === "on"
-      ? "Its clear yes or no decides whether Orbit reruns a job; your rules for reruns still apply."
-      : buddy.luckCall === "watch"
-        ? "Orbit keeps its answer while its own rules decide."
-        : "Quick calls are off now.";
+  const mode = callModeText(s.settings);
   return (
     <VStack gap={3}>
       <Heading level={3}>Quick calls</Heading>

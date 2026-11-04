@@ -37,6 +37,7 @@ import {
   updatesSummary,
   waitingText,
   whyText,
+  callModeText,
   callText,
   scoreLines,
   writeSummary,
@@ -856,6 +857,34 @@ describe("operations page", () => {
         "listitem",
       )[1].textContent,
     ).toContain("Quick call on Ollama: not bad luck. It decides.");
+    // While Bit or Watch CI is off, Orbit asks nothing and the rules decide,
+    // and the calls it made stay.
+    cleanup();
+    s.settings.buddy!.enabled = false;
+    show(s);
+    expect(
+      within(screen.getByRole("list", { name: "Open problems" })).getAllByRole(
+        "listitem",
+      )[1].textContent,
+    ).toContain("Quick call on Ollama: not bad luck. The rules decide.");
+    expect(
+      screen.getByText(
+        /Orbit asks nothing while Bit is off, and its own rules decide\./,
+      ),
+    ).toBeTruthy();
+    expect(screen.getByRole("list", { name: "Quick calls" })).toBeTruthy();
+    s.settings.buddy!.enabled = true;
+    expect(callModeText({ ...s.settings, watchCi: false })).toBe(
+      "Orbit asks nothing while Watch CI is off, and its own rules decide.",
+    );
+    expect(
+      callModeText({
+        ...s.settings,
+        buddy: { ...s.settings.buddy!, quickModel: "" },
+      }),
+    ).toBe(
+      "Orbit asks nothing until you choose a model in Settings, under Buddy, and its own rules decide.",
+    );
     // None until Orbit makes one.
     cleanup();
     s.calls = [];

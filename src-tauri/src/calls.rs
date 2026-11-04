@@ -32,7 +32,7 @@ use crate::{
     logs::Failure,
     outcomes::{Kind, Verdict},
     problems::{stamp, time, ProblemKind},
-    types::Snapshot,
+    types::{same_repo, Snapshot},
 };
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -121,11 +121,14 @@ pub fn id(url: &str) -> String {
 
 /// Where and how Orbit makes quick calls: Bit's Ollama address, the model,
 /// and whether a clear answer decides (On) or only gets kept (Watch). None
-/// while Bit is off, the call is Off or no model is chosen.
+/// while Watch CI or Bit is off, the call is Off or no model is chosen.
 pub fn setup(s: &Snapshot) -> Option<(String, String, bool)> {
     let buddy = &s.settings.buddy;
     let mode = buddy.luck_call.as_str();
-    let asks = buddy.enabled && matches!(mode, "watch" | "on") && !buddy.quick_model.is_empty();
+    let asks = s.settings.watch_ci
+        && buddy.enabled
+        && matches!(mode, "watch" | "on")
+        && !buddy.quick_model.is_empty();
     asks.then(|| {
         (
             buddy.ollama_url.clone(),
@@ -152,7 +155,8 @@ pub struct Wanted {
     pub problem: String,
 }
 
-/// The open problems about failing checks, whose jobs Orbit may rerun.
+/// The open problems about failing checks in a connected repository,
+/// whose jobs Orbit may rerun.
 fn failing(s: &Snapshot) -> impl Iterator<Item = &crate::problems::Problem> {
     s.problems.iter().filter(|p| {
         p.is_open()
@@ -160,14 +164,20 @@ fn failing(s: &Snapshot) -> impl Iterator<Item = &crate::problems::Problem> {
                 p.kind,
                 ProblemKind::DefaultBranch | ProblemKind::PullRequest | ProblemKind::ReleaseBuild
             )
+            && s.settings
+                .repositories
+                .iter()
+                .any(|r| same_repo(&r.name, &p.repo))
     })
+}
+/// Whether a job is failing on one of those problems.
+fn on_failing(s: &Snapshot, url: &str) -> bool {
+    failing(s).any(|p| p.failing.iter().any(|c| c.url == url))
 }
 /// Whether Orbit will ask about a failure: it can, the job is failing on
 /// an open problem about failing checks, and Orbit hasn't asked yet.
 fn will_ask(s: &Snapshot, f: &Failure) -> bool {
-    askable(f)
-        && !s.calls.iter().any(|c| c.id == id(&f.url))
-        && failing(s).any(|p| p.failing.iter().any(|c| c.url == f.url))
+    askable(f) && !s.calls.iter().any(|c| c.id == id(&f.url)) && on_failing(s, &f.url)
 }
 
 /// The calls to make this pass, at most `PER_PASS`: each failure Orbit
@@ -250,8 +260,9 @@ pub fn parse(content: &str) -> Result<Said, String> {
 }
 
 /// Keeps what the model said about a planned call, or why it didn't
-/// answer. A failure that changed or went meanwhile isn't kept, so Orbit
-/// asks about what it reads now. Says whether it kept it.
+/// answer. A failure that changed or went meanwhile, or whose repository
+/// Orbit stopped watching, isn't kept, so Orbit asks about what it reads
+/// now. Says whether it kept it.
 pub fn record(
     s: &mut Snapshot,
     w: &Wanted,
@@ -264,7 +275,8 @@ pub fn record(
         .failures
         .iter()
         .any(|f| f.url == w.failure.url && f.read_at == w.failure.read_at);
-    if !same || s.calls.iter().any(|c| c.id == id(&w.failure.url)) {
+    let asked = s.calls.iter().any(|c| c.id == id(&w.failure.url));
+    if !same || asked || !on_failing(s, &w.failure.url) {
         return false;
     }
     let (said, error) = match answer {
