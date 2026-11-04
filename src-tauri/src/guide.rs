@@ -292,7 +292,7 @@ pub fn all_connections(s: &Snapshot) -> Vec<Connection> {
         c.page = PAGES[5];
     }
     out.push(Connection {
-        for_calls: crate::calls::setup(s).is_some(),
+        for_calls: crate::calls::used(s),
         ..cli(
             "Ollama",
             "ollama",

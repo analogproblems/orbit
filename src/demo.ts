@@ -2002,6 +2002,44 @@ export function demoCi(
       },
       6 * 24 * 60 + 4 * 60,
     ),
+    // While main was broken then, two pull requests failed the same check:
+    // one was failing already, the other failed its own way.
+    quick(
+      {
+        id: "fault:https://github.com/acme/orbit/actions/runs/882/job/1882",
+        question: "fault",
+        repo: "acme/orbit",
+        number: 141,
+        check: "CI / Rust tests",
+        url: "https://github.com/acme/orbit/actions/runs/882/job/1882",
+        sha: sha("6b1e9c4"),
+        problem: "demo-problem-141",
+        rules: true,
+        said: "yes",
+        truth: true,
+        how: "It passed once the default branch was fixed, with no fix of its own.",
+        settledAt: ago(6 * 24 * 60 + 30),
+      },
+      6 * 24 * 60 + 3 * 60,
+    ),
+    quick(
+      {
+        id: "fault:https://github.com/acme/orbit/actions/runs/884/job/1884",
+        question: "fault",
+        repo: "acme/orbit",
+        number: 143,
+        check: "CI / Rust tests",
+        url: "https://github.com/acme/orbit/actions/runs/884/job/1884",
+        sha: sha("c37a0f2"),
+        problem: "demo-problem-143",
+        rules: true,
+        said: "no",
+        truth: false,
+        how: "It passed on the pull request while the default branch still failed it.",
+        settledAt: ago(6 * 24 * 60 + 90),
+      },
+      6 * 24 * 60 + 2 * 60,
+    ),
   ];
   // What Orbit learned from repeats: the end-to-end job keeps passing when
   // it runs again, and main keeps breaking. The failing problems say so,

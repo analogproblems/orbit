@@ -50,6 +50,7 @@ import {
   checkNames,
   ENOUGH_CALLS,
   scoredModel,
+  type CallMode,
   type QuickCall,
   type Broke,
   type Build,
@@ -88,6 +89,11 @@ function show(snapshot: Snapshot) {
   render(<Operations {...go} />);
   return go;
 }
+
+/** The lists of each quick call, by name. */
+const luckList = "Quick calls: Is this failure bad luck?";
+const faultList =
+  "Quick calls: Was this failure already failing on the default branch?";
 
 describe("operations page", () => {
   it("lists open problems first, a default branch before a pull request", () => {
@@ -812,7 +818,7 @@ describe("operations page", () => {
     const s = freshDemo();
     tick.mockRestore();
     show(s);
-    const list = screen.getByRole("list", { name: "Quick calls" });
+    const list = screen.getByRole("list", { name: luckList });
     const items = within(list).getAllByRole("listitem");
     expect(items).toHaveLength(6);
     const pr = s.prs[2].id.replace("#", " #");
@@ -837,8 +843,10 @@ describe("operations page", () => {
       ),
     ).toBeTruthy();
     expect(
-      screen.getByText(/Orbit keeps its answer while its own rules decide\./),
-    ).toBeTruthy();
+      screen.getAllByText(
+        /Orbit keeps its answer while its own rules decide\./,
+      ),
+    ).toHaveLength(2);
     // On each failing job, what the call said and who decides.
     const row = within(
       screen.getByRole("list", { name: "Open problems" }),
@@ -868,20 +876,23 @@ describe("operations page", () => {
       )[1].textContent,
     ).toContain("Quick call on Ollama: not bad luck. The rules decide.");
     expect(
-      screen.getByText(
+      screen.getAllByText(
         /Orbit asks nothing while Bit is off, and its own rules decide\./,
       ),
-    ).toBeTruthy();
-    expect(screen.getByRole("list", { name: "Quick calls" })).toBeTruthy();
+    ).toHaveLength(2);
+    expect(screen.getByRole("list", { name: luckList })).toBeTruthy();
     s.settings.buddy!.enabled = true;
-    expect(callModeText({ ...s.settings, watchCi: false })).toBe(
+    expect(callModeText({ ...s.settings, watchCi: false }, "luck")).toBe(
       "Orbit asks nothing while Watch CI is off, and its own rules decide.",
     );
     expect(
-      callModeText({
-        ...s.settings,
-        buddy: { ...s.settings.buddy!, quickModel: "" },
-      }),
+      callModeText(
+        {
+          ...s.settings,
+          buddy: { ...s.settings.buddy!, quickModel: "" },
+        },
+        "luck",
+      ),
     ).toBe(
       "Orbit asks nothing until you choose a model in Settings, under Buddy, and its own rules decide.",
     );
@@ -889,7 +900,106 @@ describe("operations page", () => {
     cleanup();
     s.calls = [];
     show(s);
-    expect(screen.queryByRole("list", { name: "Quick calls" })).toBeNull();
+    expect(screen.queryByRole("list", { name: /^Quick calls/ })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Quick calls" })).toBeNull();
+  });
+
+  it("lists the calls on whether a failure was failing already apart, with their own scorecard", () => {
+    const s = freshDemo();
+    show(s);
+    const items = within(
+      screen.getByRole("list", { name: faultList }),
+    ).getAllByRole("listitem");
+    expect(items.map((i) => i.textContent)).toEqual([
+      expect.stringContaining(
+        "CI / Rust tests on acme/orbit #143Rules: failing already. Ollama (llama3.2:3b): from the pull request. It passed on the pull request while the default branch still failed it.",
+      ),
+      expect.stringContaining(
+        "CI / Rust tests on acme/orbit #141Rules: failing already. Ollama (llama3.2:3b): failing already. It passed once the default branch was fixed, with no fix of its own.",
+      ),
+    ]);
+    expect(within(items[0]).getByLabelText("Ollama was right")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Orbit asked llama3.2:3b 2 calls. It agreed with the rules on 1, was unsure on 0 and didn’t answer 0.",
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Of the 2 calls Orbit could check, the rules were right on 1, and llama3.2:3b on 2 of the 2 it answered clearly. With On, Orbit would have been right on 2.",
+      ),
+    ).toBeTruthy();
+    // Each question says what it does now.
+    const fault = (faultCall: CallMode) =>
+      callModeText(
+        { ...s.settings, buddy: { ...s.settings.buddy!, faultCall } },
+        "fault",
+      );
+    expect(fault("on")).toBe(
+      "Its clear no stops Orbit telling the pull request its check fails on the default branch too.",
+    );
+    expect(fault("off")).toBe("This quick call is off now.");
+    expect(
+      callModeText(
+        { ...s.settings, buddy: { ...s.settings.buddy!, faultCall: "off" } },
+        "luck",
+      ),
+    ).toBe("Orbit keeps its answer while its own rules decide.");
+    // Only the questions Orbit asked show.
+    cleanup();
+    s.calls = s.calls!.filter((c) => c.question === "fault");
+    show(s);
+    expect(screen.queryByRole("list", { name: luckList })).toBeNull();
+    expect(screen.getByRole("list", { name: faultList })).toBeTruthy();
+  });
+
+  it("says when a pull request's failing check fails on the default branch too, and what its call said", () => {
+    const s = freshDemo();
+    const item = s
+      .ops!.flatMap((t) => t.items)
+      .find((i) => i.failing && i.why?.check === "CI / Frontend")!;
+    const note =
+      "It fails on main too, at 9f3c2a1, so it may not come from this pull request.";
+    item.why = { ...item.why!, already: note };
+    const luck = s.calls!.find((c) => c.url === item.url)!;
+    s.calls!.push({
+      ...luck,
+      id: `fault:${item.url}`,
+      question: "fault",
+      rules: true,
+      said: "yes",
+    });
+    show(s);
+    const row = () =>
+      within(screen.getByRole("list", { name: "Open problems" })).getAllByRole(
+        "listitem",
+      )[1].textContent;
+    expect(row()).toContain(note);
+    // Bad luck first, then the default branch.
+    expect(row()).toContain(
+      "Quick call on Ollama: not bad luck. The rules decide.Quick call on Ollama about the default branch: failing already. The rules decide.",
+    );
+    cleanup();
+    s.settings.buddy!.faultCall = "on";
+    show(s);
+    expect(row()).toContain(
+      "Quick call on Ollama: not bad luck. The rules decide.Quick call on Ollama about the default branch: failing already. It decides.",
+    );
+    // A no takes the note away; one that left it was about another of
+    // main's jobs, so the rule decides.
+    s.calls!.at(-1)!.said = "no";
+    cleanup();
+    show(s);
+    expect(row()).toContain(
+      "Quick call on Ollama about the default branch: from the pull request. The rules decide.",
+    );
+    cleanup();
+    item.why = { ...item.why!, already: null };
+    show(s);
+    expect(row()).not.toContain(note);
+    expect(row()).toContain(
+      "Quick call on Ollama about the default branch: from the pull request. It decides.",
+    );
   });
 
   it("says when On would have been right as often as the rules on enough calls of the chosen model", () => {
@@ -913,15 +1023,23 @@ describe("operations page", () => {
     const calls = Array.from({ length: ENOUGH_CALLS }, (_, n) => call(n));
     const ready =
       "On would have been right at least as often as the rules on enough calls. You can let it decide in Settings, under Buddy.";
-    expect(scoreLines(calls, "small", true).at(-1)).toBe(ready);
-    expect(scoreLines(calls.slice(1), "small", true)).not.toContain(ready);
+    expect(scoreLines(calls, "luck", "small", true).at(-1)).toBe(ready);
+    expect(scoreLines(calls.slice(1), "luck", "small", true)).not.toContain(
+      ready,
+    );
     // Only for the model chosen now, and only its own calls count.
-    expect(scoreLines(calls, "small", false)).not.toContain(ready);
-    expect(scoreLines(calls, "big", true)).toEqual([
+    expect(scoreLines(calls, "luck", "small", false)).not.toContain(ready);
+    expect(scoreLines(calls, "luck", "big", true)).toEqual([
       "Orbit hasn’t asked big yet.",
     ]);
-    expect(scoredModel("", calls)).toBe("small");
-    expect(scoredModel("big", calls)).toBe("big");
+    expect(scoredModel("", calls, "luck")).toBe("small");
+    expect(scoredModel("big", calls, "luck")).toBe("big");
+    // And only the question's own: calls about bad luck make no other
+    // question ready.
+    expect(scoreLines(calls, "fault", "small", true)).toEqual([
+      "Orbit hasn’t asked small yet.",
+    ]);
+    expect(scoredModel("", calls, "fault")).toBe("");
     // Where the model was unsure, On counts the rules too: right on 8 of
     // the 10 it answered clearly, where the rules were right on 9, On
     // would have done worse, however the rules did on the rest.
@@ -937,7 +1055,7 @@ describe("operations page", () => {
       said: "unsure" as const,
       truth: false,
     }));
-    const score = callScore([...close, ...unsure], "small");
+    const score = callScore([...close, ...unsure], "luck", "small");
     expect([
       score.modelRight,
       score.modelScored,

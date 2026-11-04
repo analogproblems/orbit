@@ -65,6 +65,7 @@ import {
   type ApiProvider,
   type Buddy,
   type CallMode,
+  type CallQuestion,
   type BuddyHat,
   type BuddyLook,
   type BuddyNote,
@@ -775,16 +776,38 @@ function OllamaSettings({
   );
 }
 
-/** What each quick call mode does, as Settings says it. */
-const callModeHelp: Record<CallMode, string> = {
-  off: "Orbit asks no model.",
-  watch:
-    "Orbit asks, and keeps the answer while its own rules decide. Operations shows who was right.",
-  on: "A clear yes or no decides whether a job looks like bad luck; unsure, or no answer, leaves it to the rules. Your rules for reruns, and at most two reruns of a check at a commit, still apply.",
+/** What each quick call mode does, for each question, as Settings says it. */
+const watchHelp =
+  "Orbit asks, and keeps the answer while its own rules decide. Operations shows who was right.";
+const callModeHelp: Record<CallQuestion, Record<CallMode, string>> = {
+  luck: {
+    off: "Orbit asks no model.",
+    watch: watchHelp,
+    on: "A clear yes or no decides whether a job looks like bad luck; unsure, or no answer, leaves it to the rules. Your rules for reruns, and at most two reruns of a check at a commit, still apply.",
+  },
+  fault: {
+    off: "Orbit asks no model.",
+    watch: watchHelp,
+    on: "A clear no stops Orbit telling a pull request its check fails on the default branch too; yes, unsure, or no answer, leaves it to the rules.",
+  },
 };
 
-/** Bit's quick calls on Ollama: what Orbit does with the answer to "Is
- * this failure bad luck?", and the model that answers. */
+/** The quick calls, as Settings asks them, and the setting for each. */
+const callQuestions: {
+  question: CallQuestion;
+  label: string;
+  field: "luckCall" | "faultCall";
+}[] = [
+  { question: "luck", label: "Is this failure bad luck?", field: "luckCall" },
+  {
+    question: "fault",
+    label: "Was this failure already failing on the default branch?",
+    field: "faultCall",
+  },
+];
+
+/** Bit's quick calls on Ollama: what Orbit does with each answer, and the
+ * model that answers. */
 function QuickCallSettings() {
   const { updateSettings, saves } = useOrbit();
   const buddy = useBuddy();
@@ -792,28 +815,35 @@ function QuickCallSettings() {
     <VStack gap={2}>
       <Text weight="semibold">Quick calls</Text>
       <Text color="secondary">
-        Before a rerun, {buddy.name} can ask a small model on Ollama whether a
-        failed job was bad luck, as well as Orbit&rsquo;s own rules. Orbit sends
-        it the check&rsquo;s name, the step that failed and the end of its log,
-        never your code, and keeps only its yes, no or unsure.
+        {buddy.name} can ask a small model on Ollama two of the questions
+        Orbit&rsquo;s own rules answer: whether a failed job was bad luck,
+        before a rerun, and, when a pull request&rsquo;s check fails on the
+        default branch too, whether it was failing already. Orbit sends it the
+        check&rsquo;s name, the step that failed and the end of its log (for the
+        second, the default branch&rsquo;s too), never your code, and keeps only
+        its yes, no or unsure.
       </Text>
-      <Selector
-        label="Is this failure bad luck?"
-        description={callModeHelp[buddy.luckCall]}
-        value={buddy.luckCall}
-        isDisabled={saves["buddy.luckCall"]?.state === "saving"}
-        options={(Object.entries(callModes) as [CallMode, string][]).map(
-          ([value, label]) => ({ value, label }),
-        )}
-        onChange={(luckCall) =>
-          void updateSettings(
-            { buddy: { luckCall: luckCall as CallMode } },
-            "buddy.luckCall",
-          )
-        }
-      />
-      <SaveFeedback saveKey="buddy.luckCall" />
-      {buddy.luckCall !== "off" && (
+      {callQuestions.map(({ question, label, field }) => (
+        <VStack gap={2} key={question}>
+          <Selector
+            label={label}
+            description={callModeHelp[question][buddy[field]]}
+            value={buddy[field]}
+            isDisabled={saves[`buddy.${field}`]?.state === "saving"}
+            options={(Object.entries(callModes) as [CallMode, string][]).map(
+              ([value, label]) => ({ value, label }),
+            )}
+            onChange={(mode) =>
+              void updateSettings(
+                { buddy: { [field]: mode as CallMode } },
+                `buddy.${field}`,
+              )
+            }
+          />
+          <SaveFeedback saveKey={`buddy.${field}`} />
+        </VStack>
+      ))}
+      {(buddy.luckCall !== "off" || buddy.faultCall !== "off") && (
         <OllamaSettings
           field="quickModel"
           address={buddy.answerer !== "ollama"}

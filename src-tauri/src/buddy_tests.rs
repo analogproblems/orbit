@@ -495,6 +495,11 @@ fn settings_check_the_name_and_choices() {
             "always",
             "'always' isn't off, watch or on, for the quick call.",
         ),
+        (
+            "fault_call",
+            "sometimes",
+            "'sometimes' isn't off, watch or on, for the quick call.",
+        ),
     ] {
         let mut bad = b.clone();
         match field {
@@ -507,6 +512,7 @@ fn settings_check_the_name_and_choices() {
             "brief_at" => bad.brief_at = value.into(),
             "time_zone" => bad.time_zone = value.into(),
             "luck_call" => bad.luck_call = value.into(),
+            "fault_call" => bad.fault_call = value.into(),
             _ => bad.tone = value.into(),
         }
         assert_eq!(bad.validate().unwrap_err(), error, "{field}");
@@ -563,6 +569,10 @@ fn settings_check_the_name_and_choices() {
     bad.quick_model = "a\nb".into();
     assert!(bad.validate().is_err());
     b.luck_call = "off".into();
+    assert!(b.wants_quick_calls(), "the other question still asks");
+    let patch: BuddyPatch = serde_json::from_value(json!({"faultCall": " off "})).unwrap();
+    patch.apply(&mut b);
+    assert_eq!(b.fault_call, "off");
     assert!(!b.wants_quick_calls());
 
     // Every rule starts on Ask first; a patch changes only the rules it names.
@@ -638,15 +648,24 @@ fn saved_state_from_another_version_falls_back_to_defaults() {
     );
     // A quick call this version doesn't know, a model Orbit can't use, and
     // none from before quick calls.
-    let mut b: Buddy =
-        serde_json::from_value(json!({"luckCall": "always", "quickModel": "a\nb"})).unwrap();
+    let mut b: Buddy = serde_json::from_value(
+        json!({"luckCall": "always", "faultCall": "never", "quickModel": "a\nb"}),
+    )
+    .unwrap();
     b.normalize();
     assert_eq!(
-        (b.luck_call.as_str(), b.quick_model.as_str()),
-        ("watch", "")
+        (
+            b.luck_call.as_str(),
+            b.fault_call.as_str(),
+            b.quick_model.as_str()
+        ),
+        ("watch", "watch", "")
     );
     let b: Buddy = serde_json::from_value(json!({"name": "Sprocket"})).unwrap();
-    assert_eq!(b.luck_call, "watch");
+    assert_eq!(
+        (b.luck_call.as_str(), b.fault_call.as_str()),
+        ("watch", "watch")
+    );
     // Older state has no rules; newer state may name a rule or a fix this
     // version doesn't know.
     let mut b: Buddy = serde_json::from_value(

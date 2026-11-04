@@ -2909,6 +2909,177 @@ async fn a_quick_call_that_is_on_decides_whether_a_job_is_rerun() {
     assert!(c.said.is_none() && c.error.as_deref().unwrap().contains("Nothing answered"));
 }
 
+/// A pull request failing a check that fails on main too hears so in
+/// Orbit's comment. In Watch, Orbit asks Ollama once whether it was failing
+/// already, with both logs, and keeps the answer while the rule decides;
+/// in On, a no takes the note away.
+/// Main, at commit 1, and pull request 12, at commit 5, both fail Rust,
+/// main by job 7 and the pull request by job 2, with the same log.
+fn both_fail_rust(dir: &Path) {
+    answer(
+        dir,
+        '1',
+        &[("Rust", "FAILURE")],
+        Some(('5', &[("Rust", "FAILURE")])),
+    );
+    let file = dir.join("answer.json");
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    let repo = &mut v["data"]["repository"];
+    repo["defaultBranchRef"]["target"]["statusCheckRollup"]["contexts"]["nodes"][0]["detailsUrl"] =
+        json!(job_url(7));
+    repo["pullRequests"]["nodes"][0]["commits"]["nodes"][0]["commit"]["statusCheckRollup"]
+        ["contexts"]["nodes"][0]["detailsUrl"] = json!(job_url(2));
+    std::fs::write(&file, v.to_string()).unwrap();
+    for (run, id) in [((1, '5'), 2), ((9, '1'), 7)] {
+        in_run(
+            dir,
+            run,
+            id,
+            "Rust",
+            1,
+            "Run cargo test",
+            &[
+                "test parses ... FAILED",
+                "##[error]Process completed with exit code 101.",
+            ],
+        );
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_pull_request_failing_a_check_main_fails_too_hears_so() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let (no, chats) = quick("no").await;
+    let e = connected(d.path()).await;
+    e.update(|s| {
+        s.prs = vec![pr('5')];
+        s.settings.buddy.ollama_url = no.clone();
+        s.settings.buddy.quick_model = "small".into();
+        s.settings.buddy.luck_call = "off".into();
+    })
+    .await;
+    both_fail_rust(d.path());
+    watch(&e, &gh).await;
+    let note = "It fails on main too, at 1111111, so it may not come from this pull request.";
+    let posted = github(d.path())["comments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["body"].as_str().unwrap().to_string())
+        .find(|b| b.contains("`CI / Rust`"))
+        .unwrap();
+    assert!(posted.contains(note), "{posted}");
+    let s = e.snapshot().await;
+    let c = s.calls.iter().find(|c| c.question == "fault").unwrap();
+    assert_eq!(
+        (c.url.as_str(), c.number, c.rules, c.said),
+        (&*job_url(2), Some(12), true, Some(crate::calls::Said::No))
+    );
+    let sent = chats.lock().unwrap().clone();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        sent[0]["messages"][0]["content"],
+        crate::calls::FAULT_INSTRUCTIONS
+    );
+    let asked = sent[0]["messages"][1]["content"].as_str().unwrap();
+    assert!(
+        asked.starts_with(
+            "Check: CI / Rust\nOn the pull request, the step that failed: Run cargo test\n"
+        ) && asked.contains("On the default branch, the step that failed: Run cargo test"),
+        "{asked}"
+    );
+    watch(&e, &gh).await;
+    assert_eq!(chats.lock().unwrap().len(), 1, "once");
+
+    // In On, the model's no takes the note away.
+    e.update(|s| s.settings.buddy.fault_call = "on".into())
+        .await;
+    watch(&e, &gh).await;
+    let s = e.snapshot().await;
+    let mut items = s.ops.iter().flat_map(|t| &t.items);
+    let item = items.find(|i| i.url == job_url(2)).unwrap();
+    assert_eq!(item.why.as_ref().unwrap().already, None);
+    assert!(!crate::calls::told_already(&s, &job_url(2)));
+    let edited = github(d.path())["comments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["body"].as_str().unwrap().to_string())
+        .find(|b| b.contains("`CI / Rust`"))
+        .unwrap();
+    assert!(!edited.contains("fails on main"), "{edited}");
+}
+
+/// A fix the agent named counts against "failing already" as soon as
+/// Orbit hears it: Orbit reads answers after it follows cases, and scores
+/// calls by the next CI read before it follows them again.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_fix_the_agent_named_keeps_a_failing_already_call_unscored() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let (yes, _) = quick("yes").await;
+    let e = connected(d.path()).await;
+    e.update(|s| {
+        s.prs = vec![pr('5')];
+        s.settings.buddy.ollama_url = yes.clone();
+        s.settings.buddy.quick_model = "small".into();
+        s.settings.buddy.luck_call = "off".into();
+    })
+    .await;
+    both_fail_rust(d.path());
+    watch(&e, &gh).await;
+    let call = |s: &Snapshot| {
+        s.calls
+            .iter()
+            .find(|c| c.question == "fault")
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(
+        call(&e.snapshot().await).said,
+        Some(crate::calls::Said::Yes)
+    );
+
+    // The agent says it fixed Rust, and main passes it.
+    say(d.path(), "agent", "Fixed I1 in 6666666");
+    compared(d.path(), '6', '5', "behind");
+    answer(
+        d.path(),
+        '3',
+        &[("Rust", "SUCCESS")],
+        Some(('5', &[("Rust", "FAILURE")])),
+    );
+    watch(&e, &gh).await;
+    let s = e.snapshot().await;
+    let c = call(&s);
+    assert!(!c.base_passed_at.is_empty() && c.settled_at.is_none());
+    let answered = s.ops.iter().flat_map(|t| &t.items).any(|i| {
+        i.answer
+            .as_ref()
+            .is_some_and(|a| a.kind == crate::ops::AnswerKind::Fixed)
+    });
+    let case = s.cases.iter().find(|k| k.id == c.problem).unwrap();
+    assert!(answered && !case.fixed, "the case hears of the fix later");
+
+    // The pull request passes at its next commit: its own fix, maybe.
+    e.update(|s| s.prs = vec![pr('6')]).await;
+    answer(
+        d.path(),
+        '3',
+        &[("Rust", "SUCCESS")],
+        Some(('6', &[("Rust", "SUCCESS")])),
+    );
+    watch(&e, &gh).await;
+    let c = call(&e.snapshot().await);
+    assert_eq!(
+        (c.truth, c.how.as_str(), c.settled_at.is_some()),
+        (None, "Orbit couldn't tell how it turned out.", true)
+    );
+}
+
 /// Quick calls go one at a time, and each reads the settings again first:
 /// once Ollama moves, the answer from the old address is dropped and the
 /// job is asked about again at the new one; once the calls or Watch CI are
