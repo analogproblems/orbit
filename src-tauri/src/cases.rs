@@ -255,15 +255,19 @@ fn from_thread(t: Option<&Thread>, sha: &str) -> (String, bool, bool, String) {
 
 /// Whether the checks a problem last saw failing passed at the commit they
 /// failed at, as Orbit last read it. GitHub reruns a job as a new attempt
-/// in the same workflow run, so each failed job counts only by its own
-/// run, from its link: for a default branch or a pull request, the one
-/// check by its name in that run passed there (with no run in its link,
-/// the one check by its name), none by its name still fails or runs, and
-/// the read saw every check; for a release build, its run succeeded, and
-/// every run is a success or skipped (`builds::publishable`). Two checks
-/// by one name in its run can't be told apart, and a check GitHub
-/// cancelled or skipped doesn't fail, so its problem closes, but it didn't
-/// pass either.
+/// in the same workflow run, so each failed job counts by its own run,
+/// from its link. Failures by one name are kept once, though, so the
+/// problem may name only one of several jobs that failed by that name:
+/// every check by the name must have passed too.
+///
+/// For a default branch or a pull request, from a read that saw every
+/// check: each one by its name passed there, and exactly one of them is
+/// in the failed job's run (with no run in its link, exactly one by its
+/// name). For a release build: every run is a success or skipped
+/// (`builds::publishable`), the failed job's run succeeded, and so did
+/// every run that could own a job by its name (`Run / job`, or the run's
+/// own name). A check GitHub cancelled or skipped doesn't fail, so its
+/// problem closes, but it didn't pass either.
 fn passed_again(
     ci: &[crate::ci::RepoCi],
     builds: &[crate::builds::Build],
@@ -275,17 +279,19 @@ fn passed_again(
         return false;
     }
     if p.kind == ProblemKind::ReleaseBuild {
+        let owns = |name: &str, run: &crate::builds::Run| {
+            run.name.is_empty() || name == run.name || name.starts_with(&format!("{} / ", run.name))
+        };
+        let success = |run: &crate::builds::Run| run.conclusion == "success";
         return builds.iter().any(|b| {
             same_repo(&b.repo, &p.repo)
                 && b.tag == p.branch
                 && b.sha == p.sha
                 && crate::builds::publishable(b).is_ok()
                 && p.failing.iter().all(|f| {
-                    run_of(&f.url).is_some_and(|id| {
-                        b.runs
-                            .iter()
-                            .any(|run| run.id == id && run.conclusion == "success")
-                    })
+                    run_of(&f.url)
+                        .is_some_and(|id| b.runs.iter().any(|run| run.id == id && success(run)))
+                        && b.runs.iter().filter(|run| owns(&f.name, run)).all(success)
                 })
         });
     }
@@ -307,18 +313,14 @@ fn passed_again(
             .iter()
             .filter(|(check, _)| check.name == failed.name)
             .collect();
-        let busy = same
-            .iter()
-            .any(|(_, s)| matches!(s, CiState::Failing | CiState::Running));
-        let own: Vec<CiState> = match run_of(&failed.url) {
+        let own = match run_of(&failed.url) {
             Some(run) => same
                 .iter()
                 .filter(|(check, _)| run_of(&check.url) == Some(run))
-                .map(|(_, s)| *s)
-                .collect(),
-            None => same.iter().map(|(_, s)| *s).collect(),
+                .count(),
+            None => same.len(),
         };
-        !busy && own == [CiState::Passing]
+        own == 1 && same.iter().all(|(_, s)| *s == CiState::Passing)
     })
 }
 

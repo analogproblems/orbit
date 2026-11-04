@@ -429,6 +429,129 @@ fn a_check_counts_as_passing_again_only_in_the_failed_jobs_own_run() {
     assert_eq!(ending(vec![at(RUST, 8, 9, Passing)]), End::Unclear);
 }
 
+/// GitHub's answer to Orbit's CI query: `main` at `sha` with these checks
+/// of the workflow CI, each a job's name, run, id and how it ended.
+fn graphql(sha: &str, jobs: &[(&str, u64, u64, &str)]) -> RepoCi {
+    let nodes: Vec<serde_json::Value> = jobs
+        .iter()
+        .map(|(name, run, id, conclusion)| {
+            serde_json::json!({
+                "__typename": "CheckRun",
+                "name": name,
+                "status": "COMPLETED",
+                "conclusion": conclusion,
+                "detailsUrl": job(*run, *id),
+                "checkSuite": { "workflowRun": { "workflow": { "name": "CI" } } }
+            })
+        })
+        .collect();
+    let v = serde_json::json!({ "data": { "repository": {
+        "defaultBranchRef": { "name": "main", "target": {
+            "oid": sha,
+            "messageHeadline": "Update the build",
+            "statusCheckRollup": { "contexts": {
+                "pageInfo": { "hasNextPage": false, "endCursor": null },
+                "nodes": nodes
+            } }
+        } },
+        "pullRequests": { "pageInfo": { "hasNextPage": false }, "nodes": [] }
+    } } });
+    crate::ci::parse("a/b", &v).unwrap()
+}
+
+/// Two jobs failing by one name are kept as one failure, so both have to
+/// pass again, read as GitHub sends them.
+#[test]
+fn two_jobs_failing_by_one_name_both_have_to_pass_again() {
+    let ending = |second: &str| {
+        let mut s = Snapshot::default();
+        let failed = graphql(A, &[("Rust", 7, 70, "FAILURE"), ("Rust", 8, 80, "FAILURE")]);
+        see(&mut s, failed, 0);
+        assert_eq!(s.problems[0].failing.len(), 1, "kept once, by name");
+        let again = graphql(A, &[("Rust", 7, 71, "SUCCESS"), ("Rust", 8, 81, second)]);
+        see(&mut s, again, 10);
+        assert!(!s.problems[0].is_open());
+        s.cases[0].end
+    };
+    assert_eq!(ending("CANCELLED"), End::Unclear);
+    assert_eq!(ending("SKIPPED"), End::Unclear);
+    assert_eq!(ending("SUCCESS"), End::Again);
+}
+
+#[cfg(unix)]
+fn fake_gh(dir: &std::path::Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let gh = dir.join("gh");
+    let script = format!(
+        "#!/bin/sh\nexec node {} {} \"$@\"\n",
+        concat!(env!("CARGO_MANIFEST_DIR"), "/src/gh_fixture.cjs"),
+        dir.display()
+    );
+    std::fs::write(&gh, script).unwrap();
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    gh
+}
+
+/// How a release build ends when two workflows that name their runs alike
+/// both fail their `build` job at `v1.0.0`, and then one run passes and
+/// the other ends as `second`, read from a fake GitHub as Orbit reads it.
+#[cfg(unix)]
+async fn two_release_runs(second: &str) -> End {
+    use serde_json::{json, Value};
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let write = |name: &str, v: Value| std::fs::write(d.path().join(name), v.to_string()).unwrap();
+    let run = |id: u64, workflow: u64, conclusion: &str| {
+        json!({
+            "id": id, "workflow_id": workflow, "name": "Release",
+            "head_branch": "v1.0.0", "head_sha": A, "event": "push",
+            "status": "completed", "conclusion": conclusion,
+            "html_url": format!("https://github.com/a/b/actions/runs/{id}"),
+            "created_at": "2026-11-03T11:00:00Z",
+        })
+    };
+    let failed_job = |id: u64, run: u64, conclusion: &str| {
+        json!({
+            "id": id, "run_id": run, "name": "build", "status": "completed",
+            "conclusion": conclusion, "html_url": job(run, id),
+        })
+    };
+    let tag = crate::releases::Tag {
+        name: "v1.0.0".into(),
+        sha: A.into(),
+    };
+    let read = || crate::github::GH.scope(gh.clone(), crate::builds::read("a/b", &tag, now()));
+    let mut s = Snapshot::default();
+    write(
+        "queued.json",
+        json!([run(11, 1, "failure"), run(12, 2, "failure")]),
+    );
+    write("job-101.json", failed_job(101, 11, "failure"));
+    write("job-102.json", failed_job(102, 12, "failure"));
+    let b = read().await.unwrap();
+    assert_eq!(b.ci.failing.len(), 1, "kept once, by name");
+    crate::problems::see_build(&mut s.problems, &b, at(0));
+    s.builds = vec![b];
+    follow(&mut s, at(0));
+    write(
+        "queued.json",
+        json!([run(11, 1, "success"), run(12, 2, second)]),
+    );
+    let b = read().await.unwrap();
+    crate::problems::see_build(&mut s.problems, &b, at(10));
+    s.builds = vec![b];
+    follow(&mut s, at(10));
+    assert!(!s.problems[0].is_open());
+    s.cases[0].end
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn two_release_runs_failing_by_one_name_both_have_to_pass_again() {
+    assert_eq!(two_release_runs("skipped").await, End::Unclear);
+    assert_eq!(two_release_runs("success").await, End::Again);
+}
+
 /// Orbit says it reran a check only when it did: one it found already
 /// rerun may have been someone else's.
 #[test]
