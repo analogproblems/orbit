@@ -458,7 +458,7 @@ async fn a_branch_that_breaks_again_says_what_happened_last_time() {
         .buddy_feed
         .notes
         .iter()
-        .find(|n| n.key.as_deref() == Some("lesson:luck:a/b:ci / rust"))
+        .find(|n| n.key.as_deref() == Some("lesson:luck:a/b:CI / Rust"))
         .expect("Bit noted it");
     assert!(
         note.text

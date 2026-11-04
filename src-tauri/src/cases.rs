@@ -8,8 +8,10 @@
 //! made by code from the problem and its CI thread (`record`), before
 //! Orbit refreshes the thread, so it still sees the reruns, the agent's
 //! answers and the step that failed as they were when the problem closed.
-//! A problem that passed at the commit it failed at counts as bad luck only
-//! when Orbit saw the checks that failed pass there (`passed_again`).
+//! The case keeps every job Orbit saw fail at that commit, each by its own
+//! link (`Case.failed`), as a problem keeps each failing name once. A
+//! problem that passed at the commit it failed at counts as bad luck only
+//! when Orbit saw each of those jobs pass there again (`passed_again`).
 //!
 //! **Last time.** When a new problem opens, Orbit looks for the latest
 //! case like it (`look_back`): first one with its key, and failing that,
@@ -19,7 +21,8 @@
 //! **Lessons.** Orbit finds repeats among the cases and the missed outcome
 //! checks of the last `LEARN_DAYS` (see `crate::outcomes`). A case counts
 //! once its problem can no longer come back as the same one (`FLAP_QUIET`
-//! after it closed). Orbit keeps each repeat as a `Lesson`: what happened,
+//! after it closed), and once per lesson however many of its checks the
+//! lesson's name covers. Orbit keeps each repeat as a `Lesson`: what happened,
 //! and what to do next time (`learn`). A lesson applies to the open
 //! problems it is about (`apply`), which then say it to the agent and to
 //! you. You can forget one, and it is learned again only from what
@@ -32,7 +35,7 @@
 use crate::{
     baseline::Setting,
     broker::clean,
-    ci::{short, CiState},
+    ci::{short, Check, CiState, CommitCi, RepoCi},
     ops::{AnswerKind, Thread},
     outcomes::{Kind, Verdict},
     problems::{how_long, stamp, time, Problem, ProblemKind, FLAP_QUIET},
@@ -58,6 +61,8 @@ pub const MISSES: usize = 2;
 /// lesson names as where it came from.
 pub const MAX_CHECKS: usize = 10;
 pub const MAX_FROM: usize = 5;
+/// The most failed jobs a case keeps to see pass again (`Case.failed`).
+pub const MAX_FAILED: usize = 100;
 
 /// How a case ended.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,7 +74,8 @@ pub enum End {
     /// It passed at the commit it failed at, when its checks ran again.
     Again,
     /// It stopped failing at the commit it failed at, but Orbit didn't see
-    /// its checks pass there: GitHub may have cancelled or skipped them.
+    /// what failed pass there: GitHub may have cancelled or skipped it, or
+    /// started it over as a new run.
     Unclear,
     /// It passed after an agent said it fixed it.
     Fixed,
@@ -117,6 +123,15 @@ pub struct Case {
     /// Orbit reran one of its jobs at `sha`.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub reran: bool,
+    /// Every job Orbit saw failing at `sha`, by name and link, with each of
+    /// several that failed by one name (a problem names each once), and
+    /// for a release build each run that failed: what has to pass again
+    /// for it to be bad luck. At most `MAX_FAILED`, and `unsure` when there
+    /// were more. Kept until its problem can't come back as the same one.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub failed: Vec<Check>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub unsure: bool,
     /// Why Orbit stopped following it, when it closed without passing.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub reason: String,
@@ -158,8 +173,9 @@ pub enum LessonKind {
 #[serde(rename_all = "camelCase", default)]
 pub struct Lesson {
     /// The same for the same repeat: `luck:<repo>:<check>`,
-    /// `back:<problem key>` (a default branch's), `fix:<repo>`, `setting:<repo>:<setting>` or
-    /// `build:<repo>`, in lower case.
+    /// `back:<problem key>` (a default branch's), `fix:<repo>`,
+    /// `setting:<repo>:<setting>` or `build:<repo>`, in lower case but for
+    /// the check, as GitHub tells checks apart by case.
     pub id: String,
     pub kind: LessonKind,
     pub repo: String,
@@ -253,62 +269,125 @@ fn from_thread(t: Option<&Thread>, sha: &str) -> (String, bool, bool, String) {
     (step, reran, !answers.is_empty(), fix)
 }
 
-/// Whether the checks a problem last saw failing passed at the commit they
-/// failed at, as Orbit last read it. GitHub reruns a job as a new attempt
-/// in the same workflow run, so each failed job counts by its own run,
-/// from its link. Failures by one name are kept once, though, so the
-/// problem may name only one of several jobs that failed by that name:
-/// every check by the name must have passed too.
-///
-/// For a default branch or a pull request, from a read that saw every
-/// check: each one by its name passed there, and exactly one of them is
-/// in the failed job's run (with no run in its link, exactly one by its
-/// name). For a release build: every run is a success or skipped
-/// (`builds::publishable`), the failed job's run succeeded, and so did
-/// every run that could own a job by its name (`Run / job`, or the run's
-/// own name). A check GitHub cancelled or skipped doesn't fail, so its
-/// problem closes, but it didn't pass either.
-fn passed_again(
-    ci: &[crate::ci::RepoCi],
+/// The commit a problem failed at, as Orbit last read it with every check
+/// by name and link (`CommitCi.named`): the pull request's, or the default
+/// branch's.
+fn commit_at<'a>(ci: &'a [RepoCi], p: &Problem, number: Option<u64>) -> Option<&'a CommitCi> {
+    let read = ci.iter().find(|r| same_repo(&r.repo, &p.repo))?;
+    let commit = match number {
+        Some(n) => &read.pull(n)?.ci,
+        None => &read.head,
+    };
+    Some(commit).filter(|ci| ci.sha == p.sha && ci.named)
+}
+
+/// The release build a problem is about, as Orbit last read it.
+fn build_of<'a>(
+    builds: &'a [crate::builds::Build],
+    p: &Problem,
+) -> Option<&'a crate::builds::Build> {
+    builds
+        .iter()
+        .find(|b| same_repo(&b.repo, &p.repo) && b.tag == p.branch && b.sha == p.sha)
+}
+
+/// Every job failing at a problem's commit as Orbit reads it now, by name
+/// and link, before failures by one name are kept once; for a release
+/// build, each run that failed. None from a read that doesn't name them,
+/// as after a restart until Orbit reads again.
+fn failing_now(
+    ci: &[RepoCi],
     builds: &[crate::builds::Build],
     p: &Problem,
     number: Option<u64>,
-) -> bool {
+) -> Vec<Check> {
+    if p.kind == ProblemKind::ReleaseBuild {
+        return build_of(builds, p)
+            .into_iter()
+            .flat_map(|b| &b.runs)
+            .filter(|run| run.state == CiState::Failing)
+            .map(|run| Check {
+                name: run.name.clone(),
+                url: run.url.clone(),
+            })
+            .collect();
+    }
+    commit_at(ci, p, number)
+        .into_iter()
+        .flat_map(|commit| &commit.checks)
+        .filter(|(_, state)| *state == CiState::Failing)
+        .map(|(check, _)| check.clone())
+        .collect()
+}
+
+/// Keeps a job that failed on a case, once by its name and run (a rerun is
+/// a new attempt in the same run), at most `MAX_FAILED`.
+fn keep_failed(c: &mut Case, f: Check) {
     use crate::outcomes::run_of;
-    if p.failing.is_empty() {
+    let run = |k: &Check| {
+        run_of(&k.url)
+            .map(|id| id.to_string())
+            .unwrap_or(k.url.clone())
+    };
+    if c.failed
+        .iter()
+        .any(|k| k.name == f.name && run(k) == run(&f))
+    {
+        return;
+    }
+    if c.failed.len() >= MAX_FAILED {
+        c.unsure = true;
+        return;
+    }
+    c.failed.push(f);
+}
+
+/// Whether what failed passed again at the commit it failed at, as Orbit
+/// last read it, by every job the case saw fail there (`Case.failed`) and
+/// those its problem names. GitHub reruns a job as a new attempt in the
+/// same workflow run, so each failed job counts by its own run, from its
+/// link. One that isn't there any more, or whose run a new one replaced,
+/// didn't pass again, and neither did one GitHub cancelled or skipped,
+/// though its problem closes as it no longer fails. With no failed job
+/// kept, or more than it keeps, it can't tell.
+///
+/// For a default branch or a pull request, from a read that saw every
+/// check: each failed job's own run has exactly one check by its name
+/// (with no run in its link, there is exactly one by its name at all),
+/// and every check by its name passed. For a release build: every run is
+/// a success or skipped (`builds::publishable`), each run that failed is
+/// still the newest of its workflow and succeeded, and so did every run
+/// that could own a job by a name the problem names (`Run / job`, or the
+/// run's own name).
+fn passed_again(ci: &[RepoCi], builds: &[crate::builds::Build], p: &Problem, c: &Case) -> bool {
+    use crate::outcomes::run_of;
+    if p.failing.is_empty() || c.failed.is_empty() || c.unsure {
         return false;
     }
+    let failed = || c.failed.iter().chain(&p.failing);
     if p.kind == ProblemKind::ReleaseBuild {
         let owns = |name: &str, run: &crate::builds::Run| {
             run.name.is_empty() || name == run.name || name.starts_with(&format!("{} / ", run.name))
         };
         let success = |run: &crate::builds::Run| run.conclusion == "success";
-        return builds.iter().any(|b| {
-            same_repo(&b.repo, &p.repo)
-                && b.tag == p.branch
-                && b.sha == p.sha
-                && crate::builds::publishable(b).is_ok()
-                && p.failing.iter().all(|f| {
+        return build_of(builds, p).is_some_and(|b| {
+            crate::builds::publishable(b).is_ok()
+                && failed().all(|f| {
                     run_of(&f.url)
                         .is_some_and(|id| b.runs.iter().any(|run| run.id == id && success(run)))
-                        && b.runs.iter().filter(|run| owns(&f.name, run)).all(success)
                 })
+                && p.failing
+                    .iter()
+                    .all(|f| b.runs.iter().filter(|run| owns(&f.name, run)).all(success))
         });
     }
-    let Some(read) = ci.iter().find(|r| same_repo(&r.repo, &p.repo)) else {
-        return false;
-    };
-    let commit = match number {
-        Some(n) => read.pull(n).map(|pull| &pull.ci),
-        None => Some(&read.head),
-    };
     let Some(commit) =
-        commit.filter(|ci| ci.sha == p.sha && ci.named && !ci.incomplete && ci.cursor.is_none())
+        commit_at(ci, p, c.number).filter(|ci| !ci.incomplete && ci.cursor.is_none())
     else {
         return false;
     };
-    p.failing.iter().all(|failed| {
-        let same: Vec<&(crate::ci::Check, CiState)> = commit
+    failed().all(|failed| {
+        let same: Vec<&(Check, CiState)> = commit
             .checks
             .iter()
             .filter(|(check, _)| check.name == failed.name)
@@ -349,11 +428,16 @@ pub fn record(s: &mut Snapshot) -> bool {
             }
             None => continue,
         };
+        let failing = if p.is_open() {
+            failing_now(&s.ci, &s.builds, p, s.cases[i].number)
+        } else {
+            vec![]
+        };
         let again = !p.is_open()
             && s.cases[i].end == End::Open
             && p.passed()
             && p.closed_sha == p.sha
-            && passed_again(&s.ci, &s.builds, p, s.cases[i].number);
+            && passed_again(&s.ci, &s.builds, p, &s.cases[i]);
         let c = &mut s.cases[i];
         let before = c.clone();
         if p.is_open() {
@@ -364,10 +448,21 @@ pub fn record(s: &mut Snapshot) -> bool {
             c.reason.clear();
             if c.sha != p.sha {
                 c.reran = false;
+                c.failed.clear();
+                c.unsure = false;
             }
             c.sha = p.sha.clone();
             c.branch = p.branch.clone();
-            c.last = p.failing.iter().map(|f| clean(&f.name, 160)).collect();
+            for f in failing {
+                keep_failed(c, f);
+            }
+            // Names alike in their first 160 characters are one to show.
+            c.last.clear();
+            for name in p.failing.iter().map(|f| clean(&f.name, 160)) {
+                if !c.last.contains(&name) {
+                    c.last.push(name);
+                }
+            }
             for name in &c.last {
                 if !c.checks.contains(name) && c.checks.len() < MAX_CHECKS {
                     c.checks.push(name.clone());
@@ -456,7 +551,7 @@ fn ended(c: &Case, show: Show) -> String {
         }
         End::Again => format!("It passed when it ran again at the same commit{took}."),
         End::Unclear => format!(
-            "It stopped failing at the same commit{took}, but Orbit didn't see it pass: GitHub may have cancelled or skipped it."
+            "It stopped failing at the same commit{took}, but Orbit didn't see what failed pass there: GitHub may have cancelled or skipped it, or started it over as a new run."
         ),
         End::Fixed if !c.fix.is_empty() && c.fix != c.passed => format!(
             "It passed again at {at} after the agent's fix in {}{took}.",
@@ -538,8 +633,14 @@ pub fn look_back(s: &mut Snapshot) -> bool {
         let Some(c) = like(&s.cases, p) else {
             continue;
         };
+        // What failed there is only for telling how that case ended.
+        let case = Case {
+            failed: vec![],
+            unsure: false,
+            ..c.clone()
+        };
         let mut l = LastTime {
-            case: c.clone(),
+            case,
             at: p.opened_at.clone(),
             text: String::new(),
         };
@@ -633,15 +734,18 @@ fn repeats(s: &Snapshot, now: DateTime<Utc>) -> BTreeMap<String, (Lesson, Vec<Se
         at > since && forgot.is_none_or(|f| at > f)
     };
     let mut found: BTreeMap<String, (Lesson, Vec<Seen>)> = BTreeMap::new();
+    // Each case or outcome check counts once for a lesson, however many of
+    // its checks the lesson's name covers.
     let mut add = |lesson: Lesson, seen: Seen| {
         if !counts(&lesson.id, &seen.at) {
             return;
         }
-        found
+        let (_, all) = found
             .entry(lesson.id.clone())
-            .or_insert_with(|| (lesson, vec![]))
-            .1
-            .push(seen);
+            .or_insert_with(|| (lesson, vec![]));
+        if !all.iter().any(|x| x.from == seen.from) {
+            all.push(seen);
+        }
     };
     for c in &s.cases {
         // Only once it can't come back as the same problem, which would
@@ -658,7 +762,7 @@ fn repeats(s: &Snapshot, now: DateTime<Utc>) -> BTreeMap<String, (Lesson, Vec<Se
                 for check in &c.last {
                     add(
                         Lesson {
-                            id: format!("luck:{}:{check}", c.repo).to_lowercase(),
+                            id: format!("luck:{}:{check}", c.repo.to_lowercase()),
                             kind: LessonKind::Luck,
                             repo: c.repo.clone(),
                             check: check.clone(),
@@ -866,9 +970,23 @@ pub fn forget(s: &mut Snapshot, id: &str, now: DateTime<Utc>) -> bool {
 /// that are still open with their problem gone, and of lessons not seen
 /// for `KEEP_DAYS`, keeping at most `MAX_CASES` and `MAX_LESSONS`, the
 /// newest. What you forgot is let go after `KEEP_DAYS`, as what it was
-/// learned from is gone by then. Says whether it let any go.
+/// learned from is gone by then, and the jobs a case saw fail once its
+/// problem can't come back as the same one. Says whether it let any go.
 pub fn prune(s: &mut Snapshot, now: DateTime<Utc>) -> bool {
     let old = |at: &str| time(at).is_none_or(|at| now - at > Duration::days(KEEP_DAYS));
+    let mut settled = false;
+    for c in &mut s.cases {
+        let done = c
+            .closed_at
+            .as_deref()
+            .and_then(time)
+            .is_some_and(|t| now - t >= FLAP_QUIET);
+        if done && (!c.failed.is_empty() || c.unsure) {
+            c.failed.clear();
+            c.unsure = false;
+            settled = true;
+        }
+    }
     let before = (s.cases.len(), s.lessons.len(), s.forgotten_lessons.len());
     let problems = &s.problems;
     s.cases.retain(|c| match &c.closed_at {
@@ -883,7 +1001,7 @@ pub fn prune(s: &mut Snapshot, now: DateTime<Utc>) -> bool {
     s.lessons.retain(|l| !old(&l.seen_at));
     s.forgotten_lessons.retain(|f| !old(&f.at));
     let capped = cap(s, now);
-    capped || before != (s.cases.len(), s.lessons.len(), s.forgotten_lessons.len())
+    settled || capped || before != (s.cases.len(), s.lessons.len(), s.forgotten_lessons.len())
 }
 
 #[cfg(test)]

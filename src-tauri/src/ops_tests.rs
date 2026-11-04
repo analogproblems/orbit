@@ -3320,7 +3320,7 @@ fn issues_and_comments_say_what_orbit_has_seen_before() {
         text: "Last time (as the app says it)".into(),
     };
     let lesson = Lesson {
-        id: "luck:a/b:ci / rust".into(),
+        id: "luck:a/b:CI / Rust".into(),
         kind: LessonKind::Luck,
         repo: "a/b".into(),
         check: "CI / Rust".into(),

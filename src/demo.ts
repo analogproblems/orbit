@@ -758,7 +758,7 @@ export function freshDemo(): Snapshot {
           reviewId: null,
           repo: "acme/api",
           text: "I learned something! CI / End-to-end in acme/api failed and then passed when it ran again at the same commit 3 times in 30 days. When it fails again, running it again will likely pass, but it may need fixing so it stops failing by chance.",
-          key: "lesson:luck:acme/api:ci / end-to-end",
+          key: "lesson:luck:acme/api:CI / End-to-end",
         },
         {
           id: 7,
@@ -1884,7 +1884,7 @@ export function demoCi(
   // with what happened the last time each failed.
   const lessons: Lesson[] = [
     {
-      id: `luck:${failingPr.repo}:ci / end-to-end`,
+      id: `luck:${failingPr.repo}:CI / End-to-end`,
       kind: "luck",
       repo: failingPr.repo,
       check: "CI / End-to-end",

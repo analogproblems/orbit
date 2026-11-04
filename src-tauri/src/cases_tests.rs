@@ -55,6 +55,16 @@ fn read(sha: &str, checks: &[(&str, CiState)]) -> RepoCi {
     ci.head.checks = checks.iter().map(|(n, state)| (check(n), *state)).collect();
     ci
 }
+/// `main` at `sha` read with each check by name, failing these.
+fn red(sha: &str, failing: &[&str]) -> RepoCi {
+    let mut ci = main_ci(sha, CiState::Failing, failing);
+    ci.head.named = true;
+    ci.head.checks = failing
+        .iter()
+        .map(|n| (check(n), CiState::Failing))
+        .collect();
+    ci
+}
 /// What Orbit does on each pass: reads CI, then follows the problems.
 fn see(s: &mut Snapshot, ci: RepoCi, minutes: i64) -> (bool, Vec<Lesson>) {
     observe(&mut s.problems, &ci, &[], at(minutes));
@@ -216,8 +226,10 @@ fn passing_at_the_commit_it_failed_at_is_bad_luck() {
         ..Default::default()
     });
     s.ops.push(t.clone());
+    s.ci = vec![red(A, &[RUST])];
     assert!(record(&mut s));
     assert_eq!(s.cases[0].step, "Run cargo test");
+    assert_eq!(s.cases[0].failed, [check(RUST)]);
     assert!(!s.cases[0].reran);
     // Orbit reruns its job, and it passes at the same commit.
     t.items[0].reruns.push(Rerun {
@@ -234,6 +246,8 @@ fn passing_at_the_commit_it_failed_at_is_bad_luck() {
     assert!(record(&mut s));
     let c = s.cases[0].clone();
     assert_eq!((c.end, c.reran, c.passed.as_str()), (End::Again, true, A));
+    // It keeps the job that failed until it can't come back.
+    assert_eq!(c.failed, [check(RUST)]);
     let l = LastTime {
         case: c.clone(),
         at: stamp(at(90)),
@@ -262,6 +276,7 @@ fn a_failed_check_orbit_didnt_see_pass_isnt_bad_luck() {
     let ending = |ci: Option<RepoCi>| {
         let mut s = Snapshot::default();
         s.problems.push(problem("p1", A));
+        s.ci = vec![red(A, &[RUST])];
         record(&mut s);
         close(&mut s.problems[0], 30, A, "Passed at 1111111.");
         s.ci = ci.into_iter().collect();
@@ -300,7 +315,7 @@ fn a_failed_check_orbit_didnt_see_pass_isnt_bad_luck() {
     );
     assert_eq!(
         text,
-        "Last time, an hour earlier: CI / Rust failed on main. It stopped failing at the same commit, 30 minutes later, but Orbit didn't see it pass: GitHub may have cancelled or skipped it."
+        "Last time, an hour earlier: CI / Rust failed on main. It stopped failing at the same commit, 30 minutes later, but Orbit didn't see what failed pass there: GitHub may have cancelled or skipped it, or started it over as a new run."
     );
     // Three of them teach nothing.
     let mut s = Snapshot::default();
@@ -314,7 +329,10 @@ fn a_failed_check_orbit_didnt_see_pass_isnt_bad_luck() {
         id,
         name: name.into(),
         url: format!("https://github.com/a/b/actions/runs/{id}"),
-        state: CiState::Passing,
+        state: match conclusion {
+            "failure" => CiState::Failing,
+            _ => CiState::Passing,
+        },
         conclusion: conclusion.into(),
         ..Default::default()
     };
@@ -338,6 +356,7 @@ fn a_failed_check_orbit_didnt_see_pass_isnt_bad_luck() {
             }],
             ..problem("p1", A)
         });
+        s.builds = vec![build(vec![run(11, "Release / Linux", "failure")])];
         record(&mut s);
         close(&mut s.problems[0], 30, A, "Passed.");
         s.builds = vec![b];
@@ -392,6 +411,15 @@ fn a_check_counts_as_passing_again_only_in_the_failed_jobs_own_run() {
             }],
             ..problem("p1", A)
         });
+        let mut red = red(A, &[]);
+        red.head.checks = vec![(
+            Check {
+                name: RUST.into(),
+                url: job(7, 6),
+            },
+            CiState::Failing,
+        )];
+        s.ci = vec![red];
         record(&mut s);
         close(&mut s.problems[0], 30, A, "Passed at 1111111.");
         let mut ci = read(A, &[]);
@@ -460,22 +488,72 @@ fn graphql(sha: &str, jobs: &[(&str, u64, u64, &str)]) -> RepoCi {
 }
 
 /// Two jobs failing by one name are kept as one failure, so both have to
-/// pass again, read as GitHub sends them.
+/// pass again, read as GitHub sends them: each in its own run, which
+/// isn't the case when one's run is gone or a new run replaced it.
 #[test]
 fn two_jobs_failing_by_one_name_both_have_to_pass_again() {
-    let ending = |second: &str| {
+    let ending = |again: &[(&str, u64, u64, &str)]| {
         let mut s = Snapshot::default();
         let failed = graphql(A, &[("Rust", 7, 70, "FAILURE"), ("Rust", 8, 80, "FAILURE")]);
         see(&mut s, failed, 0);
         assert_eq!(s.problems[0].failing.len(), 1, "kept once, by name");
-        let again = graphql(A, &[("Rust", 7, 71, "SUCCESS"), ("Rust", 8, 81, second)]);
-        see(&mut s, again, 10);
+        assert_eq!(s.cases[0].failed.len(), 2, "both kept on the case");
+        see(&mut s, graphql(A, again), 10);
         assert!(!s.problems[0].is_open());
         s.cases[0].end
     };
-    assert_eq!(ending("CANCELLED"), End::Unclear);
-    assert_eq!(ending("SKIPPED"), End::Unclear);
-    assert_eq!(ending("SUCCESS"), End::Again);
+    let passed = ("Rust", 7, 71, "SUCCESS");
+    for second in ["CANCELLED", "SKIPPED"] {
+        assert_eq!(ending(&[passed, ("Rust", 8, 81, second)]), End::Unclear);
+    }
+    // The other run was deleted, or a new run replaced it.
+    assert_eq!(ending(&[passed]), End::Unclear);
+    assert_eq!(ending(&[passed, ("Rust", 9, 90, "SUCCESS")]), End::Unclear);
+    assert_eq!(ending(&[passed, ("Rust", 8, 81, "SUCCESS")]), End::Again);
+}
+
+/// One failure counts once for a lesson, however its jobs are named: by
+/// one name in another case, as GitHub tells them apart, or alike in
+/// their first 160 characters, which show as one.
+#[test]
+fn one_failure_counts_once_however_its_jobs_are_named() {
+    let long = "x".repeat(200);
+    let (one, two) = (format!("{long} 1"), format!("{long} 2"));
+    let jobs = ["Rust", "rust", "RUST", one.as_str(), two.as_str()];
+    let at_runs = |conclusion: &'static str| -> Vec<(&str, u64, u64, &str)> {
+        (0..)
+            .zip(jobs)
+            .map(|(n, job)| (job, 7 + n, 70 + n, conclusion))
+            .collect()
+    };
+    let mut s = Snapshot::default();
+    see(&mut s, graphql(A, &at_runs("FAILURE")), 0);
+    assert_eq!(s.cases[0].failed.len(), 5);
+    see(&mut s, graphql(A, &at_runs("SUCCESS")), 10);
+    let c = &s.cases[0];
+    assert_eq!(c.end, End::Again);
+    assert_eq!(c.last.len(), 4, "the long ones show as one");
+    assert_eq!(c.last[..3], ["CI / Rust", "CI / rust", "CI / RUST"]);
+    let (_, learned) = see(&mut s, graphql(A, &at_runs("SUCCESS")), 80);
+    assert!(learned.is_empty() && s.lessons.is_empty());
+    // Two more times for one of them, and that one is a lesson.
+    for start in [100, 200] {
+        let failed = graphql(A, &[("Rust", 20 + start as u64, 1, "FAILURE")]);
+        see(&mut s, failed, start);
+        let passed = graphql(A, &[("Rust", 20 + start as u64, 2, "SUCCESS")]);
+        see(&mut s, passed, start + 10);
+    }
+    let (_, learned) = see(&mut s, graphql(A, &[("Rust", 220, 2, "SUCCESS")]), 280);
+    assert_eq!(ids(&learned), ["luck:a/b:CI / Rust"]);
+    assert_eq!(learned[0].count, 3);
+    assert_eq!(s.lessons.len(), 1);
+    // However often a case names a check, it counts once.
+    let mut s = Snapshot::default();
+    s.cases.push(Case {
+        last: vec![RUST.into(); REPEATS],
+        ..case("c1", End::Again, 1)
+    });
+    assert!(learn(&mut s, now()).is_empty());
 }
 
 #[cfg(unix)]
@@ -493,10 +571,11 @@ fn fake_gh(dir: &std::path::Path) -> std::path::PathBuf {
 }
 
 /// How a release build ends when two workflows that name their runs alike
-/// both fail their `build` job at `v1.0.0`, and then one run passes and
-/// the other ends as `second`, read from a fake GitHub as Orbit reads it.
+/// (runs 11 and 12) both fail their `build` job at `v1.0.0`, and then
+/// GitHub lists `after`, each run's id, workflow and how it ended, read
+/// from a fake GitHub as Orbit reads it.
 #[cfg(unix)]
-async fn two_release_runs(second: &str) -> End {
+async fn two_release_runs(after: &[(u64, u64, &str)]) -> End {
     use serde_json::{json, Value};
     let d = tempfile::tempdir().unwrap();
     let gh = fake_gh(d.path());
@@ -533,10 +612,12 @@ async fn two_release_runs(second: &str) -> End {
     crate::problems::see_build(&mut s.problems, &b, at(0));
     s.builds = vec![b];
     follow(&mut s, at(0));
-    write(
-        "queued.json",
-        json!([run(11, 1, "success"), run(12, 2, second)]),
-    );
+    assert_eq!(s.cases[0].failed.len(), 2, "both runs kept on the case");
+    let after: Vec<Value> = after
+        .iter()
+        .map(|(id, workflow, conclusion)| run(*id, *workflow, conclusion))
+        .collect();
+    write("queued.json", json!(after));
     let b = read().await.unwrap();
     crate::problems::see_build(&mut s.problems, &b, at(10));
     s.builds = vec![b];
@@ -548,8 +629,22 @@ async fn two_release_runs(second: &str) -> End {
 #[cfg(unix)]
 #[tokio::test]
 async fn two_release_runs_failing_by_one_name_both_have_to_pass_again() {
-    assert_eq!(two_release_runs("skipped").await, End::Unclear);
-    assert_eq!(two_release_runs("success").await, End::Again);
+    let passed = (11, 1, "success");
+    assert_eq!(
+        two_release_runs(&[passed, (12, 2, "skipped")]).await,
+        End::Unclear
+    );
+    // The other run was deleted, or a newer one in its workflow replaced
+    // it: that one passing isn't the failed run passing again.
+    assert_eq!(two_release_runs(&[passed]).await, End::Unclear);
+    assert_eq!(
+        two_release_runs(&[passed, (12, 2, "failure"), (13, 2, "success")]).await,
+        End::Unclear
+    );
+    assert_eq!(
+        two_release_runs(&[passed, (12, 2, "success")]).await,
+        End::Again
+    );
 }
 
 /// Orbit says it reran a check only when it did: one it found already
@@ -565,6 +660,7 @@ fn only_orbits_own_reruns_are_its() {
         ..Default::default()
     });
     s.ops.push(t);
+    s.ci = vec![red(A, &[RUST])];
     record(&mut s);
     assert!(!s.cases[0].reran);
     close(&mut s.problems[0], 30, A, "Passed at 1111111.");
@@ -591,14 +687,14 @@ fn a_case_counts_only_once_its_problem_cant_come_back() {
     s.cases.push(case("c1", End::Again, 3));
     s.cases.push(case("c2", End::Again, 2));
     // It fails, and passes when it runs again at the same commit.
-    see(&mut s, main_ci(A, CiState::Failing, &[RUST]), 0);
+    see(&mut s, red(A, &[RUST]), 0);
     see(&mut s, read(A, &[(RUST, CiState::Passing)]), 10);
     assert_eq!(s.cases[2].end, End::Again);
     assert!(s.lessons.is_empty(), "it may still come back");
     // It comes back within the hour: it wasn't bad luck after all.
-    see(&mut s, main_ci(A, CiState::Failing, &[RUST]), 30);
+    see(&mut s, red(A, &[RUST]), 30);
     assert_eq!(s.cases[2].end, End::Open);
-    see(&mut s, main_ci(A, CiState::Failing, &[RUST]), 120);
+    see(&mut s, red(A, &[RUST]), 120);
     assert!(s.lessons.is_empty());
     // It passes for good, and once the hour is up it counts.
     see(&mut s, read(A, &[(RUST, CiState::Passing)]), 130);
@@ -606,7 +702,7 @@ fn a_case_counts_only_once_its_problem_cant_come_back() {
         .1
         .is_empty());
     let (_, learned) = see(&mut s, read(A, &[(RUST, CiState::Passing)]), 191);
-    assert_eq!(ids(&learned), ["luck:a/b:ci / rust"]);
+    assert_eq!(ids(&learned), ["luck:a/b:CI / Rust"]);
     assert_eq!(learned[0].count, 3);
 }
 
@@ -757,7 +853,12 @@ fn a_problem_that_comes_back_within_the_hour_is_the_same_case() {
 #[test]
 fn last_time_is_found_by_key_and_else_by_a_check_of_the_same_kind() {
     let mut s = Snapshot::default();
-    s.cases.push(case("old", End::Passed, 9));
+    // What failed there isn't carried along.
+    s.cases.push(Case {
+        failed: vec![check(RUST)],
+        unsure: true,
+        ..case("old", End::Passed, 9)
+    });
     s.cases.push(Case {
         key: "build:a/b:v1.0.0".into(),
         kind: ProblemKind::ReleaseBuild,
@@ -790,6 +891,8 @@ fn last_time_is_found_by_key_and_else_by_a_check_of_the_same_kind() {
         last_time(&s, 0),
         "Last time, 9 days earlier: CI / Rust failed on main. It passed again at 2222222, an hour later."
     );
+    let l = s.problems[0].last_time.as_ref().unwrap();
+    assert_eq!((l.case.failed.len(), l.case.unsure), (0, false));
     assert_eq!(
         s.problems[0].timeline.last().map(|e| e.text.clone()),
         Some(last_time(&s, 0))
@@ -830,7 +933,7 @@ fn a_check_that_passes_when_run_again_three_times_is_a_lesson() {
     assert!(learn(&mut s, now()).is_empty());
     s.cases.push(case("c3", End::Again, 10));
     let learned = learn(&mut s, now());
-    assert_eq!(ids(&learned), ["luck:a/b:ci / rust"]);
+    assert_eq!(ids(&learned), ["luck:a/b:CI / Rust"]);
     let l = &s.lessons[0];
     assert_eq!(
         (l.kind, l.check.as_str(), l.count),
@@ -861,7 +964,7 @@ fn a_check_that_passes_when_run_again_three_times_is_a_lesson() {
         ..problem("p2", A)
     });
     assert!(apply(&mut s));
-    assert_eq!(ids(&s.problems[0].lessons), ["luck:a/b:ci / rust"]);
+    assert_eq!(ids(&s.problems[0].lessons), ["luck:a/b:CI / Rust"]);
     assert!(s.problems[1].lessons.is_empty());
     assert!(!apply(&mut s));
     let lines = seen_before(&s.problems[0], &code);
@@ -993,13 +1096,13 @@ fn a_forgotten_lesson_is_learned_again_only_from_what_happens_after() {
     assert_eq!(learned.len(), 1);
     assert_eq!(s.problems[0].lessons.len(), 1);
     assert!(!forget(&mut s, "luck:a/b:lint", now()));
-    assert!(forget(&mut s, "luck:a/b:ci / rust", now()));
+    assert!(forget(&mut s, "luck:a/b:CI / Rust", now()));
     assert!(s.lessons.is_empty());
     assert!(s.problems[0].lessons.is_empty());
     assert_eq!(
         s.forgotten_lessons,
         [Forgot {
-            id: "luck:a/b:ci / rust".into(),
+            id: "luck:a/b:CI / Rust".into(),
             at: stamp(now()),
         }]
     );
@@ -1020,7 +1123,7 @@ fn a_forgotten_lesson_is_learned_again_only_from_what_happens_after() {
     // Each counts once its hour to come back is up.
     assert!(learn(&mut s, at(60)).is_empty());
     let learned = learn(&mut s, at(90));
-    assert_eq!(ids(&learned), ["luck:a/b:ci / rust"]);
+    assert_eq!(ids(&learned), ["luck:a/b:CI / Rust"]);
     assert_eq!(learned[0].from, ["c6", "c5", "c4"]);
 }
 
@@ -1063,6 +1166,27 @@ fn old_cases_lessons_and_what_you_forgot_are_let_go() {
     assert_eq!(cases, ["open", "kept"]);
     assert_eq!(ids(&s.lessons), ["luck:a/b:new"]);
     assert_eq!(s.forgotten_lessons.len(), 1);
+    assert!(!prune(&mut s, now()));
+    // The jobs a case saw fail go once its problem can't come back.
+    let failed = vec![check(RUST)];
+    for c in &mut s.cases {
+        c.failed = failed.clone();
+        c.unsure = true;
+    }
+    s.cases.push(Case {
+        failed: failed.clone(),
+        closed_at: Some(stamp(at(-30))),
+        ..case("settling", End::Again, 0)
+    });
+    assert!(prune(&mut s, now()));
+    let kept = |id: &str| {
+        let c = s.cases.iter().find(|c| c.id == id).unwrap();
+        (c.failed.len(), c.unsure)
+    };
+    assert_eq!(
+        (kept("open"), kept("kept"), kept("settling")),
+        ((1, true), (0, false), (1, false))
+    );
     assert!(!prune(&mut s, now()));
     // At most so many, the newest.
     for i in 0..MAX_CASES + 5 {

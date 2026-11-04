@@ -1506,6 +1506,11 @@ export interface Case {
   fixed?: boolean;
   fix?: string;
   reran?: boolean;
+  /** Every job Orbit saw failing at `sha`, each of several by one name
+   * too, or a release build's failed runs: what has to pass again for it
+   * to be bad luck. `unsure` when there were more than Orbit keeps. */
+  failed?: CiCheck[];
+  unsure?: boolean;
   reason?: string;
 }
 /** What happened the last time something like a problem failed. */
