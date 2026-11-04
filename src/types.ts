@@ -1485,7 +1485,8 @@ export interface Problem {
   lessons?: Lesson[];
 }
 /** How a case ended (`cases.rs`). */
-export type CaseEnd = "open" | "again" | "fixed" | "passed" | "closed";
+export type CaseEnd =
+  "open" | "again" | "unclear" | "fixed" | "passed" | "closed";
 /** The short record of one problem about failing checks. */
 export interface Case {
   id: string;

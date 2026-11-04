@@ -8,6 +8,8 @@
 //! made by code from the problem and its CI thread (`record`), before
 //! Orbit refreshes the thread, so it still sees the reruns, the agent's
 //! answers and the step that failed as they were when the problem closed.
+//! A problem that passed at the commit it failed at counts as bad luck only
+//! when Orbit saw the checks that failed pass there (`passed_again`).
 //!
 //! **Last time.** When a new problem opens, Orbit looks for the latest
 //! case like it (`look_back`): first one with its key, and failing that,
@@ -15,11 +17,14 @@
 //! problem says how that one ended (`LastTime`).
 //!
 //! **Lessons.** Orbit finds repeats among the cases and the missed outcome
-//! checks of the last `LEARN_DAYS` (see `crate::outcomes`). It keeps each
-//! repeat as a `Lesson`: what happened, and what to do next time (`learn`).
-//! A lesson applies to the open problems it is about (`apply`), which then
-//! say it to the agent and to you. You can forget one, and it is learned
-//! again only from what happens after that.
+//! checks of the last `LEARN_DAYS` (see `crate::outcomes`). A case counts
+//! once its problem can no longer come back as the same one (`FLAP_QUIET`
+//! after it closed). Orbit keeps each repeat as a `Lesson`: what happened,
+//! and what to do next time (`learn`). A lesson applies to the open
+//! problems it is about (`apply`), which then say it to the agent and to
+//! you. You can forget one, and it is learned again only from what
+//! happens after that, as is one Orbit let go to keep at most
+//! `MAX_LESSONS`.
 //!
 //! Guidance, never authority: a lesson changes what Orbit and Bit say. It
 //! never changes a rule, or what Bit does on its own. Nothing here posts
@@ -27,10 +32,10 @@
 use crate::{
     baseline::Setting,
     broker::clean,
-    ci::short,
+    ci::{short, CiState},
     ops::{AnswerKind, Thread},
     outcomes::{Kind, Verdict},
-    problems::{how_long, stamp, time, Problem, ProblemKind},
+    problems::{how_long, stamp, time, Problem, ProblemKind, FLAP_QUIET},
     types::*,
 };
 use chrono::{DateTime, Duration, Utc};
@@ -63,6 +68,9 @@ pub enum End {
     Open,
     /// It passed at the commit it failed at, when its checks ran again.
     Again,
+    /// It stopped failing at the commit it failed at, but Orbit didn't see
+    /// its checks pass there: GitHub may have cancelled or skipped them.
+    Unclear,
     /// It passed after an agent said it fixed it.
     Fixed,
     /// It passed at a newer commit.
@@ -180,8 +188,9 @@ pub struct Lesson {
     pub next: String,
 }
 
-/// A lesson you forgot (`Snapshot.forgotten_lessons`): it is learned again
-/// only from what happens after `at`.
+/// A lesson you forgot, or Orbit let go to keep at most `MAX_LESSONS`
+/// (`Snapshot.forgotten_lessons`): it is learned again only from what
+/// happens after `at`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Forgot {
@@ -215,7 +224,7 @@ fn pr_number(pr_id: Option<&str>) -> Option<u64> {
 }
 
 /// What the problem's thread says about it now: the step that failed
-/// first, whether Orbit reran a job at `sha`, and whether an agent said it
+/// first, whether Orbit itself reran a job at `sha`, and whether an agent said it
 /// fixed it, with the newest commit an agent named.
 fn from_thread(t: Option<&Thread>, sha: &str) -> (String, bool, bool, String) {
     let Some(t) = t else {
@@ -228,7 +237,9 @@ fn from_thread(t: Option<&Thread>, sha: &str) -> (String, bool, bool, String) {
         .find(|s| !s.is_empty())
         .map(|s| clean(s, 120))
         .unwrap_or_default();
-    let reran = failing().any(|i| i.at == sha && crate::reruns::done(i) > 0);
+    // Orbit's own reruns only: one it found already done may have been
+    // someone else's.
+    let reran = failing().any(|i| i.at == sha && i.reruns.iter().any(|r| r.done && !r.already));
     let answers: Vec<_> = failing()
         .filter_map(|i| i.answer.as_ref())
         .filter(|a| a.kind == AnswerKind::Fixed)
@@ -240,6 +251,70 @@ fn from_thread(t: Option<&Thread>, sha: &str) -> (String, bool, bool, String) {
         .and_then(|a| a.commit.clone())
         .unwrap_or_default();
     (step, reran, !answers.is_empty(), fix)
+}
+
+/// Whether the checks a case last saw failing passed at the commit they
+/// failed at, as Orbit last read it: each one by its name passed there,
+/// and none still fails or runs, from a read that saw every check; for a
+/// release build, the run of each succeeded, and every run is a success
+/// or skipped (`builds::publishable`). A check GitHub cancelled or skipped
+/// doesn't fail, so its problem closes, but it didn't pass either.
+fn passed_again(
+    ci: &[crate::ci::RepoCi],
+    builds: &[crate::builds::Build],
+    p: &Problem,
+    c: &Case,
+) -> bool {
+    let names = if c.last.is_empty() {
+        &c.checks
+    } else {
+        &c.last
+    };
+    if names.is_empty() {
+        return false;
+    }
+    if p.kind == ProblemKind::ReleaseBuild {
+        // A failed job is named for its run: `Run / job`, or the run's.
+        let of = |name: &str, run: &crate::builds::Run| {
+            let run = clean(&run.name, 160);
+            !run.is_empty() && (name == run || name.starts_with(&format!("{run} / ")))
+        };
+        return builds.iter().any(|b| {
+            same_repo(&b.repo, &p.repo)
+                && b.tag == p.branch
+                && b.sha == p.sha
+                && crate::builds::publishable(b).is_ok()
+                && names.iter().all(|name| {
+                    b.runs
+                        .iter()
+                        .any(|run| of(name, run) && run.conclusion == "success")
+                })
+        });
+    }
+    let Some(read) = ci.iter().find(|r| same_repo(&r.repo, &p.repo)) else {
+        return false;
+    };
+    let commit = match c.number {
+        Some(n) => read.pull(n).map(|pull| &pull.ci),
+        None => Some(&read.head),
+    };
+    let Some(commit) =
+        commit.filter(|ci| ci.sha == p.sha && ci.named && !ci.incomplete && ci.cursor.is_none())
+    else {
+        return false;
+    };
+    names.iter().all(|name| {
+        let states: Vec<CiState> = commit
+            .checks
+            .iter()
+            .filter(|(check, _)| clean(&check.name, 160) == *name)
+            .map(|(_, state)| *state)
+            .collect();
+        states.contains(&CiState::Passing)
+            && !states
+                .iter()
+                .any(|s| matches!(s, CiState::Failing | CiState::Running))
+    })
 }
 
 /// Adds a case for each new problem about failing checks, follows each
@@ -267,6 +342,11 @@ pub fn record(s: &mut Snapshot) -> bool {
             }
             None => continue,
         };
+        let again = !p.is_open()
+            && s.cases[i].end == End::Open
+            && p.passed()
+            && p.closed_sha == p.sha
+            && passed_again(&s.ci, &s.builds, p, &s.cases[i]);
         let c = &mut s.cases[i];
         let before = c.clone();
         if p.is_open() {
@@ -304,8 +384,10 @@ pub fn record(s: &mut Snapshot) -> bool {
             c.closed_at = p.closed_at.clone();
             c.end = if !p.passed() {
                 End::Closed
-            } else if p.closed_sha == p.sha {
+            } else if again {
                 End::Again
+            } else if p.closed_sha == p.sha {
+                End::Unclear
             } else if c.fixed {
                 End::Fixed
             } else {
@@ -366,6 +448,9 @@ fn ended(c: &Case, show: Show) -> String {
             format!("It passed when Orbit reran it at the same commit{took}.")
         }
         End::Again => format!("It passed when it ran again at the same commit{took}."),
+        End::Unclear => format!(
+            "It stopped failing at the same commit{took}, but Orbit didn't see it pass: GitHub may have cancelled or skipped it."
+        ),
         End::Fixed if !c.fix.is_empty() && c.fix != c.passed => format!(
             "It passed again at {at} after the agent's fix in {}{took}.",
             show(short(&c.fix))
@@ -552,7 +637,13 @@ fn repeats(s: &Snapshot, now: DateTime<Utc>) -> BTreeMap<String, (Lesson, Vec<Se
             .push(seen);
     };
     for c in &s.cases {
-        let Some(at) = c.closed_at.clone() else {
+        // Only once it can't come back as the same problem, which would
+        // undo how it ended.
+        let Some(at) = c
+            .closed_at
+            .clone()
+            .filter(|at| time(at).is_some_and(|t| now - t >= FLAP_QUIET))
+        else {
             continue;
         };
         match c.end {
@@ -673,7 +764,30 @@ pub fn learn(s: &mut Snapshot, now: DateTime<Utc>) -> Vec<Lesson> {
             }
         }
     }
+    // One with no room is never told of.
+    cap(s, now);
+    learned.retain(|l| s.lessons.iter().any(|k| k.id == l.id));
     learned
+}
+
+/// Keeps at most `MAX_LESSONS`, the latest seen first. One let go for room
+/// is learned again only from what happens after now, as one you forgot
+/// is, so the same repeats don't teach it again. Says whether it let any
+/// go.
+fn cap(s: &mut Snapshot, now: DateTime<Utc>) -> bool {
+    s.lessons
+        .sort_by(|a, b| b.seen_at.cmp(&a.seen_at).then_with(|| a.id.cmp(&b.id)));
+    if s.lessons.len() <= MAX_LESSONS {
+        return false;
+    }
+    for l in s.lessons.split_off(MAX_LESSONS) {
+        s.forgotten_lessons.retain(|f| f.id != l.id);
+        s.forgotten_lessons.push(Forgot {
+            id: l.id,
+            at: stamp(now),
+        });
+    }
+    true
 }
 
 /// Whether a lesson is about a problem: bad luck in one of its failing
@@ -760,10 +874,9 @@ pub fn prune(s: &mut Snapshot, now: DateTime<Utc>) -> bool {
     });
     s.cases.truncate(MAX_CASES);
     s.lessons.retain(|l| !old(&l.seen_at));
-    s.lessons.sort_by(|a, b| b.seen_at.cmp(&a.seen_at));
-    s.lessons.truncate(MAX_LESSONS);
     s.forgotten_lessons.retain(|f| !old(&f.at));
-    before != (s.cases.len(), s.lessons.len(), s.forgotten_lessons.len())
+    let capped = cap(s, now);
+    capped || before != (s.cases.len(), s.lessons.len(), s.forgotten_lessons.len())
 }
 
 #[cfg(test)]

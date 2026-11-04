@@ -342,11 +342,11 @@ Each one **held**, **missed**, or Orbit **couldn't tell**, with why, such as "It
 
 #### What Orbit learned
 
-Orbit keeps a short record of each problem about failing checks, on a default branch, a pull request or a release build: which checks failed and where, the step that failed, and how it ended. It passed when it ran again at the same commit, passed after the agent's fix, passed at a newer commit, or Orbit stopped following it, such as when its pull request closed. Orbit keeps each one for 90 days after it ended, and at most 300.
+Orbit keeps a short record of each problem about failing checks, on a default branch, a pull request or a release build: which checks failed and where, the step that failed, and how it ended. It passed when it ran again at the same commit, passed after the agent's fix, passed at a newer commit, or Orbit stopped following it, such as when its pull request closed. Orbit says it passed at the same commit only when GitHub says each check that failed passed there; a check GitHub cancelled or skipped doesn't fail, but it didn't pass either, so then Orbit says it stopped failing without being seen to pass. It says Orbit reran it only when Orbit did, not when it found the job already rerun. Orbit keeps each one for 90 days after it ended, and at most 300.
 
 **Last time.** When something fails, Orbit looks for the last time something like it failed: on the same default branch, pull request or release build, or else the same check failing elsewhere in that repository. The problem then says what happened, on **Operations**, on **Needs you**, in its latest events and in Orbit's issue or comment for the agent, such as "Last time, 9 days earlier: CI / Rust failed on main. It passed again at 1a2b3c4 after the agent's fix, 2 hours later." This takes the place of "It was fixed before". Orbit looks once, as the problem opens, before it first tells the agent.
 
-**Lessons.** When something happens often enough in 30 days, Orbit learns a lesson from it: what happened, and what to do next time. It learns that:
+**Lessons.** When something happens often enough in 30 days, Orbit learns a lesson from it: what happened, and what to do next time. A problem counts once an hour has passed since it closed, as until then it can come back as the same problem. It learns that:
 
 - a check failed and then passed when it ran again at the same commit 3 times, so it fails by bad luck: running it again will likely pass, but it may need fixing;
 - a default branch broke 3 times and was fixed each time: look for what keeps breaking it, not just the check that fails now. A pull request's checks failing and then passing at a newer commit is how work goes, so it isn't counted;
@@ -356,7 +356,7 @@ Orbit keeps a short record of each problem about failing checks, on a default br
 
 Each open problem a lesson is about says it, on **Operations** ("Orbit learned: …") and in Orbit's issue or comment for the agent, under "Orbit has seen this before". **What Orbit learned** on **Operations** lists every lesson, the latest seen first, with when it last happened. While Bit is on, a new lesson is a note from Bit, and tapping it opens **Operations**. Bit also sees the lessons, and what happened last time on each CI problem, when you ask it (see [Ask Bit](#ask-bit)).
 
-A lesson is guidance, never a rule: it changes what Orbit and Bit say, never what Orbit may do on its own, and it posts nothing by itself. **Forget** drops one, and Orbit learns it again only from what happens after that. A lesson that hasn't happened for 90 days is let go, and Orbit keeps at most 50.
+A lesson is guidance, never a rule: it changes what Orbit and Bit say, never what Orbit may do on its own, and it posts nothing by itself. **Forget** drops one, and Orbit learns it again only from what happens after that. A lesson that hasn't happened for 90 days is let go. Orbit keeps at most 50, the latest seen; one with no room is let go as if you forgot it, so it isn't learned again from the same repeats.
 
 #### Telling agents
 
