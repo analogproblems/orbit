@@ -1586,6 +1586,27 @@ describe("Bit", () => {
     expect(
       screen.getByRole("combobox", { name: /^Quick call model/ }),
     ).toBeTruthy();
+  });
+
+  it("chooses the second look before posting in Settings", async () => {
+    snapshot.ollama = { ready: true };
+    snapshot.ollamaModels = ["llama3.2:3b", "qwen3:8b"];
+    snapshot.settings.buddy = {
+      ...buddyOf(snapshot.settings),
+      quickModel: "llama3.2:3b",
+      luckCall: "off",
+      faultCall: "off",
+    };
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Settings" }));
+    await openSettingsTab("Buddy");
+    // It starts in Watch, and keeps the model while it is on.
+    expect(
+      await screen.findByText(/^Orbit asks the model, and keeps its verdict/),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("combobox", { name: /^Quick call model/ }),
+    ).toBeTruthy();
     const look = screen.getByRole("combobox", {
       name: /^Second look before posting where you aren’t an admin/,
     });
