@@ -548,6 +548,40 @@ describe("operations page", () => {
     );
   });
 
+  it("shows the playbook of every other kind of problem where it is listed", () => {
+    show(freshDemo());
+    // No CI, with the repository: Bit asks before proposing it.
+    const docs = within(screen.getByRole("list", { name: "CI by repository" }))
+      .getAllByRole("listitem")
+      .find((i) => i.textContent?.includes("acme/docs"))!;
+    expect(docs.textContent).toContain("Playbook: 0 of 4 steps done.");
+    expect(docs.textContent).toContain(
+      "Orbit proposes a workflow to the agent in an issue.Next.",
+    );
+    // Security alerts, each kind with its own: the agent fixed one of
+    // two, and a secret is yours.
+    const api = within(screen.getByRole("list", { name: "Security alerts" }))
+      .getAllByRole("listitem")
+      .find((i) => i.textContent?.includes("acme/api"))!;
+    expect(api.textContent).toContain(
+      "A fix lands for each alert.Next: The agent said it fixed 1 of the 2 left.",
+    );
+    expect(api.textContent).toContain(
+      "You revoke each secret, then close its alert on GitHub.Next.",
+    );
+    // Risky settings and version files, with the other open problems.
+    const open = screen.getByRole("list", { name: "Open problems" });
+    expect(open.textContent).toContain(
+      "A fix lands on main for each risky setting.Next.",
+    );
+    expect(open.textContent).toContain(
+      "You fix each risky setting on main.Next.",
+    );
+    expect(open.textContent).toContain(
+      "A fix lands on main for each file that disagrees.Next: The agent said it fixed 1 of the 2 left.",
+    );
+  });
+
   it("says what a closed problem's playbook did, and when Orbit checks it stayed fixed", () => {
     const s = freshDemo();
     show(s);
@@ -666,7 +700,11 @@ describe("operations page", () => {
   });
 
   it("lists how what Orbit and the agents did turned out, newest first", () => {
+    // In the same order however far the clock moves while the demo is made.
+    let t = Date.now();
+    const tick = vi.spyOn(Date, "now").mockImplementation(() => (t += 1));
     const s = freshDemo();
+    tick.mockRestore();
     show(s);
     const list = screen.getByRole("list", { name: "How it turned out" });
     const items = within(list).getAllByRole("listitem");

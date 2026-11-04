@@ -939,6 +939,14 @@ export function freshDemo(): Snapshot {
   };
 }
 const sha = (start: string) => start + "0".repeat(40 - start.length);
+/** A step of a demo problem's playbook. */
+const step = (
+  kind: PlaybookStep["step"],
+  who: PlaybookStep["who"],
+  text: string,
+  mark: PlaybookStep["mark"] = "todo",
+  more: Partial<PlaybookStep> = {},
+): PlaybookStep => ({ step: kind, who, text, mark, ...more });
 /** CI as Orbit last read it: orbit's main fails, api's passes after failing
  * yesterday and its one self-hosted runner is offline, dashboard can't be
  * read, docs has no CI on pull requests, one pull request fails its own
@@ -1766,6 +1774,11 @@ export function demoCi(
   // on, and a rebase waits.
   const at = failingPr.headSha.slice(0, 7);
   const where = `${failingPr.repo} #${failingPr.number}`;
+  // Read the clock once for what happened at the same time, as the check
+  // due later keeps the time of the one that held: two reads can be a
+  // millisecond apart, and the newest is listed first.
+  const turnedOn = ago(27 * 60);
+  const ran = ago(19);
   const outcomes: Outcome[] = [
     {
       id: "demo-outcome-1",
@@ -1774,7 +1787,7 @@ export function demoCi(
       what: "Orbit turned on secret scanning in acme/orbit.",
       expect: "it reads as on",
       url: "https://github.com/acme/orbit/settings/security_analysis",
-      at: ago(27 * 60),
+      at: turnedOn,
       verdict: "held",
       why: "It reads as on.",
       settledAt: ago(27 * 60 - 5),
@@ -1787,7 +1800,7 @@ export function demoCi(
       what: `Orbit reran CI / End-to-end at ${at} on ${where}.`,
       expect: "the job passes the second time",
       url: e2eFirst,
-      at: ago(19),
+      at: ran,
       verdict: "missed",
       why: "It failed again after the rerun.",
       settledAt: ago(9),
@@ -1800,7 +1813,7 @@ export function demoCi(
       what: `${failingPr.author} said I1 (CI / Frontend) is fixed in ${at} on ${where}.`,
       expect: `its checks pass at ${at}`,
       url: `${failingPr.url}#issuecomment-905`,
-      at: ago(19),
+      at: ran,
       verdict: "missed",
       why: `Its checks fail at ${at}.`,
       settledAt: ago(17),
@@ -1825,7 +1838,7 @@ export function demoCi(
       what: "Orbit turned on secret scanning in acme/orbit.",
       expect: "it's still on a week later",
       url: "https://github.com/acme/orbit/settings/security_analysis",
-      at: ago(27 * 60),
+      at: turnedOn,
       verdict: "waiting",
       due: ago(27 * 60 - 7 * 24 * 60),
     },
@@ -1958,13 +1971,6 @@ export function demoCi(
   // the agent took it; the pull request's fix still fails; the agent hasn't
   // merged main in yet; and acme/api passed again, so Orbit waits to see
   // it stay fixed.
-  const step = (
-    kind: PlaybookStep["step"],
-    who: PlaybookStep["who"],
-    text: string,
-    mark: PlaybookStep["mark"] = "todo",
-    more: Partial<PlaybookStep> = {},
-  ): PlaybookStep => ({ step: kind, who, text, mark, ...more });
   red.playbook = [
     step("found", "orbit", "Orbit finds the commit that broke it.", "done", {
       note: "It started failing with #208, merged as 7d41e09; 3b8e6f4 before it passed.",
@@ -2010,6 +2016,27 @@ export function demoCi(
       step("taken", "agent", "The agent takes it."),
       step("fixed", "agent", "The agent merges main in."),
       step("passes", "orbit", "Every check passes again with main's latest."),
+    ];
+  // Bit asks before proposing CI to acme/docs's agent.
+  const docs = problems.find((p) => p.id === "demo-problem-5");
+  if (docs)
+    docs.playbook = [
+      step(
+        "told",
+        "orbit",
+        "Orbit proposes a workflow to the agent in an issue.",
+      ),
+      step("taken", "agent", "The agent takes it."),
+      step(
+        "fixed",
+        "agent",
+        "A workflow that runs on pull requests lands on main.",
+      ),
+      step(
+        "passes",
+        "orbit",
+        "Orbit sees a workflow on main that runs on pull requests.",
+      ),
     ];
   const api = problems.find((p) => p.id === "demo-problem-3");
   if (api && api.closedAt) {
@@ -2385,6 +2412,59 @@ function demoSecurity(): {
       ],
       mismatchCount: 2,
     },
+  ];
+  // acme/api's agent fixed one of its two alerts, took a risky setting and
+  // fixed one of two version files; the rest are yours to fix.
+  const [deps, secret, code, apiRisks, orbitRisks, versions] = problems;
+  const told = (at: string) =>
+    step("told", "orbit", "Orbit tells the agent in an issue.", "done", {
+      at,
+    });
+  const taken = (at: string) =>
+    step("taken", "agent", "The agent takes it.", "done", {
+      at,
+      note: "acme-bot said they're on it.",
+    });
+  const fixedOne = { note: "The agent said it fixed 1 of the 2 left." };
+  deps.playbook = [
+    told(ago(290)),
+    taken(ago(40)),
+    step("fixed", "agent", "A fix lands for each alert.", "todo", fixedOne),
+    step("passes", "orbit", "GitHub marks each alert fixed or dismissed."),
+  ];
+  secret.playbook = [
+    step(
+      "fixed",
+      "you",
+      "You revoke each secret, then close its alert on GitHub.",
+    ),
+    step("passes", "orbit", "GitHub marks each alert resolved."),
+  ];
+  code.playbook = [
+    step("fixed", "you", "You fix each alert, or dismiss it on GitHub."),
+    step("passes", "orbit", "GitHub marks each alert fixed or dismissed."),
+  ];
+  apiRisks.playbook = [
+    told(ago(190)),
+    taken(ago(120)),
+    step("fixed", "agent", "A fix lands on main for each risky setting."),
+    step("passes", "orbit", "Orbit finds no risky settings on main."),
+  ];
+  orbitRisks.playbook = [
+    step("fixed", "you", "You fix each risky setting on main."),
+    step("passes", "orbit", "Orbit finds no risky settings on main."),
+  ];
+  versions.playbook = [
+    told(ago(140)),
+    taken(ago(40)),
+    step(
+      "fixed",
+      "agent",
+      "A fix lands on main for each file that disagrees.",
+      "todo",
+      fixedOne,
+    ),
+    step("passes", "orbit", "The version files agree on main."),
   ];
   const item = (p: Problem, reason: string): Attention => ({
     key: `problem:${p.id}:${p.alerts}`,

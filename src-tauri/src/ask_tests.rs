@@ -155,16 +155,24 @@ fn bit_hears_of_security_alerts_but_never_a_secret() {
         ..Default::default()
     };
     crate::problems::see_security(&mut s.problems, &read, &[], chrono::Utc::now());
+    crate::playbooks::follow(&mut s);
     s.security.push(read);
     let b = briefing(&s, &Lookups::default());
     let alerts = &b["repositories"][0]["securityAlerts"];
     assert_eq!(alerts["readAt"], "2026-11-01T09:00:00.000Z");
+    // The repository isn't private, so each is yours to fix.
+    let step = |text: &str, who: &str| json!({"step": text, "who": who, "state": "todo", "at": null, "note": null, "due": null});
     assert_eq!(
         alerts["kinds"],
         json!([
-            {"kind": "dependabot", "unseen": null, "open": 1, "needYou": 1, "first": ["lodash (high)"]},
-            {"kind": "code_scanning", "unseen": "No code scanning runs on a/b.", "open": 0, "needYou": 0, "first": []},
-            {"kind": "secret_scanning", "unseen": null, "open": 1, "needYou": 1, "first": ["a GitHub Personal Access Token in src/config.ts line 4"]},
+            {"kind": "dependabot", "unseen": null, "open": 1, "needYou": 1, "first": ["lodash (high)"],
+             "playbook": [step("You fix each alert, or dismiss it on GitHub.", "you"),
+                          step("GitHub marks each alert fixed or dismissed.", "orbit")]},
+            {"kind": "code_scanning", "unseen": "No code scanning runs on a/b.", "open": 0, "needYou": 0, "first": [],
+             "playbook": []},
+            {"kind": "secret_scanning", "unseen": null, "open": 1, "needYou": 1, "first": ["a GitHub Personal Access Token in src/config.ts line 4"],
+             "playbook": [step("You revoke each secret, then close its alert on GitHub.", "you"),
+                          step("GitHub marks each alert resolved.", "orbit")]},
         ])
     );
     assert!(!b.to_string().contains("THISISTHESECRETVALUE"));
@@ -982,6 +990,11 @@ fn bit_is_told_each_repositorys_ci_and_how_to_look_things_up() {
              "broke": null, "fixedBefore": null, "lastTime": null,
              "lessons": [], "playbook": []},
         ])
+    );
+    // Its other problems, with what's left of each.
+    assert_eq!(
+        ci["otherProblems"],
+        json!([{"kind": "waiting", "pr": null, "openedAt": "2026-11-03T09:00:00Z", "playbook": []}])
     );
     // Nothing while Watch CI is off.
     s.settings.watch_ci = false;

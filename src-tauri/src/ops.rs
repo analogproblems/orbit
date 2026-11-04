@@ -2317,7 +2317,8 @@ fn proposal_body(t: &Thread, p: &Problem) -> String {
         )
     };
     format!(
-        "## Orbit · CI\n\n{status}\n\n{}\n\nOrbit opened this issue because no CI runs on pull requests here. It edits this issue as it reads new commits on {on}, and closes it once a workflow there runs on pull requests.\n\n{}",
+        "## Orbit · CI\n\n{status}\n\n{}{}\n\nOrbit opened this issue because no CI runs on pull requests here. It edits this issue as it reads new commits on {on}, and closes it once a workflow there runs on pull requests.\n\n{}",
+        crate::playbooks::done_text(p, &code),
         items_text(t, p),
         data(t, Some(p))
     )
@@ -2359,7 +2360,8 @@ fn security_body(t: &Thread, p: &Problem) -> String {
         )
     };
     format!(
-        "## Orbit · Security\n\n{status}\n\n{}\n\nOrbit opened this issue because GitHub found these alerts in this private repository. It edits this issue as they change, and closes it once none of them is open on GitHub. An item counts as fixed only once GitHub marks its alert fixed, which can wait until GitHub checks the default branch again. Dismissing an alert is a person's call.\n\n{}",
+        "## Orbit · Security\n\n{status}\n\n{}{}\n\nOrbit opened this issue because GitHub found these alerts in this private repository. It edits this issue as they change, and closes it once none of them is open on GitHub. An item counts as fixed only once GitHub marks its alert fixed, which can wait until GitHub checks the default branch again. Dismissing an alert is a person's call.\n\n{}",
+        crate::playbooks::done_text(p, &code),
         items_text(t, p),
         data(t, Some(p))
     )
@@ -2386,7 +2388,8 @@ fn workflows_body(t: &Thread, p: &Problem) -> String {
         )
     };
     format!(
-        "## Orbit · Workflows\n\n{status}\n\n{}\n\nOrbit opened this issue because it found these settings in `.github/workflows` in this private repository. Each lets someone else's code or words run with this repository's token or secrets. Orbit checks the files again at each new commit on {on}, edits this issue as they change, and closes it once none is left.\n\n{}",
+        "## Orbit · Workflows\n\n{status}\n\n{}{}\n\nOrbit opened this issue because it found these settings in `.github/workflows` in this private repository. Each lets someone else's code or words run with this repository's token or secrets. Orbit checks the files again at each new commit on {on}, edits this issue as they change, and closes it once none is left.\n\n{}",
+        crate::playbooks::done_text(p, &code),
         items_text(t, p),
         data(t, Some(p))
     )
@@ -2416,7 +2419,8 @@ fn versions_body(t: &Thread, p: &Problem) -> String {
         )
     };
     format!(
-        "## Orbit · Versions\n\n{status}\n\n{}\n\nOrbit opened this issue because these files should say the same version: a manifest and its lockfile, and a Tauri app's `tauri.conf.json` with its `Cargo.toml` and `package.json`. It takes the version most of them say as the one. If that is the old version, bring the others up to the new one instead: an item counts as fixed once its file agrees. Orbit reads the files again at each new commit on {on}, edits this issue as they change, and closes it once they agree.\n\n{}",
+        "## Orbit · Versions\n\n{status}\n\n{}{}\n\nOrbit opened this issue because these files should say the same version: a manifest and its lockfile, and a Tauri app's `tauri.conf.json` with its `Cargo.toml` and `package.json`. It takes the version most of them say as the one. If that is the old version, bring the others up to the new one instead: an item counts as fixed once its file agrees. Orbit reads the files again at each new commit on {on}, edits this issue as they change, and closes it once they agree.\n\n{}",
+        crate::playbooks::done_text(p, &code),
         items_text(t, p),
         data(t, Some(p))
     )

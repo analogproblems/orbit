@@ -612,7 +612,30 @@ fn other_kinds_have_their_own_steps_and_bit_hears_whats_left() {
             "Orbit tells the agent in an issue.",
             "The agent takes it.",
             "A fix lands on the default branch, for the next version.",
-            "Every run of the release build passes.",
+            "Every run of the release build passes, or a newer version is tagged.",
+        ]
+    );
+    // A newer version took its place: its own build shows whether the
+    // fix is in.
+    let newer = Problem {
+        closed_at: Some(stamp(at(5))),
+        closed_reason: Some("v1.3.0 is the newest version tag now.".into()),
+        superseded_by: "v1.3.0".into(),
+        ..build.clone()
+    };
+    assert_eq!(
+        ends(&newer),
+        [
+            (
+                StepKind::Fixed,
+                Mark::Skipped,
+                "Orbit couldn't tell: v1.3.0 was tagged since, and its own build shows whether the fix is in.".into()
+            ),
+            (
+                StepKind::Passes,
+                Mark::Done,
+                "v1.3.0 is the newest version tag now.".into()
+            ),
         ]
     );
     // A release build passes at its tag's commit: no fix was needed.
@@ -625,14 +648,6 @@ fn other_kinds_have_their_own_steps_and_bit_hears_whats_left() {
     let steps = playbook(&passed, None, None, &[]);
     assert_eq!(steps[2].mark, Mark::Skipped);
     assert_eq!(steps[3].mark, Mark::Done);
-    // Kinds without a playbook yet get none.
-    let mut s = Snapshot::default();
-    s.problems.push(Problem {
-        kind: ProblemKind::Waiting,
-        ..Default::default()
-    });
-    assert!(!follow(&mut s));
-    assert!(s.problems[0].playbook.is_empty());
     // Bit hears each step, who does it and where it stands.
     let p = Problem {
         playbook: steps,
@@ -648,8 +663,493 @@ fn other_kinds_have_their_own_steps_and_bit_hears_whats_left() {
     assert_eq!(summary[3]["note"], "Passed at 1111111.");
 }
 
+fn texts(p: &Problem) -> Vec<(StepKind, Who, String)> {
+    steps(p)
+        .into_iter()
+        .map(|(step, who)| (step, who, text(p, step, who)))
+        .collect()
+}
+fn closed(p: &Problem, sha: &str, reason: &str) -> Problem {
+    Problem {
+        closed_at: Some(stamp(at(5))),
+        closed_sha: sha.into(),
+        closed_reason: Some(reason.into()),
+        ..p.clone()
+    }
+}
+fn ends(p: &Problem) -> Vec<(StepKind, Mark, String)> {
+    playbook(p, None, None, &[])
+        .into_iter()
+        .filter(|s| matches!(s.step, StepKind::Fixed | StepKind::Passes))
+        .map(|s| (s.step, s.mark, s.note))
+        .collect()
+}
+
+/// Where Orbit tells an agent, it tells it, the agent takes it, a fix
+/// lands and Orbit sees it done, and the agent hears what done looks like.
+#[test]
+fn kinds_orbit_tells_an_agent_about_go_from_telling_to_done() {
+    use crate::security::Source;
+    use Mark::*;
+    use StepKind::*;
+    use Who::*;
+    let code = |s: &str| format!("`{s}`");
+    let on_main = |kind| Problem {
+        kind,
+        repo: "a/b".into(),
+        branch: "main".into(),
+        sha: A.into(),
+        private: true,
+        ..Default::default()
+    };
+    let told = (
+        Told,
+        Orbit,
+        "Orbit tells the agent in an issue.".to_string(),
+    );
+    let taken = (Taken, Agent, "The agent takes it.".to_string());
+    let no_ci = on_main(ProblemKind::NoCi);
+    assert_eq!(
+        texts(&no_ci),
+        [
+            (
+                Told,
+                Orbit,
+                "Orbit proposes a workflow to the agent in an issue.".into()
+            ),
+            taken.clone(),
+            (
+                Fixed,
+                Agent,
+                "A workflow that runs on pull requests lands on main.".into()
+            ),
+            (
+                Passes,
+                Orbit,
+                "Orbit sees a workflow on main that runs on pull requests.".into()
+            ),
+        ]
+    );
+    let alerts = Problem {
+        source: Some(Source::Dependabot),
+        ..on_main(ProblemKind::Security)
+    };
+    assert_eq!(
+        texts(&alerts),
+        [
+            told.clone(),
+            taken.clone(),
+            (Fixed, Agent, "A fix lands for each alert.".into()),
+            (
+                Passes,
+                Orbit,
+                "GitHub marks each alert fixed or dismissed.".into()
+            ),
+        ]
+    );
+    let risks = on_main(ProblemKind::WorkflowRisks);
+    assert_eq!(
+        texts(&risks)[2..],
+        [
+            (
+                Fixed,
+                Agent,
+                "A fix lands on main for each risky setting.".into()
+            ),
+            (
+                Passes,
+                Orbit,
+                "Orbit finds no risky settings on main.".into()
+            ),
+        ]
+    );
+    let versions = Problem {
+        private: false,
+        ..on_main(ProblemKind::Versions)
+    };
+    assert_eq!(
+        texts(&versions),
+        [
+            told,
+            taken,
+            (
+                Fixed,
+                Agent,
+                "A fix lands on main for each file that disagrees.".into()
+            ),
+            (Passes, Orbit, "The version files agree on main.".into()),
+        ]
+    );
+    // What done looks like, for the agent.
+    for (p, fixed, done) in [
+        (
+            &no_ci,
+            "A workflow that runs on pull requests lands on `main`.",
+            "Orbit reads a workflow on `main` that runs on pull requests.",
+        ),
+        (
+            &alerts,
+            "A fix lands for each alert.",
+            "GitHub marks each alert fixed or dismissed.",
+        ),
+        (
+            &risks,
+            "A fix lands on `main` for each risky setting.",
+            "Orbit finds no risky settings on `main`.",
+        ),
+        (
+            &versions,
+            "A fix lands on `main` for each file that disagrees.",
+            "The version files agree on `main`.",
+        ),
+    ] {
+        assert_eq!(
+            done_text(p, &code),
+            format!(
+                "What done looks like:\n\n1. An agent takes each item.\n2. {fixed}\n3. {done}\n\n"
+            ),
+            "{:?}",
+            p.kind
+        );
+    }
+    // Done once Orbit sees it, at the commit it landed at.
+    for p in [&no_ci, &risks, &versions] {
+        assert_eq!(
+            ends(&closed(p, B, "Done at 2222222.")),
+            [
+                (Fixed, Done, "It landed at 2222222.".into()),
+                (Passes, Done, "Done at 2222222.".into()),
+            ]
+        );
+    }
+    // Every alert fixed or dismissed, GitHub says; or none open, but
+    // GitHub didn't say what became of some.
+    let gone = closed(&alerts, "", "GitHub says each one is fixed.");
+    assert_eq!(
+        ends(&gone),
+        [
+            (Fixed, Done, String::new()),
+            (Passes, Done, "GitHub says each one is fixed.".into()),
+        ]
+    );
+    let vanished = Problem {
+        vanished: vec![3],
+        ..closed(&alerts, "", "GitHub no longer has alert 3.")
+    };
+    assert_eq!(
+        ends(&vanished),
+        [
+            (Fixed, Todo, String::new()),
+            (
+                Passes,
+                Skipped,
+                "Orbit couldn't tell: GitHub no longer has alert 3.".into()
+            ),
+        ]
+    );
+    // Stopped following it.
+    assert_eq!(
+        ends(&closed(&versions, "", "Watch CI was turned off."))[1],
+        (
+            Passes,
+            Missed,
+            "Orbit stopped following it. Watch CI was turned off.".into()
+        )
+    );
+}
+
+/// Alerts, risky settings and version files are each their own thing: a
+/// fix is done once the agent named one for each still open, and what it
+/// said about one already gone still counts. A branch's checks are fixed
+/// with the first fix.
+#[test]
+fn alerts_settings_and_files_need_a_fix_for_each_one() {
+    use crate::ops::{ItemKind, Thread};
+    use Mark::*;
+    use StepKind::*;
+    let fixed = |minutes, commit: &str| Answer {
+        kind: AnswerKind::Fixed,
+        author: "agent-bot".into(),
+        at: stamp(at(minutes)),
+        commit: Some(commit.into()),
+        ..Default::default()
+    };
+    let item = |number, failing, answer: Option<Answer>| Item {
+        number,
+        kind: ItemKind::Risk,
+        risk: number,
+        check: format!("risk {number}"),
+        failing,
+        heard_from: stamp(at(30)),
+        answer,
+        ..Default::default()
+    };
+    let p = Problem {
+        id: "risks".into(),
+        kind: ProblemKind::WorkflowRisks,
+        repo: "a/b".into(),
+        branch: "main".into(),
+        sha: A.into(),
+        private: true,
+        ..Default::default()
+    };
+    let thread = |items| Thread {
+        key: "issue:risks".into(),
+        repo: "a/b".into(),
+        problem_id: "risks".into(),
+        items,
+        ..Default::default()
+    };
+    let at_step = |t: &Thread, step| {
+        let s = playbook(&p, Some(t), None, &[])
+            .into_iter()
+            .find(|s| s.step == step)
+            .expect("the step");
+        (s.mark, s.note)
+    };
+    // One of two fixed: not yet.
+    let t = thread(vec![item(1, true, Some(fixed(20, B))), item(2, true, None)]);
+    assert_eq!(
+        at_step(&t, Fixed),
+        (Todo, "The agent said it fixed 1 of the 2 left.".into())
+    );
+    assert_eq!(at_step(&t, Taken).0, Done);
+    // The one it fixed is gone, and the one left has a fix too: done, at
+    // the last one. Taking it still counts, though that item is gone.
+    let t = thread(vec![
+        item(1, false, Some(fixed(10, B))),
+        item(2, true, Some(fixed(20, C))),
+    ]);
+    assert_eq!(
+        at_step(&t, Fixed),
+        (
+            Done,
+            "The agent said it fixed each one, the last in 3333333.".into()
+        )
+    );
+    assert_eq!(at_step(&t, Told).0, Done);
+    assert_eq!(at_step(&t, Taken).0, Done);
+    // A gone item says nothing about one still open.
+    let t = thread(vec![
+        item(1, false, Some(fixed(20, B))),
+        item(2, true, None),
+    ]);
+    assert_eq!(at_step(&t, Fixed), (Todo, String::new()));
+}
+
+/// Where only a person can fix it, or an issue would show others where a
+/// weakness is, it's you who fixes it, and Orbit sees it done. The agent
+/// hears nothing.
+#[test]
+fn kinds_only_you_can_fix_go_from_your_fix_to_done() {
+    use crate::{runners::Waiting, security::Source};
+    use Mark::*;
+    use StepKind::*;
+    use Who::*;
+    let code = |s: &str| format!("`{s}`");
+    let p = |kind| Problem {
+        kind,
+        repo: "a/b".into(),
+        branch: "main".into(),
+        sha: A.into(),
+        ..Default::default()
+    };
+    let waiting = Problem {
+        waiting: vec![Waiting::default()],
+        ..p(ProblemKind::Waiting)
+    };
+    let tag = Problem {
+        tag: "v0.3.0".into(),
+        ..p(ProblemKind::Tag)
+    };
+    let secrets = Problem {
+        source: Some(Source::SecretScanning),
+        private: true,
+        ..p(ProblemKind::Security)
+    };
+    let public = Problem {
+        source: Some(Source::CodeScanning),
+        ..p(ProblemKind::Security)
+    };
+    let risks = p(ProblemKind::WorkflowRisks);
+    for (p, fixed, done) in [
+        (
+            &waiting,
+            "You bring a runner online that can take the waiting runs.",
+            "No runs wait for a runner.",
+        ),
+        (
+            &tag,
+            "If nothing was released from v0.3.0 yet, you move it to a commit whose version files say its version; if a release is out, you leave it and release the next version.",
+            "v0.3.0 points at a commit whose version files say its version, or a newer version comes out on the right commit.",
+        ),
+        (
+            &secrets,
+            "You revoke each secret, then close its alert on GitHub.",
+            "GitHub marks each alert resolved.",
+        ),
+        (
+            &public,
+            "You fix each alert, or dismiss it on GitHub.",
+            "GitHub marks each alert fixed or dismissed.",
+        ),
+        (
+            &risks,
+            "You fix each risky setting on main.",
+            "Orbit finds no risky settings on main.",
+        ),
+    ] {
+        assert_eq!(
+            texts(p),
+            [(Fixed, You, fixed.into()), (Passes, Orbit, done.into())],
+            "{:?}",
+            p.kind
+        );
+        assert_eq!(done_text(p, &code), "", "{:?}", p.kind);
+    }
+    // No runs wait, as Orbit read every queued run; or Orbit stopped.
+    let clear = Problem {
+        waiting: vec![],
+        ..closed(&waiting, "", "No runs wait for a runner now.")
+    };
+    assert_eq!(
+        ends(&clear),
+        [
+            (Fixed, Done, String::new()),
+            (Passes, Done, "No runs wait for a runner now.".into()),
+        ]
+    );
+    assert_eq!(
+        ends(&closed(&waiting, "", "Watch CI was turned off.")),
+        [
+            (Fixed, Todo, String::new()),
+            (
+                Passes,
+                Missed,
+                "Orbit stopped following it. Watch CI was turned off.".into()
+            ),
+        ]
+    );
+    // A tag nothing was released from moved to the right commit; one a
+    // release came out from stayed, and the next version came out on the
+    // right commit. Or it's gone.
+    let reason = "v0.3.0 now points at 2222222, whose version files say its version.";
+    assert_eq!(
+        ends(&closed(&tag, B, reason)),
+        [
+            (Fixed, Done, "It points at 2222222 now.".into()),
+            (Passes, Done, reason.into()),
+        ]
+    );
+    let reason = "v0.4.0 came out on the right commit since, so Orbit stops raising v0.3.0.";
+    let released = Problem {
+        superseded_by: "v0.4.0".into(),
+        ..closed(&tag, "", reason)
+    };
+    assert_eq!(
+        ends(&released),
+        [
+            (Fixed, Done, "v0.4.0 came out on the right commit.".into()),
+            (Passes, Done, reason.into()),
+        ]
+    );
+    assert_eq!(
+        ends(&closed(&tag, "", "The tag v0.3.0 is gone."))[1],
+        (
+            Passes,
+            Missed,
+            "Orbit stopped following it. The tag v0.3.0 is gone.".into()
+        )
+    );
+}
+
+/// A pull request whose checks ran again with its base's latest at the
+/// same commit needed no merge.
+#[test]
+fn checks_that_ran_again_with_the_base_need_no_merge() {
+    let moved = Problem {
+        kind: ProblemKind::BaseMoved,
+        base: "main".into(),
+        sha: A.into(),
+        ..Default::default()
+    };
+    let fixed = |p: &Problem| {
+        let s = playbook(p, None, None, &[]).swap_remove(2);
+        (s.mark, s.note)
+    };
+    assert_eq!(
+        fixed(&closed(&moved, A, "Passed at 1111111 with main's latest.")),
+        (
+            Mark::Skipped,
+            "Its checks ran again with main's latest at the same commit, so no merge was needed."
+                .into()
+        )
+    );
+    assert_eq!(
+        fixed(&closed(&moved, B, "Passed at 2222222 with main's latest.")),
+        (Mark::Done, "It passed at 2222222.".into())
+    );
+}
+
 /// A problem saved before playbooks still loads, and one saved with its
 /// playbook keeps it.
+/// What an older Orbit saved, from before it said which newer version
+/// took a problem's place or cleared the runs once none waited, reads as
+/// done once it's upgraded; what didn't end that way stays as it was.
+#[test]
+fn problems_an_older_orbit_closed_read_as_done() {
+    let saved = r#"[
+        {"id":"w1","key":"wait:a/b","kind":"waiting","repo":"a/b",
+         "waiting":[{"id":1,"name":"CI"}],"closedAt":"2026-11-03T10:00:00.000Z",
+         "closedReason":"No runs wait for a runner now."},
+        {"id":"w2","key":"wait:a/c","kind":"waiting","repo":"a/c",
+         "waiting":[{"id":2,"name":"CI"}],"closedAt":"2026-11-03T10:00:00.000Z",
+         "closedReason":"The repository was disconnected."},
+        {"id":"b1","key":"build:a/b:v1.0.0","kind":"release_build","repo":"a/b",
+         "branch":"v1.0.0","sha":"1111111111111111111111111111111111111111",
+         "closedAt":"2026-11-03T10:00:00.000Z",
+         "closedReason":"v1.1.0 is the newest version tag now."},
+        {"id":"t1","key":"tag:a/b:v0.3.0","kind":"tag","repo":"a/b","tag":"v0.3.0",
+         "closedAt":"2026-11-03T10:00:00.000Z",
+         "closedReason":"v0.4.0 came out on the right commit since, so Orbit stops raising v0.3.0."},
+        {"id":"t2","key":"tag:a/b:v0.5.0","kind":"tag","repo":"a/b","tag":"v0.5.0",
+         "closedAt":"2026-11-03T10:00:00.000Z",
+         "closedReason":"The tag v0.5.0 is gone."}
+    ]"#;
+    let mut s = Snapshot {
+        problems: serde_json::from_str(saved).unwrap(),
+        ..Default::default()
+    };
+    let passes = |s: &Snapshot| -> Vec<Mark> {
+        s.problems
+            .iter()
+            .map(|p| step(p, StepKind::Passes).mark)
+            .collect()
+    };
+    follow(&mut s);
+    assert_eq!(passes(&s), [Mark::Missed; 5]);
+    // Loading it upgrades it.
+    crate::engine::recover(&mut s).unwrap();
+    follow(&mut s);
+    assert_eq!(
+        passes(&s),
+        [
+            Mark::Done,
+            Mark::Missed,
+            Mark::Done,
+            Mark::Done,
+            Mark::Missed
+        ]
+    );
+    assert!(s.problems[0].waiting.is_empty());
+    assert_eq!(s.problems[1].waiting.len(), 1);
+    assert_eq!(s.problems[2].superseded_by, "v1.1.0");
+    assert_eq!(s.problems[3].superseded_by, "v0.4.0");
+    assert!(s.problems[4].superseded_by.is_empty());
+    // Once is enough.
+    assert!(!crate::problems::upgrade(&mut s.problems));
+}
+
 #[test]
 fn state_from_before_playbooks_still_loads() {
     let p: Problem = serde_json::from_str(r#"{"id":"p1","key":"ci:a/b"}"#).unwrap();

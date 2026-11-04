@@ -360,7 +360,7 @@ A lesson is guidance, never a rule: it changes what Orbit and Bit say, never wha
 
 #### Playbooks
 
-Each problem about failing checks has a playbook: the steps to done, in order, and who does each. Orbit ticks each step from what it already reads, so there's nothing to tick yourself. For a default branch:
+Every problem has a playbook: the steps to done, in order, and who does each. Orbit ticks each step from what it already reads, so there's nothing to tick yourself. For a default branch:
 
 1. Orbit finds the commit that broke it (see [What broke it](#what-broke-it)).
 2. Orbit tells the agent in an issue (see [Telling agents](#telling-agents)).
@@ -369,11 +369,29 @@ Each problem about failing checks has a playbook: the steps to done, in order, a
 5. Every check passes on the branch.
 6. It stays fixed for 3 days (see [How it turned out](#how-it-turned-out)).
 
-A pull request's playbook is the same from Orbit telling the agent, in its comment, to every check passing, and so is a release build's, where the fix lands on the default branch for the next version and every run of the build passes, such as after a rerun. When a pull request's checks passed before its base moved on, the fix is the agent merging the base branch in, and done is every check passing again with the base branch's latest commit. Other kinds of problem have no playbook yet.
+A pull request's playbook is the same from Orbit telling the agent, in its comment, to every check passing, and so is a release build's, where the fix lands on the default branch for the next version and every run of the build passes, such as after a rerun, or a newer version is tagged. Then whether the fix is in shows in the newer version's own build, so the fix step is skipped, as Orbit couldn't tell. When a pull request's checks passed before its base moved on, the fix is the agent merging the base branch in, and done is every check passing again with the base branch's latest commit. When its checks ran again with the base branch's latest at the same commit, no merge was needed, so that step is skipped.
 
-Each open problem on **Operations** lists its steps under "Playbook: 3 of 6 steps done." (a step skipped isn't counted, and one missed isn't done), each done, to do, skipped or missed, with how, such as "Done: acme-bot said they're on it.", and the first one left marked **Next**. A step is missed when it didn't happen: the default branch failed again within the 3 days, or Orbit stopped following the problem before it passed, such as when its pull request closed. Once a problem closes, **Recently closed** shows its steps, with when Orbit checks that it stayed fixed; what Orbit's comment or issue showed then stays as it was, even after the comment moves on to a new problem. If the problem comes back within the hour, its steps say where it stands again.
+Where Orbit tells the agent about another kind of problem, its playbook goes the same way, from Orbit telling the agent in an issue to done:
 
-Orbit's comment or issue for the agent says what done looks like, under "What done looks like", as a numbered list of the steps the agent can see, such as "1. An agent takes each item. 2. A fix lands on this branch. 3. Every check passes.". It doesn't change as steps are ticked, so Orbit edits the comment or issue only when CI changes. Bit sees each open problem's steps when you ask it, so it can say what's left (see [Ask Bit](#ask-bit)).
+- **No CI**: Orbit proposes a workflow, the agent takes it, a workflow that runs on pull requests lands on the default branch, and Orbit sees it there (see [Repositories with no CI](#repositories-with-no-ci)).
+- **Security alerts** in a private repository, other than secrets: a fix lands for each alert, and GitHub marks each one fixed or dismissed (see [Security alerts](#security-alerts)).
+- **Risky workflow settings** in a private repository: a fix lands on the default branch for each risky setting, and Orbit finds none left (see [Risky workflow settings](#risky-workflow-settings)).
+- **Version files that disagree**: a fix lands on the default branch for each file that disagrees, and the version files agree (see [Version files](#version-files)).
+
+Alerts, risky settings and version files are each their own thing, so the fix is done only once the agent said it fixed each one still open, such as "To do: The agent said it fixed 1 of the 2 left.". What it said about one that's gone still counts.
+
+Where only you can fix it, or an issue would show others where the weakness is, the agent hears nothing, and the playbook is your fix, then done:
+
+- **A secret GitHub found**: you revoke each secret, then close its alert on GitHub, and GitHub marks each alert resolved.
+- **Security alerts or risky workflow settings in a repository that isn't private**: you fix each one, or dismiss the alert on GitHub, and done is as above.
+- **Runs waiting for a runner**: you bring a runner online that can take them, and no runs wait (see [Runners](#runners)).
+- **A version tag on the wrong commit**: if nothing was released from it yet, you move the tag to a commit whose version files say its version, and it points there; if a release is out, you leave it and release the next version, and done is that version coming out on the right commit (see [Version files](#version-files)).
+
+When no alert is open any more but GitHub didn't say what became of one, such as when GitHub no longer has it, the last step is skipped, as Orbit couldn't tell. When Orbit stops following a problem before it's done, such as when **Watch CI** is turned off or the tag is deleted, the last step is missed.
+
+Each open problem on **Operations** lists its steps (a repository with no CI under **CI by repository**, and security alerts under **Security alerts**) under "Playbook: 3 of 6 steps done." (a step skipped isn't counted, and one missed isn't done), each done, to do, skipped or missed, with how, such as "Done: acme-bot said they're on it.", and the first one left marked **Next**. A step is missed when it didn't happen: the default branch failed again within the 3 days, or Orbit stopped following the problem before it passed, such as when its pull request closed. Once a problem closes, **Recently closed** shows its steps, with when Orbit checks that it stayed fixed; what Orbit's comment or issue showed then stays as it was, even after the comment moves on to a new problem. If the problem comes back within the hour, its steps say where it stands again.
+
+Orbit's comment or issue for the agent says what done looks like, under "What done looks like", as a numbered list of the steps the agent can see, such as "1. An agent takes each item. 2. A fix lands on this branch. 3. Every check passes.". Orbit's issues about no CI, security alerts, risky workflow settings and version files have one too, such as "1. An agent takes each item. 2. A fix lands for each alert. 3. GitHub marks each alert fixed or dismissed.". It doesn't change as steps are ticked, so Orbit edits the comment or issue only when what it's about changes. Bit sees each open problem's steps when you ask it, so it can say what's left (see [Ask Bit](#ask-bit)).
 
 A playbook is guidance, never a rule: it changes what Orbit and Bit say, never what Orbit may do, and it posts nothing by itself.
 

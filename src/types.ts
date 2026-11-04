@@ -1474,6 +1474,9 @@ export interface Problem {
    * versions the files there say. */
   tag?: string;
   tagSays?: string[];
+  /** For a release build or a version tag on the wrong commit: the newer
+   * version that took its place, when it closed as that came out. */
+  supersededBy?: string;
   /** For something failing that passed before, as a problem of its own
    * that closed by passing: when it passed, and at which commit. */
   fixedBefore?: { at: string; sha: string } | null;
@@ -1547,9 +1550,10 @@ export interface Lesson {
 /** A step of a problem's playbook (`playbooks.rs`). */
 export type PlaybookStepKind =
   "found" | "told" | "taken" | "fixed" | "passes" | "holds";
-/** Where a step stands. `skipped`: no fix was needed, as it passed at the
- * commit it failed at, or Orbit couldn't tell whether it stayed fixed.
- * `missed`: it failed again, or Orbit stopped following it. */
+/** Where a step stands. `skipped`: not needed, as it passed at the commit
+ * it failed at, or Orbit couldn't tell whether it stayed fixed or what
+ * became of each alert. `missed`: it failed again, or Orbit stopped
+ * following it. */
 export type PlaybookMark = "todo" | "done" | "skipped" | "missed";
 /** One step to done for a problem, in order, ticked from what Orbit saw:
  * who does it, where it stands and when that happened, how, and for
