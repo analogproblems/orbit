@@ -580,6 +580,48 @@ describe("operations page", () => {
     );
     expect(after.textContent).toContain("It stays fixed for 3 days.Not done.");
     expect(within(after).queryByLabelText("Next")).toBeNull();
+    // It passed with no answer from the agent: staying fixed is still
+    // next, though an earlier step was never done.
+    cleanup();
+    api.playbook = freshDemo()
+      .problems!.find((p) => p.id === "demo-problem-3")!
+      .playbook!.map((st) =>
+        st.step === "taken" || st.step === "fixed"
+          ? { ...st, mark: "todo" as const, at: undefined, note: undefined }
+          : st,
+      );
+    show(s);
+    const quiet = screen.getByRole("list", { name: "Recently closed" });
+    expect(quiet.textContent).toContain("The agent takes it.Not done.");
+    expect(quiet.textContent).toContain(
+      "It stays fixed for 3 days.Next. Orbit checks by",
+    );
+    expect(within(quiet).getAllByLabelText("Next")).toHaveLength(1);
+    expect(quiet.textContent).toContain("Playbook: 3 of 6 steps done.");
+    // A step missed isn't done, and one skipped isn't counted.
+    cleanup();
+    api.playbook = api.playbook.map((st) =>
+      st.step === "holds"
+        ? {
+            ...st,
+            mark: "missed" as const,
+            due: undefined,
+            note: "It failed again 2 days later.",
+          }
+        : st.step === "taken" || st.step === "fixed"
+          ? {
+              ...st,
+              mark:
+                st.step === "fixed" ? ("skipped" as const) : ("done" as const),
+            }
+          : st,
+    );
+    show(s);
+    const missed = screen.getByRole("list", { name: "Recently closed" });
+    expect(missed.textContent).toContain("Playbook: 4 of 5 steps done.");
+    expect(missed.textContent).toContain(
+      "It stays fixed for 3 days.Missed: It failed again 2 days later.",
+    );
     // A problem with no playbook says why it closed.
     cleanup();
     api.playbook = [];

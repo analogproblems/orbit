@@ -40,13 +40,32 @@ fn main_ci(sha: &str, state: CiState, failing: &[&str], minutes: i64) -> RepoCi 
         ..Default::default()
     }
 }
-/// What Orbit does on each pass, in order: reads CI, ticks the playbooks,
-/// then brings its comments and issues up to date.
+/// `main` at `sha` read with each check by name, as Orbit reads it:
+/// `checks` say where each one stands.
+fn named(sha: &str, checks: &[(&str, CiState)], minutes: i64) -> RepoCi {
+    let failing: Vec<&str> = checks
+        .iter()
+        .filter(|(_, state)| *state == CiState::Failing)
+        .map(|(n, _)| *n)
+        .collect();
+    let state = if failing.is_empty() {
+        CiState::Passing
+    } else {
+        CiState::Failing
+    };
+    let mut ci = main_ci(sha, state, &failing, minutes);
+    ci.head.named = true;
+    ci.head.checks = checks.iter().map(|(n, st)| (check(n), *st)).collect();
+    ci
+}
+/// What Orbit does on each pass, in order: reads CI, follows each case,
+/// ticks the playbooks, then brings its comments and issues up to date.
 fn pass(s: &mut Snapshot, ci: Option<RepoCi>, minutes: i64) -> bool {
     if let Some(ci) = ci {
         observe(&mut s.problems, &ci, &[], at(minutes));
         s.ci = vec![ci];
     }
+    crate::cases::follow(s, at(minutes));
     let changed = follow(s);
     crate::ops::refresh(&mut s.ops, &s.problems, at(minutes));
     changed
@@ -242,8 +261,16 @@ fn passing_at_the_same_commit_needs_no_fix_and_coming_back_unticks_it() {
     use Mark::*;
     use StepKind::*;
     let mut s = Snapshot::default();
-    pass(&mut s, Some(main_ci(B, CiState::Failing, &[RUST], 0)), 0);
-    pass(&mut s, Some(main_ci(B, CiState::Passing, &[], 10)), 10);
+    pass(&mut s, Some(named(B, &[(RUST, CiState::Failing)], 0)), 0);
+    pass(
+        &mut s,
+        Some(named(
+            B,
+            &[(RUST, CiState::Passing), ("Lint", CiState::Passing)],
+            10,
+        )),
+        10,
+    );
     let p = &s.problems[0];
     let fixed = step(p, Fixed);
     assert_eq!(
@@ -263,6 +290,71 @@ fn passing_at_the_same_commit_needs_no_fix_and_coming_back_unticks_it() {
     for k in [Fixed, Passes, Holds] {
         assert_eq!(step(p, k).mark, Todo, "{k:?}");
     }
+}
+
+/// Stopping failing at the same commit is bad luck only when Orbit saw
+/// what failed pass there: a failed job cancelled or skipped beside one
+/// that passed isn't.
+#[test]
+fn stopping_failing_at_the_same_commit_without_passing_isnt_bad_luck() {
+    let mut s = Snapshot::default();
+    pass(&mut s, Some(named(B, &[(RUST, CiState::Failing)], 0)), 0);
+    pass(
+        &mut s,
+        Some(named(
+            B,
+            &[(RUST, CiState::None), ("Lint", CiState::Passing)],
+            10,
+        )),
+        10,
+    );
+    let p = &s.problems[0];
+    assert!(p.passed());
+    assert_eq!(s.cases[0].end, crate::cases::End::Unclear);
+    let fixed = step(p, StepKind::Fixed);
+    assert_eq!(
+        (fixed.mark, fixed.note.as_str()),
+        (
+            Mark::Skipped,
+            "No fix landed: it stopped failing at the same commit, but Orbit didn't see what failed pass there."
+        )
+    );
+}
+
+/// The pass a problem closes on reads its comment or issue as it was,
+/// with what Orbit found when it checked the agent's fix since the last
+/// pass; only later passes keep what that pass ticked.
+#[test]
+fn a_fix_found_failing_just_before_it_closed_does_not_count() {
+    use crate::ops::FixCheck;
+    let mut s = Snapshot::default();
+    pass(&mut s, Some(main_ci(B, CiState::Failing, &[RUST], 0)), 0);
+    shown(&mut s, 1);
+    answer(&mut s, AnswerKind::Fixed, Some(C), 2);
+    s.ops[0].items[0].answer.as_mut().unwrap().check = Some(FixCheck::Waiting);
+    pass(&mut s, None, 3);
+    assert_eq!(step(&s.problems[0], StepKind::Fixed).mark, Mark::Done);
+    // Orbit checks the fix after that pass: it fails there. Then Orbit
+    // stops following the problem.
+    s.ops[0].items[0].answer.as_mut().unwrap().check = Some(FixCheck::Fails);
+    s.problems[0].closed_at = Some(stamp(at(4)));
+    s.problems[0].closed_reason = Some("Watch CI was turned off.".into());
+    pass(&mut s, None, 4);
+    let p = &s.problems[0];
+    assert!(p.playbook_closed);
+    let fixed = step(p, StepKind::Fixed);
+    let c = &C[..7];
+    let note = format!("The agent said it fixed it in {c}, but checks still fail there.");
+    assert_eq!(
+        (fixed.mark, fixed.note.as_str()),
+        (Mark::Todo, note.as_str())
+    );
+    // Its items are no longer failing, so later passes keep what it ticked.
+    assert_eq!(step(p, StepKind::Told).mark, Mark::Done);
+    pass(&mut s, None, 5);
+    let p = &s.problems[0];
+    assert_eq!(step(p, StepKind::Told).mark, Mark::Done);
+    assert_eq!(step(p, StepKind::Fixed).note, note);
 }
 
 /// While the problem is open, each step says where it stands now: an
@@ -489,7 +581,10 @@ fn the_agent_hears_what_done_looks_like() {
 #[test]
 fn other_kinds_have_their_own_steps_and_bit_hears_whats_left() {
     let texts = |p: &Problem| -> Vec<String> {
-        playbook(p, None, &[]).into_iter().map(|s| s.text).collect()
+        playbook(p, None, None, &[])
+            .into_iter()
+            .map(|s| s.text)
+            .collect()
     };
     let moved = Problem {
         kind: ProblemKind::BaseMoved,
@@ -527,7 +622,7 @@ fn other_kinds_have_their_own_steps_and_bit_hears_whats_left() {
         closed_reason: Some("Passed at 1111111.".into()),
         ..build
     };
-    let steps = playbook(&passed, None, &[]);
+    let steps = playbook(&passed, None, None, &[]);
     assert_eq!(steps[2].mark, Mark::Skipped);
     assert_eq!(steps[3].mark, Mark::Done);
     // Kinds without a playbook yet get none.

@@ -13,20 +13,25 @@
 //! a default branch staying fixed (`crate::outcomes`). An agent's word that
 //! it fixed it counts until Orbit sees checks fail at that commit, or the
 //! commit isn't on the branch (`Answer::check`). A step is to do, done,
-//! skipped (no fix was needed, as it passed at the commit it failed at, or
-//! Orbit couldn't tell whether it stayed fixed), or missed (it failed again
+//! skipped (no fix landed, as it stopped failing at the commit it failed
+//! at, which is bad luck only when its case saw each job that failed pass
+//! again there, or Orbit couldn't tell whether it stayed fixed), or missed
+//! (it failed again
 //! within the days it should have stayed fixed, or Orbit stopped following
 //! it before it passed). It runs before Orbit
 //! refreshes its comments and issues, so the items failing there are this
 //! problem's. Once the problem closes, its comment may move on to another
-//! problem, so the steps it ticked stay ticked; while the problem is open,
-//! or open again within the hour, each step says where it stands now.
+//! problem, so the steps it ticked on the pass it closed on, which still
+//! reads the comment as it was, stay ticked (`Problem.playbook_closed`);
+//! while the problem is open, or open again within the hour, each step
+//! says where it stands now.
 //!
 //! Guidance, never authority: a playbook says what's left, on Operations,
 //! in Orbit's comment or issue for the agent (`done_text`) and to Bit. It
 //! changes no rule, and nothing here posts anything or reads GitHub.
 use crate::{
     broker::clean,
+    cases::{Case, End},
     ci::short,
     ops::{Answer, AnswerKind, FixCheck, Item, ItemKind, Thread},
     outcomes::{Kind, Outcome, Verdict, HOLDS_DAYS},
@@ -71,8 +76,8 @@ pub enum Mark {
     #[default]
     Todo,
     Done,
-    /// Skipped: no fix was needed, as it passed at the commit it failed
-    /// at, or Orbit couldn't tell whether it stayed fixed.
+    /// Skipped: no fix landed, as it stopped failing at the commit it
+    /// failed at, or Orbit couldn't tell whether it stayed fixed.
     Skipped,
     /// It didn't happen: it failed again, or Orbit stopped following it.
     Missed,
@@ -226,9 +231,13 @@ pub fn follow(s: &mut Snapshot) -> bool {
             continue;
         }
         let thread = s.ops.iter().find(|t| t.problem_id == p.id);
-        let next = playbook(p, thread, &s.outcomes);
-        if s.problems[i].playbook != next {
-            s.problems[i].playbook = next;
+        let case = s.cases.iter().find(|c| c.id == p.id);
+        let next = playbook(p, thread, case, &s.outcomes);
+        let closed = !p.is_open();
+        let p = &mut s.problems[i];
+        if p.playbook != next || p.playbook_closed != closed {
+            p.playbook = next;
+            p.playbook_closed = closed;
             changed = true;
         }
     }
@@ -257,7 +266,12 @@ fn mark(mark: Mark, at: Option<&str>, note: impl Into<String>) -> (Mark, Option<
 }
 
 /// A problem's playbook as Orbit reads it now (see the module's docs).
-fn playbook(p: &Problem, t: Option<&Thread>, outcomes: &[Outcome]) -> Vec<Step> {
+fn playbook(
+    p: &Problem,
+    t: Option<&Thread>,
+    case: Option<&Case>,
+    outcomes: &[Outcome],
+) -> Vec<Step> {
     use StepKind::*;
     let items = items(p, t);
     let answers = || items.iter().filter_map(|i| i.answer.as_ref());
@@ -323,10 +337,16 @@ fn playbook(p: &Problem, t: Option<&Thread>, outcomes: &[Outcome]) -> Vec<Step> 
                             None => "The agent said it fixed it.".into(),
                         },
                     ),
+                    // Bad luck only when its case saw each job that
+                    // failed pass again in its own run (`cases::passed_again`).
                     None if p.passed() && p.closed_sha == p.sha => mark(
                         Mark::Skipped,
                         closed,
-                        "It passed when it ran again at the same commit, so no fix was needed.",
+                        if case.is_some_and(|c| c.end == End::Again) {
+                            "It passed when it ran again at the same commit, so no fix was needed."
+                        } else {
+                            "No fix landed: it stopped failing at the same commit, but Orbit didn't see what failed pass there."
+                        },
                     ),
                     None if p.passed() => mark(
                         Mark::Done,
@@ -369,10 +389,13 @@ fn playbook(p: &Problem, t: Option<&Thread>, outcomes: &[Outcome]) -> Vec<Step> 
                 due: None,
             };
             // What the comment or issue showed stays once the problem
-            // closed: it may be about another problem by now.
+            // closed: it may be about another problem by now. The pass it
+            // closes on still reads it as it was, with the latest answers
+            // and what Orbit found checking a fix, so only later passes
+            // keep what that one ticked.
             let shown = matches!(step, Told | Taken | Fixed);
             if let Some(old) = p.playbook.iter().find(|o| o.step == step) {
-                if shown && !p.is_open() && old.mark == Mark::Done {
+                if shown && !p.is_open() && p.playbook_closed && old.mark == Mark::Done {
                     s = Step {
                         text: s.text,
                         ..old.clone()

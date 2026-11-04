@@ -1483,8 +1483,10 @@ export interface Problem {
   lastTime?: LastTime | null;
   lookedBack?: boolean;
   lessons?: Lesson[];
-  /** For failing checks: the steps to done, and where each stands. */
+  /** For failing checks: the steps to done, and where each stands, and
+   * whether they were ticked since it closed. */
   playbook?: PlaybookStep[];
+  playbookClosed?: boolean;
 }
 /** How a case ended (`cases.rs`). */
 export type CaseEnd =

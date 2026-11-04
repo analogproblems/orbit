@@ -763,22 +763,26 @@ const markDot: Record<
 
 /** A problem's playbook: the steps to done, in order, each ticked from
  * what Orbit saw. The first one left to do is next while the problem is
- * open, or while Orbit waits to see it stay fixed; once it closed any
- * other is not done. */
+ * open; once it closed, only one Orbit waits on, to see it stay fixed, is
+ * next, and any other left is not done. The count leaves out steps
+ * skipped, and a missed step isn't done. */
 export function Playbook({ p }: { p: Problem }) {
   const steps = p.playbook ?? [];
   if (!steps.length) return null;
   const open = !p.closedAt;
-  const next = steps.findIndex((st) => st.mark === "todo");
-  const done = steps.filter((st) => st.mark !== "todo").length;
+  const next = steps.findIndex(
+    (st) => st.mark === "todo" && (open || !!st.due),
+  );
+  const done = steps.filter((st) => st.mark === "done").length;
+  const counted = steps.filter((st) => st.mark !== "skipped").length;
   return (
     <VStack gap={1}>
       <Text type="supporting" weight="medium">
-        Playbook: {done} of {steps.length} steps done.
+        Playbook: {done} of {counted} steps done.
       </Text>
       {steps.map((st, i) => {
         const dot =
-          i === next && (open || st.due)
+          i === next
             ? { variant: "accent" as const, label: "Next" }
             : st.mark === "todo" && !open
               ? { variant: "neutral" as const, label: "Not done" }

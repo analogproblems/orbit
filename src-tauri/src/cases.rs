@@ -230,17 +230,95 @@ pub fn tracked(kind: ProblemKind) -> bool {
 /// of the whole name, so two checks are never one. A repository's name
 /// holds no `#` or `:`, so the two never meet, whatever a check is named.
 pub fn luck_id(repo: &str, check: &str) -> String {
-    use sha2::{Digest, Sha256};
     let repo = repo.to_lowercase();
     if clean(check, 160) == check {
         return format!("luck:{repo}:{check}");
     }
-    let hash: String = Sha256::digest(check.as_bytes())
+    format!("luck:{repo}#{}:{}", name_hash(check), clean(check, 100))
+}
+
+/// The start of a hash of a check's full name, in hex.
+fn name_hash(check: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(check.as_bytes())
         .iter()
         .take(8)
         .map(|b| format!("{b:02x}"))
-        .collect();
-    format!("luck:{repo}#{hash}:{}", clean(check, 100))
+        .collect()
+}
+
+/// The id `luck_id` gave a check before its hashed form changed:
+/// `luck:<repo>:<start> #<hash>`, which a check named like that could
+/// spell too.
+fn old_luck_id(repo: &str, check: &str) -> String {
+    if clean(check, 160) == check {
+        return luck_id(repo, check);
+    }
+    format!(
+        "luck:{}:{} #{}",
+        repo.to_lowercase(),
+        clean(check, 100),
+        name_hash(check)
+    )
+}
+
+/// Brings bad luck's lessons saved before their ids changed (`luck_id`) up
+/// to date as Orbit loads its state, with what you forgot, so a lesson
+/// Orbit has isn't learned again beside it and one you forgot stays
+/// forgotten. A lesson knows its check's full name. What you forgot keeps
+/// only an id, so Orbit matches it by the checks the cases and lessons
+/// name, and forgets each check it could be, keeping the old id too, as a
+/// check could be named like it. Says whether anything changed.
+pub fn upgrade(s: &mut Snapshot) -> bool {
+    let mut moved: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let lessons = s.lessons.iter().map(|l| (&l.repo, &l.check));
+    let cases = s.cases.iter().flat_map(|c| {
+        let failed = c.failed.iter().map(|f| &f.name);
+        c.checks
+            .iter()
+            .chain(&c.last)
+            .chain(failed)
+            .map(move |n| (&c.repo, n))
+    });
+    for (repo, check) in lessons.chain(cases).filter(|(_, c)| !c.is_empty()) {
+        let (old, new) = (old_luck_id(repo, check), luck_id(repo, check));
+        let ids = moved.entry(old.clone()).or_default();
+        if old != new && !ids.contains(&new) {
+            ids.push(new);
+        }
+    }
+    let mut changed = false;
+    let renamed = |l: &mut Lesson| {
+        let id = luck_id(&l.repo, &l.check);
+        let old = l.kind == LessonKind::Luck && !l.check.is_empty() && l.id != id;
+        if old {
+            l.id = id;
+        }
+        old
+    };
+    for l in s
+        .lessons
+        .iter_mut()
+        .chain(s.problems.iter_mut().flat_map(|p| p.lessons.iter_mut()))
+    {
+        changed |= renamed(l);
+    }
+    let mut forgot = s.forgotten_lessons.clone();
+    for f in &s.forgotten_lessons {
+        for id in moved.get(&f.id).into_iter().flatten() {
+            match forgot.iter_mut().find(|g| &g.id == id) {
+                Some(g) if g.at >= f.at => continue,
+                Some(g) => g.at = f.at.clone(),
+                None => forgot.push(Forgot {
+                    id: id.clone(),
+                    at: f.at.clone(),
+                }),
+            }
+            changed = true;
+        }
+    }
+    s.forgotten_lessons = forgot;
+    changed
 }
 
 /// Keeps the cases up to date, says what happened last time on each new
