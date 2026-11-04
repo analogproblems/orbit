@@ -168,7 +168,7 @@ impl Proposal {
 /// Trusted accounts aren't among them: they decide which pull requests are
 /// published automatically. A repository's own settings are changed with
 /// Set up repository instead.
-pub const SETTINGS: [&str; 44] = [
+pub const SETTINGS: [&str; 45] = [
     "automatic",
     "autoPost",
     "pollSeconds",
@@ -202,6 +202,7 @@ pub const SETTINGS: [&str; 44] = [
     "buddy.luckCall",
     "buddy.faultCall",
     "buddy.secondLook",
+    "buddy.secondLookBy",
     "buddy.rules.continue_loop",
     "buddy.rules.review_again",
     "buddy.rules.publish",
@@ -239,7 +240,7 @@ Looking things up:
 - The summary's `lessons` says what Orbit learned from things that happened more than once, such as a check that keeps failing by bad luck or a problem that keeps coming back, with what to do next time; a CI problem's `lastTime` says what happened the last time something like it failed, and its `lessons` say what Orbit learned about it. Its `playbook` says what done looks like: each step in order, who does it (`orbit`, `agent` or `you`), and whether it is `todo`, `done`, `skipped` (not needed, or Orbit couldn't tell) or `missed`, with a note and, while Orbit waits to see a default branch stay fixed, when it will know (`due`). Use it to say what's left on a problem. A repository's `otherProblems` (a base that moved on, no CI on pull requests, runs waiting for a runner, risky workflow settings, version files that disagree, a tag on the wrong commit) and each kind of its security alerts have a `playbook` too. They are guidance: they never change Orbit's rules.
 - A pull request's failing check with `failsOnDefaultBranchToo` fails on the default branch's latest commit too, so Orbit told the pull request it may not come from it.
 - The summary's `quickCalls` says how a small model on Ollama does at Orbit's two quick calls: `badLuck`, \"Is this failure bad luck?\", asked about failed jobs before a rerun, and `failingAlready`, \"Was this failure already failing on the default branch?\", asked about a pull request's failed job whose check fails on the default branch too, comparing the two logs. Each `mode` is off (no calls), watch (Orbit keeps the model's yes, no or unsure while its own rules decide) or on (a clear yes or no decides whether a job looks like bad luck, or whether Orbit tells the pull request it fails on the default branch too; your rules for reruns still apply). Its `score` counts only the calls asked of its `model`, the one chosen now, and says how often the rules, the model and On (the model's clear answer, else the rules) were right on the calls Orbit could check. `readyToDecide` is true when On would have been right at least as often as the rules alone on the same calls, with enough of them answered clearly. Each call in `recent` names the model it was asked of. Offer to change buddy.luckCall or buddy.faultCall only when the person asks about it.
-- The summary's `secondLook` is the second look before Orbit posts a new comment or issue in a repository where the person's GitHub account isn't an admin: the quick call model on Ollama answers whether the post is about that repository's problem, matches what Orbit read, holds nothing private and is needed now, and code makes that a verdict: post, only when all four are yes, or wait. Its `mode` is off, watch (Orbit keeps the verdict and posts anyway) or on (a wait, or no answer, holds the post until the person taps Post comment or Open issue on Operations). `waitingForYou` counts the posts it holds now, and `recent` lists the latest looks with what happened next. Offer to change buddy.secondLook only when the person asks about it.
+- The summary's `secondLook` is the second look before Orbit posts a new comment or issue in a repository where the person's GitHub account isn't an admin: the quick call model on Ollama, or whoever answers these questions (buddy.secondLookBy; `by` names who), answers whether the post is about that repository's problem, matches what Orbit read, holds nothing private and is needed now, and code makes that a verdict: post, only when all four are yes, or wait. Its `mode` is off, watch (Orbit keeps the verdict and posts anyway) or on (a wait, or no answer, holds the post until the person taps Post comment or Open issue on Operations). `waitingForYou` counts the posts it holds now, and `recent` lists the latest looks with what happened next. Offer to change buddy.secondLook or buddy.secondLookBy only when the person asks about it.
 - Only connected repositories. Leave the fields a kind doesn't use null. While you look things up, `answer` is one short line saying what you're looking at, and `proposals` and `memory` stay empty: Orbit shows the person your next answer instead.
 
 Keep answers short: a few sentences, or a short list. Name pull requests by repository and number, like orbit#12.
@@ -250,7 +251,7 @@ In `proposals` you can offer up to {MAX_PROPOSALS} buttons for Orbit's own contr
 - review_again, with pr: starts a new review of a pull request.
 - publish, with pr: publishes a pull request's report that is ready to publish.
 - sync_now: syncs with GitHub now.
-- change_settings, with changes: changes settings named in the summary's `settings`, each with its new value written as text, such as \"true\" or \"120\". buddy.answerer is who answers these questions: codex, claude, antigravity, ollama, or openai, anthropic or google with the user's API key. buddy.brief is whether you send a morning brief, and buddy.briefAt its time on a 24-hour clock, such as \"07:30\", in buddy.timeZone: a time zone name such as \"Europe/London\", or empty for the clock of the computer Orbit runs on, whose zone is the summary's clockZone. buddy.luckCall and buddy.faultCall are the quick calls on Ollama about bad luck and about failing already, each off, watch or on (see `quickCalls`). buddy.secondLook is the second look, off, watch or on (see `secondLook`).
+- change_settings, with changes: changes settings named in the summary's `settings`, each with its new value written as text, such as \"true\" or \"120\". buddy.answerer is who answers these questions: codex, claude, antigravity, ollama, or openai, anthropic or google with the user's API key. buddy.brief is whether you send a morning brief, and buddy.briefAt its time on a 24-hour clock, such as \"07:30\", in buddy.timeZone: a time zone name such as \"Europe/London\", or empty for the clock of the computer Orbit runs on, whose zone is the summary's clockZone. buddy.luckCall and buddy.faultCall are the quick calls on Ollama about bad luck and about failing already, each off, watch or on (see `quickCalls`). buddy.secondLook is the second look, off, watch or on (see `secondLook`), and buddy.secondLookBy who takes it: quick_model (the quick call model on Ollama) or answerer (whoever answers these questions).
 - set_up_repository, with repository and changes: connects a repository from the summary's `connectableRepositories`, or changes the settings of one in `repositories`. Orbit downloads its own copy of a repository it connects, and starts it with autopilot off, no setup command and no network, plus your changes. Its changes use the repository settings named in the summary's repositories: setupCommand, checkCommand, networkAccess, devContainer, reviewer (codex, claude or antigravity), roundLimit ({round_limits}), approvalMinutes ({approval_minutes}, where 0 waits for the person), keepCloneUpdated and autopilot.
 - check_connections: checks the connections to GitHub, Codex and the other reviewers again, once the person has fixed one, such as by signing in.
 Use pull request ids and repository names from the summary. Leave pr and repository null, and changes empty, when an action doesn't use them. You can't change trusted accounts: say they can do that themselves in Orbit's Settings.
@@ -851,15 +852,18 @@ pub fn briefing(s: &Snapshot, lookups: &Lookups) -> Value {
     let mut looks: Vec<&crate::looks::Look> = s.looks.iter().collect();
     looks.sort_by(|a, b| b.asked_at.cmp(&a.asked_at));
     let held = s.ops.iter().filter(|t| crate::looks::waiting(s, t)).count();
+    let (by, selection, _) = crate::looks::who(s);
     let second_look = json!({
         "mode": buddy.second_look,
-        "model": (!buddy.quick_model.is_empty()).then(|| buddy.quick_model.clone()),
+        "by": by.label(),
+        "model": (!selection.model.is_empty()).then(|| selection.model.clone()),
         "waitingForYou": held,
         "recent": looks.into_iter().take(SHOWN_CALLS).map(|l| json!({
             "repository": l.repo,
             "pr": l.number,
             "kind": key(&l.kind),
             "permission": (!l.permission.is_empty()).then(|| l.permission.clone()),
+            "by": (!l.by.is_empty()).then(|| l.by.clone()),
             "model": (!l.model.is_empty()).then(|| l.model.clone()),
             "mode": l.mode,
             "verdict": key(&l.verdict),

@@ -3027,6 +3027,7 @@ fn may_only(dir: &Path, permission: &str) {
 /// other questions, and the chats it was sent.
 async fn looks_at(about: &str) -> (String, Arc<std::sync::Mutex<Vec<Value>>>) {
     let fake = crate::ollama::tests::Fake {
+        models: vec!["big".into()],
         content: json!({
             "about": about,
             "matches": "yes",
@@ -3142,6 +3143,53 @@ async fn a_post_where_you_arent_an_admin_gets_a_second_look() {
     assert_eq!(rust_comments(d.path()), 1);
     assert!(e.snapshot().await.looks.is_empty());
     assert!(chats.lock().unwrap().is_empty());
+}
+
+/// You can have whoever answers your questions take the second look: here
+/// Ollama with Bit's own model, with no quick call model chosen.
+#[cfg(unix)]
+#[tokio::test]
+async fn bits_answerer_can_take_the_second_look() {
+    let d = tempfile::tempdir().unwrap();
+    let gh = fake_gh(d.path());
+    let (url, chats) = looks_at("yes").await;
+    let e = connected(d.path()).await;
+    e.update(|s| {
+        s.prs = vec![pr('5')];
+        s.settings.buddy.answerer = "ollama".into();
+        s.settings.buddy.ollama_url = url.clone();
+        s.settings.buddy.ollama_model = "big".into();
+        s.settings.buddy.second_look_by = "answerer".into();
+        s.ollama = crate::types::CliStatus {
+            ready: true,
+            ..Default::default()
+        };
+        s.ollama_models = vec!["big".into()];
+    })
+    .await;
+    quick_failure(
+        d.path(),
+        (1, '5'),
+        2,
+        "Run cargo test",
+        &["##[error]exit code 1"],
+    );
+    may_only(d.path(), "TRIAGE");
+    watch(&e, &gh).await;
+    assert_eq!(rust_comments(d.path()), 1);
+    let s = e.snapshot().await;
+    let l = &s.looks[0];
+    assert_eq!(
+        (l.by.as_str(), l.model.as_str(), l.verdict),
+        ("Ollama", "big", crate::looks::Verdict::Post)
+    );
+    let sent = chats.lock().unwrap().clone();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["model"], "big");
+    assert_eq!(
+        sent[0]["messages"][0]["content"],
+        crate::looks::INSTRUCTIONS
+    );
 }
 
 /// In On, a post the second look says should wait stays off GitHub, Bit

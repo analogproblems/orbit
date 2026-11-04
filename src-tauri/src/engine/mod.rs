@@ -251,6 +251,8 @@ pub struct Engine {
     writing_up: AtomicBool,
     /// The Codex thread writing a pull request up.
     writing_thread: std::sync::Mutex<Option<writeup::Writing>>,
+    /// The Codex thread taking a second look (`crate::looks`).
+    looking_thread: std::sync::Mutex<Option<writeup::Writing>>,
     /// Write-ups that failed, by repository and pull request: what they
     /// were made from and how many times.
     write_failed: std::sync::Mutex<HashMap<(String, u64), (String, u32)>>,
@@ -389,6 +391,7 @@ impl Engine {
             queue_retry: std::sync::Mutex::new(HashMap::new()),
             writing_up: AtomicBool::new(false),
             writing_thread: std::sync::Mutex::new(None),
+            looking_thread: std::sync::Mutex::new(None),
             write_failed: std::sync::Mutex::new(HashMap::new()),
             synced_repos: Mutex::new(HashSet::new()),
             preparing: std::sync::Mutex::new(HashMap::new()),

@@ -484,7 +484,12 @@ export interface Buddy {
   /** The second look before Bit posts something new where Orbit's
    * sign-in isn't an admin. */
   secondLook: CallMode;
+  /** Who takes the second look: the quick call model on Ollama, or
+   * whoever answers your questions. */
+  secondLookBy: SecondLookBy;
 }
+/** Who takes the second look. */
+export type SecondLookBy = "quick_model" | "answerer";
 /** One of Orbit's own controls, offered for something that needs you. */
 export type Fix =
   | "continue_loop"
@@ -599,6 +604,12 @@ export const defaultBuddy: Buddy = {
   luckCall: "watch",
   faultCall: "watch",
   secondLook: "watch",
+  secondLookBy: "quick_model",
+};
+/** How Settings names who takes the second look. */
+export const lookers: Record<SecondLookBy, string> = {
+  quick_model: "The quick call model on Ollama",
+  answerer: "Whoever answers your questions",
 };
 /** How Settings names each quick call mode. */
 export const callModes: Record<CallMode, string> = {
@@ -2505,6 +2516,9 @@ export interface SecondLook {
   permission: string;
   askedAt: string;
   mode: "watch" | "on";
+  /** Who Orbit asked, such as Ollama or Codex; empty from before Orbit
+   * kept it, which was Ollama. */
+  by?: string;
   /** The model asked, or empty when none was chosen. */
   model: string;
   answers?: {

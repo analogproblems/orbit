@@ -219,6 +219,66 @@ async fn codex_writes_up_a_merged_pull_request_once_in_a_thread_that_cant_change
     assert_eq!(e.snapshot().await.ledger.version, 1);
 }
 
+/// A second look Codex takes runs in a thread of its own, as a write-up
+/// does, in its own folder, and never takes a write-up's events.
+#[tokio::test]
+async fn a_second_look_asks_codex_in_a_thread_that_cant_change_anything() {
+    let (dir, e, rpc) = fixture(Writer::Codex).await;
+    let selection = crate::models::ModelSelection {
+        model: "model-a".into(),
+        effort: "high".into(),
+    };
+    let asking = tokio::spawn({
+        let e = e.clone();
+        async move {
+            e.codex_once(
+                super::writeup::Once::Look,
+                crate::looks::INSTRUCTIONS,
+                "What Orbit read: …",
+                &crate::looks::schema(),
+                &selection,
+                Duration::from_secs(5),
+            )
+            .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while e.looking_thread.lock().unwrap().is_none() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("never started"));
+    assert!(e.writing_thread.lock().unwrap().is_none());
+    let answer = r#"{"about":"yes","matches":"yes","nothingPrivate":"yes","needed":"no"}"#;
+    e.event(json!({"method": "item/completed", "params": {
+        "threadId": "fixture-thread",
+        "item": {"type": "agentMessage", "id": "m1", "text": answer},
+    }}))
+    .await;
+    e.event(json!({"method": "turn/completed", "params": {
+        "threadId": "fixture-thread",
+        "turn": {"id": "fixture-turn", "status": "completed"},
+    }}))
+    .await;
+    assert_eq!(asking.await.unwrap().as_deref(), Ok(answer));
+    assert!(e.looking_thread.lock().unwrap().is_none());
+
+    let start = &sent(&rpc, "thread/start").await[0];
+    assert_eq!(start["cwd"], json!(dir.path().join("state").join("looks")));
+    assert_eq!(start["sandbox"], "read-only");
+    assert_eq!(start["approvalPolicy"], "never");
+    assert_eq!(start["config"]["web_search"], "disabled");
+    assert_eq!(start["developerInstructions"], crate::looks::INSTRUCTIONS);
+    let turn = &sent(&rpc, "turn/start").await[0];
+    assert_eq!(turn["outputSchema"], crate::looks::schema());
+    assert_eq!(turn["input"][0]["text"], "What Orbit read: …");
+    assert_eq!(
+        sent(&rpc, "thread/archive").await[0]["threadId"],
+        "fixture-thread"
+    );
+}
+
 #[tokio::test]
 async fn a_repository_disconnected_during_a_pass_is_neither_sent_nor_kept() {
     let (dir, e, rpc) = fixture(Writer::Codex).await;

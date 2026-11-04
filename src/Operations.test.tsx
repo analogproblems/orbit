@@ -1229,6 +1229,19 @@ describe("operations page", () => {
     expect(lookText({ ...look, held: false }, false)).toContain(
       "It isn’t on GitHub yet.",
     );
+    // Whoever answers your questions took it.
+    expect(
+      lookText(
+        { ...look, by: "the Anthropic API", model: "big", verdict: "post" },
+        false,
+      ),
+    ).toMatch(/^Second look by big on the Anthropic API, in On: post it\./);
+    expect(
+      lookText({ ...look, by: "Codex", model: "", verdict: "post" }, false),
+    ).toMatch(/^Second look by Codex, in On: post it\./);
+    expect(lookText({ ...look, problem: "", dropped: true }, false)).toContain(
+      "It never went up, as Orbit had nothing left to say there.",
+    );
     const s = freshDemo();
     const mode = (secondLook: CallMode, quickModel = "small") =>
       lookModeText({
@@ -1244,6 +1257,19 @@ describe("operations page", () => {
     );
     expect(mode("watch", "")).toBe(
       "It’s in Watch, but no quick call model is chosen, so Orbit takes no look yet.",
+    );
+    const by = lookModeText({
+      ...s.settings,
+      buddy: {
+        ...s.settings.buddy!,
+        secondLook: "on",
+        secondLookBy: "answerer",
+        answerer: "claude",
+        quickModel: "",
+      },
+    });
+    expect(by).toBe(
+      "It’s on, with Claude Code, who answers your questions: a post it says should wait, or that gets no answer, waits for your tap.",
     );
   });
 

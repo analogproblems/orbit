@@ -36,7 +36,30 @@ const USAGE_PAUSE: f64 = 90.0;
 const TRIES: u32 = 2;
 const DISCONNECTED: &str = "Codex disconnected.";
 
-/// The Codex thread writing a pull request up.
+/// Which of Codex's one-off threads (`Engine::codex_once`): a write-up's,
+/// or a second look's (`crate::looks`). Each has its own slot and folder,
+/// so neither takes the other's events.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Once {
+    WriteUp,
+    Look,
+}
+impl Once {
+    fn folder(self) -> &'static str {
+        match self {
+            Once::WriteUp => "writeups",
+            Once::Look => "looks",
+        }
+    }
+    /// What didn't start, when Codex's extra tools couldn't be turned off.
+    fn unstarted(self) -> &'static str {
+        match self {
+            Once::WriteUp => "the write-up didn't start",
+            Once::Look => "the second look didn't start",
+        }
+    }
+}
+/// A one-off Codex thread: writing a pull request up, or a second look.
 pub(super) struct Writing {
     thread: String,
     /// Codex's latest message, its answer once the turn completes.
@@ -298,16 +321,47 @@ impl Engine {
         .await;
     }
     /// Asks Codex for a write-up in a thread of its own that can't change
-    /// anything: read-only, in an empty folder of Orbit's, with no network,
-    /// no approvals and none of Codex's other tools. Returns the answer
-    /// and the model.
+    /// anything (`codex_once`). Returns the answer and the model.
     async fn write_with_codex(
         &self,
         input: &str,
         selection: &ModelSelection,
     ) -> Result<(Value, String), String> {
+        let text = self
+            .codex_once(
+                Once::WriteUp,
+                &writeup::instructions(),
+                input,
+                &writeup::schema(),
+                selection,
+                WRITE_TIMEOUT,
+            )
+            .await?;
+        let output = serde_json::from_str(&text)
+            .map_err(|_| "Codex's answer wasn't in the shape asked for.".to_string())?;
+        Ok((output, selection.model.clone()))
+    }
+    fn once_slot(&self, once: Once) -> &std::sync::Mutex<Option<Writing>> {
+        match once {
+            Once::WriteUp => &self.writing_thread,
+            Once::Look => &self.looking_thread,
+        }
+    }
+    /// Asks Codex one thing in a thread of its own that can't change
+    /// anything: read-only, in an empty folder of Orbit's for `once`, with
+    /// no network, no approvals and none of Codex's other tools, answering
+    /// in `schema`. Returns its answer as text.
+    pub(super) async fn codex_once(
+        &self,
+        once: Once,
+        instructions: &str,
+        input: &str,
+        schema: &Value,
+        selection: &ModelSelection,
+        timeout: Duration,
+    ) -> Result<String, String> {
         let rpc = self.client().await?;
-        let folder = self.root.join("writeups");
+        let folder = self.root.join(once.folder());
         std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
         let codex_config = extras::codex_config(&rpc, &folder).await?;
         let thread = rpc
@@ -319,7 +373,7 @@ impl Engine {
                     "sandbox": "read-only",
                     "model": selection.model,
                     "config": crate::ask::thread_config(&selection.effort, &codex_config),
-                    "developerInstructions": writeup::instructions(),
+                    "developerInstructions": instructions,
                 }),
             )
             .await?;
@@ -332,8 +386,8 @@ impl Engine {
             selection.verify_response(&thread)?;
             extras::check(&rpc, &thread_id, None)
                 .await
-                .map_err(|left| left.message("the write-up didn't start"))?;
-            *self.writing_thread.lock().unwrap() = Some(Writing {
+                .map_err(|left| left.message(once.unstarted()))?;
+            *self.once_slot(once).lock().unwrap() = Some(Writing {
                 thread: thread_id.clone(),
                 text: String::new(),
                 done: Some(done),
@@ -346,11 +400,11 @@ impl Engine {
                         "model": selection.model,
                         "effort": selection.effort,
                         "input": [{"type": "text", "text": input}],
-                        "outputSchema": writeup::schema(),
+                        "outputSchema": schema,
                     }),
                 )
                 .await?;
-            match tokio::time::timeout(WRITE_TIMEOUT, answer).await {
+            match tokio::time::timeout(timeout, answer).await {
                 Ok(Ok(answer)) => answer,
                 Ok(Err(_)) => Err("Codex stopped answering.".into()),
                 Err(_) => {
@@ -368,31 +422,36 @@ impl Engine {
             }
         }
         .await;
-        *self.writing_thread.lock().unwrap() = None;
+        *self.once_slot(once).lock().unwrap() = None;
         let _ = rpc
             .request_timeout("thread/archive", json!({"threadId": thread_id}), 10)
             .await;
-        let output = serde_json::from_str(&result?)
-            .map_err(|_| "Codex's answer wasn't in the shape asked for.".to_string())?;
-        Ok((output, selection.model.clone()))
+        result
     }
-    /// Ends a Codex write-up at once when Codex goes away, instead of
-    /// waiting out its time limit.
+    /// Ends a Codex write-up, and a second look, at once when Codex goes
+    /// away, instead of waiting out its time limit.
     pub(super) fn end_codex_write_up(&self) {
-        let done = self
-            .writing_thread
-            .lock()
-            .unwrap()
-            .take()
-            .and_then(|mut w| w.done.take());
-        if let Some(done) = done {
-            let _ = done.send(Err(DISCONNECTED.into()));
+        for once in [Once::WriteUp, Once::Look] {
+            let done = self
+                .once_slot(once)
+                .lock()
+                .unwrap()
+                .take()
+                .and_then(|mut w| w.done.take());
+            if let Some(done) = done {
+                let _ = done.send(Err(DISCONNECTED.into()));
+            }
         }
     }
     /// Applies a Codex notification from the thread writing a pull request
-    /// up. Returns whether it was that thread's.
+    /// up, or taking a second look. Returns whether it was one of theirs.
     pub(super) fn write_up_event(&self, thread: Option<&str>, method: &str, p: &Value) -> bool {
-        let mut writing = self.writing_thread.lock().unwrap();
+        [Once::WriteUp, Once::Look]
+            .into_iter()
+            .any(|once| self.once_event(once, thread, method, p))
+    }
+    fn once_event(&self, once: Once, thread: Option<&str>, method: &str, p: &Value) -> bool {
+        let mut writing = self.once_slot(once).lock().unwrap();
         let Some(w) = writing
             .as_mut()
             .filter(|w| thread == Some(w.thread.as_str()))

@@ -89,17 +89,11 @@ impl Engine {
         let Some(w) = wanted else {
             return (true, None);
         };
-        let answers = match &w.ask {
-            Some(ask) => crate::ollama::answer(
-                &ask.url,
-                &ask.model,
-                crate::looks::INSTRUCTIONS,
-                &ask.prompt,
-                &crate::looks::schema(),
-                crate::looks::TIMEOUT,
-            )
-            .await
-            .and_then(|content| crate::looks::parse(&content)),
+        let answers = match &w.prompt {
+            Some(prompt) => self
+                .look_answer(&w, prompt)
+                .await
+                .and_then(|content| crate::looks::parse(&content)),
             None => Err(w.why.clone()),
         };
         let mut out = (false, None);
@@ -128,6 +122,64 @@ impl Engine {
             return (false, out.1);
         }
         out
+    }
+    /// Asks whoever takes a second look (`crate::looks::who`) for its
+    /// answers, as text: Ollama, or Bit's answerer, each answering only in
+    /// `looks::schema` with no tools, as Bit's own questions are.
+    async fn look_answer(&self, w: &crate::looks::Wanted, prompt: &str) -> Result<String, String> {
+        use crate::{buddy::Answerer, looks, types::Provider};
+        let schema = looks::schema();
+        let instructions = looks::INSTRUCTIONS;
+        let model = &w.selection.model;
+        match w.by {
+            looks::Who::Quick | looks::Who::Bit(Answerer::Ollama) => {
+                crate::ollama::answer(&w.url, model, instructions, prompt, &schema, looks::TIMEOUT)
+                    .await
+            }
+            looks::Who::Bit(Answerer::Codex) => {
+                self.codex_once(
+                    super::writeup::Once::Look,
+                    instructions,
+                    prompt,
+                    &schema,
+                    &w.selection,
+                    looks::BIT_TIMEOUT,
+                )
+                .await
+            }
+            looks::Who::Bit(Answerer::Api(api)) => {
+                let setup = self.apis.lock().unwrap().clone();
+                let key = setup.key(api).await?.ok_or_else(|| {
+                    format!(
+                        "Your {} API key isn't in your password store any more.",
+                        api.company()
+                    )
+                })?;
+                crate::api::answer(
+                    api,
+                    setup.base(api),
+                    &key,
+                    model,
+                    instructions,
+                    prompt,
+                    &schema,
+                    looks::BIT_TIMEOUT,
+                )
+                .await
+            }
+            looks::Who::Bit(a) => {
+                let by = a.provider().unwrap_or(Provider::Claude);
+                self.cli_once(
+                    by,
+                    prompt,
+                    instructions,
+                    &schema,
+                    &w.selection,
+                    looks::BIT_TIMEOUT,
+                )
+                .await
+            }
+        }
     }
     /// Whether `planned` is still the next write once Orbit has looked on
     /// GitHub, as rules, settings and answers may have changed meanwhile.

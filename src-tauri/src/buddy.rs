@@ -127,6 +127,9 @@ pub const RULES: [&str; 3] = ["do_it", "ask_first", "leave_it"];
 /// model, asks and keeps the answer while the rules decide, or lets a
 /// clear answer decide.
 pub const CALL_MODES: [&str; 3] = ["off", "watch", "on"];
+/// Who takes the second look (`crate::looks`): the quick call model on
+/// Ollama, or whoever answers the questions you type.
+pub const LOOKERS: [&str; 2] = ["quick_model", "answerer"];
 /// Rounds a fix's Continue loop allows, as the button on the loops page does.
 pub const CONTINUE_ROUNDS: u32 = 2;
 /// Lines Bit's general memory holds.
@@ -324,6 +327,8 @@ pub struct Buddy {
     /// One of `CALL_MODES`, for the second look before Bit posts where
     /// Orbit's sign-in isn't an admin (`crate::looks`).
     pub second_look: String,
+    /// One of `LOOKERS`: who takes the second look.
+    pub second_look_by: String,
 }
 impl Default for Buddy {
     fn default() -> Self {
@@ -349,6 +354,7 @@ impl Default for Buddy {
             luck_call: "watch".into(),
             fault_call: "watch".into(),
             second_look: "watch".into(),
+            second_look_by: "quick_model".into(),
         }
     }
 }
@@ -424,13 +430,20 @@ impl Buddy {
                 self.second_look
             ));
         }
+        if !LOOKERS.contains(&self.second_look_by.as_str()) {
+            return Err(format!(
+                "'{}' can't take the second look.",
+                self.second_look_by
+            ));
+        }
         Ok(())
     }
-    /// Whether Orbit makes quick calls or second looks on Ollama, or would
-    /// once a model is chosen: Settings then lists Ollama's models.
+    /// Whether Orbit makes quick calls, or second looks with the quick
+    /// call model, on Ollama, or would once a model is chosen: Settings
+    /// then lists Ollama's models.
     pub fn wants_quick_calls(&self) -> bool {
-        let modes = [&self.luck_call, &self.fault_call, &self.second_look];
-        self.enabled && modes.iter().any(|m| m.as_str() != "off")
+        let looks = self.second_look != "off" && self.second_look_by == "quick_model";
+        self.enabled && (self.luck_call != "off" || self.fault_call != "off" || looks)
     }
     /// Who answers the questions you type.
     pub fn answered_by(&self) -> Answerer {
@@ -519,6 +532,9 @@ impl Buddy {
         if !CALL_MODES.contains(&self.second_look.as_str()) {
             self.second_look = default.second_look;
         }
+        if !LOOKERS.contains(&self.second_look_by.as_str()) {
+            self.second_look_by = default.second_look_by;
+        }
     }
 }
 /// Only supplied fields change.
@@ -546,6 +562,7 @@ pub struct BuddyPatch {
     pub luck_call: Option<String>,
     pub fault_call: Option<String>,
     pub second_look: Option<String>,
+    pub second_look_by: Option<String>,
 }
 impl BuddyPatch {
     pub fn apply(self, buddy: &mut Buddy) {
@@ -599,6 +616,9 @@ impl BuddyPatch {
         }
         if let Some(v) = self.second_look {
             buddy.second_look = v.trim().to_string();
+        }
+        if let Some(v) = self.second_look_by {
+            buddy.second_look_by = v.trim().to_string();
         }
         for (api, v) in [
             (Api::OpenAi, self.openai_model),

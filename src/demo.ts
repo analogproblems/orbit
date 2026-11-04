@@ -2057,6 +2057,7 @@ export function demoCi(
       permission: "WRITE",
       askedAt: ago(19),
       mode: "watch",
+      by: "Ollama",
       model: "llama3.2:3b",
       answers: {
         about: "yes",
@@ -2078,6 +2079,7 @@ export function demoCi(
       permission: "WRITE",
       askedAt: ago(6 * 24 * 60 + 2 * 60 + 5),
       mode: "watch",
+      by: "Ollama",
       model: "llama3.2:3b",
       answers: {
         about: "yes",

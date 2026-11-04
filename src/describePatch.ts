@@ -4,6 +4,7 @@ import {
   callModes,
   type CallMode,
   fixRuleLabels,
+  lookers,
   providerLabels,
   securitySettings,
   type Baseline,
@@ -16,6 +17,7 @@ import {
   type RepositoryPatch,
   type RuledAction,
   ruleLabel,
+  type SecondLookBy,
   type SettingsPatch,
   type WriteUps,
   writerLabels,
@@ -67,6 +69,7 @@ const buddyLabels: Record<keyof Buddy, string> = {
   luckCall: "Quick call on bad luck",
   faultCall: "Quick call on failing already",
   secondLook: "Second look before posting",
+  secondLookBy: "Who takes the second look",
 };
 
 /** A buddy setting's value as the settings page names it, such as Pink. */
@@ -80,15 +83,17 @@ function buddyValue(field: string, v: unknown): unknown {
           ? bitHats[v as BuddyHat]
           : field === "look"
             ? bitLooks[v as BuddyLook]?.label
-            : field === "luckCall" ||
-                field === "faultCall" ||
-                field === "secondLook"
-              ? callModes[v as CallMode]
-              : field === "timeZone"
-                ? (v as string) === ""
-                  ? "Orbit’s computer"
-                  : (v as string).replace(/_/g, " ")
-                : undefined;
+            : field === "secondLookBy"
+              ? lookers[v as SecondLookBy]
+              : field === "luckCall" ||
+                  field === "faultCall" ||
+                  field === "secondLook"
+                ? callModes[v as CallMode]
+                : field === "timeZone"
+                  ? (v as string) === ""
+                    ? "Orbit’s computer"
+                    : (v as string).replace(/_/g, " ")
+                  : undefined;
   return name ?? v;
 }
 

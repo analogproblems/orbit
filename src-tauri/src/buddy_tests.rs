@@ -713,6 +713,7 @@ fn the_app_offers_the_same_choices() {
     assert_eq!(list("answerers"), ANSWERERS);
     assert_eq!(list("rules"), RULES);
     assert_eq!(list("callModes"), CALL_MODES);
+    assert_eq!(list("lookers"), LOOKERS);
     assert_eq!(fixture["enoughCalls"], crate::calls::ENOUGH);
     let names = |values: Vec<serde_json::Value>| -> Vec<String> {
         values

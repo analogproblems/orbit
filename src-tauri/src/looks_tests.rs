@@ -78,7 +78,8 @@ fn only_a_new_post_where_you_arent_an_admin_gets_a_look() {
     let w = wanted(&s, &p, t0()).expect("a look");
     assert_eq!(w.permission, "WRITE");
     assert!(!w.on);
-    assert_eq!(w.ask.as_ref().unwrap().model, "small");
+    assert_eq!(w.selection.model, "small");
+    assert!(w.prompt.is_some());
     // Unknown counts as not an admin.
     s.ci[0].permission.clear();
     assert!(wanted(&s, &p, t0()).is_some(), "GitHub didn't say");
@@ -122,6 +123,49 @@ fn only_a_new_post_where_you_arent_an_admin_gets_a_look() {
     assert!(wanted(&s, &changed, t0()).is_some(), "a new text");
 }
 
+/// Whoever answers your questions can take the look instead, with its own
+/// model, once it's ready; until then, Watch takes none and On waits.
+#[test]
+fn bits_answerer_can_take_the_look() {
+    let mut s = state("watch", "WRITE");
+    s.settings.buddy.second_look_by = "answerer".into();
+    s.settings.buddy.quick_model.clear();
+    assert!(!used(&s), "Ollama isn't used for it");
+    let p = planned(&s).unwrap();
+    // Codex, the default, isn't connected here.
+    assert!(wanted(&s, &p, t0()).is_none(), "Watch waits for it");
+    s.settings.buddy.second_look = "on".into();
+    let w = wanted(&s, &p, t0()).unwrap();
+    assert_eq!(w.by, Who::Bit(Answerer::Codex));
+    assert!(w.prompt.is_none());
+    assert!(
+        w.why
+            .starts_with("Codex answers your questions, but isn't ready:"),
+        "{}",
+        w.why
+    );
+    // Bit answering with Ollama, ready, with its own model.
+    s.settings.buddy.answerer = "ollama".into();
+    s.settings.buddy.ollama_model = "big".into();
+    s.ollama.ready = true;
+    s.ollama_models = vec!["big".into()];
+    let w = wanted(&s, &p, t0()).unwrap();
+    assert_eq!(w.by, Who::Bit(Answerer::Ollama));
+    assert_eq!(w.selection.model, "big");
+    assert_eq!(w.url, s.settings.buddy.ollama_url);
+    assert!(w.prompt.is_some(), "{}", w.why);
+    assert!(!record(&mut s, &w, Ok(yes()), t0()));
+    assert_eq!(
+        (s.looks[0].by.as_str(), s.looks[0].model.as_str()),
+        ("Ollama", "big")
+    );
+    // The quick call model, chosen again, is Ollama's.
+    let s = state("watch", "WRITE");
+    let w = wanted(&s, &p, t0()).unwrap();
+    assert_eq!((w.by, w.selection.model.as_str()), (Who::Quick, "small"));
+    assert!(used(&s));
+}
+
 /// With no model, Watch takes no look, and On keeps one without asking, so
 /// the post waits; a post that looks like it holds a credential, or is too
 /// long to read whole, isn't sent.
@@ -133,7 +177,7 @@ fn a_post_the_model_cant_read_isnt_sent() {
     assert!(wanted(&s, &p, t0()).is_none());
     s.settings.buddy.second_look = "on".into();
     let w = wanted(&s, &p, t0()).unwrap();
-    assert!(w.ask.is_none());
+    assert!(w.prompt.is_none());
     assert!(w.why.contains("No quick call model"), "{}", w.why);
 
     let s = state("watch", "READ");
@@ -142,21 +186,21 @@ fn a_post_the_model_cant_read_isnt_sent() {
         ..p.clone()
     };
     let w = wanted(&s, &secret, t0()).unwrap();
-    assert!(w.ask.is_none());
+    assert!(w.prompt.is_none());
     assert!(w.why.contains("credential"), "{}", w.why);
     let long = Planned {
         body: "x".repeat(MAX_POST + 1),
         ..p.clone()
     };
     let w = wanted(&s, &long, t0()).unwrap();
-    assert!(w.ask.is_none());
+    assert!(w.prompt.is_none());
     assert!(w.why.contains("too long"), "{}", w.why);
     // Orbit's hidden markers don't count.
     let marked = Planned {
         body: format!("<!-- {} -->Short.", "x".repeat(MAX_POST + 1)),
         ..p.clone()
     };
-    assert!(wanted(&s, &marked, t0()).unwrap().ask.is_some());
+    assert!(wanted(&s, &marked, t0()).unwrap().prompt.is_some());
 }
 
 /// The model gets where the post goes, what Orbit read, and the post
@@ -166,7 +210,7 @@ fn the_model_checks_the_post_against_what_orbit_read() {
     let s = state("watch", "WRITE");
     let p = planned(&s).unwrap();
     assert!(p.body.contains("<!--"), "a post has markers");
-    let prompt = &wanted(&s, &p, t0()).unwrap().ask.unwrap().prompt;
+    let prompt = &wanted(&s, &p, t0()).unwrap().prompt.unwrap();
     for part in [
         "Repository: a/b, public",
         "Where it goes: a new issue about the main branch",

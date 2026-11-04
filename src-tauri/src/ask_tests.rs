@@ -1207,9 +1207,10 @@ fn bit_is_told_about_the_second_look() {
     let b = briefing(&s, &Lookups::default());
     assert_eq!(
         b["secondLook"],
-        json!({"mode": "watch", "model": null, "waitingForYou": 0, "recent": []})
+        json!({"mode": "watch", "by": "Ollama", "model": null, "waitingForYou": 0, "recent": []})
     );
     assert_eq!(b["settings"]["buddy.secondLook"], "watch");
+    assert_eq!(b["settings"]["buddy.secondLookBy"], "quick_model");
     s.settings.buddy.quick_model = "small".into();
     s.looks = (0..SHOWN_CALLS + 2)
         .map(|n| Look {
@@ -1219,6 +1220,7 @@ fn bit_is_told_about_the_second_look() {
             permission: "WRITE".into(),
             asked_at: format!("2026-11-04T{n:02}:00:00Z"),
             mode: "watch".into(),
+            by: "Ollama".into(),
             model: "small".into(),
             verdict: Verdict::Wait,
             why: "The model said it isn't needed now.".into(),
@@ -1234,16 +1236,26 @@ fn bit_is_told_about_the_second_look() {
         recent[0],
         json!({
             "repository": "a/b", "pr": 6, "kind": "comment", "permission": "WRITE",
-            "model": "small", "mode": "watch", "verdict": "wait",
+            "by": "Ollama", "model": "small", "mode": "watch", "verdict": "wait",
             "why": "The model said it isn't needed now.", "held": false,
             "postedAt": "2026-11-04T06:01:00Z", "agentAnsweredAt": null,
             "deletedFromGitHub": false, "neverPosted": false,
             "askedAt": "2026-11-04T06:00:00Z",
         })
     );
+    // Whoever answers your questions takes it, with its model.
+    s.settings.buddy.second_look_by = "answerer".into();
+    s.settings.buddy.answerer = "anthropic".into();
+    s.settings.buddy.anthropic_model = "big".into();
+    let told = briefing(&s, &Lookups::default())["secondLook"].clone();
+    assert_eq!(
+        (told["by"].clone(), told["model"].clone()),
+        (json!("the Anthropic API"), json!("big"))
+    );
     let said = instructions(&s.settings.buddy);
     assert!(said.contains("The summary's `secondLook` is the second look"));
     assert!(said.contains("buddy.secondLook is the second look, off, watch or on"));
+    assert!(said.contains("buddy.secondLookBy who takes it: quick_model"));
 }
 
 #[test]

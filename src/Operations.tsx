@@ -19,6 +19,7 @@ import { SaveFeedback } from "./SaveFeedback";
 import { AskWhy } from "./AskWhy";
 import {
   alertNeedsYou,
+  buddyAnswerers,
   buddyOf,
   callScore,
   callsMode,
@@ -279,7 +280,12 @@ export function toldText(s: Snapshot, p: Problem, t: OpsThread | undefined) {
  * such as "Second look by small on Ollama, in Watch: post it. Orbit posted
  * it." `held` is whether it holds the post now. */
 export function lookText(l: SecondLook, held: boolean) {
-  const by = l.model ? ` by ${l.model} on Ollama` : "";
+  const who = l.by || "Ollama";
+  const by = l.model
+    ? ` by ${l.model} on ${who}`
+    : l.by && l.by !== "Ollama"
+      ? ` by ${who}`
+      : "";
   const mode = l.mode === "on" ? "On" : "Watch";
   const said =
     l.verdict === "post" ? "post it." : `wait for you. ${l.why ?? ""}`.trim();
@@ -314,7 +320,14 @@ function LookLine({ t }: { t: OpsThread | undefined }) {
 export function lookModeText(settings: Settings) {
   const mode = lookMode(settings);
   if (mode === "off") return "It’s off, so Orbit takes no second look.";
-  if (!buddyOf(settings).quickModel)
+  const buddy = buddyOf(settings);
+  if (buddy.secondLookBy === "answerer") {
+    const who = buddyAnswerers[buddy.answerer];
+    return mode === "on"
+      ? `It’s on, with ${who}, who answers your questions: a post it says should wait, or that gets no answer, waits for your tap.`
+      : `It’s in Watch, with ${who}, who answers your questions: Orbit keeps each verdict, but never holds a post back.`;
+  }
+  if (!buddy.quickModel)
     return mode === "on"
       ? "It’s on, but no quick call model is chosen, so each new post there waits for your tap."
       : "It’s in Watch, but no quick call model is chosen, so Orbit takes no look yet.";
