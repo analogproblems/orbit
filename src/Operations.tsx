@@ -2542,13 +2542,16 @@ function SecondLooks() {
   const threadOfLook = (l: SecondLook) =>
     (s.ops ?? []).find((t) => t.key === l.thread);
   const holds = (l: SecondLook) => !l.dropped && heldByLook(s, threadOfLook(l));
-  // A post that waits for you comes first, as some, such as a pull
+  // Every post that waits for you is listed first, as some, such as a pull
   // request's answer to whether it is clear to merge, have no problem of
-  // their own to tap on.
-  const looks = [...(s.looks ?? [])].sort(
-    (a, b) =>
-      Number(holds(b)) - Number(holds(a)) || b.askedAt.localeCompare(a.askedAt),
+  // their own to tap on; then the latest of the rest.
+  const newest = [...(s.looks ?? [])].sort((a, b) =>
+    b.askedAt.localeCompare(a.askedAt),
   );
+  const looks = [
+    ...newest.filter(holds),
+    ...newest.filter((l) => !holds(l)).slice(0, RECENT),
+  ];
   if (!looks.length) return null;
   return (
     <VStack gap={3}>
@@ -2561,7 +2564,7 @@ function SecondLooks() {
       </Text>
       <Card padding={0}>
         <List hasDividers aria-label="Second looks">
-          {looks.slice(0, RECENT).map((l) => {
+          {looks.map((l) => {
             const t = threadOfLook(l);
             const held = holds(l);
             const tap = held && t && !t.unsure;

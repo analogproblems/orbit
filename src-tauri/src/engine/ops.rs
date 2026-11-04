@@ -181,8 +181,10 @@ impl Engine {
                 let mut s = self.state.lock().await;
                 let now = chrono::Utc::now();
                 // Here rather than first, as reading answers or the write
-                // before may have taken a while.
-                if ready_now(&mut s, now) {
+                // before may have taken a while. Then what each look's post
+                // has to say, as a pull request's answer may have changed.
+                let ready = ready_now(&mut s, now);
+                if crate::looks::follow(&mut s) || ready {
                     self.dirty.store(true, Ordering::SeqCst);
                 }
                 // Orbit's sign-in is how it finds its own comments again.

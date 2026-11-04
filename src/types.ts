@@ -2536,14 +2536,17 @@ export function lookMode(settings: Settings): CallMode {
   const buddy = buddyOf(settings);
   return buddy.enabled ? buddy.secondLook : "off";
 }
-/** The look of a thread's post, unless its post never went up. */
+/** The look of a thread's post for the problem it is about now, unless
+ * its thread has nothing left to say. */
 export function lookOf(s: Snapshot, t: OpsThread | undefined) {
   if (!t) return undefined;
-  return (s.looks ?? []).find((l) => l.thread === t.key && !l.dropped);
+  return (s.looks ?? []).find(
+    (l) => l.thread === t.key && l.problem === t.problemId && !l.dropped,
+  );
 }
-/** Whether the second look holds a thread's new post for you, as Orbit's
- * `looks::holds` says: On, not on GitHub yet, its look said wait, and you
- * haven't said to post it. */
+/** Whether the second look holds a thread's new post for you now, as
+ * Orbit's `looks::waiting` says: On, not on GitHub yet, its look said
+ * wait, and you haven't said to post it. */
 export function heldByLook(s: Snapshot, t: OpsThread | undefined) {
   const posted = t?.kind === "issue" ? !!t?.number : !!t?.commentId;
   return (

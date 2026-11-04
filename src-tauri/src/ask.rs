@@ -850,7 +850,7 @@ pub fn briefing(s: &Snapshot, lookups: &Lookups) -> Value {
     // latest first.
     let mut looks: Vec<&crate::looks::Look> = s.looks.iter().collect();
     looks.sort_by(|a, b| b.asked_at.cmp(&a.asked_at));
-    let held = s.ops.iter().filter(|t| crate::looks::holds(s, t)).count();
+    let held = s.ops.iter().filter(|t| crate::looks::waiting(s, t)).count();
     let second_look = json!({
         "mode": buddy.second_look,
         "model": (!buddy.quick_model.is_empty()).then(|| buddy.quick_model.clone()),

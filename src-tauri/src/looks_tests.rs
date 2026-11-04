@@ -336,7 +336,8 @@ fn a_look_keeps_what_happened_next() {
     assert!(follow(&mut s));
     assert!(s.looks[0].dropped);
     assert!(s.looks[0].held, "it waited first");
-    assert!(of(&s, &s.ops[0]).is_none());
+    assert!(!waiting(&s, &s.ops[0]));
+    assert_eq!(planned(&s), None, "nothing to post");
 }
 
 /// A post with no problem, a pull request's answer to whether it is clear
@@ -386,16 +387,20 @@ fn a_held_post_with_no_problem_stays_held_and_a_posted_one_stays_posted() {
         assert!(!s.looks[0].dropped, "pass {pass}");
         assert!(wanted(&s, &p, t0()).is_none(), "asked again on pass {pass}");
     }
-    // Not worth a comment for a while: it isn't going up.
+    // Not worth a comment for a while: it isn't going up, and doesn't
+    // wait for you.
     s.ops[0].ready.as_mut().unwrap().clear = false;
     assert!(follow(&mut s));
     assert!(s.looks[0].dropped);
-    assert!(!holds(&s, &s.ops[0]));
-    // Worth one again: the same look holds it, and no model is asked.
+    assert!(!waiting(&s, &s.ops[0]));
+    // Worth one again: the same look holds it, even before Orbit follows
+    // it again, and no model is asked.
     s.ops[0].ready.as_mut().unwrap().clear = true;
+    assert!(held(&s));
+    assert!(wanted(&s, &p, t0()).is_none(), "asked again before follow");
     assert!(follow(&mut s));
     assert!(!s.looks[0].dropped);
-    assert!(held(&s));
+    assert!(held(&s) && waiting(&s, &s.ops[0]));
     assert!(wanted(&s, &p, t0()).is_none(), "asked again");
 
     // Your tap lets it go, and it goes up.
@@ -422,7 +427,9 @@ fn a_held_post_with_no_problem_stays_held_and_a_posted_one_stays_posted() {
     assert!(s.looks[0].dropped);
 }
 
-/// Looks go after 90 days, and at most a few hundred stay, the newest.
+/// Looks go after 90 days, and at most a few hundred stay, the newest, but
+/// one whose post isn't up yet stays while Orbit keeps its thread, so it
+/// still holds the post and nothing is asked again.
 #[test]
 fn old_looks_go_and_at_most_a_few_hundred_stay() {
     let at = |days: i64| Look {
@@ -431,7 +438,7 @@ fn old_looks_go_and_at_most_a_few_hundred_stay() {
         ..Default::default()
     };
     let mut looks = vec![at(91), at(3), at(1)];
-    assert!(prune(&mut looks, t0()));
+    assert!(prune(&mut looks, &[], t0()));
     assert_eq!(
         looks.iter().map(|l| l.thread.as_str()).collect::<Vec<_>>(),
         ["issue:3", "issue:1"]
@@ -443,10 +450,39 @@ fn old_looks_go_and_at_most_a_few_hundred_stay() {
             ..Default::default()
         })
         .collect();
-    assert!(prune(&mut many, t0()));
+    assert!(prune(&mut many, &[], t0()));
     assert_eq!(many.len(), MAX_LOOKS);
     assert!(many
         .iter()
         .all(|l| l.thread != format!("issue:{}", MAX_LOOKS + 4)));
-    assert!(!prune(&mut many, t0()));
+    assert!(!prune(&mut many, &[], t0()));
+
+    // A held post, 100 days on, behind a few hundred newer looks.
+    let mut s = state("on", "WRITE");
+    assert!(look(
+        &mut s,
+        Ok(Answers {
+            needed: Said::No,
+            ..yes()
+        })
+    ));
+    let key = s.ops[0].key.clone();
+    s.looks[0].asked_at = stamp(t0() - Duration::days(100));
+    s.looks.extend((0..MAX_LOOKS as i64 + 5).map(|i| Look {
+        thread: format!("issue:{i}"),
+        asked_at: stamp(t0() - Duration::minutes(i)),
+        ..Default::default()
+    }));
+    assert!(prune(&mut s.looks, &s.ops, t0()));
+    assert_eq!(s.looks.len(), MAX_LOOKS + 1);
+    assert_eq!(s.looks[0].thread, key, "oldest first");
+    assert!(holds(&s, &s.ops[0]));
+    assert_eq!(planned(&s), None, "it still waits");
+    let p = ops::next(&s.ops[0], s.problems.first(), true, t0()).unwrap();
+    assert!(wanted(&s, &p, t0()).is_none(), "asked again");
+    // Once it's up, it's history like any other.
+    s.ops[0].number = Some(45);
+    assert!(prune(&mut s.looks, &s.ops, t0()));
+    assert_eq!(s.looks.len(), MAX_LOOKS);
+    assert!(s.looks.iter().all(|l| l.thread != key));
 }

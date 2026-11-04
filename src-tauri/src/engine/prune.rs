@@ -76,7 +76,7 @@ pub(super) fn prune(s: &mut Snapshot, now: chrono::DateTime<chrono::Utc>) -> boo
     changed |= crate::outcomes::prune(&mut s.outcomes, now);
     changed |= crate::cases::prune(s, now);
     changed |= crate::calls::prune(&mut s.calls, now);
-    changed |= crate::looks::prune(&mut s.looks, now);
+    changed |= crate::looks::prune(&mut s.looks, &s.ops, now);
     changed
 }
 

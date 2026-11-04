@@ -220,10 +220,7 @@ pub fn wanted(s: &Snapshot, p: &Planned, now: DateTime<Utc>) -> Option<Wanted> {
         return None;
     }
     let post = post_hash(p);
-    let had = s
-        .looks
-        .iter()
-        .any(|l| l.thread == t.key && l.post == post && !l.dropped);
+    let had = of(s, t).is_some_and(|l| l.post == post);
     if had {
         return None;
     }
@@ -528,15 +525,26 @@ pub fn record(
     held
 }
 
-/// The look of a thread's post, if it had one.
+/// The look of a thread's post, if it had one for the problem the thread
+/// is about now. Whether `follow` last marked it `dropped` doesn't count,
+/// as that may be from before the thread's latest answer to whether its
+/// pull request is clear to merge: a post with nothing to say isn't
+/// planned anyway, and one that has something to say again keeps its look.
 pub fn of<'a>(s: &'a Snapshot, t: &Thread) -> Option<&'a Look> {
-    s.looks.iter().find(|l| l.thread == t.key && !l.dropped)
+    s.looks
+        .iter()
+        .find(|l| l.thread == t.key && l.problem == t.problem_id)
 }
 /// Whether the second look holds a thread's new post for you: it is On,
 /// the post isn't on GitHub yet, its look said wait or had no answer, and
 /// you haven't said to post it.
 pub fn holds(s: &Snapshot, t: &Thread) -> bool {
     of(s, t).is_some_and(|l| holds_with(s, t, l))
+}
+/// Whether a thread's post waits for your tap now, as Bit and Operations
+/// count it: it is held, and its thread still has something to say.
+pub fn waiting(s: &Snapshot, t: &Thread) -> bool {
+    of(s, t).is_some_and(|l| !l.dropped && holds_with(s, t, l))
 }
 /// Whether `l`, a look at a thread's post, holds it for you.
 fn holds_with(s: &Snapshot, t: &Thread, l: &Look) -> bool {
@@ -605,17 +613,27 @@ pub fn follow(s: &mut Snapshot) -> bool {
     changed
 }
 
-/// Drops looks older than `KEEP_DAYS`, and keeps at most `MAX_LOOKS`, the
-/// newest. Says whether any went.
-pub fn prune(looks: &mut Vec<Look>, now: DateTime<Utc>) -> bool {
+/// Drops looks older than `KEEP_DAYS`, and keeps at most `MAX_LOOKS` of
+/// them, the newest. A look whose post isn't on GitHub yet stays while
+/// Orbit keeps its thread (`ops`), however old, as it may hold the post for
+/// you, and dropping it would ask again. Says whether any went.
+pub fn prune(looks: &mut Vec<Look>, ops: &[Thread], now: DateTime<Utc>) -> bool {
     let before = looks.len();
-    looks.retain(|l| {
+    let live = |l: &Look| {
+        ops.iter()
+            .any(|t| t.key == l.thread && t.problem_id == l.problem && !t.is_posted())
+    };
+    let (mut kept, mut past): (Vec<Look>, Vec<Look>) =
+        std::mem::take(looks).into_iter().partition(live);
+    past.retain(|l| {
         time(&l.asked_at)
             .is_some_and(|at| now.signed_duration_since(at) <= Duration::days(KEEP_DAYS))
     });
-    looks.sort_by(|a, b| b.asked_at.cmp(&a.asked_at));
-    looks.truncate(MAX_LOOKS);
-    looks.reverse();
+    past.sort_by(|a, b| b.asked_at.cmp(&a.asked_at));
+    past.truncate(MAX_LOOKS);
+    kept.extend(past);
+    kept.sort_by(|a, b| a.asked_at.cmp(&b.asked_at));
+    *looks = kept;
     looks.len() != before
 }
 

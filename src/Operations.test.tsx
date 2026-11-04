@@ -1125,6 +1125,66 @@ describe("operations page", () => {
     ).toBeNull();
   });
 
+  it("lists every post that waits for you, however many, and the latest of the rest", () => {
+    const s = freshDemo();
+    s.problems = [];
+    s.settings.buddy = { ...s.settings.buddy!, secondLook: "on" };
+    const day = 86_400_000;
+    const thread = (n: number): OpsThread => ({
+      key: `pr:demo-pr-${n}`,
+      kind: "comment",
+      repo: "acme/api",
+      number: n,
+      prId: `demo-pr-${n}`,
+      url: "",
+      branch: "",
+      problemId: "",
+      items: [],
+      posted: "",
+      closed: false,
+      allowed: false,
+      gone: false,
+      tries: 0,
+      updatedAt: new Date().toISOString(),
+    });
+    const look = (n: number, ago: number): SecondLook => ({
+      thread: `pr:demo-pr-${n}`,
+      kind: "comment",
+      repo: "acme/api",
+      number: n,
+      problem: "",
+      post: "0a1b2c3d4e5f6a7b",
+      permission: "WRITE",
+      askedAt: new Date(Date.now() - ago).toISOString(),
+      mode: "on",
+      model: "llama3.2:3b",
+      verdict: "wait",
+      why: "The model said it couldn’t tell whether it’s needed now.",
+      held: true,
+    });
+    // Eleven held posts, older than twelve that went up.
+    const held = Array.from({ length: 11 }, (_, i) => i + 1);
+    s.ops = [...(s.ops ?? []), ...held.map(thread)];
+    s.looks = [
+      ...(s.looks ?? []),
+      ...held.map((n) => look(n, (30 + n) * day)),
+      ...Array.from({ length: 12 }, (_, i) => ({
+        ...look(100 + i, i * 60_000),
+        verdict: "post" as const,
+        held: false,
+        postedAt: new Date().toISOString(),
+      })),
+    ];
+    show(s);
+    const list = screen.getByRole("list", { name: "Second looks" });
+    const buttons = within(list).getAllByRole("button", {
+      name: "Post comment",
+    });
+    expect(buttons).toHaveLength(11);
+    expect(within(list).getAllByRole("listitem")).toHaveLength(11 + 10);
+    expect(list.textContent).toContain("Comment on acme/api #11Second look");
+  });
+
   it("says what each second look said, and what happened next", () => {
     const look: SecondLook = {
       thread: "pr:acme/orbit#12",
