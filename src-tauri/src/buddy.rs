@@ -321,6 +321,9 @@ pub struct Buddy {
     /// One of `CALL_MODES`, for the quick call "Was this failure already
     /// failing on the default branch?".
     pub fault_call: String,
+    /// One of `CALL_MODES`, for the second look before Bit posts where
+    /// Orbit's sign-in isn't an admin (`crate::looks`).
+    pub second_look: String,
 }
 impl Default for Buddy {
     fn default() -> Self {
@@ -345,6 +348,7 @@ impl Default for Buddy {
             quick_model: String::new(),
             luck_call: "watch".into(),
             fault_call: "watch".into(),
+            second_look: "watch".into(),
         }
     }
 }
@@ -414,12 +418,19 @@ impl Buddy {
                 ));
             }
         }
+        if !CALL_MODES.contains(&self.second_look.as_str()) {
+            return Err(format!(
+                "'{}' isn't off, watch or on, for the second look.",
+                self.second_look
+            ));
+        }
         Ok(())
     }
-    /// Whether Orbit makes quick calls on Ollama, or would once a model is
-    /// chosen: Settings then lists Ollama's models.
+    /// Whether Orbit makes quick calls or second looks on Ollama, or would
+    /// once a model is chosen: Settings then lists Ollama's models.
     pub fn wants_quick_calls(&self) -> bool {
-        self.enabled && (self.luck_call != "off" || self.fault_call != "off")
+        let modes = [&self.luck_call, &self.fault_call, &self.second_look];
+        self.enabled && modes.iter().any(|m| m.as_str() != "off")
     }
     /// Who answers the questions you type.
     pub fn answered_by(&self) -> Answerer {
@@ -505,6 +516,9 @@ impl Buddy {
         if !CALL_MODES.contains(&self.fault_call.as_str()) {
             self.fault_call = default.fault_call;
         }
+        if !CALL_MODES.contains(&self.second_look.as_str()) {
+            self.second_look = default.second_look;
+        }
     }
 }
 /// Only supplied fields change.
@@ -531,6 +545,7 @@ pub struct BuddyPatch {
     pub quick_model: Option<String>,
     pub luck_call: Option<String>,
     pub fault_call: Option<String>,
+    pub second_look: Option<String>,
 }
 impl BuddyPatch {
     pub fn apply(self, buddy: &mut Buddy) {
@@ -581,6 +596,9 @@ impl BuddyPatch {
         }
         if let Some(v) = self.fault_call {
             buddy.fault_call = v.trim().to_string();
+        }
+        if let Some(v) = self.second_look {
+            buddy.second_look = v.trim().to_string();
         }
         for (api, v) in [
             (Api::OpenAi, self.openai_model),

@@ -84,6 +84,27 @@ fn reads_the_default_branch_and_each_pull_request() {
     assert_eq!(pull.ci.state, CiState::Running);
 }
 
+/// What Orbit's sign-in may do in the repository, and whether it's
+/// private, as GitHub says; nothing when it doesn't.
+#[test]
+fn reads_what_orbit_may_do_there() {
+    let mut v = answer(commit(A, vec![]), vec![], false);
+    let ci = parse("o/r", &v).unwrap();
+    assert_eq!(
+        (ci.permission.as_str(), ci.admin(), ci.private),
+        ("", false, None)
+    );
+    v["data"]["repository"]["viewerPermission"] = json!("WRITE");
+    v["data"]["repository"]["isPrivate"] = json!(true);
+    let ci = parse("o/r", &v).unwrap();
+    assert_eq!(
+        (ci.permission.as_str(), ci.admin(), ci.private),
+        ("WRITE", false, Some(true))
+    );
+    v["data"]["repository"]["viewerPermission"] = json!("ADMIN");
+    assert!(parse("o/r", &v).unwrap().admin());
+}
+
 #[test]
 fn leaves_out_orbits_own_status() {
     let v = answer(
@@ -269,6 +290,8 @@ async fn all_pages_passing_pass_and_too_many_pages_never_do() {
 fn the_query_reads_every_part_parse_needs() {
     let q = query();
     for part in [
+        "viewerPermission",
+        "isPrivate",
         "defaultBranchRef",
         "messageHeadline",
         "hasNextPage",

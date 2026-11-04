@@ -76,6 +76,59 @@ pub(super) fn decide(s: &mut Snapshot) -> bool {
 }
 
 impl Engine {
+    /// Takes the second look a new post needs before it goes, if any
+    /// (`crate::looks`): asks the model without the state lock, then keeps
+    /// its answers only while the post and the look's setup are as they
+    /// were. Says whether the post may go on now, and Bit's note when the
+    /// look holds it for you.
+    async fn second_look(&self, planned: &Planned) -> (bool, Option<Event>) {
+        let wanted = {
+            let s = self.state.lock().await;
+            crate::looks::wanted(&s, planned, chrono::Utc::now())
+        };
+        let Some(w) = wanted else {
+            return (true, None);
+        };
+        let answers = match &w.ask {
+            Some(ask) => crate::ollama::answer(
+                &ask.url,
+                &ask.model,
+                crate::looks::INSTRUCTIONS,
+                &ask.prompt,
+                &crate::looks::schema(),
+                crate::looks::TIMEOUT,
+            )
+            .await
+            .and_then(|content| crate::looks::parse(&content)),
+            None => Err(w.why.clone()),
+        };
+        let mut out = (false, None);
+        self.update(|s| {
+            let now = chrono::Utc::now();
+            let same = crate::looks::wanted(s, planned, now).is_some_and(|now| now.same(&w));
+            if !same || !still_next(s, planned, now) {
+                return;
+            }
+            if crate::looks::record(s, &w, answers, now) {
+                let why = s
+                    .looks
+                    .iter()
+                    .find(|l| l.thread == w.thread)
+                    .map(|l| l.why.clone())
+                    .unwrap_or_default();
+                out.1 = Some(Event::Held {
+                    thread: w.thread.clone(),
+                    why,
+                });
+            }
+            out.0 = still_next(s, planned, now);
+        })
+        .await;
+        if self.flush().await.is_err() {
+            return (false, out.1);
+        }
+        out
+    }
     /// Whether `planned` is still the next write once Orbit has looked on
     /// GitHub, as rules, settings and answers may have changed meanwhile.
     async fn still_wanted(&self, planned: &Planned) -> bool {
@@ -111,6 +164,7 @@ impl Engine {
             changed |= crate::playbooks::follow(s);
             changed |= crate::buddy::observe_lessons(s, &learned);
             changed |= ops::refresh(&mut s.ops, &s.problems, now);
+            changed |= crate::looks::follow(s);
             // As a quick call that decides says, while it does.
             changed |= decide(s);
             let mut again = reruns::noticed(s);
@@ -174,6 +228,13 @@ impl Engine {
                 // Nothing there: post it only if it is still wanted now the
                 // search is done, as rules and settings may have changed.
                 if !self.still_wanted(&planned).await {
+                    continue;
+                }
+                // Something new where you don't run things gets a second
+                // look first, which may hold it for you.
+                let (go, held) = self.second_look(&planned).await;
+                events.extend(held);
+                if !go {
                     continue;
                 }
             }
@@ -268,6 +329,8 @@ impl Engine {
                     events.extend(reran);
                 } else {
                     ops::settle(&mut s.ops, &mut s.journal, &id, &planned, result, now);
+                    // A post a second look had shows as posted at once.
+                    crate::looks::follow(s);
                 }
             })
             .await;

@@ -100,8 +100,20 @@ pub struct RepoCi {
     pub checked_at: String,
     /// Why the latest read failed. What was read before is kept.
     pub error: Option<String>,
+    /// What Orbit's sign-in may do in the repository, as GitHub says it:
+    /// `ADMIN`, `MAINTAIN`, `WRITE`, `TRIAGE` or `READ`. Empty when GitHub
+    /// didn't say.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub permission: String,
+    /// Whether the repository is private, when GitHub said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub private: Option<bool>,
 }
 impl RepoCi {
+    /// Whether GitHub said Orbit's sign-in is an admin of the repository.
+    pub fn admin(&self) -> bool {
+        self.permission == "ADMIN"
+    }
     pub fn pull(&self, number: u64) -> Option<&PullCi> {
         self.pulls.iter().find(|p| p.number == number)
     }
@@ -116,7 +128,7 @@ pub fn query() -> String {
     let contexts = format!("statusCheckRollup {{ contexts(first: {CHECKS}) {{ {NODES} }} }}");
     format!(
         "query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ \
-defaultBranchRef {{ name target {{ ... on Commit {{ oid committedDate messageHeadline {contexts} }} }} }} \
+viewerPermission isPrivate defaultBranchRef {{ name target {{ ... on Commit {{ oid committedDate messageHeadline {contexts} }} }} }} \
 pullRequests(states: OPEN, first: {PULLS}, orderBy: {{ field: UPDATED_AT, direction: DESC }}) {{ \
 pageInfo {{ hasNextPage }} nodes {{ number isDraft headRefOid \
 commits(last: 1) {{ nodes {{ commit {{ oid {contexts} }} }} }} }} }} }} }}"
@@ -316,6 +328,8 @@ pub fn parse(repo: &str, v: &Value) -> Result<RepoCi, String> {
             .unwrap_or(true),
         checked_at: now(),
         error: None,
+        permission: r["viewerPermission"].as_str().unwrap_or("").to_string(),
+        private: r["isPrivate"].as_bool(),
     })
 }
 

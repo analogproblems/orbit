@@ -1198,6 +1198,54 @@ fn bit_is_told_how_the_quick_calls_did_newest_first() {
     assert_eq!(told["badLuck"]["score"]["asked"], crate::calls::ENOUGH);
 }
 
+/// Bit hears how the second look is set, how many posts it holds, and the
+/// latest looks with what happened to each post, newest first.
+#[test]
+fn bit_is_told_about_the_second_look() {
+    use crate::looks::{Look, Verdict};
+    let mut s = snapshot();
+    let b = briefing(&s, &Lookups::default());
+    assert_eq!(
+        b["secondLook"],
+        json!({"mode": "watch", "model": null, "waitingForYou": 0, "recent": []})
+    );
+    assert_eq!(b["settings"]["buddy.secondLook"], "watch");
+    s.settings.buddy.quick_model = "small".into();
+    s.looks = (0..SHOWN_CALLS + 2)
+        .map(|n| Look {
+            thread: format!("pr:a/b#{n}"),
+            repo: "a/b".into(),
+            number: Some(n as u64),
+            permission: "WRITE".into(),
+            asked_at: format!("2026-11-04T{n:02}:00:00Z"),
+            mode: "watch".into(),
+            model: "small".into(),
+            verdict: Verdict::Wait,
+            why: "The model said it isn't needed now.".into(),
+            posted_at: format!("2026-11-04T{n:02}:01:00Z"),
+            ..Default::default()
+        })
+        .collect();
+    let told = briefing(&s, &Lookups::default())["secondLook"].clone();
+    assert_eq!(told["model"], "small");
+    let recent = told["recent"].as_array().unwrap();
+    assert_eq!(recent.len(), SHOWN_CALLS);
+    assert_eq!(
+        recent[0],
+        json!({
+            "repository": "a/b", "pr": 6, "kind": "comment", "permission": "WRITE",
+            "model": "small", "mode": "watch", "verdict": "wait",
+            "why": "The model said it isn't needed now.", "held": false,
+            "postedAt": "2026-11-04T06:01:00Z", "agentAnsweredAt": null,
+            "deletedFromGitHub": false, "neverPosted": false,
+            "askedAt": "2026-11-04T06:00:00Z",
+        })
+    );
+    let said = instructions(&s.settings.buddy);
+    assert!(said.contains("The summary's `secondLook` is the second look"));
+    assert!(said.contains("buddy.secondLook is the second look, off, watch or on"));
+}
+
 #[test]
 fn what_orbit_looked_up_is_data_that_cant_close_its_block() {
     let found = |text: &str, error: Option<&str>| Found {

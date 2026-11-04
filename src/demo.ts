@@ -29,6 +29,7 @@ import {
   type Outcome,
   type Lesson,
   type QuickCall,
+  type SecondLook,
   type PlaybookStep,
   type Problem,
   type PullRequest,
@@ -1094,6 +1095,7 @@ export function demoCi(
   | "lessons"
   | "failures"
   | "calls"
+  | "looks"
   | "setups"
   | "runners"
   | "actionsStorage"
@@ -2041,6 +2043,55 @@ export function demoCi(
       6 * 24 * 60 + 2 * 60,
     ),
   ];
+  // Second looks at Bit's new comments where your account isn't an admin:
+  // one passed, and one the model wasn't sure was needed, which Watch
+  // posted anyway, and the agent answered.
+  const looks: SecondLook[] = [
+    {
+      thread: `pr:${failingPr.id}`,
+      kind: "comment",
+      repo: failingPr.repo,
+      number: failingPr.number,
+      problem: "demo-problem-2",
+      post: "5d1c9a0e7b3f2a64",
+      permission: "WRITE",
+      askedAt: ago(19),
+      mode: "watch",
+      model: "llama3.2:3b",
+      answers: {
+        about: "yes",
+        matches: "yes",
+        nothingPrivate: "yes",
+        needed: "yes",
+      },
+      verdict: "post",
+      postedAt: ago(18),
+      url: `${failingPr.url}#issuecomment-901`,
+    },
+    {
+      thread: "pr:acme/orbit#143",
+      kind: "comment",
+      repo: "acme/orbit",
+      number: 143,
+      problem: "demo-problem-143",
+      post: "a90e4c71d2b85f13",
+      permission: "WRITE",
+      askedAt: ago(6 * 24 * 60 + 2 * 60 + 5),
+      mode: "watch",
+      model: "llama3.2:3b",
+      answers: {
+        about: "yes",
+        matches: "yes",
+        nothingPrivate: "yes",
+        needed: "unsure",
+      },
+      verdict: "wait",
+      why: "The model said it couldn’t tell whether it’s needed now.",
+      postedAt: ago(6 * 24 * 60 + 2 * 60 + 4),
+      url: "https://github.com/acme/orbit/pull/143#issuecomment-870",
+      answeredAt: ago(6 * 24 * 60 + 60),
+    },
+  ];
   // What Orbit learned from repeats: the end-to-end job keeps passing when
   // it runs again, and main keeps breaking. The failing problems say so,
   // with what happened the last time each failed.
@@ -2232,6 +2283,7 @@ export function demoCi(
     lessons,
     failures,
     calls,
+    looks,
     setups,
     runners,
     actionsStorage,

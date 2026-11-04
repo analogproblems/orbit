@@ -1399,6 +1399,9 @@ pub struct Snapshot {
     /// Quick calls a model on Ollama made, and how each turned out (see
     /// `crate::calls`).
     pub calls: Vec<crate::calls::Call>,
+    /// Second looks a model took at Bit's new posts where Orbit's sign-in
+    /// isn't an admin, and what happened to each post (see `crate::looks`).
+    pub looks: Vec<crate::looks::Look>,
     /// Why the jobs still failing on open problems failed, as Orbit read
     /// them (see `crate::logs`).
     pub failures: Vec<crate::logs::Failure>,

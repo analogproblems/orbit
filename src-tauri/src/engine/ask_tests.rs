@@ -899,6 +899,10 @@ async fn ollama_answers_with_bits_instructions_and_the_answer_form() {
     let patch: SettingsPatch =
         serde_json::from_value(json!({"buddy": {"faultCall": "off"}})).unwrap();
     e.update_settings(patch).await.unwrap();
+    assert!(e.snapshot().await.ollama.ready, "the second look");
+    let patch: SettingsPatch =
+        serde_json::from_value(json!({"buddy": {"secondLook": "off"}})).unwrap();
+    e.update_settings(patch).await.unwrap();
     let s = e.snapshot().await;
     assert_eq!(s.ollama, CliStatus::default());
     assert!(s.ollama_models.is_empty());

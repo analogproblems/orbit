@@ -26,7 +26,8 @@ pub struct Connection {
     pub needed_by: Vec<String>,
     /// Whether Bit answers the questions you type with it.
     pub for_bit: bool,
-    /// Whether Bit's quick calls use it (`crate::calls`).
+    /// Whether Bit's quick calls or second looks use it (`crate::calls`,
+    /// `crate::looks`).
     pub for_calls: bool,
     /// How to connect it, when there's no error that says.
     pub how: &'static str,
@@ -292,7 +293,7 @@ pub fn all_connections(s: &Snapshot) -> Vec<Connection> {
         c.page = PAGES[5];
     }
     out.push(Connection {
-        for_calls: crate::calls::used(s),
+        for_calls: crate::calls::used(s) || crate::looks::used(s),
         ..cli(
             "Ollama",
             "ollama",

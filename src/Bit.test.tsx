@@ -138,6 +138,9 @@ describe("Bit", () => {
     expect(describePatch({ buddy: { faultCall: "off" } }, [])).toBe(
       "Quick call on failing already: Off",
     );
+    expect(describePatch({ buddy: { secondLook: "on" } }, [])).toBe(
+      "Second look before posting: On",
+    );
     expect(Object.keys(fixRuleLabels)).toEqual(options.rules);
     expect(Object.keys(callModes)).toEqual(options.callModes);
     expect(ENOUGH_CALLS).toBe(options.enoughCalls);

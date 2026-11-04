@@ -514,6 +514,8 @@ fn bits_answerer_is_checked_even_when_no_repository_uses_it() {
     s.settings.buddy.luck_call = "off".into();
     assert_eq!(names(&s), ["GitHub", "Codex", "Ollama"], "the other call");
     s.settings.buddy.fault_call = "off".into();
+    assert_eq!(names(&s), ["GitHub", "Codex", "Ollama"], "the second look");
+    s.settings.buddy.second_look = "off".into();
     assert_eq!(names(&s), ["GitHub", "Codex"]);
     s.settings.buddy.luck_call = "on".into();
     s.settings.buddy.answerer = "ollama".into();

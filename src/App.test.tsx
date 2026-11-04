@@ -1579,12 +1579,37 @@ describe("Bit", () => {
       patch: { buddy: { faultCall: "off" } },
     });
     expect(await screen.findAllByText("Orbit asks no model.")).toHaveLength(2);
+    // The second look still uses the model, and starts in Watch.
+    expect(
+      screen.getByText(/^Orbit asks the model, and keeps its verdict/),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("combobox", { name: /^Quick call model/ }),
+    ).toBeTruthy();
+    const look = screen.getByRole("combobox", {
+      name: /^Second look before posting where you aren’t an admin/,
+    });
+    await chooseOption(look, "On");
+    expect(invoke).toHaveBeenCalledWith("update_settings", {
+      patch: { buddy: { secondLook: "on" } },
+    });
+    expect(
+      await screen.findByText(/^A post the model doesn’t pass on all four/),
+    ).toBeTruthy();
+    await chooseOption(
+      screen.getByRole("combobox", {
+        name: /^Second look before posting where you aren’t an admin/,
+      }),
+      "Off",
+    );
+    expect(await screen.findByText("Orbit takes no second look.")).toBeTruthy();
     expect(
       screen.queryByRole("combobox", { name: /^Quick call model/ }),
     ).toBeNull();
     expect(buddyOf(snapshot.settings)).toMatchObject({
       luckCall: "off",
       faultCall: "off",
+      secondLook: "off",
     });
   });
 

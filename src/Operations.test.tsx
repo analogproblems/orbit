@@ -39,6 +39,8 @@ import {
   whyText,
   callModeText,
   callText,
+  lookModeText,
+  lookText,
   scoreLines,
   writeSummary,
 } from "./Operations";
@@ -66,6 +68,7 @@ import {
   type RepoReleases,
   type Milestone,
   type RunnerPlace,
+  type SecondLook,
   type ActionsStorage,
   type SecurityAlert,
   type Snapshot,
@@ -951,6 +954,163 @@ describe("operations page", () => {
     show(s);
     expect(screen.queryByRole("list", { name: luckList })).toBeNull();
     expect(screen.getByRole("list", { name: faultList })).toBeTruthy();
+  });
+
+  it("shows each second look with its post, and lists the latest", () => {
+    const s = freshDemo();
+    show(s);
+    const pull = within(
+      screen.getByRole("list", { name: "Open problems" }),
+    ).getAllByRole("listitem")[1];
+    expect(pull.textContent).toContain(
+      "Second look by llama3.2:3b on Ollama, in Watch: post it. Orbit posted it.",
+    );
+    const items = within(
+      screen.getByRole("list", { name: "Second looks" }),
+    ).getAllByRole("listitem");
+    expect(items.map((i) => i.textContent)).toEqual([
+      expect.stringContaining(
+        "Comment on acme/api #82Second look by llama3.2:3b on Ollama, in Watch: post it. Orbit posted it.",
+      ),
+      expect.stringContaining(
+        "Comment on acme/orbit #143Second look by llama3.2:3b on Ollama, in Watch: wait for you. The model said it couldn’t tell whether it’s needed now. Orbit posted it, and the agent answered.",
+      ),
+    ]);
+    expect(within(items[0]).getByLabelText("Post it")).toBeTruthy();
+    expect(within(items[1]).getByLabelText("Wait")).toBeTruthy();
+    expect(
+      screen.getByText(
+        /It’s in Watch: Orbit keeps each verdict, but never holds a post back\./,
+      ),
+    ).toBeTruthy();
+    cleanup();
+    s.looks = [];
+    show(s);
+    expect(screen.queryByRole("list", { name: "Second looks" })).toBeNull();
+  });
+
+  it("holds a post the second look says should wait, in On, until you tap", () => {
+    const action = vi.fn().mockResolvedValue({ ok: true });
+    useOrbit.setState({ action });
+    const s = freshDemo();
+    const issue = s.ops![0];
+    issue.url = "";
+    issue.number = null;
+    s.settings.buddy = {
+      ...s.settings.buddy!,
+      secondLook: "on",
+      rules: { ...s.settings.buddy!.rules, open_issues: "do_it" },
+    };
+    s.looks!.push({
+      thread: issue.key,
+      kind: "issue",
+      repo: issue.repo,
+      problem: issue.problemId,
+      post: "0a1b2c3d4e5f6a7b",
+      permission: "WRITE",
+      askedAt: new Date().toISOString(),
+      mode: "on",
+      model: "llama3.2:3b",
+      verdict: "wait",
+      why: "The model said it may hold something private.",
+      held: true,
+    });
+    show(s);
+    const row = () =>
+      within(screen.getByRole("list", { name: "Open problems" })).getAllByRole(
+        "listitem",
+      )[0];
+    expect(row().textContent).toContain(
+      "The second look held this issue for you, as you aren’t an admin of this repository. The model said it may hold something private. Tap Open issue to post it anyway.",
+    );
+    expect(row().textContent).toContain(
+      "Second look by llama3.2:3b on Ollama, in On: wait for you. The model said it may hold something private. It waits for your tap.",
+    );
+    fireEvent.click(within(row()).getByRole("button", { name: "Open issue" }));
+    expect(action).toHaveBeenCalledWith("tell_agent", {
+      key: "issue:demo-problem-1",
+    });
+    // Once you said to post it, or in Watch, it doesn't wait.
+    for (const change of [
+      () => (issue.allowed = true),
+      () => {
+        issue.allowed = false;
+        s.settings.buddy!.secondLook = "watch";
+      },
+    ]) {
+      cleanup();
+      change();
+      show(s);
+      expect(row().textContent).not.toContain("The second look held");
+      expect(row().textContent).toContain(
+        "Orbit tells the agent on GitHub after this sync.",
+      );
+      expect(
+        within(row()).queryByRole("button", { name: "Open issue" }),
+      ).toBeNull();
+    }
+  });
+
+  it("says what each second look said, and what happened next", () => {
+    const look: SecondLook = {
+      thread: "pr:acme/orbit#12",
+      kind: "comment",
+      repo: "acme/orbit",
+      number: 12,
+      problem: "p1",
+      post: "0a1b2c3d4e5f6a7b",
+      permission: "WRITE",
+      askedAt: "2026-11-04T12:00:00Z",
+      mode: "on",
+      model: "",
+      verdict: "wait",
+      why: "No quick call model is chosen in Settings, so Orbit couldn’t ask.",
+      held: true,
+    };
+    expect(lookText(look, true)).toBe(
+      "Second look, in On: wait for you. No quick call model is chosen in Settings, so Orbit couldn’t ask. It waits for your tap.",
+    );
+    expect(lookText({ ...look, postedAt: "2026-11-04T12:30:00Z" }, false)).toBe(
+      "Second look, in On: wait for you. No quick call model is chosen in Settings, so Orbit couldn’t ask. It waited for you, then Orbit posted it.",
+    );
+    expect(lookText({ ...look, dropped: true }, false)).toContain(
+      "It never went up, as the problem ended first.",
+    );
+    expect(
+      lookText(
+        {
+          ...look,
+          model: "small",
+          verdict: "post",
+          why: "",
+          held: false,
+          postedAt: "x",
+          gone: true,
+        },
+        false,
+      ),
+    ).toBe(
+      "Second look by small on Ollama, in On: post it. Orbit posted it, and someone deleted it from GitHub.",
+    );
+    expect(lookText({ ...look, held: false }, false)).toContain(
+      "It isn’t on GitHub yet.",
+    );
+    const s = freshDemo();
+    const mode = (secondLook: CallMode, quickModel = "small") =>
+      lookModeText({
+        ...s.settings,
+        buddy: { ...s.settings.buddy!, secondLook, quickModel },
+      });
+    expect(mode("off")).toBe("It’s off, so Orbit takes no second look.");
+    expect(mode("on")).toBe(
+      "It’s on: a post it says should wait, or that gets no answer, waits for your tap.",
+    );
+    expect(mode("on", "")).toBe(
+      "It’s on, but no quick call model is chosen, so each new post there waits for your tap.",
+    );
+    expect(mode("watch", "")).toBe(
+      "It’s in Watch, but no quick call model is chosen, so Orbit takes no look yet.",
+    );
   });
 
   it("says when a pull request's failing check fails on the default branch too, and what its call said", () => {
