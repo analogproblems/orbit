@@ -614,7 +614,7 @@ fn dependabots_fixes_for_high_or_critical_alerts_are_in_the_brief() {
     );
     assert_eq!(before[0].pr_id.as_deref(), Some("a/b#12"));
     assert_eq!(
-        say("", &before, 0, true),
+        say("", "Bit", &before, 0, true),
         "Here's your morning brief! 1 Dependabot fix for a high or critical alert is open."
     );
 
@@ -1332,7 +1332,99 @@ fn a_brief_lists_what_is_wrong_with_orbit_itself() {
         listed[0].text,
         "Orbit itself: Codex has used 95% of a usage limit."
     );
+    assert_eq!(
+        say("", "Bit", &listed, 0, true),
+        "Here's your morning brief! 1 thing is wrong with Orbit itself."
+    );
     // Not once it clears.
     crate::health::see(&mut s.health, &[], now());
     assert!(lines(&s).is_empty());
+}
+
+#[test]
+fn the_brief_says_how_bits_own_questions_turned_out() {
+    use crate::own::{OwnQuestion, Turned};
+    let hours = |n: i64| stamp(now() - chrono::Duration::hours(n));
+    let asked = |repo: &str, turned: Turned, how: &str, at: String| OwnQuestion {
+        subject: format!("problem:{repo}"),
+        problem_id: Some(repo.into()),
+        repo: Some(repo.into()),
+        question: format!("CI started failing on the default branch of {repo}."),
+        mode: "on".into(),
+        answered_at: Some(at.clone()),
+        settled_at: Some(at),
+        turned: Some(turned),
+        how: how.into(),
+        ..Default::default()
+    };
+    let mut s = Snapshot {
+        own_questions: vec![
+            OwnQuestion {
+                used_at: Some(hours(3)),
+                ..asked(
+                    "a/b",
+                    Turned::UsedAndClosed,
+                    "You used its button, and the problem closed 2 hours after the answer.",
+                    hours(3),
+                )
+            },
+            OwnQuestion {
+                // Used after it closed: used, but not before it closed.
+                used_at: Some(hours(2)),
+                ..asked(
+                    "x/y",
+                    Turned::Closed,
+                    "The problem closed 2 hours after the answer, before you used its button.",
+                    hours(3),
+                )
+            },
+            asked(
+                "c/d",
+                Turned::Unused,
+                "The problem was still open a day after the answer.",
+                hours(1),
+            ),
+            // Settled more than a day before the first brief.
+            asked("e/f", Turned::Used, "You used its button.", hours(30)),
+            OwnQuestion {
+                settled_at: None,
+                turned: None,
+                ..asked("g/h", Turned::Unused, "", hours(1))
+            },
+        ],
+        ..Default::default()
+    };
+    look(&mut s, at("2026-10-31", "09:00"), now());
+    let b = latest(&s);
+    assert_eq!(
+        texts(b),
+        [(
+            "Bit's own questions: 3 turned out, and you used a button of 2. The latest, about CI on c/d: The problem was still open a day after the answer.",
+            true
+        )]
+    );
+    assert_eq!(
+        b.text,
+        "Here's your morning brief! 3 answers to Bit's own questions turned out."
+    );
+    // The next day there's nothing new, and it doesn't count as settled.
+    let tomorrow = now() + chrono::Duration::days(1);
+    look(&mut s, at("2026-11-01", "09:00"), tomorrow);
+    assert_eq!(latest(&s).day, "2026-10-31");
+    // One alone says which.
+    s.own_questions[0].settled_at = Some(stamp(tomorrow + chrono::Duration::hours(1)));
+    look(
+        &mut s,
+        at("2026-11-02", "09:00"),
+        tomorrow + chrono::Duration::days(1),
+    );
+    let b = latest(&s);
+    assert_eq!(
+        texts(b),
+        [(
+            "Bit's own question about CI on a/b: You used its button, and the problem closed 2 hours after the answer.",
+            true
+        )]
+    );
+    assert_eq!(b.settled, 0);
 }

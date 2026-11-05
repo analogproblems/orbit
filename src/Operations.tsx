@@ -54,6 +54,7 @@ import {
   type OpsThread,
   type OpsWrite,
   type Outcome,
+  type OwnQuestion,
   type PlaybookMark,
   type Problem,
   type QuickCall,
@@ -2708,17 +2709,58 @@ const OWN_SHOWN = 10;
 
 /** The questions Bit asked on its own, newest first, with their answers:
  * while it only watches, this is the only place they show. */
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** Whether you used a button of its answer within a day of it, whenever
+ * that was against the problem closing (`own::used_in_time`). */
+function usedInTime(q: OwnQuestion) {
+  if (!q.usedAt || !q.answeredAt) return false;
+  return Date.parse(q.usedAt) <= Date.parse(q.answeredAt) + DAY_MS;
+}
+/** How the answers to Bit's own questions turned out, in a line each:
+ * how many with buttons you used one of, and how many of the problems
+ * closed within a day. */
+export function ownScoreLines(questions: OwnQuestion[]): string[] {
+  const settled = questions.filter((q) => q.turned);
+  const offered = settled.filter(
+    (q) => q.mode === "on" && (q.proposals ?? []).length > 0,
+  );
+  const used = settled.filter(usedInTime).length;
+  const problems = settled.filter((q) => q.problemId && q.turned !== "unknown");
+  const closed = problems.filter(
+    (q) => q.turned === "closed" || q.turned === "used_and_closed",
+  ).length;
+  const closedUsed = problems.filter(
+    (q) => q.turned === "used_and_closed",
+  ).length;
+  const lines: string[] = [];
+  if (offered.length) {
+    lines.push(
+      `You used a button of ${used} of the ${offered.length === 1 ? "1 answer that offered one" : `${offered.length} answers that offered one`}.`,
+    );
+  }
+  if (problems.length) {
+    lines.push(
+      `${closed} of the ${problems.length === 1 ? "1 problem" : `${problems.length} problems`} it asked about closed within a day${closedUsed ? `, ${closedUsed} after you used a button` : ""}.`,
+    );
+  }
+  return lines;
+}
+
 function OwnQuestions() {
   const { snapshot: s } = useOrbit();
   const buddy = buddyOf(s.settings);
-  const asked = [...(s.ownQuestions ?? [])].reverse().slice(0, OWN_SHOWN);
+  const all = s.ownQuestions ?? [];
+  const asked = [...all].reverse().slice(0, OWN_SHOWN);
   if (!asked.length) return null;
   return (
     <VStack gap={3}>
       <Heading level={3}>{`${buddy.name}’s own questions`}</Heading>
       <Text color="secondary">
-        {`What ${buddy.name} asked on its own when CI started failing on a default branch or a release build, or the morning brief came, and what came back. While it only watches, the answers stay here.`}
+        {`What ${buddy.name} asked on its own when CI started failing on a default branch or a release build, or the morning brief came, and what came back. While it only watches, the answers stay here. A day after each answer, Orbit notes whether you used one of its buttons and whether the problem closed.`}
       </Text>
+      {ownScoreLines(all).map((line) => (
+        <Text key={line}>{line}</Text>
+      ))}
       <Card padding={0}>
         <List hasDividers aria-label={`${buddy.name}’s own questions`}>
           {asked.map((q) => {
@@ -2752,6 +2794,7 @@ function OwnQuestions() {
                         {`Offered: ${offered.join(", ")}`}
                       </Text>
                     )}
+                    {q.how && <Text>{`Turned out: ${q.how}`}</Text>}
                     <Text color="secondary" type="supporting">
                       {q.mode === "on"
                         ? `In ${buddy.name}’s notes · `

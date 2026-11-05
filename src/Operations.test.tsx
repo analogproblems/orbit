@@ -39,6 +39,7 @@ import {
   waitingText,
   whyText,
   callModeText,
+  ownScoreLines,
   callText,
   lookModeText,
   lookText,
@@ -64,6 +65,7 @@ import {
   type OpsRerun,
   type OpsThread,
   type OpsWrite,
+  type OwnQuestion,
   type Problem,
   type RepoCi,
   type RepoReleases,
@@ -382,6 +384,9 @@ describe("operations page", () => {
         answeredAt: "2026-11-05T09:01:00.000Z",
         answer: "Rerun the end-to-end job.",
         proposals: [{ id: 0, action: "review_again", prId: "acme/orbit#141" }],
+        settledAt: "2026-11-05T12:00:00.000Z",
+        turned: "closed",
+        how: "The problem closed 3 hours after the answer.",
       },
     ];
     show(s);
@@ -394,11 +399,61 @@ describe("operations page", () => {
     expect(items[0].textContent).toContain("Rerun the end-to-end job.");
     expect(items[0].textContent).toContain("Offered: Review again: orbit#141");
     expect(items[0].textContent).toContain("Watching");
+    expect(items[0].textContent).toContain(
+      "Turned out: The problem closed 3 hours after the answer.",
+    );
+    // Watching offers no buttons to use, so only the problem counts.
+    expect(
+      screen.getByText(
+        "1 of the 1 problem it asked about closed within a day.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/You used a button/)).toBeNull();
     expect(within(items[0]).getByLabelText("Answered")).toBeTruthy();
     // Its buttons wait in Bit's notes, never here.
     expect(within(items[0]).queryByRole("button")).toBeNull();
     expect(items[1].textContent).toContain("No answer: Codex couldn't finish.");
     expect(items[1].textContent).toContain("In Bit’s notes");
+  });
+
+  it("sums up how Bit's own answers turned out", () => {
+    const answeredAt = "2026-11-05T09:00:00.000Z";
+    const q = (
+      turned: OwnQuestion["turned"],
+      on: boolean,
+      problem = true,
+      usedAt: string | null = null,
+    ): OwnQuestion => ({
+      subject: "s",
+      problemId: problem ? "p" : null,
+      question: "Q?",
+      mode: on ? "on" : "watch",
+      askedAt: answeredAt,
+      answeredAt,
+      note: 0,
+      proposals: on ? [{ id: 0, action: "sync_now" }] : [],
+      turned,
+      usedAt,
+    });
+    expect(ownScoreLines([])).toEqual([]);
+    expect(
+      ownScoreLines([
+        q("used_and_closed", true, true, "2026-11-05T10:00:00.000Z"),
+        q("used", true, false, "2026-11-05T10:00:00.000Z"),
+        q("unused", true),
+        // Used after the problem closed, still within the day, counts as
+        // used, but not as used before it closed.
+        q("closed", true, true, "2026-11-06T08:00:00.000Z"),
+        // Used after the day doesn't count.
+        q("unused", true, true, "2026-11-06T09:30:00.000Z"),
+        q("closed", false),
+        q("unknown", false),
+        q(null, true),
+      ]),
+    ).toEqual([
+      "You used a button of 3 of the 5 answers that offered one.",
+      "3 of the 5 problems it asked about closed within a day, 1 after you used a button.",
+    ]);
   });
 
   it("shows nothing about Orbit itself while all is well", () => {

@@ -1950,8 +1950,25 @@ export function demoCi(
     model: "llama3.2:3b",
     ...call,
   });
-  // What Bit asked itself when the default branch started failing.
+  // What Bit asked itself when the default branch started failing, and
+  // the day before, about one that has since passed.
   const ownQuestions: OwnQuestion[] = [
+    {
+      subject: `problem:demo-problem-3@${ago(26 * 60 + 40)}`,
+      problemId: "demo-problem-3",
+      repo: "acme/api",
+      question:
+        "CI started failing on the default branch of acme/api. What's the most useful thing to do about it now?",
+      mode: "watch",
+      askedAt: ago(26 * 60 + 39),
+      note: 0,
+      answeredAt: ago(26 * 60 + 38),
+      answer:
+        "Only CI / Lint fails, on a formatting rule. The project's agent has the issue; its fix should pass without anything from you.",
+      settledAt: ago(25 * 60),
+      turned: "closed",
+      how: "The problem closed 38 minutes after the answer.",
+    },
     {
       subject: `problem:${redProblem.id}@${redProblem.openedAt}`,
       problemId: redProblem.id,

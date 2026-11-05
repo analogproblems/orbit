@@ -1380,12 +1380,15 @@ fn bit_is_told_about_its_own_questions() {
         .collect();
     s.own_questions[6].answer.clear();
     s.own_questions[6].error = Some("Codex couldn't finish.".into());
+    s.own_questions[5].how = "You used its button.".into();
     let b = briefing(&s, &Lookups::default());
     let recent = b["ownQuestions"]["recent"].as_array().unwrap();
     assert_eq!(recent.len(), 5);
     assert_eq!(recent[0]["error"], "Codex couldn't finish.");
     assert_eq!(recent[0]["answer"], Value::Null);
+    assert_eq!(recent[0]["turnedOut"], Value::Null);
     assert_eq!(recent[1]["answer"], "Answer 5.");
+    assert_eq!(recent[1]["turnedOut"], "You used its button.");
     assert_eq!(b["ownQuestions"]["mode"], "watch");
     assert!(
         instructions(&s.settings.buddy).contains("buddy.ownQuestions is whether you ask yourself")

@@ -261,3 +261,185 @@ fn keeps_a_month_and_never_drops_one_being_answered() {
     assert!(!list.iter().any(|q| q.subject == "old"));
     assert!(!prune(&mut list, now()));
 }
+
+/// Bit asked about problem p1 at `now()`, and the answer came then, with a
+/// button when on.
+fn answered_about_p1(mode: &str) -> Snapshot {
+    let mut s = snapshot(mode);
+    s.problems
+        .push(problem("p1", ProblemKind::DefaultBranch, 5));
+    ask(&mut s).unwrap();
+    let note = s.own_questions[0].note;
+    let proposals = vec![Proposal::new(crate::ask::Action::SyncNow)];
+    answered(&mut s, note, Ok(("Sync now.".into(), proposals)));
+    s.own_questions[0].answered_at = Some(stamp(now()));
+    s
+}
+fn later(hours: i64) -> DateTime<Utc> {
+    now() + Duration::hours(hours)
+}
+
+#[test]
+fn a_problem_that_closes_after_you_use_a_button_turned_out_used_and_closed() {
+    let mut s = answered_about_p1("on");
+    let note = s.own_questions[0].note;
+    assert!(used(&mut s, note, later(1)));
+    // Not before it has stayed closed an hour, so a flap doesn't count.
+    s.problems[0].closed_at = Some(stamp(later(3)));
+    assert!(!settle(&mut s, later(3)));
+    assert!(settle(&mut s, later(4)));
+    let q = &s.own_questions[0];
+    assert_eq!(q.turned, Some(Turned::UsedAndClosed));
+    assert_eq!(
+        q.how,
+        "You used its button, and the problem closed 3 hours after the answer."
+    );
+    assert_eq!(q.settled_at, Some(stamp(later(4))));
+    // Settled once.
+    assert!(!settle(&mut s, later(30)));
+}
+
+#[test]
+fn a_problem_that_closes_with_no_button_used_turned_out_closed() {
+    for mode in ["watch", "on"] {
+        let mut s = answered_about_p1(mode);
+        s.problems[0].closed_at = Some(stamp(now() - Duration::minutes(1)));
+        assert!(settle(&mut s, later(2)));
+        let q = &s.own_questions[0];
+        assert_eq!(q.turned, Some(Turned::Closed));
+        assert_eq!(q.how, "The problem closed before the answer came.");
+    }
+}
+
+#[test]
+fn a_problem_still_open_a_day_and_an_hour_later_turned_out_unused_or_used() {
+    let mut s = answered_about_p1("on");
+    assert!(!settle(&mut s, later(24)));
+    // It closed after the day: too late to count.
+    s.problems[0].closed_at = Some(stamp(later(24) + Duration::minutes(10)));
+    assert!(settle(&mut s, later(25)));
+    assert_eq!(s.own_questions[0].turned, Some(Turned::Unused));
+    assert_eq!(
+        s.own_questions[0].how,
+        "The problem was still open a day after the answer."
+    );
+    let mut s = answered_about_p1("on");
+    let note = s.own_questions[0].note;
+    used(&mut s, note, later(2));
+    assert!(settle(&mut s, later(25)));
+    assert_eq!(s.own_questions[0].turned, Some(Turned::Used));
+}
+
+#[test]
+fn a_problem_whose_record_is_gone_cant_be_told() {
+    let mut s = answered_about_p1("watch");
+    s.problems.clear();
+    assert!(settle(&mut s, later(1)));
+    assert_eq!(s.own_questions[0].turned, Some(Turned::Unknown));
+}
+
+#[test]
+fn the_briefs_answer_turned_out_used_at_once_or_unused_after_a_day() {
+    let mut s = snapshot("on");
+    s.brief.latest = Some(Brief {
+        day: "2026-11-05".into(),
+        at: at(2),
+        ..Default::default()
+    });
+    ask(&mut s).unwrap();
+    let note = s.own_questions[0].note;
+    answered(&mut s, note, Ok(("Merge #12.".into(), vec![])));
+    s.own_questions[0].answered_at = Some(stamp(now()));
+    assert!(!settle(&mut s, later(23)));
+    assert!(settle(&mut s, later(24)));
+    assert_eq!(s.own_questions[0].turned, Some(Turned::Unused));
+    assert_eq!(s.own_questions[0].how, "It had no button to use.");
+    assert_eq!(about(&s.own_questions[0]), "about the morning brief");
+    s.own_questions[0].settled_at = None;
+    s.own_questions[0].used_at = Some(stamp(later(1)));
+    assert!(settle(&mut s, later(1)));
+    assert_eq!(s.own_questions[0].turned, Some(Turned::Used));
+}
+
+#[test]
+fn only_an_answered_question_of_bits_own_counts_a_button() {
+    let mut s = snapshot("on");
+    s.problems
+        .push(problem("p1", ProblemKind::DefaultBranch, 5));
+    ask(&mut s).unwrap();
+    let note = s.own_questions[0].note;
+    // Still being answered.
+    assert!(!used(&mut s, note, now()));
+    assert!(!used(&mut s, note + 1, now()));
+    answered(&mut s, note, Err("Codex couldn't finish.".into()));
+    assert!(!settle(&mut s, later(48)));
+    assert_eq!(s.own_questions[0].turned, None);
+}
+
+#[test]
+fn says_what_each_question_was_about() {
+    let mut s = snapshot("on");
+    s.problems.extend([
+        problem("main", ProblemKind::DefaultBranch, 10),
+        problem("build", ProblemKind::ReleaseBuild, 3),
+    ]);
+    ask(&mut s).unwrap();
+    let note = s.own_questions[0].note;
+    answered(&mut s, note, Ok(("Look.".into(), vec![])));
+    ask(&mut s).unwrap();
+    assert_eq!(about(&s.own_questions[0]), "about CI on acme/widgets");
+    assert_eq!(
+        about(&s.own_questions[1]),
+        "about the release build for v1.2.0 in acme/widgets"
+    );
+}
+
+#[test]
+fn a_button_used_after_the_problem_closed_counts_as_used_but_not_before() {
+    // Used after it closed, before it settled.
+    let mut s = answered_about_p1("on");
+    let note = s.own_questions[0].note;
+    s.problems[0].closed_at = Some(stamp(later(2)));
+    used(&mut s, note, later(3) - Duration::minutes(30));
+    assert!(settle(&mut s, later(3)));
+    let q = &s.own_questions[0];
+    assert_eq!(q.turned, Some(Turned::Closed));
+    assert_eq!(
+        q.how,
+        "The problem closed 2 hours after the answer, before you used its button."
+    );
+    assert!(used_in_time(q));
+    // Used after it closed and settled, still within the day.
+    let mut s = answered_about_p1("on");
+    let note = s.own_questions[0].note;
+    s.problems[0].closed_at = Some(stamp(later(2)));
+    assert!(settle(&mut s, later(3)));
+    assert!(!used_in_time(&s.own_questions[0]));
+    used(&mut s, note, later(5));
+    let q = &s.own_questions[0];
+    assert_eq!(q.turned, Some(Turned::Closed));
+    assert!(used_in_time(q));
+}
+
+#[test]
+fn a_button_used_after_the_day_doesnt_count() {
+    for (minutes, counts) in [(24 * 60, true), (24 * 60 + 30, false)] {
+        let mut s = answered_about_p1("on");
+        let note = s.own_questions[0].note;
+        used(&mut s, note, now() + Duration::minutes(minutes));
+        assert_eq!(s.own_questions[0].used_at.is_some(), counts);
+        // Settled late, it is still judged by the day.
+        assert!(settle(&mut s, later(30)));
+        let q = &s.own_questions[0];
+        assert_eq!(used_in_time(q), counts);
+        let want = if counts { Turned::Used } else { Turned::Unused };
+        assert_eq!(q.turned, Some(want), "{minutes}");
+    }
+    // A use recorded after the day, as an older Orbit could, doesn't count
+    // either.
+    let mut s = answered_about_p1("on");
+    s.own_questions[0].used_at = Some(stamp(later(25)));
+    assert!(settle(&mut s, later(30)));
+    assert!(!used_in_time(&s.own_questions[0]));
+    assert_eq!(s.own_questions[0].turned, Some(Turned::Unused));
+}
