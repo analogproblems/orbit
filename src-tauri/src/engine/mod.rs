@@ -300,6 +300,8 @@ pub struct Engine {
     wake_retry: std::sync::Mutex<HashMap<String, (std::time::Instant, Duration)>>,
     /// How Docker and the Dev Container CLI are started; tests use fakes.
     dev_tools: std::sync::Mutex<crate::devcontainer::Tools>,
+    /// How Orbit's sandbox is started; tests use a fake.
+    sandbox_tool: std::sync::Mutex<crate::cli::Launcher>,
     /// How actionlint and zizmor are started; tests use fakes.
     lint_tools: std::sync::Mutex<crate::lint::Tools>,
     /// Dev containers kept for reviewers' own commands, by review; removed
@@ -411,6 +413,7 @@ impl Engine {
             wake_retry: std::sync::Mutex::new(HashMap::new()),
             antigravity: std::sync::Mutex::new(crate::antigravity::Setup::default()),
             dev_tools: std::sync::Mutex::new(Default::default()),
+            sandbox_tool: std::sync::Mutex::new(crate::sandbox::launcher()),
             lint_tools: std::sync::Mutex::new(Default::default()),
             boxes: Default::default(),
             building: Mutex::new(()),
@@ -815,6 +818,7 @@ pub(crate) fn recover(state: &mut Snapshot) -> Result<Vec<String>, String> {
         key.models.clear();
     }
     state.dev_containers = CliStatus::default();
+    state.sandbox = CliStatus::default();
     state.ledger.refreshing = false;
     state.ledger.progress = None;
     state.ledger.writing = None;

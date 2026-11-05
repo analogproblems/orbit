@@ -30,6 +30,7 @@ fn repository() -> Repository {
         keep_updated: false,
         provider: Default::default(),
         dev_container: Default::default(),
+        sandbox: false,
     }
 }
 fn review(status: &str) -> Review {

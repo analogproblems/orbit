@@ -252,7 +252,7 @@ In `proposals` you can offer up to {MAX_PROPOSALS} buttons for Orbit's own contr
 - publish, with pr: publishes a pull request's report that is ready to publish.
 - sync_now: syncs with GitHub now.
 - change_settings, with changes: changes settings named in the summary's `settings`, each with its new value written as text, such as \"true\" or \"120\". buddy.answerer is who answers these questions: codex, claude, antigravity, ollama, or openai, anthropic or google with the user's API key. buddy.brief is whether you send a morning brief, and buddy.briefAt its time on a 24-hour clock, such as \"07:30\", in buddy.timeZone: a time zone name such as \"Europe/London\", or empty for the clock of the computer Orbit runs on, whose zone is the summary's clockZone. buddy.luckCall and buddy.faultCall are the quick calls on Ollama about bad luck and about failing already, each off, watch or on (see `quickCalls`). buddy.secondLook is the second look, off, watch or on (see `secondLook`), and buddy.secondLookBy who takes it: quick_model (the quick call model on Ollama) or answerer (whoever answers these questions).
-- set_up_repository, with repository and changes: connects a repository from the summary's `connectableRepositories`, or changes the settings of one in `repositories`. Orbit downloads its own copy of a repository it connects, and starts it with autopilot off, no setup command and no network, plus your changes. Its changes use the repository settings named in the summary's repositories: setupCommand, checkCommand, networkAccess, devContainer, reviewer (codex, claude or antigravity), roundLimit ({round_limits}), approvalMinutes ({approval_minutes}, where 0 waits for the person), keepCloneUpdated and autopilot.
+- set_up_repository, with repository and changes: connects a repository from the summary's `connectableRepositories`, or changes the settings of one in `repositories`. Orbit downloads its own copy of a repository it connects, and starts it with autopilot off, no setup command and no network, plus your changes. Its changes use the repository settings named in the summary's repositories: setupCommand, checkCommand, networkAccess, devContainer, orbitsSandbox, reviewer (codex, claude or antigravity), roundLimit ({round_limits}), approvalMinutes ({approval_minutes}, where 0 waits for the person), keepCloneUpdated and autopilot.
 - check_connections: checks the connections to GitHub, Codex and the other reviewers again, once the person has fixed one, such as by signing in.
 Use pull request ids and repository names from the summary. Leave pr and repository null, and changes empty, when an action doesn't use them. You can't change trusted accounts: say they can do that themselves in Orbit's Settings.
 
@@ -263,9 +263,9 @@ Decisions:
 
 Setting up a repository:
 - A setup command runs in each review's sandbox before the reviewer starts, to install what the code needs. Use the `suggestedSetup` the summary gives for the repository's copy, which Orbit picks from its first lock file: {setup_commands}. With none, leave it empty unless the person tells you what it needs.
-- Installing needs networkAccess on. Say so when you offer it: with network on, setup and the reviewer can reach the internet, including code from the pull request.
+- Installing needs networkAccess on. Say so when you offer it: with network on, setup and the reviewer can reach the internet, including code from the pull request. In Orbit's sandbox it is narrower: only setup reaches the internet, and only the main package registries and GitHub.
 - Keep commands to standard install and test commands: the suggested setup, `npm run <script>` (or pnpm, yarn or bun) with a script the summary lists, `npm test`, `cargo test`, `go test ./...`, `pytest`, `make <target>` and the like, joined by `&&`. Orbit refuses anything else, such as `python -c` or `node -e`, a registry or other value after a flag, or downloading and running a script; when the person needs one of those, tell them to type it in Repositories themselves.
-- Claude and Antigravity reviews can run a setup command only with devContainer on. A check command, such as `npm test`, runs only in the dev container, after setup, so it needs devContainer on and a .devcontainer file in the copy.
+- Claude and Antigravity reviews can run a setup command only with orbitsSandbox or devContainer on. A check command, such as `npm test`, runs after setup only in Orbit's sandbox (Claude and Antigravity reviews with orbitsSandbox on and devContainer off) or the dev container (which needs a .devcontainer file in the copy). Orbit's sandbox runs them on this computer and needs the sandbox runtime (the summary's orbitsSandboxReady); prefer it for a Claude or Antigravity repository without a .devcontainer file. Keep setup's caches inside the copy there, such as `npm ci --cache .cache/npm`.
 - Turn autopilot on only when the person asks for it, or asks you to get a repository reviewed automatically, and offer it as a button of its own.
 
 You have a small memory that carries over between questions, in the summary's `memory`: up to {MEMORY_GENERAL} general lines, and up to {MEMORY_PER_REPO} lines about each repository. You keep it yourself with `memory` in your answer: `remember` adds lines, and `forget` removes lines, copied exactly as the summary shows them. Give each line's repository by its full name from the summary, or null for a general line. Each line is one short sentence.
@@ -890,6 +890,7 @@ pub fn briefing(s: &Snapshot, lookups: &Lookups) -> Value {
             "claude": s.claude.ready,
             "antigravity": s.antigravity.ready,
         },
+        "orbitsSandboxReady": s.sandbox.ready,
         "repositories": s.settings.repositories.iter().map(|r| json!({
             "name": r.name,
             "autopilot": r.automatic,
@@ -901,6 +902,7 @@ pub fn briefing(s: &Snapshot, lookups: &Lookups) -> Value {
             "networkAccess": r.network_access,
             "devContainer": r.dev_container.enabled,
             "reviewerRunsCommandsInDevContainer": r.dev_container.enabled && r.dev_container.reviewer_tool,
+            "orbitsSandbox": r.sandbox,
             "approvalMinutes": r.approval_minutes,
             "securityAlerts": security_of(s, &r.name),
             "ci": ci_of(s, &r.name),

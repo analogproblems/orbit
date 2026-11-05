@@ -335,6 +335,7 @@ pub(super) fn keep_here(
     moved.antigravity = here.antigravity.clone();
     moved.antigravity_models = here.antigravity_models.clone();
     moved.dev_containers = here.dev_containers.clone();
+    moved.sandbox = here.sandbox.clone();
     moved.ollama = here.ollama.clone();
     moved.ollama_models = here.ollama_models.clone();
     moved.api_keys = here.api_keys.clone();

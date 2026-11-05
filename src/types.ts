@@ -288,6 +288,9 @@ export interface Repository {
   provider?: Provider;
   /** Run the setup and check commands in the repository's dev container. */
   devContainer?: DevContainer;
+  /** Run a Claude or Antigravity review's setup and check commands in
+   * Orbit's sandbox on this computer, while the dev container is off. */
+  sandbox?: boolean;
 }
 export interface DevContainer {
   enabled: boolean;
@@ -308,11 +311,14 @@ export interface CheckStep {
   output: string;
 }
 export interface ContainerChecks {
+  /** Empty when they ran in Orbit's sandbox. */
   image: string;
   network: boolean;
   setup: CheckStep | null;
   /** Null without a check command, or after a failed setup. */
   check: CheckStep | null;
+  /** They ran in Orbit's sandbox, not a dev container. */
+  sandbox?: boolean;
 }
 export function checkPassed(step: CheckStep) {
   return step.exitCode === 0 && !step.timedOut;
@@ -760,6 +766,7 @@ export interface RepositoryPatch {
   checkCommand?: string;
   networkAccess?: boolean;
   devContainer?: boolean;
+  orbitsSandbox?: boolean;
   reviewer?: Provider;
   roundLimit?: number;
   approvalMinutes?: number;
@@ -784,6 +791,7 @@ export function withRepositoryPatch(
     approvalMinutes: patch.approvalMinutes ?? repo.approvalMinutes,
     keepUpdated: patch.keepCloneUpdated ?? repo.keepUpdated,
     automatic: patch.autopilot ?? repo.automatic,
+    sandbox: patch.orbitsSandbox ?? repo.sandbox,
     devContainer: {
       enabled: patch.devContainer ?? devContainer.enabled,
       checkCommand: patch.checkCommand ?? devContainer.checkCommand,
@@ -1192,6 +1200,9 @@ export interface Snapshot {
   antigravity?: CliStatus;
   /** Docker and the Dev Container CLI, as last checked. */
   devContainers?: CliStatus;
+  /** Orbit's sandbox, for Claude and Antigravity repositories' setup and
+   * checks, as last checked. */
+  sandbox?: CliStatus;
   /** The models Antigravity offered when last checked. */
   antigravityModels?: Model[];
   /** Ollama at Bit's address, as last checked while it answers Bit. */

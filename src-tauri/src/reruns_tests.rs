@@ -33,6 +33,7 @@ fn state(flaky: Option<&str>) -> Snapshot {
         keep_updated: false,
         provider: Default::default(),
         dev_container: Default::default(),
+        sandbox: false,
     });
     s.ci = vec![RepoCi {
         repo: "a/b".into(),

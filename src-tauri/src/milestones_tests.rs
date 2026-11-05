@@ -66,6 +66,7 @@ fn repo(milestones: Vec<Milestone>) -> Snapshot {
         keep_updated: false,
         provider: Default::default(),
         dev_container: Default::default(),
+        sandbox: false,
     });
     s.releases.push(RepoReleases {
         repo: "a/b".into(),

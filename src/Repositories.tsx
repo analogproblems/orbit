@@ -240,8 +240,8 @@ function CloneUpdateStatus({ update }: { update?: CloneUpdate }) {
   );
 }
 /**
- * What Claude and Antigravity can run without the dev container: neither can
- * run a setup command on this computer, so they read the code.
+ * What Claude and Antigravity can run with neither Orbit's sandbox nor the
+ * dev container: they read the code.
  */
 const readsOnly = {
   claude: "Reads the code, can't run it",
@@ -259,7 +259,9 @@ function environment(repo: Repository) {
     return `Reviewed by ${providerLabels[repo.provider]} · ${
       container
         ? `Sandboxed worktree · ${inBox} · ${repo.networkAccess ? "Container network enabled" : "No network"}`
-        : `${readsOnly[repo.provider]} · No network`
+        : repo.sandbox
+          ? `Setup and checks in Orbit's sandbox · ${repo.networkAccess && repo.setupCommand.trim() ? "Setup can download packages" : "No network"}`
+          : `${readsOnly[repo.provider]} · No network`
     }`;
   return `Reviewed by Codex · ${
     container
@@ -328,6 +330,9 @@ export function Repositories({
   const reviewer = editing?.provider ?? "codex";
   const cliReviewer = reviewer !== "codex";
   const inContainer = editing?.devContainer?.enabled ?? false;
+  // Claude and Antigravity run setup and checks in Orbit's sandbox when the
+  // dev container is off.
+  const inSandbox = cliReviewer && !inContainer && (editing?.sandbox ?? false);
   const checkCommand = editing?.devContainer?.checkCommand ?? "";
   const reviewerTool = editing?.devContainer?.reviewerTool ?? false;
   const close = (open: boolean) => {
@@ -546,19 +551,19 @@ export function Repositories({
                       ]}
                       description={
                         reviewer === "antigravity"
-                          ? "Antigravity follows Orbit's review instructions, using the model and effort in Settings. Orbit gives it the change; it can read files in the worktree, and anything else that needs approval is declined, so it never waits for you. Commands you allowed in Antigravity's own settings run inside its sandbox with no network access and can write to the worktree. Orbit won't start a review if those settings would let a pull request reach past the sandbox, and never changes them. With the dev container on, it also gets the results of the setup and check commands, but can't run its own commands there."
+                          ? "Antigravity follows Orbit's review instructions, using the model and effort in Settings. Orbit gives it the change; it can read files in the worktree, and anything else that needs approval is declined, so it never waits for you. Commands you allowed in Antigravity's own settings run inside its sandbox with no network access and can write to the worktree. Orbit won't start a review if those settings would let a pull request reach past the sandbox, and never changes them. With Orbit's sandbox or the dev container on, it also gets the results of the setup and check commands, but can't run its own commands there."
                           : reviewer === "claude"
-                            ? "Claude reviews with its own code review rules, using the model and effort in Settings. It can read files and run a short list of Git and text commands, all inside Claude's sandbox with no network access, and declines anything else on its own, so it never waits for your approval. Like Codex's sandbox, this is not a full read boundary, and a Git diff driver configured in your clone can still run inside it and write to the worktree. With the dev container on, it also gets the results of the setup and check commands, and can run its own commands there if you let it."
+                            ? "Claude reviews with its own code review rules, using the model and effort in Settings. It can read files and run a short list of Git and text commands, all inside Claude's sandbox with no network access, and declines anything else on its own, so it never waits for your approval. Like Codex's sandbox, this is not a full read boundary, and a Git diff driver configured in your clone can still run inside it and write to the worktree. With Orbit's sandbox or the dev container on, it also gets the results of the setup and check commands, and can run its own commands in the dev container if you let it."
                             : "Codex reviews in its sandbox, using the model and effort in Settings."
                       }
                       status={
-                        cliReviewer && !inContainer
+                        cliReviewer && !inContainer && !inSandbox
                           ? {
                               type: "warning",
                               message:
                                 reviewer === "antigravity"
-                                  ? "Without the dev container, Antigravity reads the code and runs only commands you allowed in its own settings: no setup, build or tests otherwise. Turn on the dev container below to give it test results."
-                                  : "Without the dev container, Claude reads the code but can't run it: no setup, build or tests, so it can't confirm a problem by running it. Turn on the dev container below to give it test results.",
+                                  ? "On its own, Antigravity reads the code and runs only commands you allowed in its own settings: no setup, build or tests otherwise. Turn on Orbit's sandbox or the dev container below to give it test results."
+                                  : "On its own, Claude reads the code but can't run it: no setup, build or tests, so it can't confirm a problem by running it. Turn on Orbit's sandbox or the dev container below to give it test results.",
                             }
                           : undefined
                       }
@@ -585,7 +590,31 @@ export function Repositories({
                           : undefined
                       }
                     />
-                    {(!cliReviewer || inContainer || editing.setupCommand) && (
+                    {cliReviewer && !inContainer && (
+                      <Switch
+                        label="Run setup and checks in Orbit's sandbox"
+                        value={inSandbox}
+                        isDisabled={busy}
+                        onChange={(sandbox) =>
+                          setEditing({ ...editing, sandbox })
+                        }
+                        description="Without a dev container, Orbit runs the setup and check commands itself before each review, on this computer, in a copy of the pull request, and gives the reviewer the results. They can write only to that copy, can't read your sign-ins, and have no network, except that setup can download packages when you allow it below. Needs Anthropic's sandbox runtime, on Linux or macOS."
+                        status={
+                          inSandbox && !s.sandbox?.ready
+                            ? {
+                                type: "warning",
+                                message:
+                                  s.sandbox?.error ??
+                                  "Orbit's sandbox isn't ready yet. Check Settings → Connections.",
+                              }
+                            : undefined
+                        }
+                      />
+                    )}
+                    {(!cliReviewer ||
+                      inContainer ||
+                      inSandbox ||
+                      editing.setupCommand) && (
                       <TextArea
                         label="Environment setup"
                         isOptional
@@ -598,19 +627,21 @@ export function Repositories({
                         description={
                           inContainer
                             ? "Runs first in the dev container, with /bin/sh, as the recipe's user. Fifteen-minute timeout. If it fails, the checks are skipped and the reviewer is told."
-                            : "Runs in the new worktree, inside the Codex sandbox. Uses /bin/sh on Unix or PowerShell on Windows. Five-minute timeout. Setup can run code from the pull request, such as package install scripts; prefer options like --ignore-scripts."
+                            : inSandbox
+                              ? "Runs first in Orbit's sandbox, in the copy of the pull request, with /bin/sh. Fifteen-minute timeout. If it fails, the checks are skipped and the reviewer is told. Keep caches inside the copy, such as npm ci --cache .cache/npm, as it can't write anywhere else."
+                              : "Runs in the new worktree, inside the Codex sandbox. Uses /bin/sh on Unix or PowerShell on Windows. Five-minute timeout. Setup can run code from the pull request, such as package install scripts; prefer options like --ignore-scripts."
                         }
                         status={
-                          cliReviewer && !inContainer
+                          cliReviewer && !inContainer && !inSandbox
                             ? {
                                 type: "error",
-                                message: `${providerLabels[reviewer]} reviews can only run a setup command in the dev container. Turn it on or clear the command to save.`,
+                                message: `${providerLabels[reviewer]} reviews can only run a setup command in Orbit's sandbox or the dev container. Turn one on or clear the command to save.`,
                               }
                             : undefined
                         }
                       />
                     )}
-                    {inContainer && (
+                    {(inContainer || inSandbox) && (
                       <TextInput
                         label="Check command"
                         placeholder="e.g. npm test"
@@ -620,21 +651,26 @@ export function Repositories({
                           setEditing({
                             ...editing,
                             devContainer: {
-                              enabled: true,
+                              enabled: inContainer,
                               checkCommand: command,
                               reviewerTool,
                             },
                           })
                         }
-                        description="Runs after setup in the dev container. Thirty-minute timeout. The reviewer gets its result and the end of its output, and reports failures this pull request caused."
+                        description={
+                          inContainer
+                            ? "Runs after setup in the dev container. Thirty-minute timeout. The reviewer gets its result and the end of its output, and reports failures this pull request caused."
+                            : "Runs after setup in Orbit's sandbox, with no network. Thirty-minute timeout. The reviewer gets its result and the end of its output, and reports failures this pull request caused."
+                        }
                         status={
                           !checkCommand.trim() &&
                           !editing.setupCommand.trim() &&
-                          !reviewerTool
+                          !(inContainer && reviewerTool)
                             ? {
                                 type: "error",
-                                message:
-                                  "Add a setup or check command, or let the reviewer run commands, to save.",
+                                message: inContainer
+                                  ? "Add a setup or check command, or let the reviewer run commands, to save."
+                                  : "Add a setup or check command, or turn off Orbit's sandbox, to save.",
                               }
                             : undefined
                         }
@@ -667,12 +703,14 @@ export function Repositories({
                         }
                       />
                     )}
-                    {(!cliReviewer || inContainer) && (
+                    {(!cliReviewer || inContainer || inSandbox) && (
                       <Switch
                         label={
-                          cliReviewer
-                            ? "Allow network access in the dev container"
-                            : "Allow sandbox network access"
+                          inSandbox
+                            ? "Let setup download packages"
+                            : cliReviewer
+                              ? "Allow network access in the dev container"
+                              : "Allow sandbox network access"
                         }
                         value={editing.networkAccess}
                         isDisabled={busy}
@@ -680,11 +718,13 @@ export function Repositories({
                           setEditing({ ...editing, networkAccess })
                         }
                         description={
-                          cliReviewer
-                            ? "Enable when setup needs to download dependencies. Code from the pull request in the dev container can then reach the network. The reviewer still has none."
-                            : inContainer
-                              ? "Enable when setup needs to download dependencies. The dev container and the review agent can then reach the network, including code from the pull request."
-                              : "Enable when setup needs to download dependencies. Setup and the review agent can then reach the network, including code from the pull request."
+                          inSandbox
+                            ? "Setup can then reach the main package registries (npm, Yarn, crates.io, PyPI, Go and RubyGems) and GitHub, and nothing else. The checks and the reviewer still have no network."
+                            : cliReviewer
+                              ? "Enable when setup needs to download dependencies. Code from the pull request in the dev container can then reach the network. The reviewer still has none."
+                              : inContainer
+                                ? "Enable when setup needs to download dependencies. The dev container and the review agent can then reach the network, including code from the pull request."
+                                : "Enable when setup needs to download dependencies. Setup and the review agent can then reach the network, including code from the pull request."
                         }
                       />
                     )}

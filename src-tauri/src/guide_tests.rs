@@ -452,6 +452,24 @@ fn reviewers_are_only_checked_while_a_repository_uses_them() {
     );
     assert!(connections(&s)[1].needed_by.is_empty());
     assert_eq!(connections(&s)[2].needed_by, ["a/b"]);
+    // Orbit's sandbox, while a Claude or Antigravity repository runs its
+    // setup and checks there.
+    let mut r = repo("a/c");
+    r.provider = Provider::Antigravity;
+    r.sandbox = true;
+    r.dev_container.check_command = "npm test".into();
+    s.settings.repositories.push(r);
+    s.sandbox.error = Some("srt isn't installed.".into());
+    let all = connections(&s);
+    let sandbox = all.last().unwrap();
+    assert_eq!(sandbox.name, "Orbit's sandbox");
+    assert_eq!(sandbox.needed_by, ["a/c"]);
+    let get = fix(sandbox).unwrap();
+    assert_eq!(get.label.as_deref(), Some("Get the sandbox runtime"));
+    assert_eq!(
+        get.link.as_deref(),
+        Some("https://github.com/anthropics/sandbox-runtime")
+    );
 }
 
 #[test]

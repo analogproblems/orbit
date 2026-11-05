@@ -35,6 +35,7 @@ fn repo(version: &str, tags: &[&str]) -> Snapshot {
         keep_updated: false,
         provider: Default::default(),
         dev_container: Default::default(),
+        sandbox: false,
     });
     s.releases.push(RepoReleases {
         repo: "a/b".into(),

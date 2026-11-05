@@ -248,10 +248,10 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
         if c.key == "github" {
             continue;
         }
-        let what = if c.key == "dev-containers" {
-            "can't run setup and checks in a dev container"
-        } else {
-            "can't be reviewed"
+        let what = match c.key {
+            "dev-containers" => "can't run setup and checks in a dev container",
+            "sandbox" => "can't run setup and checks in Orbit's sandbox",
+            _ => "can't be reviewed",
         };
         out.push(Attention {
             fix: Some(Fix::CheckConnections),

@@ -19,7 +19,13 @@ import {
   Token,
   VStack,
 } from "@astryxdesign/core";
-import { Code2, Container, GitBranch, RefreshCw } from "lucide-react";
+import {
+  Code2,
+  Container,
+  GitBranch,
+  RefreshCw,
+  ShieldCheck,
+} from "lucide-react";
 import { useOrbit, live, remote } from "./store";
 import {
   connectionState,
@@ -230,6 +236,40 @@ function ConnectionSettings() {
                     !!s.devContainers?.ready,
                     s.devContainers?.error,
                   )}
+                </Text>
+              </HStack>
+            }
+          />
+          <ListItem
+            label="Orbit's sandbox"
+            startContent={<ShieldCheck />}
+            description={
+              <Text color="secondary">
+                {s.sandbox?.error ||
+                  (s.sandbox?.ready
+                    ? `Runs Claude and Antigravity repositories' setup and checks on this computer · ${s.sandbox.version}.`
+                    : "Install Anthropic's sandbox runtime with npm install -g @anthropic-ai/sandbox-runtime to run Claude and Antigravity repositories' setup and checks on this computer, without a dev container.")}
+              </Text>
+            }
+            endContent={
+              <HStack gap={2} vAlign="center">
+                <StatusDot
+                  label="Sandbox connection"
+                  variant={
+                    s.sandbox?.ready
+                      ? "success"
+                      : draft.repositories.some(
+                            (r) =>
+                              r.sandbox &&
+                              (r.provider ?? "codex") !== "codex" &&
+                              !r.devContainer?.enabled,
+                          )
+                        ? "warning"
+                        : "neutral"
+                  }
+                />
+                <Text color="secondary" type="supporting">
+                  {connectionState(!!s.sandbox?.ready, s.sandbox?.error)}
                 </Text>
               </HStack>
             }

@@ -1,11 +1,49 @@
-//! A repository's setup and checks in its dev container, run before the
-//! review so the reviewer gets their results (see `crate::devcontainer`).
+//! A repository's setup and checks in its dev container, or for a Claude or
+//! Antigravity review without one in Orbit's sandbox, run before the review
+//! so the reviewer gets their results (see `crate::devcontainer` and
+//! `crate::sandbox`).
 use super::{
     worktrees::{git, remove_worktree},
     Engine,
 };
-use crate::{boxtool, devcontainer, types::*};
-use std::path::Path;
+use crate::{boxtool, devcontainer, sandbox, types::*};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
+/// A review's copy for Orbit's sandbox, removed when its commands are done
+/// or, should the review stop while they run, as soon as they are stopped.
+struct SandboxCopy {
+    engine: Arc<Engine>,
+    folder: PathBuf,
+    removed: bool,
+}
+impl SandboxCopy {
+    async fn remove(mut self) {
+        remove_copy(&self.engine, &self.folder).await;
+        self.removed = true;
+    }
+}
+impl Drop for SandboxCopy {
+    fn drop(&mut self) {
+        if self.removed {
+            return;
+        }
+        // Without a runtime, Orbit is quitting: the next launch removes it.
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let (engine, folder) = (self.engine.clone(), self.folder.clone());
+            runtime.spawn(async move { remove_copy(&engine, &folder).await });
+        }
+    }
+}
+async fn remove_copy(engine: &Engine, folder: &Path) {
+    {
+        let _git = engine.git_lock.lock().await;
+        let _ = remove_worktree(&folder.join("copy")).await;
+    }
+    let _ = std::fs::remove_dir_all(folder);
+}
 
 /// A review's dev container, kept while the reviewer can run commands in it.
 pub(super) struct ReviewBox {
@@ -37,7 +75,7 @@ impl Engine {
         result.map(|_| ())
     }
     /// Removes check containers an earlier run of Orbit left behind, and
-    /// recipe checkouts it didn't get to remove.
+    /// recipe checkouts and sandbox copies it didn't get to remove.
     pub(super) async fn remove_leftover_containers(&self) {
         // Reviews may already have started, so their own containers and
         // recipe checkouts stay; no review sets one up until this is done.
@@ -58,6 +96,16 @@ impl Engine {
                 }
             }
         }
+        // And sandbox copies, which hold a worktree of their own.
+        if let Ok(entries) = std::fs::read_dir(self.root.join("sandbox")) {
+            let _git = self.git_lock.lock().await;
+            for entry in entries.flatten() {
+                if !keep.iter().any(|id| entry.file_name() == id.as_str()) {
+                    let _ = remove_worktree(&entry.path().join("copy")).await;
+                    let _ = std::fs::remove_dir_all(entry.path());
+                }
+            }
+        }
         if snapshot.dev_containers.ready {
             let tools = self.dev_tools.lock().unwrap().clone();
             devcontainer::remove_leftovers(&tools, &keep).await;
@@ -66,6 +114,116 @@ impl Engine {
     #[cfg(test)]
     pub(super) fn use_dev_tools(&self, tools: devcontainer::Tools) {
         *self.dev_tools.lock().unwrap() = tools;
+    }
+    /// Checks Orbit's sandbox can start, and records whether Claude and
+    /// Antigravity repositories can run their setup and checks in it.
+    pub async fn check_sandbox(&self) -> Result<(), String> {
+        let srt = self.sandbox_tool.lock().unwrap().clone();
+        let result = sandbox::check(&srt, &self.root.join("sandbox").join("trial")).await;
+        self.update(|s| {
+            s.sandbox = match &result {
+                Ok(version) => CliStatus {
+                    ready: true,
+                    error: None,
+                    version: Some(version.clone()),
+                },
+                Err(error) => CliStatus {
+                    ready: false,
+                    error: Some(error.clone()),
+                    version: None,
+                },
+            }
+        })
+        .await;
+        result.map(|_| ())
+    }
+    #[cfg(test)]
+    pub(super) fn use_sandbox(&self, srt: crate::cli::Launcher) {
+        *self.sandbox_tool.lock().unwrap() = srt;
+    }
+    /// Runs a Claude or Antigravity repository's setup and check commands
+    /// in Orbit's sandbox, in a copy of the pull request of their own
+    /// beside the review's worktree, and keeps the results for the
+    /// reviewer. A failing command is a result; a sandbox that can't start
+    /// fails the review.
+    pub(super) async fn run_sandbox_checks(
+        self: &Arc<Self>,
+        id: &str,
+        repo: &Repository,
+        clone: &Path,
+        head_sha: &str,
+    ) -> Result<(), String> {
+        // Not while launch removes leftovers, which could take this
+        // review's copy for one.
+        let _containers = self.containers.read().await;
+        if !self.snapshot().await.sandbox.ready {
+            let _ = self.check_sandbox().await;
+        }
+        let ready = self.snapshot().await.sandbox;
+        if !ready.ready {
+            return Err(format!(
+                "This repository's setup and checks run in Orbit's sandbox, which isn't ready: {} Install it with {}, use a dev container, or clear the commands.",
+                ready.error.unwrap_or_default(),
+                sandbox::INSTALL
+            ));
+        }
+        let srt = self.sandbox_tool.lock().unwrap().clone();
+        let folder = self.root.join("sandbox").join(id);
+        let copy = folder.join("copy");
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+        let made = SandboxCopy {
+            engine: self.clone(),
+            folder: folder.clone(),
+            removed: false,
+        };
+        let added = {
+            let _git = self.git_lock.lock().await;
+            git(
+                clone,
+                &[
+                    "worktree",
+                    "add",
+                    "--detach",
+                    copy.to_str().ok_or("Invalid sandbox path")?,
+                    head_sha,
+                ],
+            )
+            .await
+        };
+        let result = match added {
+            Ok(_) => {
+                self.say(id, sandbox_running(repo)).await;
+                sandbox::run_checks(
+                    &srt,
+                    sandbox::Plan {
+                        folder: &folder,
+                        copy: &copy,
+                        data: &self.root,
+                        network: repo.network_access,
+                        setup: &repo.setup_command,
+                        check: &repo.dev_container.check_command,
+                    },
+                )
+                .await
+            }
+            Err(error) => Err(error),
+        };
+        made.remove().await;
+        let checks = result?;
+        self.live(id).await?;
+        let summary = devcontainer::summary(&checks);
+        self.update(|s| {
+            if let Some(r) = s.reviews.iter_mut().find(|r| r.id == id) {
+                r.messages.push(Message::new(
+                    "system",
+                    format!("Sandbox results:\n{summary}"),
+                ));
+                r.checks = Some(checks);
+            }
+        })
+        .await;
+        Ok(())
     }
     /// Runs the repository's setup and check commands on the review's
     /// worktree in its dev container, built from the base commit's recipe,
@@ -320,6 +478,24 @@ fn running(repo: &Repository, image: &str) -> String {
             _ => "the check command",
         },
         on_off(repo.network_access)
+    )
+}
+/// What runs in Orbit's sandbox, as the review's chat says it.
+fn sandbox_running(repo: &Repository) -> String {
+    let setup = !repo.setup_command.trim().is_empty();
+    let check = !repo.dev_container.check_command.trim().is_empty();
+    let what = match (setup, check) {
+        (true, true) => "the setup and check commands",
+        (true, false) => "the setup command",
+        _ => "the check command",
+    };
+    let network = if setup && repo.network_access {
+        " Setup can reach package registries; nothing else can reach the network."
+    } else {
+        " They have no network access."
+    };
+    format!(
+        "Running {what} in Orbit's sandbox, in a copy of the pull request. They can write only to that copy and can't read your sign-ins.{network}"
     )
 }
 fn on_off(on: bool) -> &'static str {

@@ -67,7 +67,7 @@ pub enum Remedy {
 }
 
 /// The pages Bit's setup help links to, which the desktop app may open.
-pub const PAGES: [&str; 10] = [
+pub const PAGES: [&str; 11] = [
     "https://cli.github.com/",
     "https://github.com/openai/codex",
     "https://code.claude.com/docs/en/setup",
@@ -78,6 +78,7 @@ pub const PAGES: [&str; 10] = [
     "https://platform.openai.com/api-keys",
     "https://console.anthropic.com/settings/keys",
     "https://aistudio.google.com/apikey",
+    "https://github.com/anthropics/sandbox-runtime",
 ];
 /// Where a sign-in sends you to enter its code.
 pub const SIGN_IN_PAGES: [&str; 2] = [
@@ -191,10 +192,10 @@ pub fn pick_answerer(s: &Snapshot) -> Option<Answerer> {
     }
 }
 
-/// What Orbit connects to: GitHub and Codex always, Claude, Antigravity
-/// and dev containers while a repository or Bit uses them, Ollama while Bit
-/// answers or makes quick calls with it, and an API key while Bit answers
-/// with it.
+/// What Orbit connects to: GitHub and Codex always, Claude, Antigravity,
+/// dev containers and Orbit's sandbox while a repository or Bit uses them,
+/// Ollama while Bit answers or makes quick calls with it, and an API key
+/// while Bit answers with it.
 pub fn connections(s: &Snapshot) -> Vec<Connection> {
     let mut out = all_connections(s);
     out.retain(|c| {
@@ -292,6 +293,16 @@ pub fn all_connections(s: &Snapshot) -> Vec<Connection> {
         c.program = "Dev Container CLI";
         c.page = PAGES[5];
     }
+    out.push(cli(
+        "Orbit's sandbox",
+        "sandbox",
+        &s.sandbox,
+        using(|r| r.in_sandbox()),
+        false,
+        "Install Anthropic's sandbox runtime with npm install -g @anthropic-ai/sandbox-runtime. On Linux it also needs bubblewrap and socat.",
+        "the sandbox runtime",
+        PAGES[10],
+    ));
     out.push(Connection {
         for_calls: crate::calls::used(s) || crate::looks::used(s),
         ..cli(

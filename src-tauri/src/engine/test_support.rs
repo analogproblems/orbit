@@ -37,6 +37,7 @@ pub(super) async fn ready_for_autopost(e: &Engine, report: &str, trusted: bool) 
             keep_updated: false,
             provider: Default::default(),
             dev_container: Default::default(),
+            sandbox: false,
         });
         if trusted {
             s.prs[0].head_repo = "a/b".into();
@@ -111,6 +112,7 @@ pub(super) async fn autopilot_engine(pr: PullRequest) -> (tempfile::TempDir, Arc
             keep_updated: false,
             provider: Default::default(),
             dev_container: Default::default(),
+            sandbox: false,
         });
         s.prs.push(pr);
     })

@@ -29,6 +29,7 @@ fn repository(automatic: bool) -> Repository {
         keep_updated: false,
         provider: Default::default(),
         dev_container: Default::default(),
+        sandbox: false,
     }
 }
 /// A pull request Orbit trusts, opened against main's latest commit.

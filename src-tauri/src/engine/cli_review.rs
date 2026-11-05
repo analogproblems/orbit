@@ -56,6 +56,7 @@ impl Engine {
         let _ = self.check_claude().await;
         let _ = self.check_antigravity().await;
         let _ = self.check_dev_containers().await;
+        let _ = self.check_sandbox().await;
         self.check_bit_answerer().await;
     }
     /// Checks the Claude CLI is installed and signed in, and records whether

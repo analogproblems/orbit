@@ -11,6 +11,7 @@ fn a_change_takes_only_values_repositories_could_save() {
         ("checkCommand", "npm test"),
         ("networkAccess", "TRUE"),
         ("devContainer", "false"),
+        ("orbitsSandbox", "true"),
         ("reviewer", "Claude"),
         ("roundLimit", "6"),
         ("approvalMinutes", "15"),
@@ -25,6 +26,7 @@ fn a_change_takes_only_values_repositories_could_save() {
             check_command: Some("npm test".into()),
             network_access: Some(true),
             dev_container: Some(false),
+            orbits_sandbox: Some(true),
             reviewer: Some(Provider::Claude),
             round_limit: Some(6),
             approval_minutes: Some(15),
@@ -37,6 +39,7 @@ fn a_change_takes_only_values_repositories_could_save() {
     assert_eq!(r.setup_command, "npm ci");
     assert_eq!(r.dev_container.check_command, "npm test");
     assert!(r.network_access && !r.dev_container.enabled && r.keep_updated && !r.automatic);
+    assert!(r.sandbox && r.in_sandbox());
     assert_eq!(
         (r.provider, r.round_limit, r.approval_minutes),
         (Provider::Claude, 6, 15)

@@ -1023,6 +1023,7 @@ fn releasing() -> Snapshot {
         keep_updated: false,
         provider: Default::default(),
         dev_container: Default::default(),
+        sandbox: false,
     });
     let draft = |id: u64, tag: &str| Release {
         id,

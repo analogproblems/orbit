@@ -171,6 +171,7 @@ const repositoryLabels: Record<keyof RepositoryPatch, string> = {
   checkCommand: "Check command",
   networkAccess: "Network access",
   devContainer: "Dev container",
+  orbitsSandbox: "Orbit's sandbox",
   reviewer: "Reviewer",
   roundLimit: "Automatic rounds per pull request",
   approvalMinutes: "Approval time limit",

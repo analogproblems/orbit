@@ -893,6 +893,7 @@ export function freshDemo(): Snapshot {
       ready: true,
       version: "Docker demo · Dev Container CLI demo",
     },
+    sandbox: { ready: true, version: "Sandbox runtime demo" },
     claudeModels: [
       ["claude-opus-5-5", "Claude Opus 5.5", true],
       ["claude-sonnet-5-5", "Claude Sonnet 5.5", false],
