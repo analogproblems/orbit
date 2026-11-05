@@ -258,8 +258,19 @@ fn how_far_back_orbit_looks() {
         )
     );
     assert_eq!(text(&b), None);
+    // The branch's first commit fails: the history ran out, not the limit.
     let first = found('1', vec![node('1', None, Some("FAILURE"), none())]);
-    assert!(first.commits.is_empty() && first.error.is_some());
+    assert!(first.commits.is_empty());
+    assert_eq!(
+        first.error.as_deref(),
+        Some(
+            format!(
+                "The branch has failed since its first commit: Orbit found no commit before {} that passed.",
+                &sha('1')[..7]
+            )
+            .as_str()
+        )
+    );
     // GitHub has it passing now, such as after a rerun.
     let passing = found('1', vec![node('1', Some('0'), Some("SUCCESS"), none())]);
     assert!(passing.commits.is_empty());
