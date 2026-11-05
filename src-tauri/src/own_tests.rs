@@ -393,3 +393,53 @@ fn says_what_each_question_was_about() {
         "about the release build for v1.2.0 in acme/widgets"
     );
 }
+
+#[test]
+fn a_button_used_after_the_problem_closed_counts_as_used_but_not_before() {
+    // Used after it closed, before it settled.
+    let mut s = answered_about_p1("on");
+    let note = s.own_questions[0].note;
+    s.problems[0].closed_at = Some(stamp(later(2)));
+    used(&mut s, note, later(3) - Duration::minutes(30));
+    assert!(settle(&mut s, later(3)));
+    let q = &s.own_questions[0];
+    assert_eq!(q.turned, Some(Turned::Closed));
+    assert_eq!(
+        q.how,
+        "The problem closed 2 hours after the answer, before you used its button."
+    );
+    assert!(used_in_time(q));
+    // Used after it closed and settled, still within the day.
+    let mut s = answered_about_p1("on");
+    let note = s.own_questions[0].note;
+    s.problems[0].closed_at = Some(stamp(later(2)));
+    assert!(settle(&mut s, later(3)));
+    assert!(!used_in_time(&s.own_questions[0]));
+    used(&mut s, note, later(5));
+    let q = &s.own_questions[0];
+    assert_eq!(q.turned, Some(Turned::Closed));
+    assert!(used_in_time(q));
+}
+
+#[test]
+fn a_button_used_after_the_day_doesnt_count() {
+    for (minutes, counts) in [(24 * 60, true), (24 * 60 + 30, false)] {
+        let mut s = answered_about_p1("on");
+        let note = s.own_questions[0].note;
+        used(&mut s, note, now() + Duration::minutes(minutes));
+        assert_eq!(s.own_questions[0].used_at.is_some(), counts);
+        // Settled late, it is still judged by the day.
+        assert!(settle(&mut s, later(30)));
+        let q = &s.own_questions[0];
+        assert_eq!(used_in_time(q), counts);
+        let want = if counts { Turned::Used } else { Turned::Unused };
+        assert_eq!(q.turned, Some(want), "{minutes}");
+    }
+    // A use recorded after the day, as an older Orbit could, doesn't count
+    // either.
+    let mut s = answered_about_p1("on");
+    s.own_questions[0].used_at = Some(stamp(later(25)));
+    assert!(settle(&mut s, later(30)));
+    assert!(!used_in_time(&s.own_questions[0]));
+    assert_eq!(s.own_questions[0].turned, Some(Turned::Unused));
+}

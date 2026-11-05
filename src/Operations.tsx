@@ -2709,6 +2709,13 @@ const OWN_SHOWN = 10;
 
 /** The questions Bit asked on its own, newest first, with their answers:
  * while it only watches, this is the only place they show. */
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** Whether you used a button of its answer within a day of it, whenever
+ * that was against the problem closing (`own::used_in_time`). */
+function usedInTime(q: OwnQuestion) {
+  if (!q.usedAt || !q.answeredAt) return false;
+  return Date.parse(q.usedAt) <= Date.parse(q.answeredAt) + DAY_MS;
+}
 /** How the answers to Bit's own questions turned out, in a line each:
  * how many with buttons you used one of, and how many of the problems
  * closed within a day. */
@@ -2717,9 +2724,7 @@ export function ownScoreLines(questions: OwnQuestion[]): string[] {
   const offered = settled.filter(
     (q) => q.mode === "on" && (q.proposals ?? []).length > 0,
   );
-  const used = settled.filter(
-    (q) => q.turned === "used" || q.turned === "used_and_closed",
-  ).length;
+  const used = settled.filter(usedInTime).length;
   const problems = settled.filter((q) => q.problemId && q.turned !== "unknown");
   const closed = problems.filter(
     (q) => q.turned === "closed" || q.turned === "used_and_closed",

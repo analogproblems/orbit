@@ -386,7 +386,6 @@ pub fn turned_out_lines(s: &Snapshot, since: &str) -> Vec<Line> {
 /// One line for the answers to Bit's own questions that settled since
 /// `since`: the latest, and how many you used a button of.
 fn own_line(s: &Snapshot, since: &str) -> Option<Line> {
-    use crate::own::Turned;
     let since = crate::problems::time(since)?;
     let mut settled: Vec<&crate::own::OwnQuestion> = s
         .own_questions
@@ -407,7 +406,7 @@ fn own_line(s: &Snapshot, since: &str) -> Option<Line> {
         n => {
             let used = settled
                 .iter()
-                .filter(|q| matches!(q.turned, Some(Turned::Used | Turned::UsedAndClosed)))
+                .filter(|q| crate::own::used_in_time(q))
                 .count();
             format!(
                 "{name}'s own questions: {n} turned out, and you used a button of {used}. The latest, {about}: {}",

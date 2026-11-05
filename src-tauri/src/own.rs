@@ -43,7 +43,8 @@ pub enum Turned {
     /// You used one of its buttons, and the problem was still open a day
     /// later, or the question was about the brief.
     Used,
-    /// The problem closed within a day, with none of its buttons used.
+    /// The problem closed within a day, before any of its buttons was used.
+    /// Whether one was used later that day is `used_in_time`.
     Closed,
     /// None of its buttons was used within a day, and the problem, if it
     /// was about one, was still open.
@@ -258,7 +259,8 @@ pub fn answered(s: &mut Snapshot, note: u64, answer: Result<(String, Vec<Proposa
     }
 }
 /// Notes that you used a button of the answer to Bit's own question in
-/// note `note`. Says whether it was one.
+/// note `note`, the first time, within `SETTLE_AFTER` of the answer: a
+/// later use doesn't count. Says whether it was one.
 pub fn used(s: &mut Snapshot, note: u64, now: DateTime<Utc>) -> bool {
     let Some(q) = s
         .own_questions
@@ -268,10 +270,24 @@ pub fn used(s: &mut Snapshot, note: u64, now: DateTime<Utc>) -> bool {
     else {
         return false;
     };
-    if q.used_at.is_none() {
+    let in_time = q
+        .answered_at
+        .as_deref()
+        .and_then(time)
+        .is_some_and(|answered| now <= answered + SETTLE_AFTER);
+    if q.used_at.is_none() && in_time {
         q.used_at = Some(stamp(now));
     }
     true
+}
+/// Whether you used a button of its answer within a day of it, whenever
+/// that was against the problem closing, and before or after it settled.
+pub fn used_in_time(q: &OwnQuestion) -> bool {
+    used_by(q).is_some()
+}
+fn used_by(q: &OwnQuestion) -> Option<DateTime<Utc>> {
+    let answered = time(q.answered_at.as_deref()?)?;
+    time(q.used_at.as_deref()?).filter(|u| *u <= answered + SETTLE_AFTER)
 }
 /// Settles how each answer turned out, once Orbit can tell: for a
 /// problem, when it has stayed closed for `problems::FLAP_QUIET` (so a
@@ -305,7 +321,7 @@ fn turned(
     answered: DateTime<Utc>,
     now: DateTime<Utc>,
 ) -> Option<(Turned, String)> {
-    let used = q.used_at.as_deref().and_then(time);
+    let used = used_by(q);
     let day = answered + SETTLE_AFTER;
     let Some(id) = &q.problem_id else {
         if used.is_some() {
@@ -356,10 +372,14 @@ fn turned(
             crate::problems::how_long(closed - answered)
         )
     };
-    Some(match used.filter(|u| *u <= closed) {
-        Some(_) => (
+    Some(match used {
+        Some(u) if u <= closed => (
             Turned::UsedAndClosed,
             format!("You used its button, and the problem closed {when}."),
+        ),
+        Some(_) => (
+            Turned::Closed,
+            format!("The problem closed {when}, before you used its button."),
         ),
         None => (Turned::Closed, format!("The problem closed {when}.")),
     })

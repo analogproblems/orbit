@@ -417,33 +417,42 @@ describe("operations page", () => {
   });
 
   it("sums up how Bit's own answers turned out", () => {
+    const answeredAt = "2026-11-05T09:00:00.000Z";
     const q = (
       turned: OwnQuestion["turned"],
       on: boolean,
       problem = true,
+      usedAt: string | null = null,
     ): OwnQuestion => ({
       subject: "s",
       problemId: problem ? "p" : null,
       question: "Q?",
       mode: on ? "on" : "watch",
-      askedAt: "2026-11-05T09:00:00.000Z",
+      askedAt: answeredAt,
+      answeredAt,
       note: 0,
       proposals: on ? [{ id: 0, action: "sync_now" }] : [],
       turned,
+      usedAt,
     });
     expect(ownScoreLines([])).toEqual([]);
     expect(
       ownScoreLines([
-        q("used_and_closed", true),
-        q("used", true, false),
+        q("used_and_closed", true, true, "2026-11-05T10:00:00.000Z"),
+        q("used", true, false, "2026-11-05T10:00:00.000Z"),
         q("unused", true),
+        // Used after the problem closed, still within the day, counts as
+        // used, but not as used before it closed.
+        q("closed", true, true, "2026-11-06T08:00:00.000Z"),
+        // Used after the day doesn't count.
+        q("unused", true, true, "2026-11-06T09:30:00.000Z"),
         q("closed", false),
         q("unknown", false),
         q(null, true),
       ]),
     ).toEqual([
-      "You used a button of 2 of the 3 answers that offered one.",
-      "2 of the 3 problems it asked about closed within a day, 1 after you used a button.",
+      "You used a button of 3 of the 5 answers that offered one.",
+      "3 of the 5 problems it asked about closed within a day, 1 after you used a button.",
     ]);
   });
 

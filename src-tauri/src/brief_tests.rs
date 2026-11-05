@@ -1359,12 +1359,25 @@ fn the_brief_says_how_bits_own_questions_turned_out() {
     };
     let mut s = Snapshot {
         own_questions: vec![
-            asked(
-                "a/b",
-                Turned::UsedAndClosed,
-                "You used its button, and the problem closed 2 hours after the answer.",
-                hours(3),
-            ),
+            OwnQuestion {
+                used_at: Some(hours(3)),
+                ..asked(
+                    "a/b",
+                    Turned::UsedAndClosed,
+                    "You used its button, and the problem closed 2 hours after the answer.",
+                    hours(3),
+                )
+            },
+            OwnQuestion {
+                // Used after it closed: used, but not before it closed.
+                used_at: Some(hours(2)),
+                ..asked(
+                    "x/y",
+                    Turned::Closed,
+                    "The problem closed 2 hours after the answer, before you used its button.",
+                    hours(3),
+                )
+            },
             asked(
                 "c/d",
                 Turned::Unused,
@@ -1386,13 +1399,13 @@ fn the_brief_says_how_bits_own_questions_turned_out() {
     assert_eq!(
         texts(b),
         [(
-            "Bit's own questions: 2 turned out, and you used a button of 1. The latest, about CI on c/d: The problem was still open a day after the answer.",
+            "Bit's own questions: 3 turned out, and you used a button of 2. The latest, about CI on c/d: The problem was still open a day after the answer.",
             true
         )]
     );
     assert_eq!(
         b.text,
-        "Here's your morning brief! 2 answers to Bit's own questions turned out."
+        "Here's your morning brief! 3 answers to Bit's own questions turned out."
     );
     // The next day there's nothing new, and it doesn't count as settled.
     let tomorrow = now() + chrono::Duration::days(1);
