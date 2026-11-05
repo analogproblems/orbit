@@ -390,12 +390,19 @@ pub fn uninstall(host: &Host, run: Run) -> Result<String, String> {
     if !file.exists() && !host.programs.exists() {
         return Ok("Orbit isn't set up as a service here.".into());
     }
+    // A unit systemd no longer knows, or a user session it can't reach,
+    // still has its file and the copy removed; what didn't work is said.
+    let mut notes = vec![];
     match host.kind {
         Kind::Systemd => {
             if file.exists() {
-                must(run, "systemctl", &["--user", "disable", "--now", UNIT])?;
+                if let Err(e) = must(run, "systemctl", &["--user", "disable", "--now", UNIT]) {
+                    notes.push(e);
+                }
                 remove_file(&file)?;
-                must(run, "systemctl", &["--user", "daemon-reload"])?;
+                if let Err(e) = must(run, "systemctl", &["--user", "daemon-reload"]) {
+                    notes.push(e);
+                }
             }
         }
         Kind::Launchd => {
@@ -406,7 +413,14 @@ pub fn uninstall(host: &Host, run: Run) -> Result<String, String> {
             }
         }
     }
-    let mut done = "Orbit's service is stopped and removed, with its copy of the program. Its data folder is kept.".to_string();
+    let mut done = if notes.is_empty() {
+        "Orbit's service is stopped and removed, with its copy of the program. Its data folder is kept.".to_string()
+    } else {
+        format!(
+            "Orbit's service file and its copy of the program are removed, but systemd didn't stop it: {}. If it still runs, stop it yourself. Its data folder is kept.",
+            notes.join(" ")
+        )
+    };
     // Only what install put there goes: anything else in the folder stays.
     for name in COPIES {
         let copy = host.programs.join(name);

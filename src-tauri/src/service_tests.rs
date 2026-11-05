@@ -521,6 +521,36 @@ fn writes_a_launch_agent_with_its_text_escaped() {
     assert!(plist(&["/a".into()], "/usr/bin\u{0}", "/log").is_err());
 }
 
+/// A unit systemd can't stop, such as one it no longer knows, still has its
+/// file and the copy removed, and the answer says what didn't work.
+#[test]
+fn removes_the_service_even_when_systemd_cant_stop_it() {
+    let m = machine(Kind::Systemd);
+    let fake = Fake::new(|line| {
+        if line.contains("disable") {
+            failed("Failed to disable unit: Unit file orbit.service does not exist.")
+        } else {
+            ok("")
+        }
+    });
+    let run = |p: &str, a: &[&str]| fake.run(p, a);
+    install(&m.host, &run, &m.exe, &m.web, &m.setup).unwrap();
+    fake.calls.borrow_mut().clear();
+    assert_eq!(
+        uninstall(&m.host, &run).unwrap(),
+        "Orbit's service file and its copy of the program are removed, but systemd didn't stop it: systemctl --user disable --now orbit.service didn't work: Failed to disable unit: Unit file orbit.service does not exist.. If it still runs, stop it yourself. Its data folder is kept."
+    );
+    assert_eq!(
+        fake.calls(),
+        [
+            "systemctl --user disable --now orbit.service",
+            "systemctl --user daemon-reload"
+        ]
+    );
+    assert!(!m.host.service_file().exists());
+    assert!(!m.host.programs.exists());
+}
+
 #[test]
 fn removes_the_service_and_its_copy_but_keeps_the_data() {
     for kind in [Kind::Systemd, Kind::Launchd] {

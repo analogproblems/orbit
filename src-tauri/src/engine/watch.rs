@@ -82,7 +82,12 @@ impl Engine {
             (s.settings.watch_ci, repos)
         };
         if !watch {
-            self.update(stop_watching).await;
+            // Saved only when there was something to forget, so a sync with
+            // Watch CI off doesn't rewrite the state for nothing.
+            let mut s = self.state.lock().await;
+            if stop_watching(&mut s) {
+                self.dirty.store(true, Ordering::SeqCst);
+            }
             return;
         }
         let mut read = vec![];
@@ -654,7 +659,15 @@ fn followed<'a>(prs: &'a [PullRequest], trusted: &[String], repo: &str) -> Vec<&
         .collect()
 }
 /// With Watch CI off, Orbit forgets what it read and closes what was open.
-fn stop_watching(s: &mut Snapshot) {
+/// Says whether there was anything to forget or close.
+fn stop_watching(s: &mut Snapshot) -> bool {
+    let read = !(s.ci.is_empty()
+        && s.setups.is_empty()
+        && s.runners.is_empty()
+        && s.actions_storage.is_empty()
+        && s.releases.is_empty()
+        && s.builds.is_empty()
+        && s.merges.is_empty());
     s.ci.clear();
     s.setups.clear();
     s.runners.clear();
@@ -662,7 +675,7 @@ fn stop_watching(s: &mut Snapshot) {
     s.releases.clear();
     s.builds.clear();
     s.merges.clear();
-    problems::close_unwatched(&mut s.problems, &[], true, chrono::Utc::now());
+    problems::close_unwatched(&mut s.problems, &[], true, chrono::Utc::now()) || read
 }
 pub(super) fn repos_of(s: &Snapshot) -> Vec<String> {
     s.settings
