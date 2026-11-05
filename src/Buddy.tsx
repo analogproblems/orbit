@@ -468,7 +468,8 @@ export function BuddyPage({
   const [sending, setSending] = useState(false);
   const [askError, setAskError] = useState<string | null>(null);
   const inFlight = useRef(false);
-  const thinking = notes.some((n) => n.pending);
+  // A question Bit asked itself stops for yours, so it never holds the box.
+  const thinking = notes.some((n) => n.pending && !n.own);
   const tooLong = [...draft.trim()].length > maxQuestion;
   const askAnything = async () => {
     if (!draft.trim() || tooLong || thinking || inFlight.current) return;

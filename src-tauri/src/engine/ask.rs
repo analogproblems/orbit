@@ -159,8 +159,22 @@ impl Engine {
                 return;
             }
             let selection = guide::bit_selection(&s, by);
-            let note = buddy::asked_itself(&mut s, &subject.question, subject.mode != "on");
-            crate::own::asked(&mut s, &subject, note, now);
+            // Its record is saved before anything is asked, so a question
+            // that can't be saved is never asked, and a restart can't ask
+            // it again or lose it from the day's count.
+            let saved = self.save(
+                &mut s,
+                |next| {
+                    let note = buddy::asked_itself(next, &subject.question, subject.mode != "on");
+                    crate::own::asked(next, &subject, note, now);
+                    Ok(note)
+                },
+                |e| e,
+            );
+            let Ok(note) = saved else {
+                return;
+            };
+            (self.emit)(&s);
             *self.asking.lock().unwrap() = Some(Asking {
                 note,
                 by,
@@ -179,10 +193,8 @@ impl Engine {
                 round: 0,
                 found: vec![],
             });
-            self.dirty.store(true, Ordering::SeqCst);
             (note, subject.question, s.settings.repositories.clone())
         };
-        let _ = self.flush().await;
         self.begin(note, &question, connected, true).await;
     }
     /// Looks up what the question in `note` needs, then starts its first

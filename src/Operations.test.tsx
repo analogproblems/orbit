@@ -2,6 +2,7 @@
 import "./test-setup";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -132,6 +133,35 @@ describe("operations page", () => {
       question: "Why is CI failing on main in acme/orbit?",
     });
     await vi.waitFor(() => expect(go.onBuddy).toHaveBeenCalled());
+    // A question Bit is asking itself doesn't hold yours back; one of yours
+    // does.
+    const pending = (own: boolean) => ({
+      id: 900,
+      at: s.prs[0].updatedAt,
+      kind: "answer" as const,
+      prId: null,
+      reviewId: null,
+      repo: null,
+      text: "",
+      pending: true,
+      own,
+      quiet: own,
+    });
+    for (const own of [true, false]) {
+      s.buddyFeed!.notes.push(pending(own));
+      act(() => useOrbit.setState({ snapshot: { ...s } }));
+      const first = within(
+        screen.getByRole("list", { name: "Open problems" }),
+      ).getAllByRole("listitem")[0];
+      const button = ask(first)!;
+      // A button with a tooltip stays focusable, so it says it is disabled.
+      expect(
+        (button as HTMLButtonElement).disabled ||
+          button.getAttribute("aria-disabled") === "true",
+      ).toBe(!own);
+      s.buddyFeed!.notes.pop();
+    }
+    act(() => useOrbit.setState({ snapshot: { ...s } }));
     // A pull request's failing checks too, but not risky settings.
     const pull = items.find((i) => i.textContent?.includes(s.prs[2].id))!;
     fireEvent.click(ask(pull)!);

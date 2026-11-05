@@ -1051,6 +1051,42 @@ describe("Bit", () => {
     expect(chat.queryByText(/morning brief most worth/)).toBeNull();
   });
 
+  it("takes your question while Bit is answering its own, watched or on", async () => {
+    for (const quiet of [true, false]) {
+      snapshot.buddyFeed!.notes.push({
+        id: 310,
+        at: new Date().toISOString(),
+        kind: "answer",
+        prId: null,
+        reviewId: null,
+        repo: null,
+        question:
+          "CI started failing on the default branch of acme/orbit. What's the most useful thing to do about it now?",
+        text: "",
+        pending: true,
+        own: true,
+        quiet,
+      });
+      await mount();
+      await user().click(screen.getByRole("button", { name: "Bit" }));
+      const box = screen.getByRole("textbox", { name: "Ask Bit anything" });
+      await user().type(box, "What's up?");
+      expect(screen.getByRole("button", { name: "Send" })).toHaveProperty(
+        "disabled",
+        false,
+      );
+      await user().type(box, "{Enter}");
+      expect(invoke).toHaveBeenCalledWith("ask_buddy_anything", {
+        question: "What's up?",
+      });
+      cleanup();
+      invoke.mockClear();
+      snapshot.buddyFeed!.notes = snapshot.buddyFeed!.notes.filter(
+        (n) => n.id !== 310,
+      );
+    }
+  });
+
   it("answers a typed question and runs its buttons only when tapped", async () => {
     invoke.mockImplementation(async (cmd, args) => {
       const a = args as Record<string, unknown>;

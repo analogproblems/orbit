@@ -1622,6 +1622,56 @@ async fn bit_asks_itself_about_a_failing_default_branch_and_only_keeps_the_answe
 }
 
 #[tokio::test]
+async fn bit_asks_itself_nothing_it_cant_save() {
+    let (dir, e, rpc) = failing_main("on").await;
+    let blocker = dir.path().join("state").join("state.json.tmp");
+    std::fs::create_dir(&blocker).unwrap();
+    e.clone().ask_on_own().await;
+    let s = e.snapshot().await;
+    assert!(s.own_questions.is_empty());
+    assert!(!s.buddy_feed.notes.iter().any(|n| n.own));
+    assert!(e.asking.lock().unwrap().is_none());
+    assert!(sent(&rpc, "turn/start").await.is_empty());
+    assert!(sent(&rpc, "thread/start").await.is_empty());
+    // Once it saves again, Bit asks.
+    std::fs::remove_dir(&blocker).unwrap();
+    e.clone().ask_on_own().await;
+    assert_eq!(e.snapshot().await.own_questions.len(), 1);
+    assert_eq!(sent(&rpc, "turn/start").await.len(), 1);
+}
+
+#[tokio::test]
+async fn bit_asks_itself_about_the_briefs_own_lines() {
+    let (_dir, e, rpc) = fixture().await;
+    e.update(|s| {
+        s.settings.buddy.own_questions = "watch".into();
+        s.brief.latest = Some(crate::brief::Brief {
+            day: "2026-11-05".into(),
+            at: crate::problems::stamp(chrono::Utc::now()),
+            text: "Here's your morning brief! 1 pull request is clear to merge.".into(),
+            lines: vec![crate::brief::Line {
+                key: "clear:a/b#1".into(),
+                text: "a/b#1 is clear to merge.".into(),
+                pr_id: Some("a/b#1".into()),
+                new: true,
+            }],
+            ..Default::default()
+        });
+    })
+    .await;
+    e.clone().ask_on_own().await;
+    assert_eq!(
+        e.snapshot().await.own_questions[0].subject,
+        "brief:2026-11-05"
+    );
+    let turn = &sent(&rpc, "turn/start").await[0];
+    let prompt = turn["input"][0]["text"].as_str().unwrap();
+    assert!(prompt.contains(&crate::own::brief_question()), "{prompt}");
+    assert!(prompt.contains("\"morningBrief\""), "{prompt}");
+    assert!(prompt.contains("a/b#1 is clear to merge."), "{prompt}");
+}
+
+#[tokio::test]
 async fn bits_own_answer_shows_in_its_feed_when_on() {
     let (_dir, e, rpc) = failing_main("on").await;
     e.clone().ask_on_own().await;
