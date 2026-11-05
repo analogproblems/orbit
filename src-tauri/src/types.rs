@@ -271,16 +271,22 @@ pub struct Review {
     #[serde(default)]
     pub checks: Option<ContainerChecks>,
 }
-/// What running the setup and checks in a dev container produced.
+/// What running the setup and checks in a dev container, or in Orbit's
+/// sandbox, produced.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContainerChecks {
     /// The image they ran in, named after the recipe it was built from.
+    /// Empty when they ran in Orbit's sandbox.
     pub image: String,
     pub network: bool,
     pub setup: Option<CheckStep>,
     /// None when there is no check command, or setup failed.
     pub check: Option<CheckStep>,
+    /// They ran in Orbit's sandbox on this computer (`crate::sandbox`),
+    /// for a Claude or Antigravity review without a dev container.
+    #[serde(default)]
+    pub sandbox: bool,
 }
 /// One command run in a dev container.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -904,6 +910,11 @@ pub struct Repository {
     /// Run the setup and check commands in the repository's dev container.
     #[serde(default)]
     pub dev_container: DevContainer,
+    /// Run a Claude or Antigravity review's setup and check commands in
+    /// Orbit's sandbox on this computer (`crate::sandbox`), while the dev
+    /// container is off. The check command is `dev_container.check_command`.
+    #[serde(default)]
+    pub sandbox: bool,
 }
 /// Running a repository's setup and checks in its dev container, built from
 /// the base commit's `.devcontainer/` (see `crate::devcontainer`).
@@ -1197,7 +1208,13 @@ impl Repository {
             keep_updated: false,
             provider: Provider::default(),
             dev_container: DevContainer::default(),
+            sandbox: false,
         }
+    }
+    /// Whether a review's setup and checks run in Orbit's sandbox: Claude
+    /// and Antigravity reviews with the sandbox on and no dev container.
+    pub fn in_sandbox(&self) -> bool {
+        self.sandbox && self.provider != Provider::Codex && !self.dev_container.enabled
     }
     /// Checks the repository's setup, apart from its name and checkout.
     pub fn check(&self) -> Result<(), String> {
@@ -1209,11 +1226,21 @@ impl Repository {
         }
         if self.provider != Provider::Codex
             && !self.dev_container.enabled
+            && !self.sandbox
             && !self.setup_command.trim().is_empty()
         {
             return Err(format!(
-                "{} reviews can't run a setup command outside a dev container. Clear the setup command for {}, run it in the repository's dev container, or review it with Codex.",
+                "{} reviews can't run a setup command outside a dev container or Orbit's sandbox. Clear the setup command for {}, run it in one of those, or review it with Codex.",
                 self.provider.label(),
+                self.name
+            ));
+        }
+        if self.in_sandbox()
+            && self.setup_command.trim().is_empty()
+            && self.dev_container.check_command.trim().is_empty()
+        {
+            return Err(format!(
+                "Add a setup or check command for {} to run in Orbit's sandbox, or turn it off.",
                 self.name
             ));
         }
@@ -1305,6 +1332,8 @@ pub struct Snapshot {
     pub antigravity: CliStatus,
     /// Docker and the Dev Container CLI, as last checked.
     pub dev_containers: CliStatus,
+    /// Orbit's sandbox (`crate::sandbox`), as last checked.
+    pub sandbox: CliStatus,
     /// The models Antigravity offered when last checked, in the shape of
     /// `models`.
     pub antigravity_models: Vec<Value>,
@@ -1782,6 +1811,7 @@ pub(crate) mod tests {
             keep_updated: false,
             provider: Default::default(),
             dev_container: Default::default(),
+            sandbox: false,
         });
         assert!(eligible(&p, &s));
         // Not where Orbit stepped back for another Orbit, which reviews it.
@@ -1937,13 +1967,37 @@ pub(crate) mod tests {
             keep_updated: false,
             provider: Provider::Claude,
             dev_container: Default::default(),
+            sandbox: false,
         });
         assert!(s.validate().unwrap_err().contains("setup command"));
         s.repositories[0].setup_command = " ".into();
         assert!(s.validate().is_ok());
         s.repositories[0].setup_command = "npm ci".into();
+        // Orbit's sandbox can run it.
+        s.repositories[0].sandbox = true;
+        assert!(s.validate().is_ok());
+        s.repositories[0].sandbox = false;
         s.repositories[0].provider = Provider::Codex;
         assert!(s.validate().is_ok());
+    }
+    #[test]
+    fn orbits_sandbox_needs_a_command_and_only_serves_claude_and_antigravity() {
+        let mut repo = Repository::new("acme/app", "/tmp/app");
+        repo.provider = Provider::Claude;
+        repo.sandbox = true;
+        assert!(repo.in_sandbox());
+        let error = repo.check().unwrap_err();
+        assert!(error.contains("Add a setup or check command"), "{error}");
+        repo.dev_container.check_command = "npm test".into();
+        assert!(repo.check().is_ok());
+        // The dev container wins, and Codex has a sandbox of its own.
+        repo.dev_container.enabled = true;
+        assert!(!repo.in_sandbox());
+        repo.dev_container.enabled = false;
+        repo.provider = Provider::Codex;
+        assert!(!repo.in_sandbox());
+        repo.dev_container.check_command = String::new();
+        assert!(repo.check().is_ok());
     }
     #[test]
     fn a_dev_container_runs_setup_for_any_reviewer_but_needs_a_command() {
@@ -1963,6 +2017,7 @@ pub(crate) mod tests {
                 check_command: String::new(),
                 reviewer_tool: false,
             },
+            sandbox: false,
         });
         assert!(s.validate().is_ok());
         s.repositories[0].setup_command = String::new();

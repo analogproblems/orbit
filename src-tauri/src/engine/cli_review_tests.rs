@@ -24,6 +24,7 @@ async fn claude_review(mode: &str) -> (tempfile::TempDir, Arc<Engine>, String, P
             keep_updated: false,
             provider: Provider::Claude,
             dev_container: Default::default(),
+            sandbox: false,
         });
         let mut review = Review::new(&pr, &s.settings, false);
         review.status = "preparing".into();
@@ -362,6 +363,7 @@ async fn state_saved_before_providers_restores_as_codex() {
         keep_updated: false,
         provider: Provider::Codex,
         dev_container: Default::default(),
+        sandbox: false,
     });
     let mut review = Review::new(&pr, &s.settings, false);
     review.status = "ready".into();
@@ -429,6 +431,7 @@ async fn extraction_weighs_dev_container_results_with_read_only_tools() {
     e.use_claude(fake(&format!("ok@{}", log.display())));
     e.update(|s| {
         s.reviews[0].checks = Some(ContainerChecks {
+            sandbox: false,
             image: "orbit-devcontainer:a.b-abc".into(),
             network: false,
             setup: None,
@@ -480,7 +483,7 @@ async fn claude_reviews_may_run_setup_in_a_dev_container() {
     let r = e.snapshot().await.reviews[0].clone();
     assert!(r.messages.iter().any(|m| m
         .text
-        .starts_with("Claude gets the results of the dev container's setup and checks")));
+        .starts_with("Claude gets the results of the setup and checks in the dev container")));
 }
 
 #[tokio::test]

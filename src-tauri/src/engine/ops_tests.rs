@@ -110,6 +110,7 @@ pub(super) async fn connected(dir: &Path) -> Arc<Engine> {
                 keep_updated: false,
                 provider: Default::default(),
                 dev_container: Default::default(),
+                sandbox: false,
             });
         }
     })

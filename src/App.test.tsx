@@ -2163,7 +2163,7 @@ describe("initial loading and repository errors", () => {
     ).toBeNull();
     expect(
       within(dialog).getByText(
-        "Claude reviews can only run a setup command in the dev container. Turn it on or clear the command to save.",
+        "Claude reviews can only run a setup command in Orbit's sandbox or the dev container. Turn one on or clear the command to save.",
       ),
     ).toBeTruthy();
     await user().clear(
@@ -2193,6 +2193,64 @@ describe("initial loading and repository errors", () => {
       ),
     ).toBeTruthy();
   });
+  it("runs a Claude repository's setup and checks in Orbit's sandbox", async () => {
+    snapshot.settings.repositories[0].setupCommand = "npm ci";
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Repositories" }));
+    await user().click(
+      await screen.findByRole("button", { name: "Configure acme/orbit" }),
+    );
+    const dialog = screen.getByRole("dialog");
+    await chooseOption(
+      within(dialog).getByRole("combobox", { name: "Reviewer" }),
+      "Claude",
+    );
+    await user().click(
+      within(dialog).getByRole("switch", {
+        name: "Run setup and checks in Orbit's sandbox",
+      }),
+    );
+    // Claude gets test results now, so the warning and the setup error go.
+    expect(within(dialog).queryByText(/^On its own, Claude/)).toBeNull();
+    expect(
+      within(dialog).queryByText(/can only run a setup command/),
+    ).toBeNull();
+    const check = within(dialog).getByRole("textbox", {
+      name: /Check command/,
+    });
+    await user().clear(check);
+    await user().type(check, "npm test");
+    await user().click(
+      within(dialog).getByRole("switch", {
+        name: "Let setup download packages",
+      }),
+    );
+    await user().click(
+      within(dialog).getByRole("button", { name: "Save repository" }),
+    );
+    const saved = invoke.mock.calls.find(([cmd]) => cmd === "save_repository");
+    const repository = (saved?.[1] as { repository: Repository }).repository;
+    expect(repository).toMatchObject({
+      provider: "claude",
+      sandbox: true,
+      setupCommand: "npm ci",
+      networkAccess: true,
+    });
+    // The check command is the sandbox's; the dev container stays off.
+    expect(repository.devContainer).toMatchObject({
+      enabled: false,
+      checkCommand: "npm test",
+    });
+    act(() => {
+      Object.assign(snapshot.settings.repositories[0], repository);
+      emit();
+    });
+    expect(
+      await screen.findByText(
+        "Reviewed by Claude · Setup and checks in Orbit's sandbox · Setup can download packages",
+      ),
+    ).toBeTruthy();
+  });
   it("runs a Claude repository's setup and checks in its dev container", async () => {
     snapshot.settings.repositories[0].setupCommand = "npm ci";
     await mount();
@@ -2211,7 +2269,7 @@ describe("initial loading and repository errors", () => {
     // Without the box, Claude only reads the code, and the reviewer says so.
     expect(
       within(dialog).getByText(
-        "Without the dev container, Claude reads the code but can't run it: no setup, build or tests, so it can't confirm a problem by running it. Turn on the dev container below to give it test results.",
+        "On its own, Claude reads the code but can't run it: no setup, build or tests, so it can't confirm a problem by running it. Turn on Orbit's sandbox or the dev container below to give it test results.",
       ),
     ).toBeTruthy();
     await user().click(
@@ -2223,7 +2281,7 @@ describe("initial loading and repository errors", () => {
     expect(
       within(dialog).queryByText(/can only run a setup command/),
     ).toBeNull();
-    expect(within(dialog).queryByText(/Without the dev container/)).toBeNull();
+    expect(within(dialog).queryByText(/^On its own, Claude/)).toBeNull();
     const check = within(dialog).getByRole("textbox", {
       name: /Check command/,
     });
@@ -2280,7 +2338,7 @@ describe("initial loading and repository errors", () => {
     // Claude can keep the setup command only in the dev container.
     expect(
       within(dialog).getByText(
-        /can only run a setup command in the dev container/,
+        /can only run a setup command in Orbit's sandbox or the dev container/,
       ),
     ).toBeTruthy();
     await user().click(box);
@@ -2443,7 +2501,7 @@ describe("initial loading and repository errors", () => {
     ).toBeTruthy();
     expect(
       within(dialog).getByText(
-        /^Without the dev container, Antigravity reads the code and runs only commands you allowed/,
+        /^On its own, Antigravity reads the code and runs only commands you allowed/,
       ),
     ).toBeTruthy();
     expect(

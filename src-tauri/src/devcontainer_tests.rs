@@ -171,6 +171,7 @@ fn output_keeps_its_end() {
 #[test]
 fn notes_hold_the_results_as_delimited_data() {
     let checks = ContainerChecks {
+        sandbox: false,
         image: "orbit-devcontainer:a.b-abc".into(),
         network: false,
         setup: Some(step("npm ci", Some(0), "added 3 packages")),
@@ -200,6 +201,7 @@ fn notes_hold_the_results_as_delimited_data() {
 #[test]
 fn checks_after_a_failed_setup_are_reported_as_not_run() {
     let checks = ContainerChecks {
+        sandbox: false,
         image: "i".into(),
         network: false,
         setup: Some(CheckStep {

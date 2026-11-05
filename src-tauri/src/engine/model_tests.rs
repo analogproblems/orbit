@@ -151,6 +151,7 @@ async fn queued_selection_is_immutable_and_confirmation_is_durable_before_review
             keep_updated: false,
             provider: Default::default(),
             dev_container: Default::default(),
+            sandbox: false,
         });
     })
     .await;
@@ -564,6 +565,7 @@ async fn rejected_settings_and_queue_writes_do_not_activate_unsaved_selections_o
             keep_updated: false,
             provider: Default::default(),
             dev_container: Default::default(),
+            sandbox: false,
         });
     })
     .await;
@@ -1108,6 +1110,7 @@ async fn first_reviews_target_the_base_and_re_reviews_carry_custom_instructions(
 #[tokio::test]
 async fn dev_container_results_go_into_custom_instructions() {
     let checks = ContainerChecks {
+        sandbox: false,
         image: "orbit-devcontainer:a.b-abc".into(),
         network: false,
         setup: None,

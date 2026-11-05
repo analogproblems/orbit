@@ -90,6 +90,7 @@ async fn fixture(writer: Writer) -> (tempfile::TempDir, Arc<Engine>, Arc<Rpc>) {
             keep_updated: false,
             provider: Default::default(),
             dev_container: Default::default(),
+            sandbox: false,
         }];
         s.settings.write_ups = WriteUps {
             enabled: true,

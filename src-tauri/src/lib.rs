@@ -48,6 +48,7 @@ pub mod review_loop;
 pub mod risks;
 pub mod rpc;
 pub mod runners;
+pub mod sandbox;
 pub mod scans;
 pub mod security;
 pub mod server;

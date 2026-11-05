@@ -88,6 +88,7 @@ async fn fixture() -> (tempfile::TempDir, Arc<Engine>, Arc<Rpc>) {
             keep_updated: false,
             provider: Default::default(),
             dev_container: Default::default(),
+            sandbox: false,
         });
     })
     .await;

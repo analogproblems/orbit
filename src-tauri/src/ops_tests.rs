@@ -747,6 +747,7 @@ fn may_post_checks_where_things_stand_now() {
         keep_updated: false,
         provider: Default::default(),
         dev_container: Default::default(),
+        sandbox: false,
     });
     s.prs = vec![open_pr()];
     assert!(may_post(&s, &t));
@@ -1545,6 +1546,7 @@ fn watched() -> Snapshot {
         keep_updated: false,
         provider: Default::default(),
         dev_container: Default::default(),
+        sandbox: false,
     });
     s
 }
@@ -3025,6 +3027,7 @@ mod security {
             keep_updated: false,
             provider: Default::default(),
             dev_container: Default::default(),
+            sandbox: false,
         });
         s.settings.watch_ci = false;
         assert!(watching(&s, &threads[0]));

@@ -18,6 +18,7 @@ fn snapshot() -> (Snapshot, PullRequest) {
         keep_updated: false,
         provider: Default::default(),
         dev_container: Default::default(),
+        sandbox: false,
     });
     s.prs.push(p.clone());
     (s, p)

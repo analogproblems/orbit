@@ -108,6 +108,15 @@ describe("structured findings", () => {
     cleanup();
     render(<Findings review={review({ checks: null })} />);
     expect(screen.queryByText(/in the dev container/)).toBeNull();
+    cleanup();
+    render(
+      <Findings
+        review={review({ checks: { ...checks, image: "", sandbox: true } })}
+      />,
+    );
+    expect(
+      screen.getByText("Setup in Orbit's sandbox (npm ci): passed in 38s"),
+    ).toBeTruthy();
   });
   it("shows what older reviews could not run", () => {
     render(

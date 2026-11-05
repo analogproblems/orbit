@@ -124,15 +124,16 @@ fn cut(text: &str, max: usize) -> &str {
 
 /// What a review can run, said in its chat before it starts, when the
 /// reviewer can't run the code itself. Claude and Antigravity have nothing
-/// like Codex's sandboxed `command/exec`, so outside a dev container they
-/// only read the code (Antigravity also runs what its own settings allow),
-/// and in one they get the checks' results but run nothing themselves
-/// unless they have the dev container tool, which Antigravity can't be
-/// given. `None` when the reviewer can run commands: Codex in its sandbox,
+/// like Codex's sandboxed `command/exec`, so they only read the code
+/// (Antigravity also runs what its own settings allow) unless Orbit runs
+/// the setup and checks for them, in the dev container or its own sandbox.
+/// Then they get the results but run nothing themselves, unless they have
+/// the dev container tool, which Antigravity can't be given. `None` when the reviewer can run commands: Codex in its sandbox,
 /// or Claude through the tool.
 ///
-/// `checks` is whether setup or check commands run in the dev container,
-/// and `tool` whether the repository lets the reviewer run its own there.
+/// `checks` is whether setup or check commands run, in the dev container
+/// or Orbit's sandbox, and `tool` whether the repository lets the reviewer
+/// run its own in the dev container.
 pub fn reach(provider: Provider, in_container: bool, checks: bool, tool: bool) -> Option<String> {
     let name = provider.label();
     if provider == Provider::Codex || (in_container && tool && provider != Provider::Antigravity) {
@@ -143,14 +144,14 @@ pub fn reach(provider: Provider, in_container: bool, checks: bool, tool: bool) -
     } else {
         String::new()
     };
-    if in_container && checks {
-        let hint = if provider == Provider::Claude {
-            " To let it, allow the reviewer to run commands in the dev container, in this repository's settings."
-        } else {
-            ""
+    if checks {
+        let (place, hint) = match (in_container, provider) {
+            (true, Provider::Claude) => ("in the dev container", " To let it, allow the reviewer to run commands in the dev container, in this repository's settings."),
+            (true, _) => ("in the dev container", ""),
+            (false, _) => ("Orbit ran in its sandbox", ""),
         };
         return Some(format!(
-            "{no_tool}{name} gets the results of the dev container's setup and checks, but can't run its own commands, so it can't run the code to confirm a problem it reads.{hint}"
+            "{no_tool}{name} gets the results of the setup and checks {place}, but can't run its own commands, so it can't run the code to confirm a problem it reads.{hint}"
         ));
     }
     let reads = if provider == Provider::Antigravity {
@@ -161,7 +162,7 @@ pub fn reach(provider: Provider, in_container: bool, checks: bool, tool: bool) -
     let hint = if in_container {
         "add a setup or check command for the dev container"
     } else {
-        "run setup and checks in the dev container"
+        "run setup and checks in Orbit's sandbox or the dev container"
     };
     Some(format!(
         "{no_tool}{name} {reads}: no setup, build or tests, so what it finds comes from reading. To give it test results, {hint}, in this repository's settings."
@@ -226,8 +227,15 @@ mod tests {
             "{reads}"
         );
         assert!(
-            reads.contains("run setup and checks in the dev container"),
+            reads.contains("run setup and checks in Orbit's sandbox or the dev container"),
             "{reads}"
+        );
+        let sandboxed = reach(Provider::Claude, false, true, false).unwrap();
+        assert!(
+            sandboxed.starts_with(
+                "Claude gets the results of the setup and checks Orbit ran in its sandbox"
+            ),
+            "{sandboxed}"
         );
 
         let results = reach(Provider::Claude, true, true, false).unwrap();

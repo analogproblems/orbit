@@ -88,6 +88,7 @@ async fn antigravity_review(mode: &str) -> Setup {
             keep_updated: false,
             provider: Provider::Antigravity,
             dev_container: Default::default(),
+            sandbox: false,
         });
         let mut review = Review::new(&pr, &s.settings, false);
         review.status = "preparing".into();
@@ -583,6 +584,7 @@ async fn the_review_prompt_carries_dev_container_results() {
     let log = logged(&t, "ok");
     t.e.update(|s| {
         s.reviews[0].checks = Some(ContainerChecks {
+            sandbox: false,
             image: "orbit-devcontainer:a.b-abc".into(),
             network: false,
             setup: None,

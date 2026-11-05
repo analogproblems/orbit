@@ -287,6 +287,7 @@ fn repository(name: &str) -> Repository {
         keep_updated: false,
         provider: Default::default(),
         dev_container: Default::default(),
+        sandbox: false,
     }
 }
 /// A stand-in for `gh` answering each endpoint from a file named after it,

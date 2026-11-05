@@ -83,16 +83,21 @@ impl Engine {
             .ok_or("Repository configuration was removed")?
             .clone();
         let in_container = repo.dev_container.enabled;
-        if r.provider != Provider::Codex && !in_container && !repo.setup_command.trim().is_empty() {
-            return Err(format!("This repository's setup command runs in the Codex sandbox, which {} reviews can't use. Clear the setup command or review this repository with Codex.", r.provider.label()));
+        let in_sandbox = repo.in_sandbox();
+        if r.provider != Provider::Codex
+            && !in_container
+            && !in_sandbox
+            && !repo.setup_command.trim().is_empty()
+        {
+            return Err(format!("This repository's setup command runs in the Codex sandbox, which {} reviews can't use. Clear the setup command, run it in Orbit's sandbox, or review this repository with Codex.", r.provider.label()));
         }
         // Antigravity takes no tool servers for a single run, and Orbit
         // never changes its settings.
         let tool =
             in_container && repo.dev_container.reviewer_tool && r.provider != Provider::Antigravity;
-        let checks = in_container
-            && (!repo.setup_command.trim().is_empty()
-                || !repo.dev_container.check_command.trim().is_empty());
+        let commands = !repo.setup_command.trim().is_empty()
+            || !repo.dev_container.check_command.trim().is_empty();
+        let checks = (in_container || in_sandbox) && commands;
         if let Some(note) = crate::review_instructions::reach(
             r.provider,
             in_container,
@@ -175,9 +180,12 @@ impl Engine {
         self.live(id).await?;
         self.carry_previous_round(id, &pr, &worktree).await?;
         self.live(id).await?;
-        // Both need the dev container.
-        if tool || checks {
+        if in_container && (tool || checks) {
             self.run_container_checks(id, &repo, &cwd, &worktree, &r.base_sha, tool)
+                .await?;
+            self.live(id).await?;
+        } else if checks {
+            self.run_sandbox_checks(id, &repo, &cwd, &r.head_sha)
                 .await?;
             self.live(id).await?;
         }

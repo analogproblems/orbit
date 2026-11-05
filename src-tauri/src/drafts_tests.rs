@@ -38,6 +38,7 @@ fn repo() -> Snapshot {
         keep_updated: false,
         provider: Default::default(),
         dev_container: Default::default(),
+        sandbox: false,
     });
     let draft = Release {
         name: "Orbit 0.3.0".into(),

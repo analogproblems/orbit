@@ -530,6 +530,12 @@ describe("repository changes from Bit", () => {
     ).toBe(
       "Setup command: None; Approval time limit: Decline after 15 minutes; Keep the copy up to date: Off; Automatic reviews: On; Automatic rounds per pull request: 6",
     );
+    expect(withRepositoryPatch(repo, { orbitsSandbox: true }).sandbox).toBe(
+      true,
+    );
+    expect(describeRepositoryPatch({ orbitsSandbox: true })).toBe(
+      "Orbit's sandbox: On",
+    );
   });
 });
 

@@ -105,6 +105,7 @@ async fn review_with_recipe(recipe: bool) -> Setup {
                 check_command: "cat setup.txt".into(),
                 reviewer_tool: false,
             },
+            sandbox: false,
         });
         let mut review = Review::new(&pr, &s.settings, false);
         review.status = "preparing".into();
@@ -301,9 +302,25 @@ async fn reports_docker_and_removes_leftovers_at_launch() {
     )
     .await
     .unwrap();
+    // And a sandbox copy.
+    let copy = t.e.root.join("sandbox").join("old").join("copy");
+    std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
+    git(
+        &t.clone,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            &copy.to_string_lossy(),
+            &t.base,
+        ],
+    )
+    .await
+    .unwrap();
     t.e.remove_leftover_containers().await;
     assert!(!t.docker.join("containers/orbit-checks-old").exists());
     assert!(!recipe.exists());
+    assert!(!copy.parent().unwrap().exists());
     assert_eq!(worktree_count(&t.clone).await, 2);
     std::fs::write(t.docker.join("no-daemon"), "").unwrap();
     assert!(t.e.check_dev_containers().await.is_err());
@@ -459,4 +476,150 @@ async fn launch_clean_up_waits_for_a_review_setting_up_its_container() {
     cleaning.await.unwrap();
     assert!(!t.docker.join("containers/orbit-checks-old").exists());
     assert!(ours.exists(), "the review's own container stays");
+}
+
+/// An engine with a fake `srt`, and a Claude review of a commit in a clone
+/// Orbit keeps in its data folder, whose setup and checks run in Orbit's
+/// sandbox.
+#[cfg(unix)]
+async fn sandboxed_review() -> (
+    tempfile::TempDir,
+    Arc<Engine>,
+    String,
+    Repository,
+    std::path::PathBuf,
+    String,
+) {
+    let (d, made) = git_repo().await;
+    let head = commit(&made, "Change").await;
+    let e = Engine::new(d.path().join("state"), |_| {}).unwrap();
+    e.use_sandbox(crate::sandbox::tests::fake(&d.path().join("srt")));
+    let pr = trusted_pr();
+    let clone = crate::setup::clone_folder(&e.root, &pr.repo).unwrap();
+    std::fs::create_dir_all(clone.parent().unwrap()).unwrap();
+    std::fs::rename(&made, &clone).unwrap();
+    let mut repo = Repository::new(&pr.repo, &clone.to_string_lossy());
+    repo.provider = Provider::Claude;
+    repo.sandbox = true;
+    repo.setup_command = "echo set up > deps.txt".into();
+    repo.dev_container.check_command = "cat deps.txt file.txt".into();
+    let id = {
+        let mut s = e.state.lock().await;
+        s.settings.repositories.push(repo.clone());
+        let review = Review::new(&pr, &s.settings, false);
+        let id = review.id.clone();
+        s.prs.push(pr);
+        s.reviews.push(review);
+        id
+    };
+    (d, e, id, repo, clone, head)
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn runs_a_claude_repositorys_setup_and_checks_in_orbits_sandbox() {
+    let (d, e, id, repo, clone, head) = sandboxed_review().await;
+    e.run_sandbox_checks(&id, &repo, &clone, &head)
+        .await
+        .unwrap();
+    let r = e.snapshot().await.reviews[0].clone();
+    let checks = r.checks.unwrap();
+    assert!(checks.sandbox && !checks.network);
+    assert!(checks.setup.unwrap().passed());
+    let check = checks.check.unwrap();
+    // The checks ran in a copy of the commit, after setup.
+    assert!(check.passed(), "{check:?}");
+    assert!(check.output.contains("set up") && check.output.contains("Change"));
+    assert!(r.messages.iter().any(|m| m
+        .text
+        .starts_with("Running the setup and check commands in Orbit's sandbox")));
+    assert!(r
+        .messages
+        .iter()
+        .any(|m| m.text.starts_with("Sandbox results:")));
+    // The copy is gone, from disk and from the clone's worktrees, and the
+    // clone itself is untouched.
+    assert!(!e.root.join("sandbox").join(&id).exists());
+    let list = git(&clone, &["worktree", "list", "--porcelain"])
+        .await
+        .unwrap();
+    assert!(!list.contains("sandbox"), "{list}");
+    assert!(!clone.join("deps.txt").exists());
+    // Orbit's data is hidden from the commands, apart from their copy.
+    let calls = crate::sandbox::tests::calls(&d.path().join("srt"));
+    let step = calls.last().unwrap();
+    let deny = step["settings"]["filesystem"]["denyRead"]
+        .as_array()
+        .unwrap();
+    assert!(deny.contains(&serde_json::json!(e.root.to_string_lossy())));
+    assert!(step["cwd"]
+        .as_str()
+        .unwrap()
+        .ends_with(&format!("sandbox/{id}/copy")));
+    // The check that the sandbox can start ran in a folder of its own,
+    // outside the copies, and removed it.
+    let trial = calls.iter().find(|c| c["args"][0] == "--settings").unwrap();
+    let trial = trial["cwd"].as_str().unwrap();
+    assert!(trial.contains("/sandbox-checks/"), "{trial}");
+    assert!(!std::path::Path::new(trial).exists());
+    // But Git works in the copy: the clone's Git metadata can be read, and
+    // the copy's own changed.
+    let common = clone.join(".git").canonicalize().unwrap();
+    let common = common.to_string_lossy();
+    let read = step["settings"]["filesystem"]["allowRead"].to_string();
+    assert!(read.contains(&format!("\"{common}\"")), "{read}");
+    let write = step["settings"]["filesystem"]["allowWrite"]
+        .as_array()
+        .unwrap();
+    assert!(write.iter().any(|w| w
+        .as_str()
+        .unwrap()
+        .starts_with(&format!("{common}/worktrees/"))));
+    assert!(!write.iter().any(|w| w.as_str() == Some(&*common)));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn stopping_a_review_stops_its_sandbox_checks_and_removes_the_copy() {
+    let (d, e, id, mut repo, clone, head) = sandboxed_review().await;
+    let started = d.path().join("started");
+    repo.setup_command = format!("touch {} && sleep 30", started.display());
+    let task = {
+        let (e, id, repo, clone) = (e.clone(), id.clone(), repo.clone(), clone.clone());
+        tokio::spawn(async move { e.run_sandbox_checks(&id, &repo, &clone, &head).await })
+    };
+    let copy = e.root.join("sandbox").join(&id);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !started.exists() {
+        assert!(std::time::Instant::now() < deadline, "setup never started");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(copy.join("copy").exists());
+    // As Stop does, the review's task is dropped while setup runs.
+    task.abort();
+    let _ = task.await;
+    while copy.exists() {
+        assert!(std::time::Instant::now() < deadline, "the copy stayed");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let list = git(&clone, &["worktree", "list", "--porcelain"])
+        .await
+        .unwrap();
+    assert!(!list.contains("sandbox"), "{list}");
+    assert!(e.snapshot().await.reviews[0].checks.is_none());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_sandbox_that_cannot_start_fails_the_review_with_how_to_fix_it() {
+    let (d, e, id, repo, clone, head) = sandboxed_review().await;
+    std::fs::create_dir_all(d.path().join("srt")).unwrap();
+    std::fs::write(d.path().join("srt/missing"), "").unwrap();
+    let error = e
+        .run_sandbox_checks(&id, &repo, &clone, &head)
+        .await
+        .unwrap_err();
+    assert!(error.contains(crate::sandbox::INSTALL), "{error}");
+    assert!(!e.snapshot().await.sandbox.ready);
+    assert!(e.snapshot().await.reviews[0].checks.is_none());
 }

@@ -8,11 +8,12 @@ use std::path::{Path, PathBuf};
 
 /// The repository settings an answer may change, by the names the summary
 /// gives them.
-pub const REPO_SETTINGS: [&str; 9] = [
+pub const REPO_SETTINGS: [&str; 10] = [
     "setupCommand",
     "checkCommand",
     "networkAccess",
     "devContainer",
+    "orbitsSandbox",
     "reviewer",
     "roundLimit",
     "approvalMinutes",
@@ -104,6 +105,8 @@ pub struct RepositoryPatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dev_container: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orbits_sandbox: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reviewer: Option<Provider>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub round_limit: Option<u32>,
@@ -127,6 +130,9 @@ impl RepositoryPatch {
         }
         if let Some(v) = self.dev_container {
             r.dev_container.enabled = v;
+        }
+        if let Some(v) = self.orbits_sandbox {
+            r.sandbox = v;
         }
         if let Some(v) = self.reviewer {
             r.provider = v;
@@ -165,6 +171,7 @@ pub fn patch<'a>(changes: impl IntoIterator<Item = (&'a str, &'a str)>) -> Optio
             "checkCommand" => patch.check_command = Some(command(value)?),
             "networkAccess" => patch.network_access = Some(flag()?),
             "devContainer" => patch.dev_container = Some(flag()?),
+            "orbitsSandbox" => patch.orbits_sandbox = Some(flag()?),
             "reviewer" => {
                 patch.reviewer =
                     Some(serde_json::from_value(value.to_ascii_lowercase().into()).ok()?)

@@ -22,6 +22,7 @@ fn snapshot() -> Snapshot {
         keep_updated: false,
         provider: Default::default(),
         dev_container: Default::default(),
+        sandbox: false,
     });
     let mut r = Review::new(&p, &Settings::default(), true);
     r.id = "run-1".into();
@@ -115,6 +116,8 @@ fn the_summary_holds_what_bit_needs_and_nothing_more() {
     assert_eq!(repo["setupCommand"], "make secrets");
     assert_eq!(repo["reviewer"], "codex");
     assert_eq!(repo["networkAccess"], false);
+    assert_eq!(repo["orbitsSandbox"], false);
+    assert_eq!(b["orbitsSandboxReady"], false);
     assert_eq!(repo["copy"], Value::Null);
     let text = b.to_string();
     for private in ["alex", "publish everything", "/tmp/a-b"] {
@@ -709,6 +712,16 @@ fn bit_offers_to_set_up_only_repositories_it_may() {
     let patch = p.repository.as_ref().unwrap();
     assert_eq!(patch.setup_command.as_deref(), Some("npm ci"));
     assert_eq!(patch.network_access, Some(true));
+    // Claude runs the setup command in Orbit's sandbox.
+    let offered = set_up(
+        Some("a/b"),
+        changes(&[("reviewer", "claude"), ("orbitsSandbox", "true")]),
+        &[],
+    );
+    assert_eq!(
+        offered[0].repository.as_ref().unwrap().orbits_sandbox,
+        Some(true)
+    );
     // A repository from the summary's list connects, even with no change.
     let offered = set_up(Some("ACME/api"), changes(&[]), &listed);
     assert_eq!(offered[0].repo.as_deref(), Some("acme/api"));

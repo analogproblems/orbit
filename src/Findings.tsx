@@ -302,8 +302,9 @@ function SinceLastRound({
 }
 
 /** Orbit's verdict when it has one, else the model's (older reviews). */
-/** How the setup and checks went in the dev container. */
+/** How the setup and checks went in the dev container or Orbit's sandbox. */
 export function ContainerResults({ checks }: { checks: ContainerChecks }) {
+  const place = checks.sandbox ? "Orbit's sandbox" : "the dev container";
   const steps = [
     ["Setup", checks.setup],
     ["Checks", checks.check],
@@ -319,7 +320,7 @@ export function ContainerResults({ checks }: { checks: ContainerChecks }) {
             label={`${name} ${checkPassed(step) ? "passed" : "failed"}`}
           />
           <Text type="supporting">
-            {name} in the dev container ({step.command}): {checkOutcome(step)}
+            {name} in {place} ({step.command}): {checkOutcome(step)}
           </Text>
         </HStack>
       ))}
