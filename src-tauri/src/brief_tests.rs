@@ -1312,3 +1312,27 @@ fn the_brief_says_what_held_and_what_missed_since_the_last_one() {
         "Here's your morning brief! 1 thing Orbit or an agent did missed. It is new since the last brief."
     );
 }
+
+#[test]
+fn a_brief_lists_what_is_wrong_with_orbit_itself() {
+    let mut s = Snapshot::default();
+    crate::health::see(
+        &mut s.health,
+        &[crate::health::Found {
+            kind: crate::health::HealthKind::Usage,
+            text: "Codex has used 95% of a usage limit.".into(),
+        }],
+        now(),
+    );
+    let id = s.health[0].id.clone();
+    let listed = lines(&s);
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].key, format!("health:{id}"));
+    assert_eq!(
+        listed[0].text,
+        "Orbit itself: Codex has used 95% of a usage limit."
+    );
+    // Not once it clears.
+    crate::health::see(&mut s.health, &[], now());
+    assert!(lines(&s).is_empty());
+}

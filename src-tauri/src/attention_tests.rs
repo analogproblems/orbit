@@ -513,3 +513,42 @@ fn a_pull_request_left_waiting_on_a_person_needs_you_once() {
     pass(&mut s, 49);
     assert!(items(&s).is_empty());
 }
+
+#[test]
+fn what_is_wrong_with_orbit_itself_needs_you_when_you_can_fix_it() {
+    let (mut s, _) = snapshot();
+    let now = chrono::Utc::now();
+    let found = |kind, text: &str| crate::health::Found {
+        kind,
+        text: text.into(),
+    };
+    crate::health::see(
+        &mut s.health,
+        &[
+            found(crate::health::HealthKind::Disk, "Only 1.0 GB is free."),
+            found(crate::health::HealthKind::Usage, "Codex has used 95%."),
+        ],
+        now,
+    );
+    let disk = s
+        .health
+        .iter()
+        .find(|i| i.kind == crate::health::HealthKind::Disk)
+        .unwrap();
+    assert_eq!(keys(&s), [(AttentionKind::Health, disk.item_key())]);
+    let (notices, _) = announce(&mut s);
+    assert_eq!(notices[0].title, "Orbit itself needs you");
+    assert_eq!(notices[0].body, "Only 1.0 GB is free.");
+    // It clears and comes straight back: not announced again.
+    crate::health::see(&mut s.health, &[], now);
+    announce(&mut s);
+    crate::health::see(
+        &mut s.health,
+        &[found(
+            crate::health::HealthKind::Disk,
+            "Only 1.0 GB is free.",
+        )],
+        now,
+    );
+    assert!(announce(&mut s).0.is_empty());
+}

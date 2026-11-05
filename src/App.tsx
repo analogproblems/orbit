@@ -263,6 +263,9 @@ export default function App() {
   const securityAlerts = (s.attention ?? []).filter(
     (a) => a.kind === "security_alert",
   ).length;
+  const orbitHealth = (s.attention ?? []).filter(
+    (a) => a.kind === "health",
+  ).length;
   const choose = (p: PullRequest, r?: Review) => {
     setSelected(p.id);
     setSelectedReview(r?.id ?? null);
@@ -487,6 +490,11 @@ export default function App() {
                     <StatusDot variant="error" label="Security alert" />
                   ) : runsWaiting > 0 ? (
                     <StatusDot variant="warning" label="Runs waiting" />
+                  ) : orbitHealth > 0 ? (
+                    <StatusDot
+                      variant="warning"
+                      label="Orbit itself needs you"
+                    />
                   ) : undefined
                 }
                 onClick={() => setPage("operations")}

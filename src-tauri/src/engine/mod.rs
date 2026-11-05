@@ -25,6 +25,7 @@ mod events;
 mod extras;
 mod findings;
 mod fixes;
+mod health;
 mod inline;
 mod ledger;
 mod moving;
@@ -78,6 +79,8 @@ mod connection_tests;
 mod findings_tests;
 #[cfg(test)]
 mod fixes_tests;
+#[cfg(test)]
+mod health_tests;
 #[cfg(test)]
 mod inline_tests;
 #[cfg(test)]
@@ -302,6 +305,10 @@ pub struct Engine {
     dev_tools: std::sync::Mutex<crate::devcontainer::Tools>,
     /// How Orbit's sandbox is started; tests use a fake.
     sandbox_tool: std::sync::Mutex<crate::cli::Launcher>,
+    /// Since when Codex has been disconnected, as `check_health` saw it.
+    codex_down: std::sync::Mutex<Option<chrono::DateTime<chrono::Utc>>>,
+    /// When `check_health` last started, so it runs once a minute.
+    last_health: std::sync::Mutex<Option<std::time::Instant>>,
     /// How actionlint and zizmor are started; tests use fakes.
     lint_tools: std::sync::Mutex<crate::lint::Tools>,
     /// Dev containers kept for reviewers' own commands, by review; removed
@@ -414,6 +421,8 @@ impl Engine {
             antigravity: std::sync::Mutex::new(crate::antigravity::Setup::default()),
             dev_tools: std::sync::Mutex::new(Default::default()),
             sandbox_tool: std::sync::Mutex::new(crate::sandbox::launcher()),
+            codex_down: std::sync::Mutex::new(None),
+            last_health: std::sync::Mutex::new(None),
             lint_tools: std::sync::Mutex::new(Default::default()),
             boxes: Default::default(),
             building: Mutex::new(()),
@@ -606,8 +615,9 @@ impl Engine {
                 tick.tick().await;
                 if e.flush().await.is_err() {
                     // Automation is paused until state saves again, but
-                    // approvals still expire, kept containers still go and
-                    // GitHub checks still close. Saving is retried less often.
+                    // approvals still expire, kept containers still go,
+                    // GitHub checks still close and Orbit still checks its own
+                    // health. Saving is retried less often.
                     e.housekeeping().await;
                     tokio::time::sleep(SAVE_RETRY).await;
                     continue;
@@ -668,8 +678,11 @@ impl Engine {
         }
         self.housekeeping().await;
     }
-    /// Work that starts nothing new, so it runs even while state can't be saved.
-    async fn housekeeping(self: &Arc<Self>) {
+    /// Work that starts nothing new, so it runs even while state can't be
+    /// saved, such as Orbit's own health, as a full disk is one reason it
+    /// can't.
+    pub(super) async fn housekeeping(self: &Arc<Self>) {
+        self.health_soon();
         self.expire_approvals().await;
         self.close_boxes().await;
         self.sync_commit_statuses().await;

@@ -261,6 +261,9 @@ Decisions:
 - Use it to answer questions about what was decided, why, what the reviewer challenged and what needs a decision, naming pull requests like orbit#64. It covers only the newest pull requests and the rules it lists: say so when a question reaches further back, and that the Decisions page has the rest.
 - Write-ups are off until the person turns them on, as each one uses the writer's allowance. When they are off and the person asks about decisions or rules, say what the review stories show, and offer change_settings with writeUps.enabled \"true\" as a button only when they want write-ups.
 
+Orbit itself:
+- The summary's `orbitHealth` lists what is wrong with Orbit itself now, found by rules: little free disk space, worktrees it couldn't remove, writes to GitHub that haven't settled, posts the second look held for over a day, Codex disconnected, and Codex usage near a limit. When the person asks how Orbit is doing, or why something is slow or stuck, start there. Offer only the buttons you already can, such as check_connections; Orbit has none for the rest, so say where to go, as each item's text does.
+
 Setting up a repository:
 - A setup command runs in each review's sandbox before the reviewer starts, to install what the code needs. Use the `suggestedSetup` the summary gives for the repository's copy, which Orbit picks from its first lock file: {setup_commands}. With none, leave it empty unless the person tells you what it needs.
 - Installing needs networkAccess on. Say so when you offer it: with network on, setup and the reviewer can reach the internet, including code from the pull request. In Orbit's sandbox it is narrower: only setup reaches the internet, and only the main package registries and GitHub.
@@ -891,6 +894,13 @@ pub fn briefing(s: &Snapshot, lookups: &Lookups) -> Value {
             "antigravity": s.antigravity.ready,
         },
         "orbitsSandboxReady": s.sandbox.ready,
+        // What is wrong with Orbit itself now, by rules (`crate::health`).
+        "orbitHealth": s.health.iter().filter(|i| i.is_open()).map(|i| json!({
+            "kind": key(&i.kind),
+            "text": i.text,
+            "since": i.opened_at,
+            "inNeedsYou": i.kind.needs_you(),
+        })).collect::<Vec<_>>(),
         "repositories": s.settings.repositories.iter().map(|r| json!({
             "name": r.name,
             "autopilot": r.automatic,

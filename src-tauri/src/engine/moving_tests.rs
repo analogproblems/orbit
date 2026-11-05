@@ -265,6 +265,8 @@ async fn what_belongs_to_each_computer_stays_there() {
             let mut done = Review::new(&pr, &s.settings, true);
             done.status = "published".into();
             done.worktree = Some("/first/worktrees/2".into());
+            // The first computer couldn't remove it; that's its own to fix.
+            done.cleanup_error = Some("Directory not empty".into());
             s.reviews = vec![running, done];
             s.prs = vec![pr.clone()];
             s.scans = vec![SecurityScan {
@@ -332,7 +334,10 @@ async fn what_belongs_to_each_computer_stays_there() {
     assert_eq!(devices, [("woken-by-second", 7, 7)]);
     assert_eq!(s.notices_sent, 7);
     assert_eq!(s.github_user.as_deref(), Some("me"));
-    assert!(s.reviews.iter().all(|r| r.worktree.is_none()));
+    assert!(s
+        .reviews
+        .iter()
+        .all(|r| r.worktree.is_none() && r.cleanup_error.is_none()));
     assert_eq!(s.reviews[0].status, "cancelled");
     assert_eq!(s.reviews[1].status, "published");
     assert_eq!(s.scans[0].scan_dir, None);

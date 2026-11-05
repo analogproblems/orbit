@@ -19,6 +19,8 @@ import {
   attentionAction,
   attentionLabels,
   briefDay,
+  healthInSettings,
+  healthOf,
   canPublish,
   fixLabel,
   loopFinished,
@@ -111,6 +113,13 @@ export function mainAction(
     a.kind === "security_alert"
   )
     return { label: "Open operations", onClick: go.onOperations };
+  // Orbit itself: Settings for the disk and worktrees.
+  if (a.kind === "health") {
+    const i = healthOf(s, a);
+    return i && healthInSettings(i.kind)
+      ? { label: "Open settings", onClick: go.onSettings }
+      : { label: "Open operations", onClick: go.onOperations };
+  }
   // You've read it.
   if (a.kind === "brief")
     return {

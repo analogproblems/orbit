@@ -25,6 +25,7 @@ pub mod engine;
 pub mod extras;
 pub mod github;
 pub mod guide;
+pub mod health;
 pub mod ledger;
 pub mod lint;
 pub mod logs;

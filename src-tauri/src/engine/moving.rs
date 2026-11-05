@@ -336,6 +336,7 @@ pub(super) fn keep_here(
     moved.antigravity_models = here.antigravity_models.clone();
     moved.dev_containers = here.dev_containers.clone();
     moved.sandbox = here.sandbox.clone();
+    moved.health = here.health.clone();
     moved.ollama = here.ollama.clone();
     moved.ollama_models = here.ollama_models.clone();
     moved.api_keys = here.api_keys.clone();
@@ -356,8 +357,10 @@ pub(super) fn keep_here(
     moved.sync_failures.clear();
     moved.queue_failures.clear();
     moved.ledger.version = here.ledger.version.max(moved.ledger.version) + 1;
+    // Worktrees, and failures to remove them, are the other computer's.
     for r in &mut moved.reviews {
         r.worktree = None;
+        r.cleanup_error = None;
     }
     for x in &mut moved.scans {
         x.worktree = None;

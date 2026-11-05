@@ -246,6 +246,14 @@ pub fn lines(s: &Snapshot) -> Vec<Line> {
             None,
         ));
     }
+    // What is wrong with Orbit itself, whatever Orbit watches.
+    for i in s.health.iter().filter(|i| i.is_open()) {
+        notes.push(line(
+            format!("health:{}", i.id),
+            format!("Orbit itself: {}", i.text),
+            None,
+        ));
+    }
     [clear, fixes, stuck, failing, security, notes].concat()
 }
 /// What a brief lists about releases at `now`, after the rest, while Watch

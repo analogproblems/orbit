@@ -269,6 +269,20 @@ pub fn items(s: &Snapshot) -> Vec<Attention> {
             )
         });
     }
+    // Orbit's own health, before the repositories' problems.
+    for i in s
+        .health
+        .iter()
+        .filter(|i| i.is_open() && i.kind.needs_you())
+    {
+        out.push(item(
+            i.item_key(),
+            AttentionKind::Health,
+            None,
+            None,
+            i.text.clone(),
+        ));
+    }
     for p in s.problems.iter().filter(|p| p.is_open() && p.needs_you()) {
         if p.kind == crate::problems::ProblemKind::Security {
             let source = p.source.unwrap_or_default();
@@ -637,6 +651,7 @@ pub fn notice(s: &Snapshot, a: Attention) -> Notice {
         AttentionKind::Brief => "Your morning brief",
         AttentionKind::AnotherOrbit => "Another Orbit posts here",
         AttentionKind::SecurityAlert => "A security alert needs you",
+        AttentionKind::Health => "Orbit itself needs you",
     };
     let pr = s.prs.iter().find(|p| Some(&p.id) == a.pr_id.as_ref());
     let body = match pr {
@@ -682,7 +697,11 @@ pub fn announce(s: &mut Snapshot) -> (Vec<Notice>, bool) {
     let mut keys: Vec<String> = open.iter().map(|a| a.key.clone()).collect();
     // A problem that cleared a moment ago stays announced, so one that comes
     // straight back isn't announced again (see `crate::problems`).
-    for key in crate::problems::quiet_keys(&s.problems, chrono::Utc::now()) {
+    let now = chrono::Utc::now();
+    for key in crate::problems::quiet_keys(&s.problems, now)
+        .into_iter()
+        .chain(crate::health::quiet_keys(&s.health, now))
+    {
         if !keys.contains(&key) {
             keys.push(key);
         }
