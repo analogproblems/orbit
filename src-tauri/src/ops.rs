@@ -2648,6 +2648,17 @@ pub fn record(journal: &mut Vec<Write>, planned: &Planned, now: DateTime<Utc>) -
 pub fn is_gone(error: &str) -> bool {
     error.contains("HTTP 404") || error.contains("HTTP 410")
 }
+/// Whether GitHub refused a write outright, so it made nothing: an answer
+/// in the 400s other than a rate limit. A cut-off, a timeout, a rate limit
+/// or a server error leaves the doubt that it took the post.
+pub fn refused(error: &str) -> bool {
+    !crate::logs::rate_limited(error)
+        && [
+            "HTTP 400", "HTTP 401", "HTTP 403", "HTTP 404", "HTTP 410", "HTTP 422",
+        ]
+        .iter()
+        .any(|code| error.contains(code))
+}
 /// Records what GitHub said to a write, on its journal entry and its thread.
 pub fn settle(
     threads: &mut [Thread],
@@ -2724,8 +2735,9 @@ pub fn settle(
             }
             let Some(t) = thread else { return };
             t.updated_at = at;
-            // GitHub may have taken a post it didn't answer for.
-            if creates(planned.action) {
+            // GitHub may have taken a post it didn't answer for, unless it
+            // refused it outright.
+            if creates(planned.action) && !refused(&error) {
                 t.unsure = true;
             }
             // Something already posted that GitHub no longer has was

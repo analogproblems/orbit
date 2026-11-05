@@ -128,6 +128,7 @@ pub fn commits(v: &Value, branch: &str) -> Result<Option<HashMap<String, Seen>>,
 pub fn walk(start: &str, history: &HashMap<String, Seen>) -> Walked {
     let mut after: Vec<(&str, &Seen)> = vec![];
     let mut at = start.to_string();
+    let mut began = false;
     for _ in 0..BACK {
         let Some(seen) = history.get(&at) else {
             return Walked::Need(at);
@@ -139,15 +140,28 @@ pub fn walk(start: &str, history: &HashMap<String, Seen>) -> Walked {
         match &seen.parent {
             Some(parent) => at = parent.clone(),
             // The branch's first commit.
-            None => break,
+            None => {
+                began = true;
+                break;
+            }
         }
     }
-    Walked::Found(Broke {
-        done: true,
-        error: Some(format!(
+    // Reaching the first commit doesn't prove every commit failed: one may
+    // have had no checks, or checks still running. Only that none passed.
+    let error = if began {
+        format!(
+            "Orbit found no commit that passed before {}: the branch's history ran out at its first commit.",
+            ci::short(start)
+        )
+    } else {
+        format!(
             "Orbit found no commit that passed in the {BACK} before {}.",
             ci::short(start)
-        )),
+        )
+    };
+    Walked::Found(Broke {
+        done: true,
+        error: Some(error),
         ..Default::default()
     })
 }

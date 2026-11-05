@@ -2402,6 +2402,49 @@ fn the_agent_is_reminded_only_on_a_comment_it_can_see() {
     assert_eq!(ready_of(&threads).reminded, None);
 }
 
+/// A post GitHub refused outright made nothing, so Orbit doesn't look for
+/// it before trying again; a rate limit or a cut-off leaves the doubt.
+#[test]
+fn a_post_github_refused_is_not_looked_for() {
+    use crate::readiness::WaitKind;
+    let fails = || {
+        waiting_on(
+            'a',
+            WaitKind::Checks,
+            Turn::Author,
+            "CI / Rust fails on aaaaaaa.",
+        )
+    };
+    for (error, unsure) in [
+        (
+            "HTTP 422: Validation Failed (https://api.github.com/...)",
+            false,
+        ),
+        ("HTTP 403: Resource not accessible by integration", false),
+        ("HTTP 404: Not Found", false),
+        ("HTTP 403: API rate limit exceeded", true),
+        ("HTTP 502: Bad Gateway", true),
+        ("timed out", true),
+    ] {
+        let mut threads = vec![];
+        let mut journal = vec![];
+        said_at(&mut threads, fails(), &[], at(0));
+        let post = next(&threads[0], None, true, at(5 * 60)).unwrap();
+        assert_eq!(post.action, Action::PostComment);
+        let id = record(&mut journal, &post, at(5 * 60));
+        settle(
+            &mut threads,
+            &mut journal,
+            &id,
+            &post,
+            Err(error.into()),
+            at(5 * 60),
+        );
+        assert_eq!(threads[0].unsure, unsure, "{error}");
+        assert_eq!(journal[0].state, WriteState::Failed, "{error}");
+    }
+}
+
 /// A first post that reached GitHub without Orbit hearing back, and that
 /// Orbit finds later, starts the agent's wait when Orbit finds it.
 #[test]
