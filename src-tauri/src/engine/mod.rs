@@ -25,6 +25,7 @@ mod events;
 mod extras;
 mod findings;
 mod fixes;
+mod health;
 mod inline;
 mod ledger;
 mod moving;
@@ -78,6 +79,8 @@ mod connection_tests;
 mod findings_tests;
 #[cfg(test)]
 mod fixes_tests;
+#[cfg(test)]
+mod health_tests;
 #[cfg(test)]
 mod inline_tests;
 #[cfg(test)]
@@ -302,6 +305,8 @@ pub struct Engine {
     dev_tools: std::sync::Mutex<crate::devcontainer::Tools>,
     /// How Orbit's sandbox is started; tests use a fake.
     sandbox_tool: std::sync::Mutex<crate::cli::Launcher>,
+    /// Since when Codex has been disconnected, as `check_health` saw it.
+    codex_down: std::sync::Mutex<Option<chrono::DateTime<chrono::Utc>>>,
     /// How actionlint and zizmor are started; tests use fakes.
     lint_tools: std::sync::Mutex<crate::lint::Tools>,
     /// Dev containers kept for reviewers' own commands, by review; removed
@@ -414,6 +419,7 @@ impl Engine {
             antigravity: std::sync::Mutex::new(crate::antigravity::Setup::default()),
             dev_tools: std::sync::Mutex::new(Default::default()),
             sandbox_tool: std::sync::Mutex::new(crate::sandbox::launcher()),
+            codex_down: std::sync::Mutex::new(None),
             lint_tools: std::sync::Mutex::new(Default::default()),
             boxes: Default::default(),
             building: Mutex::new(()),
@@ -600,6 +606,7 @@ impl Engine {
             let mut tick = tokio::time::interval(Duration::from_millis(200));
             let mut last_poll = std::time::Instant::now();
             let mut last_usage = std::time::Instant::now();
+            let mut last_health: Option<std::time::Instant> = None;
             let mut last_ledger: Option<std::time::Instant> = None;
             let mut write_ups = WriteUps::default();
             while !e.stopping.load(Ordering::SeqCst) {
@@ -652,6 +659,11 @@ impl Engine {
                 if codex_ready && last_usage.elapsed() >= USAGE_REFRESH {
                     last_usage = std::time::Instant::now();
                     tokio::spawn(e.clone().read_usage());
+                }
+                // Orbit's own health, by rules, once a minute.
+                if last_health.is_none_or(|t| t.elapsed() >= health::EVERY) {
+                    last_health = Some(std::time::Instant::now());
+                    tokio::spawn(e.clone().check_health());
                 }
                 e.tick(codex_ready || cli_ready).await;
             }

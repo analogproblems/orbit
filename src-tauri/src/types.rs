@@ -1334,6 +1334,9 @@ pub struct Snapshot {
     pub dev_containers: CliStatus,
     /// Orbit's sandbox (`crate::sandbox`), as last checked.
     pub sandbox: CliStatus,
+    /// What is wrong with Orbit itself, open and lately closed
+    /// (`crate::health`).
+    pub health: Vec<crate::health::HealthIssue>,
     /// The models Antigravity offered when last checked, in the shape of
     /// `models`.
     pub antigravity_models: Vec<Value>,
@@ -1658,6 +1661,9 @@ pub enum AttentionKind {
     /// A repository has a secret GitHub found, or a high or critical
     /// security alert (`crate::security`).
     SecurityAlert,
+    /// Something is wrong with Orbit itself, such as little free disk
+    /// space (`crate::health`).
+    Health,
 }
 /// Something only the developer can resolve.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -1066,7 +1066,8 @@ export type AttentionKind =
   | "stuck"
   | "brief"
   | "another_orbit"
-  | "security_alert";
+  | "security_alert"
+  | "health";
 /** Something only the developer can resolve. */
 export interface Attention {
   /** Stays the same while the item is open. */
@@ -1097,6 +1098,7 @@ export const attentionLabels: Record<AttentionKind, string> = {
   brief: "Morning brief",
   another_orbit: "Another Orbit posts here",
   security_alert: "Security alert",
+  health: "Orbit itself",
 };
 /** The day a morning brief's item is for, from its key. */
 export const briefDay = (a: Attention) => a.key.replace(/^brief:/, "");
@@ -1132,6 +1134,10 @@ export function attentionAction(
   )
     return go.onSettings;
   if (a.kind === "brief") return go.onBuddy;
+  if (a.kind === "health") {
+    const i = healthOf(s, a);
+    return i && healthInSettings(i.kind) ? go.onSettings : go.onOperations;
+  }
   const p = [...s.prs, ...(s.historyPrs ?? [])].find((p) => p.id === a.prId);
   const r = s.reviews.find((r) => r.id === a.reviewId);
   if (a.kind === "approval" && r && a.approvalId != null) {
@@ -1203,6 +1209,8 @@ export interface Snapshot {
   /** Orbit's sandbox, for Claude and Antigravity repositories' setup and
    * checks, as last checked. */
   sandbox?: CliStatus;
+  /** What is wrong with Orbit itself, open and lately closed. */
+  health?: HealthIssue[];
   /** The models Antigravity offered when last checked. */
   antigravityModels?: Model[];
   /** Ollama at Bit's address, as last checked while it answers Bit. */
@@ -1460,6 +1468,42 @@ export type ProblemKind =
   | "versions"
   | "tag"
   | "release_build";
+/** What a rule found wrong with Orbit itself (`crate::health`). */
+export type HealthKind =
+  "disk" | "leftovers" | "journal" | "second_look" | "codex" | "usage";
+/** Something wrong with Orbit itself, from when Orbit saw it until it
+ * cleared. */
+export interface HealthIssue {
+  id: string;
+  kind: HealthKind;
+  text: string;
+  openedAt: string;
+  updatedAt: string;
+  closedAt?: string | null;
+  closedReason?: string | null;
+  timeline: ProblemEvent[];
+  alerts: number;
+}
+/** Those in Needs you; Codex has its own item there, and usage waits. */
+export const healthNeedsYou = (kind: HealthKind) =>
+  kind !== "codex" && kind !== "usage";
+/** Where each is fixed: Settings for the disk and worktrees, Operations
+ * otherwise. */
+export const healthInSettings = (kind: HealthKind) =>
+  kind === "disk" || kind === "leftovers";
+export const healthLabels: Record<HealthKind, string> = {
+  disk: "Disk space",
+  leftovers: "Worktrees left behind",
+  journal: "Writes to GitHub",
+  second_look: "Held posts",
+  codex: "Codex",
+  usage: "Codex usage",
+};
+/** The health issue a Needs you item is about, from its key. */
+export function healthOf(s: Snapshot, a: Attention) {
+  const id = a.key.split(":")[1];
+  return (s.health ?? []).find((i) => i.id === id);
+}
 export interface ProblemEvent {
   at: string;
   text: string;

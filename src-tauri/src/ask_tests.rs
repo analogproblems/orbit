@@ -118,6 +118,7 @@ fn the_summary_holds_what_bit_needs_and_nothing_more() {
     assert_eq!(repo["networkAccess"], false);
     assert_eq!(repo["orbitsSandbox"], false);
     assert_eq!(b["orbitsSandboxReady"], false);
+    assert_eq!(b["orbitHealth"], json!([]));
     assert_eq!(repo["copy"], Value::Null);
     let text = b.to_string();
     for private in ["alex", "publish everything", "/tmp/a-b"] {

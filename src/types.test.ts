@@ -608,6 +608,42 @@ describe("what needs you", () => {
     expect(open("release")).toBe(go.onOperations);
     expect(open("security_alert")).toBe(go.onOperations);
   });
+  it("opens Settings for the disk and worktrees, and Operations for the rest of Orbit itself", () => {
+    const s = freshDemo();
+    const go = {
+      onChoose: () => {},
+      onRepositories: () => {},
+      onSettings: () => {},
+      onApproval: () => {},
+      onPublish: () => {},
+      onOperations: () => {},
+    };
+    s.health = (["disk", "journal"] as const).map((kind) => ({
+      id: kind,
+      kind,
+      text: "",
+      openedAt: "",
+      updatedAt: "",
+      timeline: [],
+      alerts: 1,
+    }));
+    const open = (id: string) =>
+      attentionAction(
+        s,
+        {
+          key: `health:${id}:1`,
+          kind: "health",
+          prId: null,
+          reviewId: null,
+          approvalId: null,
+          repo: null,
+          reason: "",
+        },
+        go,
+      );
+    expect(open("disk")).toBe(go.onSettings);
+    expect(open("journal")).toBe(go.onOperations);
+  });
 });
 describe("readiness line", () => {
   it("says it as the engine does", () => {

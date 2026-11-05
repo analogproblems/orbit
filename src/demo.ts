@@ -894,6 +894,26 @@ export function freshDemo(): Snapshot {
       version: "Docker demo · Dev Container CLI demo",
     },
     sandbox: { ready: true, version: "Sandbox runtime demo" },
+    // A review's worktree Orbit couldn't remove this morning, cleared since.
+    health: [
+      {
+        id: "health-leftovers",
+        kind: "leftovers",
+        text: "Orbit couldn't remove the worktree of 1 review: Directory not empty. Retry under Settings → Storage.",
+        openedAt: ago(300),
+        updatedAt: ago(120),
+        closedAt: ago(120),
+        closedReason: "No worktree is left to remove.",
+        timeline: [
+          {
+            at: ago(300),
+            text: "Orbit couldn't remove the worktree of 1 review: Directory not empty. Retry under Settings → Storage.",
+          },
+          { at: ago(120), text: "No worktree is left to remove." },
+        ],
+        alerts: 1,
+      },
+    ],
     claudeModels: [
       ["claude-opus-5-5", "Claude Opus 5.5", true],
       ["claude-sonnet-5-5", "Claude Sonnet 5.5", false],

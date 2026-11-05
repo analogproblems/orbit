@@ -68,6 +68,10 @@ import {
   type Snapshot,
   type VersionMismatch,
   type WorkflowRisk,
+  type HealthIssue,
+  healthInSettings,
+  healthLabels,
+  healthNeedsYou,
 } from "./types";
 
 /** How many closed problems the page lists, and how many writes. */
@@ -2629,6 +2633,74 @@ function SecondLooks() {
   );
 }
 
+/** What Operations lists of Orbit itself: what is open, what needs you
+ * first, and what cleared in the last day. */
+export function healthShown(issues: HealthIssue[], now = Date.now()) {
+  const day = now - 24 * 60 * 60 * 1000;
+  return issues
+    .filter((i) => !i.closedAt || Date.parse(i.closedAt) >= day)
+    .sort(
+      (a, b) =>
+        Number(!!a.closedAt) - Number(!!b.closedAt) ||
+        Number(!healthNeedsYou(a.kind)) - Number(!healthNeedsYou(b.kind)) ||
+        b.openedAt.localeCompare(a.openedAt),
+    );
+}
+/** What is wrong with Orbit itself, and what cleared in the last day,
+ * whatever Orbit watches. Nothing shows while all is well. */
+function OrbitHealth({ go }: { go: AttentionHandlers }) {
+  const { snapshot: s } = useOrbit();
+  const shown = healthShown(s.health ?? []);
+  if (!shown.length) return null;
+  return (
+    <VStack gap={3}>
+      <Heading level={3}>Orbit itself</Heading>
+      <Card padding={0}>
+        <List hasDividers aria-label="Orbit itself">
+          {shown.map((i) => {
+            const open = !i.closedAt;
+            const dot = !open
+              ? { variant: "success" as const, label: "Cleared" }
+              : healthNeedsYou(i.kind)
+                ? { variant: "error" as const, label: "Needs you" }
+                : { variant: "warning" as const, label: "Heads-up" };
+            return (
+              <ListItem
+                key={i.id}
+                startContent={
+                  <StatusDot variant={dot.variant} label={dot.label} />
+                }
+                label={<Text weight="medium">{healthLabels[i.kind]}</Text>}
+                description={
+                  <VStack gap={1}>
+                    <Text>{open ? i.text : i.closedReason}</Text>
+                    <Text color="secondary" type="supporting">
+                      {open ? "Since " : "Cleared "}
+                      <Timestamp
+                        value={open ? i.openedAt : (i.closedAt as string)}
+                        format="relative_short"
+                      />
+                    </Text>
+                  </VStack>
+                }
+                endContent={
+                  open && healthInSettings(i.kind) ? (
+                    <Button
+                      label="Open settings"
+                      variant="secondary"
+                      onClick={go.onSettings}
+                    />
+                  ) : undefined
+                }
+              />
+            );
+          })}
+        </List>
+      </Card>
+    </VStack>
+  );
+}
+
 /** CI on every connected repository, and what is failing. */
 export function Operations(go: AttentionHandlers) {
   const { snapshot: s, updateSettings } = useOrbit();
@@ -2647,6 +2719,7 @@ export function Operations(go: AttentionHandlers) {
           do secrets GitHub finds and high or critical security alerts.
         </Text>
       </VStack>
+      <OrbitHealth go={go} />
       {!watching ? (
         <>
           <EmptyState

@@ -276,6 +276,65 @@ describe("operations page", () => {
     expect(screen.getByText("All clear. Nothing is failing.")).toBeTruthy();
   });
 
+  it("lists what is wrong with Orbit itself, even while watching CI is off", () => {
+    const s = freshDemo();
+    s.settings.watchCi = false;
+    const now = new Date().toISOString();
+    s.health = [
+      {
+        id: "disk",
+        kind: "disk",
+        text: "Only 1.0 GB of 500.0 GB is free on the disk that holds Orbit's data.",
+        openedAt: now,
+        updatedAt: now,
+        timeline: [],
+        alerts: 1,
+      },
+      {
+        id: "usage",
+        kind: "usage",
+        text: "Codex has used 93% of a usage limit.",
+        openedAt: now,
+        updatedAt: now,
+        timeline: [],
+        alerts: 1,
+      },
+      {
+        id: "old",
+        kind: "journal",
+        text: "1 write to GitHub hasn't settled after an hour.",
+        openedAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-02T00:00:00.000Z",
+        closedAt: "2026-01-02T00:00:00.000Z",
+        closedReason: "Every write to GitHub has settled.",
+        timeline: [],
+        alerts: 1,
+      },
+    ];
+    const go = show(s);
+    const list = within(screen.getByRole("list", { name: "Orbit itself" }));
+    const items = list.getAllByRole("listitem");
+    // What needs you first; what cleared long ago isn't listed.
+    expect(items).toHaveLength(2);
+    expect(items[0].textContent).toContain("Disk space");
+    expect(items[0].textContent).toContain("Only 1.0 GB");
+    expect(within(items[0]).getByLabelText("Needs you")).toBeTruthy();
+    expect(items[1].textContent).toContain("Codex usage");
+    expect(within(items[1]).getByLabelText("Heads-up")).toBeTruthy();
+    expect(within(items[1]).queryByRole("button")).toBeNull();
+    fireEvent.click(
+      within(items[0]).getByRole("button", { name: "Open settings" }),
+    );
+    expect(go.onSettings).toHaveBeenCalled();
+  });
+
+  it("shows nothing about Orbit itself while all is well", () => {
+    const s = freshDemo();
+    s.health = [];
+    show(s);
+    expect(screen.queryByRole("list", { name: "Orbit itself" })).toBeNull();
+  });
+
   it("offers to turn watching back on", () => {
     const updateSettings = vi.fn().mockResolvedValue({ ok: true });
     const s = freshDemo();
