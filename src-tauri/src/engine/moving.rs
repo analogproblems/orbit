@@ -357,8 +357,10 @@ pub(super) fn keep_here(
     moved.sync_failures.clear();
     moved.queue_failures.clear();
     moved.ledger.version = here.ledger.version.max(moved.ledger.version) + 1;
+    // Worktrees, and failures to remove them, are the other computer's.
     for r in &mut moved.reviews {
         r.worktree = None;
+        r.cleanup_error = None;
     }
     for x in &mut moved.scans {
         x.worktree = None;

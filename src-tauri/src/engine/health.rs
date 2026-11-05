@@ -7,6 +7,17 @@ use std::{sync::atomic::Ordering, sync::Arc, time::Duration};
 pub(super) const EVERY: Duration = Duration::from_secs(60);
 
 impl Engine {
+    /// Starts `check_health` if it hasn't run in the last minute.
+    pub(super) fn health_soon(self: &Arc<Self>) {
+        {
+            let mut last = self.last_health.lock().unwrap();
+            if last.is_some_and(|t| t.elapsed() < EVERY) {
+                return;
+            }
+            *last = Some(std::time::Instant::now());
+        }
+        tokio::spawn(self.clone().check_health());
+    }
     /// Reads the free space where Orbit keeps its data, then opens, updates
     /// or closes what is wrong with Orbit itself. Saves only on a change.
     pub(super) async fn check_health(self: Arc<Self>) {

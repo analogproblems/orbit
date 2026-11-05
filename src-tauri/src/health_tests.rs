@@ -56,6 +56,11 @@ fn worktrees_orbit_could_not_remove_are_wrong() {
     let pr = crate::types::tests::pr();
     let mut r = Review::new(&pr, &s.settings, false);
     r.cleanup_error = Some("Permission denied".into());
+    // A worktree on another computer, as after a move, isn't this one's.
+    s.reviews.push(r.clone());
+    assert!(find(&s, roomy(), None, now()).is_empty());
+    s.reviews.clear();
+    r.worktree = Some("/data/worktrees/1".into());
     s.reviews.push(r.clone());
     let found = find(&s, roomy(), None, now());
     assert_eq!(kinds(&found), [HealthKind::Leftovers]);

@@ -57,3 +57,43 @@ async fn orbit_sees_what_is_wrong_with_itself_and_saves_only_changes() {
     e.see_health(roomy, t0 + Span::minutes(12)).await;
     assert!(e.snapshot().await.health.iter().all(|i| !i.is_open()));
 }
+
+/// A full disk is one reason state can't be saved, so Orbit still checks
+/// its own health then, once a minute.
+#[tokio::test]
+async fn orbit_checks_its_health_while_state_cant_be_saved() {
+    let d = tempfile::tempdir().unwrap();
+    let e = Engine::new(d.path().into(), |_| {}).unwrap();
+    e.update(|s| {
+        let pr = crate::types::tests::pr();
+        let mut r = Review::new(&pr, &s.settings, false);
+        r.worktree = Some(d.path().join("worktrees/1").display().to_string());
+        r.cleanup_error = Some("Directory not empty".into());
+        s.reviews.push(r);
+    })
+    .await;
+    std::fs::create_dir(d.path().join("state.json.tmp")).unwrap();
+    assert!(e.flush().await.is_err());
+    e.housekeeping().await;
+    let open = || async {
+        e.snapshot()
+            .await
+            .health
+            .iter()
+            .filter(|i| i.is_open())
+            .map(|i| i.kind)
+            .collect::<Vec<_>>()
+    };
+    for _ in 0..200 {
+        if !open().await.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(open().await.contains(&HealthKind::Leftovers));
+    // Not again within the minute.
+    e.update(|s| s.health.clear()).await;
+    e.housekeeping().await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(open().await.is_empty());
+}

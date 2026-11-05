@@ -190,7 +190,9 @@ pub fn find(
     let failed: Vec<&Review> = s
         .reviews
         .iter()
-        .filter(|r| r.cleanup_error.is_some())
+        // Only worktrees on this computer, which Settings → Storage can
+        // remove again.
+        .filter(|r| r.cleanup_error.is_some() && r.worktree.is_some())
         .collect();
     if let Some(first) = failed.first() {
         found(
