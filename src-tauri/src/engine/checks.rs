@@ -119,7 +119,13 @@ impl Engine {
     /// Antigravity repositories can run their setup and checks in it.
     pub async fn check_sandbox(&self) -> Result<(), String> {
         let srt = self.sandbox_tool.lock().unwrap().clone();
-        let result = sandbox::check(&srt, &self.root.join("sandbox").join("trial")).await;
+        // A folder of its own, so checks at the same time don't remove
+        // each other's, and outside `sandbox`, whose folders are copies.
+        let folder = self
+            .root
+            .join("sandbox-checks")
+            .join(uuid::Uuid::new_v4().simple().to_string());
+        let result = sandbox::check(&srt, &folder).await;
         self.update(|s| {
             s.sandbox = match &result {
                 Ok(version) => CliStatus {
@@ -192,21 +198,28 @@ impl Engine {
             .await
         };
         let result = match added {
-            Ok(_) => {
-                self.say(id, sandbox_running(repo)).await;
-                sandbox::run_checks(
-                    &srt,
-                    sandbox::Plan {
-                        folder: &folder,
-                        copy: &copy,
-                        data: &self.root,
-                        network: repo.network_access,
-                        setup: &repo.setup_command,
-                        check: &repo.dev_container.check_command,
-                    },
-                )
-                .await
-            }
+            Ok(_) => match git_metadata(&copy).await {
+                Ok((dir, common)) => {
+                    self.say(id, sandbox_running(repo)).await;
+                    sandbox::run_checks(
+                        &srt,
+                        sandbox::Plan {
+                            folder: &folder,
+                            copy: &copy,
+                            data: &self.root,
+                            git: Some(sandbox::Git {
+                                dir: &dir,
+                                common: &common,
+                            }),
+                            network: repo.network_access,
+                            setup: &repo.setup_command,
+                            check: &repo.dev_container.check_command,
+                        },
+                    )
+                    .await
+                }
+                Err(error) => Err(error),
+            },
             Err(error) => Err(error),
         };
         made.remove().await;
@@ -480,6 +493,20 @@ fn running(repo: &Repository, image: &str) -> String {
         on_off(repo.network_access)
     )
 }
+/// The copy's own Git metadata and the clone's shared one, which the
+/// sandbox opens to its commands so Git works in the copy.
+async fn git_metadata(copy: &Path) -> Result<(PathBuf, PathBuf), String> {
+    let out = git(copy, &["rev-parse", "--git-dir", "--git-common-dir"]).await?;
+    let mut lines = out.lines().map(|l| {
+        copy.join(l.trim())
+            .canonicalize()
+            .map_err(|e| format!("Couldn't find the copy's Git metadata: {e}"))
+    });
+    match (lines.next(), lines.next()) {
+        (Some(dir), Some(common)) => Ok((dir?, common?)),
+        _ => Err("Couldn't find the copy's Git metadata".into()),
+    }
+}
 /// What runs in Orbit's sandbox, as the review's chat says it.
 fn sandbox_running(repo: &Repository) -> String {
     let setup = !repo.setup_command.trim().is_empty();
@@ -495,7 +522,7 @@ fn sandbox_running(repo: &Repository) -> String {
         " They have no network access."
     };
     format!(
-        "Running {what} in Orbit's sandbox, in a copy of the pull request. They can write only to that copy and can't read your sign-ins.{network}"
+        "Running {what} in Orbit's sandbox, in a copy of the pull request. They can write only to that copy and can't read your sign-ins or tokens.{network}"
     )
 }
 fn on_off(on: bool) -> &'static str {

@@ -7,6 +7,7 @@
 //! removed.
 use crate::{cli::Launcher, types::*};
 use std::{
+    ffi::OsString,
     path::Path,
     process::Stdio,
     sync::{Arc, Mutex},
@@ -646,21 +647,25 @@ impl Drop for Group {
 /// Runs a command, keeping the end of its standard output and error
 /// together, and stops it and what it started after `timeout`.
 async fn run(launcher: &Launcher, args: &[&str], timeout: Duration) -> Result<Output, String> {
-    run_in(launcher, args, timeout, None, &[]).await
+    run_in(launcher, args, timeout, None, None).await
 }
-/// `run`, in the folder `cwd` and with `env` added to the environment.
+/// `run`, in the folder `cwd`, and with `env` as its whole environment
+/// instead of Orbit's, when given.
 pub(crate) async fn run_in(
     launcher: &Launcher,
     args: &[&str],
     timeout: Duration,
     cwd: Option<&Path>,
-    env: &[(&str, &Path)],
+    env: Option<&[(OsString, OsString)]>,
 ) -> Result<Output, String> {
     let mut cmd = launcher.command();
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);
     }
-    cmd.envs(env.iter().copied());
+    if let Some(env) = env {
+        cmd.env_clear();
+        cmd.envs(env.iter().map(|(k, v)| (k, v)));
+    }
     cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

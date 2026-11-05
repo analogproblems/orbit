@@ -598,7 +598,7 @@ export function Repositories({
                         onChange={(sandbox) =>
                           setEditing({ ...editing, sandbox })
                         }
-                        description="Without a dev container, Orbit runs the setup and check commands itself before each review, on this computer, in a copy of the pull request, and gives the reviewer the results. They can write only to that copy, can't read your sign-ins, and have no network, except that setup can download packages when you allow it below. Needs Anthropic's sandbox runtime, on Linux or macOS."
+                        description="Without a dev container, Orbit runs the setup and check commands itself before each review, on this computer, in a copy of the pull request, and gives the reviewer the results. They can write only to that copy, can't read your sign-ins or tokens, and have no network, except that setup can download packages when you allow it below. Needs Anthropic's sandbox runtime, on Linux or macOS."
                         status={
                           inSandbox && !s.sandbox?.ready
                             ? {
@@ -628,7 +628,7 @@ export function Repositories({
                           inContainer
                             ? "Runs first in the dev container, with /bin/sh, as the recipe's user. Fifteen-minute timeout. If it fails, the checks are skipped and the reviewer is told."
                             : inSandbox
-                              ? "Runs first in Orbit's sandbox, in the copy of the pull request, with /bin/sh. Fifteen-minute timeout. If it fails, the checks are skipped and the reviewer is told. Keep caches inside the copy, such as npm ci --cache .cache/npm, as it can't write anywhere else."
+                              ? "Runs first in Orbit's sandbox, in the copy of the pull request, with /bin/sh. Fifteen-minute timeout. If it fails, the checks are skipped and the reviewer is told. Package caches go in a temporary folder Orbit removes afterwards."
                               : "Runs in the new worktree, inside the Codex sandbox. Uses /bin/sh on Unix or PowerShell on Windows. Five-minute timeout. Setup can run code from the pull request, such as package install scripts; prefer options like --ignore-scripts."
                         }
                         status={

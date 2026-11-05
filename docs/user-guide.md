@@ -168,7 +168,12 @@ For each review, Orbit:
 2. runs the setup command (up to 15 minutes), then the check command (up to 30 minutes), in that copy, with `/bin/sh`. If setup fails, the checks are skipped.
 3. removes the copy. Stopping the review, or a new push replacing it, stops them and removes the copy too.
 
-The commands run in Anthropic's sandbox runtime, the one Claude Code runs its own commands in. Inside it they can write only to their copy and a temporary folder beside it, can't read Orbit's own data or the sign-ins, keys and tokens in your home folder (such as `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.npmrc`, and Codex's, Claude's and Antigravity's sign-ins), and have no network. Turn on **Let setup download packages** and setup, but not the checks, can reach the main package registries (npm, Yarn, crates.io, PyPI, Go's module proxy and RubyGems) and GitHub, and nothing else. Keep caches inside the copy, as in `npm ci --cache .cache/npm`, since the commands can't write anywhere else.
+The commands run in Anthropic's sandbox runtime, the one Claude Code runs its own commands in. Inside it:
+
+- They can write only to their copy, its own Git records, and a temporary folder beside it. Orbit points package managers' caches there (npm, pnpm, Yarn, Bun, pip, uv, Poetry, Cargo, Go, Bundler and Gradle), so a plain `npm ci` works.
+- They can read the clone's Git history, so `git` works in the copy, but can't change it, read the rest of Orbit's data, or read the sign-ins, keys and tokens in your home folder (such as `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.npmrc`, and Codex's, Claude's and Antigravity's sign-ins).
+- They get only a short list of Orbit's environment settings, such as `PATH`, `HOME`, the language and where your toolchains are, so a token Orbit itself was started with, such as `GH_TOKEN`, never reaches them.
+- They have no network. Turn on **Let setup download packages** and setup, but not the checks, can reach the main package registries (npm, Yarn, crates.io, PyPI, Go's module proxy and RubyGems) and GitHub, and nothing else.
 
 The results show in the review's chat and under its findings, labelled as run in Orbit's sandbox, and the reviewer reports a failure the pull request caused as a finding. A failing command doesn't stop the review. A sandbox that can't start does, with the reason and how to fix it.
 

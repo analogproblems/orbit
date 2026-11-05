@@ -479,7 +479,8 @@ async fn launch_clean_up_waits_for_a_review_setting_up_its_container() {
 }
 
 /// An engine with a fake `srt`, and a Claude review of a commit in a clone
-/// whose setup and checks run in Orbit's sandbox.
+/// Orbit keeps in its data folder, whose setup and checks run in Orbit's
+/// sandbox.
 #[cfg(unix)]
 async fn sandboxed_review() -> (
     tempfile::TempDir,
@@ -489,11 +490,14 @@ async fn sandboxed_review() -> (
     std::path::PathBuf,
     String,
 ) {
-    let (d, clone) = git_repo().await;
-    let head = commit(&clone, "Change").await;
+    let (d, made) = git_repo().await;
+    let head = commit(&made, "Change").await;
     let e = Engine::new(d.path().join("state"), |_| {}).unwrap();
     e.use_sandbox(crate::sandbox::tests::fake(&d.path().join("srt")));
     let pr = trusted_pr();
+    let clone = crate::setup::clone_folder(&e.root, &pr.repo).unwrap();
+    std::fs::create_dir_all(clone.parent().unwrap()).unwrap();
+    std::fs::rename(&made, &clone).unwrap();
     let mut repo = Repository::new(&pr.repo, &clone.to_string_lossy());
     repo.provider = Provider::Claude;
     repo.sandbox = true;
@@ -552,6 +556,26 @@ async fn runs_a_claude_repositorys_setup_and_checks_in_orbits_sandbox() {
         .as_str()
         .unwrap()
         .ends_with(&format!("sandbox/{id}/copy")));
+    // The check that the sandbox can start ran in a folder of its own,
+    // outside the copies, and removed it.
+    let trial = calls.iter().find(|c| c["args"][0] == "--settings").unwrap();
+    let trial = trial["cwd"].as_str().unwrap();
+    assert!(trial.contains("/sandbox-checks/"), "{trial}");
+    assert!(!std::path::Path::new(trial).exists());
+    // But Git works in the copy: the clone's Git metadata can be read, and
+    // the copy's own changed.
+    let common = clone.join(".git").canonicalize().unwrap();
+    let common = common.to_string_lossy();
+    let read = step["settings"]["filesystem"]["allowRead"].to_string();
+    assert!(read.contains(&format!("\"{common}\"")), "{read}");
+    let write = step["settings"]["filesystem"]["allowWrite"]
+        .as_array()
+        .unwrap();
+    assert!(write.iter().any(|w| w
+        .as_str()
+        .unwrap()
+        .starts_with(&format!("{common}/worktrees/"))));
+    assert!(!write.iter().any(|w| w.as_str() == Some(&*common)));
 }
 
 #[cfg(unix)]

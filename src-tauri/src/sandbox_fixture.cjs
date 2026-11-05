@@ -3,7 +3,7 @@
 // host's shell in the folder it was started in. Usage: node
 // sandbox_fixture.cjs <state folder> <arguments...>. Each call is logged as
 // a JSON line in <state>/log, with the settings file's contents, the
-// folder it ran in and TMPDIR. Files in the state folder change behaviour:
+// folder it ran in, TMPDIR and the whole environment. Files in the state folder change behaviour:
 // `missing` makes it fail as if it weren't installed, and `no-sandbox`
 // makes every sandboxed command fail as srt does when it can't start one.
 const fs = require("node:fs");
@@ -24,6 +24,7 @@ fs.appendFileSync(
     settings,
     cwd: process.cwd(),
     tmpdir: process.env.TMPDIR ?? null,
+    env: process.env,
   }) + "\n",
 );
 if (has("missing")) {

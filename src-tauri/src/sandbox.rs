@@ -9,12 +9,15 @@
 //!
 //! The commands run in a copy of the pull request of their own, not the
 //! reviewer's, so nothing they leave behind looks like the reviewer's
-//! doing. They can write only to that copy and a temporary folder beside
-//! it, can't read your sign-ins and keys (`PRIVATE`) or Orbit's own data,
-//! and reach no network, except that setup reaches the package registries
-//! in `PACKAGE_HOSTS` when the repository's network access is on. The
-//! settings are written outside the copy, so the pull request can't change
-//! them. It runs on Linux and macOS; on Windows the runtime needs a
+//! doing. They can write only to that copy, its own Git metadata and a
+//! temporary folder beside it, where package managers' caches go too
+//! (`CACHES`); can read the clone's Git metadata but not your sign-ins and
+//! keys (`PRIVATE`) or the rest of Orbit's data; get only a short list of
+//! environment variables (`KEEP`), so no token in Orbit's environment
+//! reaches them; and reach no network, except that setup reaches the
+//! package registries in `PACKAGE_HOSTS` when the repository's network
+//! access is on. The settings are written outside the copy, so the pull
+//! request can't change them. It runs on Linux and macOS; on Windows the runtime needs a
 //! machine-wide install Orbit doesn't ask for.
 use crate::{
     cli::Launcher,
@@ -23,7 +26,8 @@ use crate::{
 };
 use serde_json::{json, Value};
 use std::{
-    path::{Path, PathBuf},
+    ffi::OsString,
+    path::Path,
     time::{Duration, Instant},
 };
 
@@ -81,19 +85,113 @@ pub const PACKAGE_HOSTS: [&str; 16] = [
     "release-assets.githubusercontent.com",
 ];
 
+/// The environment variables the commands get from Orbit's own, besides
+/// the `LC_` ones: where programs and toolchains are, the locale and the
+/// terminal, and certificates to trust. Nothing else passes, so a token in
+/// Orbit's environment, such as `GH_TOKEN`, never reaches them.
+pub const KEEP: [&str; 30] = [
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "LANG",
+    "LANGUAGE",
+    "TZ",
+    "TERM",
+    "COLORTERM",
+    "NO_COLOR",
+    "CI",
+    "RUSTUP_HOME",
+    "RUSTUP_TOOLCHAIN",
+    "JAVA_HOME",
+    "GOROOT",
+    "NVM_DIR",
+    "NVM_BIN",
+    "VOLTA_HOME",
+    "PNPM_HOME",
+    "BUN_INSTALL",
+    "PYENV_ROOT",
+    "ASDF_DIR",
+    "ASDF_DATA_DIR",
+    "SDKMAN_DIR",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "NODE_EXTRA_CA_CERTS",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+];
+/// Where package managers keep their caches and downloads, in the
+/// temporary folder, as they can't write to their usual places in your home
+/// folder: each variable, with its folder under the temporary one.
+pub const CACHES: [(&str, &str); 15] = [
+    ("XDG_CACHE_HOME", "cache"),
+    ("npm_config_cache", "cache/npm"),
+    ("npm_config_store_dir", "cache/pnpm"),
+    ("YARN_CACHE_FOLDER", "cache/yarn"),
+    ("BUN_INSTALL_CACHE_DIR", "cache/bun"),
+    ("PIP_CACHE_DIR", "cache/pip"),
+    ("UV_CACHE_DIR", "cache/uv"),
+    ("POETRY_CACHE_DIR", "cache/poetry"),
+    ("CARGO_HOME", "cargo"),
+    ("GOPATH", "go"),
+    ("GOMODCACHE", "go/pkg/mod"),
+    ("GOCACHE", "cache/go-build"),
+    ("BUNDLE_PATH", "bundle"),
+    ("GEM_HOME", "gems"),
+    ("GRADLE_USER_HOME", "gradle"),
+];
+/// The environment the commands get: from `vars`, Orbit's own, only those
+/// in `KEEP` and the `LC_` ones, then the temporary folder `temp` as
+/// `TMPDIR`, `TMP` and `TEMP`, and package managers' caches in it
+/// (`CACHES`).
+pub fn environment(
+    vars: impl IntoIterator<Item = (OsString, OsString)>,
+    temp: &Path,
+) -> Vec<(OsString, OsString)> {
+    let mut out: Vec<(OsString, OsString)> = vars
+        .into_iter()
+        .filter(|(k, _)| {
+            k.to_str()
+                .is_some_and(|k| KEEP.contains(&k) || k.starts_with("LC_"))
+        })
+        .collect();
+    for name in ["TMPDIR", "TMP", "TEMP"] {
+        out.push((name.into(), temp.into()));
+    }
+    for (name, folder) in CACHES {
+        out.push((name.into(), temp.join(folder).into()));
+    }
+    out
+}
+
+/// The clone's Git metadata for the copy, so Git works in it: the copy's
+/// own, which its commands may change, and the clone's shared one, which
+/// they may only read.
+#[derive(Clone, Copy, Debug)]
+pub struct Git<'a> {
+    pub dir: &'a Path,
+    pub common: &'a Path,
+}
+
 /// How to start the runtime; tests start a fake.
 pub fn launcher() -> Launcher {
     Launcher::new("srt")
 }
 
 /// The runtime's settings for one step: write only to `writable`, read
-/// anything but `PRIVATE` and `hidden` (apart from `writable`), and reach
-/// `PACKAGE_HOSTS` only when `network` is on.
-pub fn settings(writable: &[&Path], hidden: &Path, network: bool) -> Value {
-    let writable: Vec<String> = writable
-        .iter()
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect();
+/// anything but `PRIVATE` and `hidden`, apart from `writable` and
+/// `readable`, and reach `PACKAGE_HOSTS` only when `network` is on.
+pub fn settings(writable: &[&Path], readable: &[&Path], hidden: &Path, network: bool) -> Value {
+    let strings = |paths: &[&Path]| -> Vec<String> {
+        paths
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect()
+    };
+    let writable = strings(writable);
+    let mut read = writable.clone();
+    read.extend(strings(readable));
     let mut deny: Vec<String> = PRIVATE.iter().map(|p| p.to_string()).collect();
     deny.push(hidden.to_string_lossy().into_owned());
     json!({
@@ -103,8 +201,8 @@ pub fn settings(writable: &[&Path], hidden: &Path, network: bool) -> Value {
         },
         "filesystem": {
             "denyRead": deny,
-            // A write root can be read, even inside what's hidden.
-            "allowRead": writable,
+            // These can be read, even inside what's hidden.
+            "allowRead": read,
             "allowWrite": writable,
             "denyWrite": [],
         },
@@ -127,7 +225,7 @@ pub async fn check(srt: &Launcher, folder: &Path) -> Result<String, String> {
     std::fs::create_dir_all(folder).map_err(|e| e.to_string())?;
     let file = folder.join("settings.json");
     let tried = async {
-        write(&file, &settings(&[folder], folder, false))?;
+        write(&file, &settings(&[folder], &[], folder, false))?;
         let out = step(
             srt,
             &file,
@@ -161,6 +259,8 @@ pub struct Plan<'a> {
     pub copy: &'a Path,
     /// Orbit's data folder, which the commands can't read.
     pub data: &'a Path,
+    /// The copy's Git metadata, when it is a Git worktree.
+    pub git: Option<Git<'a>>,
     pub network: bool,
     pub setup: &'a str,
     pub check: &'a str,
@@ -172,7 +272,12 @@ pub struct Plan<'a> {
 pub async fn run_checks(srt: &Launcher, plan: Plan<'_>) -> Result<ContainerChecks, String> {
     let temp = plan.folder.join("tmp");
     std::fs::create_dir_all(&temp).map_err(|e| e.to_string())?;
-    let writable = [plan.copy, temp.as_path()];
+    let mut writable = vec![plan.copy, temp.as_path()];
+    let mut readable = vec![];
+    if let Some(git) = plan.git {
+        writable.push(git.dir);
+        readable.push(git.common);
+    }
     let mut checks = ContainerChecks {
         image: String::new(),
         network: plan.network,
@@ -182,7 +287,10 @@ pub async fn run_checks(srt: &Launcher, plan: Plan<'_>) -> Result<ContainerCheck
     };
     if !plan.setup.trim().is_empty() {
         let file = plan.folder.join("setup.json");
-        write(&file, &settings(&writable, plan.data, plan.network))?;
+        write(
+            &file,
+            &settings(&writable, &readable, plan.data, plan.network),
+        )?;
         let ran = step(srt, &file, plan.copy, &temp, plan.setup, SETUP_TIMEOUT).await?;
         let passed = ran.passed();
         checks.setup = Some(ran);
@@ -192,7 +300,7 @@ pub async fn run_checks(srt: &Launcher, plan: Plan<'_>) -> Result<ContainerCheck
     }
     if !plan.check.trim().is_empty() {
         let file = plan.folder.join("check.json");
-        write(&file, &settings(&writable, plan.data, false))?;
+        write(&file, &settings(&writable, &readable, plan.data, false))?;
         checks.check = Some(step(srt, &file, plan.copy, &temp, plan.check, CHECK_TIMEOUT).await?);
     }
     Ok(checks)
@@ -214,13 +322,13 @@ async fn step(
 ) -> Result<CheckStep, String> {
     let file = file.to_str().ok_or("Invalid sandbox settings path")?;
     let started = Instant::now();
-    let temp: PathBuf = temp.into();
+    let env = environment(std::env::vars_os(), temp);
     let out = devcontainer::run_in(
         srt,
         &["--settings", file, "--", "/bin/sh", "-c", command],
         timeout,
         Some(cwd),
-        &[("TMPDIR", &temp), ("TMP", &temp), ("TEMP", &temp)],
+        Some(&env),
     )
     .await?;
     Ok(CheckStep {
