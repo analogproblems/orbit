@@ -1555,3 +1555,166 @@ async fn bit_reads_what_changed_before_it_answers() {
         ]
     );
 }
+
+/// The fixture's engine with Bit's own questions in `mode`, and the
+/// default branch of a/b failing a moment ago.
+async fn failing_main(mode: &str) -> (tempfile::TempDir, Arc<Engine>, Arc<Rpc>) {
+    let (dir, e, rpc) = fixture().await;
+    e.update(|s| {
+        s.settings.buddy.own_questions = mode.into();
+        s.problems.push(crate::problems::Problem {
+            id: "p1".into(),
+            key: crate::problems::branch_key("a/b"),
+            kind: crate::problems::ProblemKind::DefaultBranch,
+            repo: "a/b".into(),
+            branch: "main".into(),
+            opened_at: crate::problems::stamp(chrono::Utc::now()),
+            ..Default::default()
+        });
+    })
+    .await;
+    (dir, e, rpc)
+}
+
+#[tokio::test]
+async fn bit_asks_itself_about_a_failing_default_branch_and_only_keeps_the_answer_while_watching() {
+    let (_dir, e, rpc) = failing_main("watch").await;
+    e.clone().ask_on_own().await;
+    let s = e.snapshot().await;
+    let asked = &s.own_questions[0];
+    assert_eq!(asked.problem_id.as_deref(), Some("p1"));
+    assert_eq!(asked.mode, "watch");
+    let note = s
+        .buddy_feed
+        .notes
+        .iter()
+        .find(|n| n.id == asked.note)
+        .unwrap()
+        .clone();
+    assert!(note.own && note.quiet && note.pending);
+    let turn = &sent(&rpc, "turn/start").await[0];
+    let prompt = turn["input"][0]["text"].as_str().unwrap();
+    assert!(
+        prompt.starts_with(
+            "Orbit asks this on its own, not the person, who will read your answer later: CI started failing on the default branch of a/b."
+        ),
+        "{prompt}"
+    );
+    // Its answer can't change what Bit remembers.
+    let reply = json!({
+        "answer": "Rerun the failed job first.",
+        "proposals": [{"action": "stop_loop", "pr": "a/b#1", "changes": []}],
+        "memory": {"forget": [], "remember": [
+            {"repository": null, "line": "Main fails a lot."},
+        ]},
+    });
+    codex_says(&e, &reply.to_string(), "completed").await;
+    let s = e.snapshot().await;
+    assert!(!s.buddy_feed.notes.iter().any(|n| n.id == note.id));
+    let asked = &s.own_questions[0];
+    assert_eq!(asked.answer, "Rerun the failed job first.");
+    assert_eq!(asked.proposals[0].action, Action::StopLoop);
+    assert!(s.buddy_feed.memory.general.is_empty());
+    assert!(e.asking.lock().unwrap().is_none());
+    // Once per problem.
+    e.clone().ask_on_own().await;
+    assert_eq!(e.snapshot().await.own_questions.len(), 1);
+}
+
+#[tokio::test]
+async fn bit_asks_itself_nothing_it_cant_save() {
+    let (dir, e, rpc) = failing_main("on").await;
+    let blocker = dir.path().join("state").join("state.json.tmp");
+    std::fs::create_dir(&blocker).unwrap();
+    e.clone().ask_on_own().await;
+    let s = e.snapshot().await;
+    assert!(s.own_questions.is_empty());
+    assert!(!s.buddy_feed.notes.iter().any(|n| n.own));
+    assert!(e.asking.lock().unwrap().is_none());
+    assert!(sent(&rpc, "turn/start").await.is_empty());
+    assert!(sent(&rpc, "thread/start").await.is_empty());
+    // Once it saves again, Bit asks.
+    std::fs::remove_dir(&blocker).unwrap();
+    e.clone().ask_on_own().await;
+    assert_eq!(e.snapshot().await.own_questions.len(), 1);
+    assert_eq!(sent(&rpc, "turn/start").await.len(), 1);
+}
+
+#[tokio::test]
+async fn bit_asks_itself_about_the_briefs_own_lines() {
+    let (_dir, e, rpc) = fixture().await;
+    e.update(|s| {
+        s.settings.buddy.own_questions = "watch".into();
+        s.brief.latest = Some(crate::brief::Brief {
+            day: "2026-11-05".into(),
+            at: crate::problems::stamp(chrono::Utc::now()),
+            text: "Here's your morning brief! 1 pull request is clear to merge.".into(),
+            lines: vec![crate::brief::Line {
+                key: "clear:a/b#1".into(),
+                text: "a/b#1 is clear to merge.".into(),
+                pr_id: Some("a/b#1".into()),
+                new: true,
+            }],
+            ..Default::default()
+        });
+    })
+    .await;
+    e.clone().ask_on_own().await;
+    assert_eq!(
+        e.snapshot().await.own_questions[0].subject,
+        "brief:2026-11-05"
+    );
+    let turn = &sent(&rpc, "turn/start").await[0];
+    let prompt = turn["input"][0]["text"].as_str().unwrap();
+    assert!(prompt.contains(&crate::own::brief_question()), "{prompt}");
+    assert!(prompt.contains("\"morningBrief\""), "{prompt}");
+    assert!(prompt.contains("a/b#1 is clear to merge."), "{prompt}");
+}
+
+#[tokio::test]
+async fn bits_own_answer_shows_in_its_feed_when_on() {
+    let (_dir, e, rpc) = failing_main("on").await;
+    e.clone().ask_on_own().await;
+    assert_eq!(sent(&rpc, "turn/start").await.len(), 1);
+    let reply = json!({"answer": "Rerun the failed job first.", "proposals": []});
+    codex_says(&e, &reply.to_string(), "completed").await;
+    let s = e.snapshot().await;
+    let id = s.own_questions[0].note;
+    let note = s.buddy_feed.notes.iter().find(|n| n.id == id).unwrap();
+    assert!(note.own && !note.quiet && !note.pending);
+    assert_eq!(note.text, "Rerun the failed job first.");
+}
+
+#[tokio::test]
+async fn your_question_stops_the_one_bit_asked_itself() {
+    let (_dir, e, rpc) = failing_main("on").await;
+    e.clone().ask_on_own().await;
+    let own = e.snapshot().await.own_questions[0].note;
+    // A fresh Codex, so the next thread reports the model it was given.
+    rpc.request("fixture/configure", json!({})).await.unwrap();
+    e.ask_buddy_anything("What's up with b#1?").await.unwrap();
+    let s = e.snapshot().await;
+    assert_eq!(
+        s.own_questions[0].error.as_deref(),
+        Some("Stopped for your question.")
+    );
+    assert!(!s.buddy_feed.notes.iter().any(|n| n.id == own));
+    let note = s
+        .buddy_feed
+        .notes
+        .iter()
+        .find(|n| n.question.as_deref() == Some("What's up with b#1?"))
+        .unwrap();
+    assert!(!note.own && note.pending);
+    // And Bit doesn't ask itself while yours is answered.
+    e.update(|s| {
+        s.brief.latest = Some(crate::brief::Brief {
+            day: "2026-11-05".into(),
+            at: crate::problems::stamp(chrono::Utc::now()),
+            ..Default::default()
+        })
+    })
+    .await;
+    e.clone().ask_on_own().await;
+    assert_eq!(e.snapshot().await.own_questions.len(), 1);
+}

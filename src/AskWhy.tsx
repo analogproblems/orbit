@@ -38,7 +38,8 @@ export function AskWhy({
   const buddy = buddyOf(s.settings);
   const question = whyQuestion(problem);
   if (!buddy.enabled || !question) return null;
-  const answering = (s.buddyFeed?.notes ?? []).some((n) => n.pending);
+  // A question Bit asked itself stops for yours.
+  const answering = (s.buddyFeed?.notes ?? []).some((n) => n.pending && !n.own);
   return (
     <Button
       label={`Ask ${buddy.name} why`}

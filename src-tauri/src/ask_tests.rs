@@ -1325,3 +1325,69 @@ fn an_answer_names_what_it_wants_looked_up() {
         }
     );
 }
+
+/// Bit hears whether it asks itself questions, and the latest it asked,
+/// newest first, and can offer to change it.
+#[test]
+fn bit_is_told_the_latest_briefs_lines() {
+    let mut s = snapshot();
+    let b = briefing(&s, &Lookups::default());
+    assert_eq!(b["morningBrief"], Value::Null);
+    s.brief.latest = Some(crate::brief::Brief {
+        day: "2026-11-05".into(),
+        at: "2026-11-05T09:00:00Z".into(),
+        text: "Here's your morning brief!".into(),
+        lines: (0..BRIEF_LINES + 2)
+            .map(|n| crate::brief::Line {
+                key: format!("clear:a/b#{n}"),
+                text: format!("a/b#{n} is clear to merge."),
+                pr_id: Some(format!("a/b#{n}")),
+                new: n == 0,
+            })
+            .collect(),
+        ..Default::default()
+    });
+    let b = briefing(&s, &Lookups::default());
+    let brief = &b["morningBrief"];
+    assert_eq!(brief["day"], "2026-11-05");
+    assert_eq!(brief["summary"], "Here's your morning brief!");
+    let lines = brief["lines"].as_array().unwrap();
+    assert_eq!(lines.len(), BRIEF_LINES);
+    assert_eq!(
+        lines[0],
+        json!({"text": "a/b#0 is clear to merge.", "pullRequest": "a/b#0", "new": true})
+    );
+    assert_eq!(brief["moreLines"], 2);
+    assert!(instructions(&s.settings.buddy).contains("`morningBrief` is the latest morning brief"));
+}
+
+#[test]
+fn bit_is_told_about_its_own_questions() {
+    let mut s = snapshot();
+    let b = briefing(&s, &Lookups::default());
+    assert_eq!(b["ownQuestions"], json!({"mode": "off", "recent": []}));
+    assert_eq!(b["settings"]["buddy.ownQuestions"], "off");
+    s.settings.buddy.own_questions = "watch".into();
+    s.own_questions = (0..7)
+        .map(|n| crate::own::OwnQuestion {
+            subject: format!("brief:2026-11-0{n}"),
+            question: crate::own::brief_question(),
+            mode: "watch".into(),
+            asked_at: format!("2026-11-0{n}T09:00:00Z"),
+            answer: format!("Answer {n}."),
+            ..Default::default()
+        })
+        .collect();
+    s.own_questions[6].answer.clear();
+    s.own_questions[6].error = Some("Codex couldn't finish.".into());
+    let b = briefing(&s, &Lookups::default());
+    let recent = b["ownQuestions"]["recent"].as_array().unwrap();
+    assert_eq!(recent.len(), 5);
+    assert_eq!(recent[0]["error"], "Codex couldn't finish.");
+    assert_eq!(recent[0]["answer"], Value::Null);
+    assert_eq!(recent[1]["answer"], "Answer 5.");
+    assert_eq!(b["ownQuestions"]["mode"], "watch");
+    assert!(
+        instructions(&s.settings.buddy).contains("buddy.ownQuestions is whether you ask yourself")
+    );
+}

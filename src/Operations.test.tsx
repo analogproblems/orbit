@@ -2,6 +2,7 @@
 import "./test-setup";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -132,6 +133,35 @@ describe("operations page", () => {
       question: "Why is CI failing on main in acme/orbit?",
     });
     await vi.waitFor(() => expect(go.onBuddy).toHaveBeenCalled());
+    // A question Bit is asking itself doesn't hold yours back; one of yours
+    // does.
+    const pending = (own: boolean) => ({
+      id: 900,
+      at: s.prs[0].updatedAt,
+      kind: "answer" as const,
+      prId: null,
+      reviewId: null,
+      repo: null,
+      text: "",
+      pending: true,
+      own,
+      quiet: own,
+    });
+    for (const own of [true, false]) {
+      s.buddyFeed!.notes.push(pending(own));
+      act(() => useOrbit.setState({ snapshot: { ...s } }));
+      const first = within(
+        screen.getByRole("list", { name: "Open problems" }),
+      ).getAllByRole("listitem")[0];
+      const button = ask(first)!;
+      // A button with a tooltip stays focusable, so it says it is disabled.
+      expect(
+        (button as HTMLButtonElement).disabled ||
+          button.getAttribute("aria-disabled") === "true",
+      ).toBe(!own);
+      s.buddyFeed!.notes.pop();
+    }
+    act(() => useOrbit.setState({ snapshot: { ...s } }));
     // A pull request's failing checks too, but not risky settings.
     const pull = items.find((i) => i.textContent?.includes(s.prs[2].id))!;
     fireEvent.click(ask(pull)!);
@@ -326,6 +356,49 @@ describe("operations page", () => {
       within(items[0]).getByRole("button", { name: "Open settings" }),
     );
     expect(go.onSettings).toHaveBeenCalled();
+  });
+
+  it("lists Bit's own questions, newest first, with what came back", () => {
+    const s = freshDemo();
+    s.ownQuestions = [
+      {
+        subject: "brief:2026-11-04",
+        question:
+          "What's the one thing in this morning's brief most worth doing first?",
+        mode: "on",
+        askedAt: "2026-11-04T09:00:00.000Z",
+        note: 3,
+        error: "Codex couldn't finish.",
+      },
+      {
+        subject: "problem:p1@2026-11-05T09:00:00.000Z",
+        problemId: "p1",
+        repo: "acme/orbit",
+        question:
+          "CI started failing on the default branch of acme/orbit. What's the most useful thing to do about it now?",
+        mode: "watch",
+        askedAt: "2026-11-05T09:00:00.000Z",
+        note: 4,
+        answeredAt: "2026-11-05T09:01:00.000Z",
+        answer: "Rerun the end-to-end job.",
+        proposals: [{ id: 0, action: "review_again", prId: "acme/orbit#141" }],
+      },
+    ];
+    show(s);
+    const list = within(
+      screen.getByRole("list", { name: "Bit’s own questions" }),
+    );
+    const items = list.getAllByRole("listitem");
+    expect(items).toHaveLength(2);
+    expect(items[0].textContent).toContain("CI started failing");
+    expect(items[0].textContent).toContain("Rerun the end-to-end job.");
+    expect(items[0].textContent).toContain("Offered: Review again: orbit#141");
+    expect(items[0].textContent).toContain("Watching");
+    expect(within(items[0]).getByLabelText("Answered")).toBeTruthy();
+    // Its buttons wait in Bit's notes, never here.
+    expect(within(items[0]).queryByRole("button")).toBeNull();
+    expect(items[1].textContent).toContain("No answer: Codex couldn't finish.");
+    expect(items[1].textContent).toContain("In Bit’s notes");
   });
 
   it("shows nothing about Orbit itself while all is well", () => {

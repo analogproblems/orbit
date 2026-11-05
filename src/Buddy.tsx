@@ -41,7 +41,7 @@ import { createISOTimeString } from "@astryxdesign/core/utils";
 import { ExternalLink, RefreshCw, Trash2 } from "lucide-react";
 import { openLink, remote, useOrbit } from "./store";
 import {
-  actionLabels,
+  proposalLabel,
   apiProviders,
   briefDay,
   buddyMood,
@@ -210,23 +210,6 @@ function ReadButton({ itemKey }: { itemKey: string | null | undefined }) {
   );
 }
 
-/** What a button from one of Bit's answers says it does. */
-function proposalLabel(p: Proposal) {
-  if (p.label) return p.label;
-  const pr = p.prId?.split("/").pop();
-  const only = (patch: object | null | undefined, key: string) =>
-    !!patch && Object.keys(patch).length === 1 && key in patch;
-  if (p.action === "set_up_repository") {
-    if (p.connect) return `Connect ${p.repo}`;
-    if (only(p.repository, "autopilot") && p.repository?.autopilot)
-      return `Review ${p.repo} automatically`;
-    return `Set up ${p.repo}`;
-  }
-  if (only(p.settings, "automatic") && p.settings?.automatic)
-    return "Turn on autopilot";
-  return pr ? `${actionLabels[p.action]}: ${pr}` : actionLabels[p.action];
-}
-
 /** A line of Bit's, with any `command` in it shown as code. */
 function LineText({ text }: { text: string }) {
   const parts = text.split("`");
@@ -378,6 +361,11 @@ function NoteMessage({
         }
       >
         <VStack gap={2}>
+          {note.own && note.question && (
+            <Text type="supporting" color="secondary">
+              {`I asked myself: ${note.question}`}
+            </Text>
+          )}
           {note.pending ? (
             <HStack gap={2} vAlign="center">
               <Spinner size="sm" aria-label="Thinking…" />
@@ -467,7 +455,8 @@ export function BuddyPage({
   const { snapshot: s, action } = useOrbit();
   const buddy = useBuddy();
   const mood = buddyMood(s);
-  const notes = s.buddyFeed?.notes ?? [];
+  // Bit's own questions while it only watches stay on Operations.
+  const notes = (s.buddyFeed?.notes ?? []).filter((n) => !n.quiet);
   const [asking, setAsking] = useState<Question | null>(null);
   const setupNeeded = needsSetup(s);
   const ask = async (question: Question) => {
@@ -479,7 +468,8 @@ export function BuddyPage({
   const [sending, setSending] = useState(false);
   const [askError, setAskError] = useState<string | null>(null);
   const inFlight = useRef(false);
-  const thinking = notes.some((n) => n.pending);
+  // A question Bit asked itself stops for yours, so it never holds the box.
+  const thinking = notes.some((n) => n.pending && !n.own);
   const tooLong = [...draft.trim()].length > maxQuestion;
   const askAnything = async () => {
     if (!draft.trim() || tooLong || thinking || inFlight.current) return;
@@ -658,7 +648,7 @@ export function BuddyPage({
                     onNote={onNote}
                   />
                 );
-                return note.question
+                return note.question && !note.own
                   ? [
                       <ChatMessage key={`${note.id}-asked`} sender="user">
                         <ChatMessageBubble>{note.question}</ChatMessageBubble>
@@ -793,6 +783,15 @@ const callModeHelp: Record<CallQuestion, Record<CallMode, string>> = {
     on: "A clear no stops Orbit telling a pull request its check fails on the default branch too; yes, unsure, or no answer, leaves it to the rules.",
   },
 };
+
+/** What Bit's own questions do in `mode`, as Settings says it. */
+function ownQuestionsHelp(name: string, by: string, mode: CallMode) {
+  if (mode === "off") return `${name} asks nothing on its own.`;
+  const when = `When CI starts failing on a default branch or a release build, and when the morning brief comes, ${name} asks ${by} what to do about it, as if you had asked, at most six times a day.`;
+  return mode === "watch"
+    ? `${when} The answer stays on Operations, out of ${name}'s notes, so you can see whether it helps.`
+    : `${when} The answer comes in ${name}'s notes, and its buttons still wait for your tap.`;
+}
 
 /** What each mode of the second look does, as Settings says it. */
 const secondLookHelp: Record<CallMode, string> = {
@@ -1320,6 +1319,25 @@ export function BuddySettings() {
             provider={buddy.answerer as ApiProvider}
           />
         )}
+        <VStack gap={2}>
+          <Selector
+            label="Ask on its own"
+            description={ownQuestionsHelp(
+              buddy.name,
+              buddyAnswerers[buddy.answerer],
+              buddy.ownQuestions,
+            )}
+            value={buddy.ownQuestions}
+            isDisabled={pending("ownQuestions")}
+            options={(Object.entries(callModes) as [CallMode, string][]).map(
+              ([value, label]) => ({ value, label }),
+            )}
+            onChange={(mode) =>
+              void save({ ownQuestions: mode as CallMode }, "ownQuestions")
+            }
+          />
+          <SaveFeedback saveKey="buddy.ownQuestions" />
+        </VStack>
         <VStack gap={2}>
           <TextArea
             label="Personality"

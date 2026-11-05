@@ -610,6 +610,7 @@ impl Engine {
             let mut last_poll = std::time::Instant::now();
             let mut last_usage = std::time::Instant::now();
             let mut last_ledger: Option<std::time::Instant> = None;
+            let mut last_own: Option<std::time::Instant> = None;
             let mut write_ups = WriteUps::default();
             while !e.stopping.load(Ordering::SeqCst) {
                 tick.tick().await;
@@ -662,6 +663,12 @@ impl Engine {
                 if codex_ready && last_usage.elapsed() >= USAGE_REFRESH {
                     last_usage = std::time::Instant::now();
                     tokio::spawn(e.clone().read_usage());
+                }
+                // Whether Bit asks itself a question, by rules, once a
+                // minute, only while state saves.
+                if last_own.is_none_or(|t| t.elapsed() >= health::EVERY) {
+                    last_own = Some(std::time::Instant::now());
+                    tokio::spawn(e.clone().ask_on_own());
                 }
                 e.tick(codex_ready || cli_ready).await;
             }
@@ -756,6 +763,7 @@ pub(crate) fn recover(state: &mut Snapshot) -> Result<Vec<String>, String> {
     }
     state.settings.repositories = repositories;
     state.settings.buddy.normalize();
+    crate::own::recover(state);
     crate::buddy::recover(&mut state.buddy_feed);
     crate::cases::upgrade(state);
     crate::problems::upgrade(&mut state.problems);

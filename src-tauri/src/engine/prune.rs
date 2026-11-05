@@ -78,6 +78,7 @@ pub(super) fn prune(s: &mut Snapshot, now: chrono::DateTime<chrono::Utc>) -> boo
     changed |= crate::cases::prune(s, now);
     changed |= crate::calls::prune(&mut s.calls, now);
     changed |= crate::looks::prune(&mut s.looks, &s.ops, now);
+    changed |= crate::own::prune(&mut s.own_questions, now);
     // A closed pull request stays while a kept review, a CI thread or a
     // note of Bit's names it, so Loops, Operations and Bit can still say
     // which it was. The rest go, descriptions and all.

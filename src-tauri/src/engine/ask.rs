@@ -38,6 +38,8 @@ pub(super) struct Asking {
     note: u64,
     /// Who answers it.
     by: Answerer,
+    /// Whether Bit asked it itself (`crate::own`).
+    own: bool,
     /// Claude Code or Antigravity answering it; dropping it stops them.
     running: Option<Running>,
     /// Ollama's or an API's request; dropping it stops the request.
@@ -83,6 +85,18 @@ impl Engine {
                 ask::MAX_QUESTION
             ));
         }
+        // Your question comes first: one Bit asked itself stops.
+        let own = self
+            .asking
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|a| a.own)
+            .map(|a| a.note);
+        if let Some(note) = own {
+            self.answer_done(note, Err("Stopped for your question.".into()))
+                .await;
+        }
         self.pick_bit_answerer().await;
         let (note, connected) = {
             let mut s = self.state.lock().await;
@@ -108,6 +122,7 @@ impl Engine {
             *self.asking.lock().unwrap() = Some(Asking {
                 note,
                 by,
+                own: false,
                 running: None,
                 request: None,
                 thread: None,
@@ -126,20 +141,87 @@ impl Engine {
             (note, s.settings.repositories.clone())
         };
         let _ = self.flush().await;
+        self.begin(note, question, connected, false).await;
+        Ok(())
+    }
+    /// Asks Bit's answerer a question of its own about the next subject the
+    /// rules give (`crate::own`), when the answerer is ready and free. Its
+    /// note stays out of Bit's feed while Bit only watches.
+    pub(super) async fn ask_on_own(self: Arc<Self>) {
+        let now = chrono::Utc::now();
+        let (note, question, connected) = {
+            let mut s = self.state.lock().await;
+            let Some(subject) = crate::own::next(&s, now) else {
+                return;
+            };
+            let by = s.settings.buddy.answered_by();
+            if self.asking.lock().unwrap().is_some() || guide::bit_ready(&s, by).is_err() {
+                return;
+            }
+            let selection = guide::bit_selection(&s, by);
+            // Its record is saved before anything is asked, so a question
+            // that can't be saved is never asked, and a restart can't ask
+            // it again or lose it from the day's count.
+            let saved = self.save(
+                &mut s,
+                |next| {
+                    let note = buddy::asked_itself(next, &subject.question, subject.mode != "on");
+                    crate::own::asked(next, &subject, note, now);
+                    Ok(note)
+                },
+                |e| e,
+            );
+            let Ok(note) = saved else {
+                return;
+            };
+            (self.emit)(&s);
+            *self.asking.lock().unwrap() = Some(Asking {
+                note,
+                by,
+                own: true,
+                running: None,
+                request: None,
+                thread: None,
+                turn: None,
+                text: String::new(),
+                memory_generation: self.memory_generation.load(Ordering::SeqCst),
+                connectable: vec![],
+                prompt: String::new(),
+                instructions: String::new(),
+                selection,
+                ollama_url: s.settings.buddy.ollama_url.clone(),
+                round: 0,
+                found: vec![],
+            });
+            (note, subject.question, s.settings.repositories.clone())
+        };
+        self.begin(note, &question, connected, true).await;
+    }
+    /// Looks up what the question in `note` needs, then starts its first
+    /// round.
+    async fn begin(
+        self: &Arc<Self>,
+        note: u64,
+        question: &str,
+        connected: Vec<Repository>,
+        own: bool,
+    ) {
         // The question shows while Bit looks up your repositories.
         let mut lookups = self.look_up(connected, true).await;
         // What the Decisions page knows, so Bit can answer about it.
         lookups.decisions = self.decisions().await.map(|d| d.prs).unwrap_or_default();
         let names = lookups.connectable_names();
         if self.asking_mut(note, |a| a.connectable = names).is_none() {
-            return Ok(());
+            return;
         }
         let (prompt, instructions) = {
             let s = self.state.lock().await;
-            (
-                ask::prompt(&s, question, &lookups),
-                ask::instructions(&s.settings.buddy),
-            )
+            let prompt = if own {
+                ask::own_prompt(&s, question, &lookups)
+            } else {
+                ask::prompt(&s, question, &lookups)
+            };
+            (prompt, ask::instructions(&s.settings.buddy))
         };
         let kept = self.asking_mut(note, |a| {
             a.prompt = prompt;
@@ -148,7 +230,6 @@ impl Engine {
         if kept.is_some() {
             self.start_round(note).await;
         }
-        Ok(())
     }
     /// Asks the question's answerer for this round's answer: the question's
     /// first message, plus what Orbit has looked up for it so far. A round
@@ -745,17 +826,27 @@ impl Engine {
         let unfinished = reply.is_err().then_some(asking.turn).flatten();
         self.put_away(asking.thread, unfinished).await;
         let connectable = &asking.connectable;
+        let own = asking.own;
         self.update(
             |s| match reply.and_then(|r| ask::answer(s, &r, connectable)) {
                 Ok(a) => {
                     // Something you forgot since the question was asked stays
-                    // forgotten: the answer's memory changes are dropped.
+                    // forgotten: the answer's memory changes are dropped. A
+                    // question Bit asked itself changes nothing it remembers.
                     let fresh =
                         asking.memory_generation == self.memory_generation.load(Ordering::SeqCst);
-                    let memory = if fresh { a.memory } else { vec![] };
+                    let memory = if fresh && !own { a.memory } else { vec![] };
+                    if own {
+                        crate::own::answered(s, note, Ok((a.text.clone(), a.proposals.clone())));
+                    }
                     buddy::answered(s, note, a.text, a.proposals, memory)
                 }
-                Err(error) => buddy::not_answered(s, note, &error),
+                Err(error) => {
+                    buddy::not_answered(s, note, &error);
+                    if own {
+                        crate::own::answered(s, note, Err(error));
+                    }
+                }
             },
         )
         .await;

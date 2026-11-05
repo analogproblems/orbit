@@ -142,6 +142,9 @@ describe("Bit", () => {
     expect(describePatch({ buddy: { secondLook: "on" } }, [])).toBe(
       "Second look before posting: On",
     );
+    expect(describePatch({ buddy: { ownQuestions: "watch" } }, [])).toBe(
+      "Bit's own questions: Watch",
+    );
     expect(describePatch({ buddy: { secondLookBy: "answerer" } }, [])).toBe(
       "Who takes the second look: Whoever answers your questions",
     );

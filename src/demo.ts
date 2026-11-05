@@ -29,6 +29,7 @@ import {
   type Outcome,
   type Lesson,
   type QuickCall,
+  type OwnQuestion,
   type SecondLook,
   type PlaybookStep,
   type Problem,
@@ -862,6 +863,9 @@ export function freshDemo(): Snapshot {
         ...defaultBuddy,
         rules: { ...defaultBuddy.rules },
         quickModel: "llama3.2:3b",
+        // Bit asks itself about new problems, keeping the answers on
+        // Operations.
+        ownQuestions: "watch",
       },
       model: "demo-review-model",
       effort: "medium",
@@ -1116,6 +1120,7 @@ export function demoCi(
   | "lessons"
   | "failures"
   | "calls"
+  | "ownQuestions"
   | "looks"
   | "setups"
   | "runners"
@@ -1945,6 +1950,21 @@ export function demoCi(
     model: "llama3.2:3b",
     ...call,
   });
+  // What Bit asked itself when the default branch started failing.
+  const ownQuestions: OwnQuestion[] = [
+    {
+      subject: `problem:${redProblem.id}@${redProblem.openedAt}`,
+      problemId: redProblem.id,
+      repo: redProblem.repo,
+      question: `CI started failing on the default branch of ${redProblem.repo}. What's the most useful thing to do about it now?`,
+      mode: "watch",
+      askedAt: redProblem.openedAt,
+      note: 0,
+      answeredAt: redProblem.openedAt,
+      answer:
+        "The end-to-end job failed after the last merge, and Orbit has already told the project's agent in an issue. Wait for its fix; if nothing comes within the hour, look at the job's log on Operations.",
+    },
+  ];
   const calls: QuickCall[] = [
     quick(
       {
@@ -2306,6 +2326,7 @@ export function demoCi(
     lessons,
     failures,
     calls,
+    ownQuestions,
     looks,
     setups,
     runners,
