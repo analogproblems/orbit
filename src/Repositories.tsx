@@ -239,6 +239,14 @@ function CloneUpdateStatus({ update }: { update?: CloneUpdate }) {
     </HStack>
   );
 }
+/**
+ * What Claude and Antigravity can run without the dev container: neither can
+ * run a setup command on this computer, so they read the code.
+ */
+const readsOnly = {
+  claude: "Reads the code, can't run it",
+  antigravity: "Reads the code, runs only allowed commands",
+} as const;
 /** How a repository's reviews are set up, in one line. */
 function environment(repo: Repository) {
   const container = repo.devContainer?.enabled;
@@ -248,10 +256,10 @@ function environment(repo: Repository) {
       : "Setup and checks in dev container"
     : "";
   if (repo.provider && repo.provider !== "codex")
-    return `Reviewed by ${providerLabels[repo.provider]} · Sandboxed worktree · ${
+    return `Reviewed by ${providerLabels[repo.provider]} · ${
       container
-        ? `${inBox} · ${repo.networkAccess ? "Container network enabled" : "No network"}`
-        : "No network"
+        ? `Sandboxed worktree · ${inBox} · ${repo.networkAccess ? "Container network enabled" : "No network"}`
+        : `${readsOnly[repo.provider]} · No network`
     }`;
   return `Reviewed by Codex · ${
     container
@@ -538,10 +546,21 @@ export function Repositories({
                       ]}
                       description={
                         reviewer === "antigravity"
-                          ? "Antigravity follows Orbit's review instructions, using the model and effort in Settings. Orbit gives it the change; it can read files in the worktree, and anything else that needs approval is declined, so it never waits for you. Commands you allowed in Antigravity's own settings run inside its sandbox with no network access and can write to the worktree. Orbit won't start a review if those settings would let a pull request reach past the sandbox, and never changes them."
+                          ? "Antigravity follows Orbit's review instructions, using the model and effort in Settings. Orbit gives it the change; it can read files in the worktree, and anything else that needs approval is declined, so it never waits for you. Commands you allowed in Antigravity's own settings run inside its sandbox with no network access and can write to the worktree. Orbit won't start a review if those settings would let a pull request reach past the sandbox, and never changes them. With the dev container on, it also gets the results of the setup and check commands, but can't run its own commands there."
                           : reviewer === "claude"
-                            ? "Claude reviews with its own code review rules, using the model and effort in Settings. It can read files and run a short list of Git and text commands, all inside Claude's sandbox with no network access, and declines anything else on its own, so it never waits for your approval. Like Codex's sandbox, this is not a full read boundary, and a Git diff driver configured in your clone can still run inside it and write to the worktree."
+                            ? "Claude reviews with its own code review rules, using the model and effort in Settings. It can read files and run a short list of Git and text commands, all inside Claude's sandbox with no network access, and declines anything else on its own, so it never waits for your approval. Like Codex's sandbox, this is not a full read boundary, and a Git diff driver configured in your clone can still run inside it and write to the worktree. With the dev container on, it also gets the results of the setup and check commands, and can run its own commands there if you let it."
                             : "Codex reviews in its sandbox, using the model and effort in Settings."
+                      }
+                      status={
+                        cliReviewer && !inContainer
+                          ? {
+                              type: "warning",
+                              message:
+                                reviewer === "antigravity"
+                                  ? "Without the dev container, Antigravity reads the code and runs only commands you allowed in its own settings: no setup, build or tests otherwise. Turn on the dev container below to give it test results."
+                                  : "Without the dev container, Claude reads the code but can't run it: no setup, build or tests, so it can't confirm a problem by running it. Turn on the dev container below to give it test results.",
+                            }
+                          : undefined
                       }
                     />
                     <Switch
