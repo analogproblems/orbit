@@ -9,6 +9,10 @@
 //! nothing; watch asks and keeps the answer here, for Operations, without
 //! putting it in Bit's feed; on puts it in Bit's feed with its buttons.
 //! Each subject is asked about once, and at most `PER_DAY` a day.
+//!
+//! How each answer turned out is settled by rules too (`settle`): whether
+//! you used one of its buttons, and, for a problem, whether it closed
+//! within `SETTLE_AFTER` of the answer and stayed closed.
 use crate::{
     ask::Proposal,
     brief::Brief,
@@ -26,6 +30,27 @@ pub const FRESH: Duration = Duration::hours(1);
 /// How long records are kept, and how many.
 pub const KEEP_DAYS: i64 = 30;
 pub const KEEP: usize = 100;
+/// How long after the answer Orbit looks for the problem closing, and for
+/// a button of the answer used.
+pub const SETTLE_AFTER: Duration = Duration::days(1);
+
+/// How an answer to Bit's own question turned out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Turned {
+    /// You used one of its buttons, and the problem closed within a day.
+    UsedAndClosed,
+    /// You used one of its buttons, and the problem was still open a day
+    /// later, or the question was about the brief.
+    Used,
+    /// The problem closed within a day, with none of its buttons used.
+    Closed,
+    /// None of its buttons was used within a day, and the problem, if it
+    /// was about one, was still open.
+    Unused,
+    /// The problem's record was gone, so Orbit couldn't tell.
+    Unknown,
+}
 
 /// A question Bit asked itself, and its answer.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -54,10 +79,24 @@ pub struct OwnQuestion {
     /// Why there is no answer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// When you first used one of its buttons.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_at: Option<String>,
+    /// How it turned out, once Orbit could tell, and in words.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settled_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turned: Option<Turned>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub how: String,
 }
 impl OwnQuestion {
     pub fn pending(&self) -> bool {
         self.answered_at.is_none() && self.error.is_none()
+    }
+    /// Whether its answer had a button you could use: one in Bit's feed.
+    pub fn offered(&self) -> bool {
+        self.mode == "on" && !self.proposals.is_empty()
     }
 }
 
@@ -87,6 +126,23 @@ pub fn problem_question(p: &crate::problems::Problem) -> Option<String> {
     Some(format!(
         "{what} What's the most useful thing to do about it now?"
     ))
+}
+/// What a question was about, in a few words: "about CI on a/b", "about
+/// the release build for v1.2.0 in a/b", "about the morning brief".
+pub fn about(q: &OwnQuestion) -> String {
+    let repo = q.repo.as_deref().unwrap_or_default();
+    if q.problem_id.is_none() {
+        "about the morning brief".into()
+    } else if let Some(tag) = q
+        .question
+        .strip_prefix("The release build for ")
+        .and_then(|rest| rest.split_once(" in "))
+        .map(|(tag, _)| tag)
+    {
+        format!("about the release build for {tag} in {repo}")
+    } else {
+        format!("about CI on {repo}")
+    }
 }
 /// The question about the morning brief.
 pub fn brief_question() -> String {
@@ -200,6 +256,113 @@ pub fn answered(s: &mut Snapshot, note: u64, answer: Result<(String, Vec<Proposa
     if !keep_note {
         s.buddy_feed.notes.retain(|n| n.id != note);
     }
+}
+/// Notes that you used a button of the answer to Bit's own question in
+/// note `note`. Says whether it was one.
+pub fn used(s: &mut Snapshot, note: u64, now: DateTime<Utc>) -> bool {
+    let Some(q) = s
+        .own_questions
+        .iter_mut()
+        .rev()
+        .find(|q| q.note == note && q.answered_at.is_some())
+    else {
+        return false;
+    };
+    if q.used_at.is_none() {
+        q.used_at = Some(stamp(now));
+    }
+    true
+}
+/// Settles how each answer turned out, once Orbit can tell: for a
+/// problem, when it has stayed closed for `problems::FLAP_QUIET` (so a
+/// flap doesn't count), or a day and that hour after the answer; for the
+/// brief, when you used a button, or a day after the answer. Says whether
+/// any settled.
+pub fn settle(s: &mut Snapshot, now: DateTime<Utc>) -> bool {
+    let mut changed = false;
+    for i in 0..s.own_questions.len() {
+        let q = &s.own_questions[i];
+        if q.settled_at.is_some() {
+            continue;
+        }
+        let Some(answered) = q.answered_at.as_deref().and_then(time) else {
+            continue;
+        };
+        let Some((turned, how)) = turned(s, q, answered, now) else {
+            continue;
+        };
+        let q = &mut s.own_questions[i];
+        q.turned = Some(turned);
+        q.how = how;
+        q.settled_at = Some(stamp(now));
+        changed = true;
+    }
+    changed
+}
+fn turned(
+    s: &Snapshot,
+    q: &OwnQuestion,
+    answered: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Option<(Turned, String)> {
+    let used = q.used_at.as_deref().and_then(time);
+    let day = answered + SETTLE_AFTER;
+    let Some(id) = &q.problem_id else {
+        if used.is_some() {
+            return Some((Turned::Used, "You used its button.".into()));
+        }
+        if now < day {
+            return None;
+        }
+        let how = if q.offered() {
+            "Its buttons weren't used within a day."
+        } else {
+            "It had no button to use."
+        };
+        return Some((Turned::Unused, how.into()));
+    };
+    let Some(p) = s.problems.iter().find(|p| &p.id == id) else {
+        return Some((
+            Turned::Unknown,
+            "Orbit no longer has the problem's record.".into(),
+        ));
+    };
+    let quiet = crate::problems::FLAP_QUIET;
+    let closed = p
+        .closed_at
+        .as_deref()
+        .and_then(time)
+        .filter(|c| *c <= day && now - *c >= quiet);
+    let Some(closed) = closed else {
+        if now < day + quiet {
+            return None;
+        }
+        return Some(match used {
+            Some(_) => (
+                Turned::Used,
+                "You used its button; the problem was still open a day later.".into(),
+            ),
+            None => (
+                Turned::Unused,
+                "The problem was still open a day after the answer.".into(),
+            ),
+        });
+    };
+    let when = if closed <= answered {
+        "before the answer came".to_string()
+    } else {
+        format!(
+            "{} after the answer",
+            crate::problems::how_long(closed - answered)
+        )
+    };
+    Some(match used.filter(|u| *u <= closed) {
+        Some(_) => (
+            Turned::UsedAndClosed,
+            format!("You used its button, and the problem closed {when}."),
+        ),
+        None => (Turned::Closed, format!("The problem closed {when}.")),
+    })
 }
 /// Bit's own questions Orbit was answering when it closed get no answer,
 /// and their notes leave the feed. Run before `crate::buddy::recover`.

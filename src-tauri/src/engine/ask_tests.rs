@@ -1676,13 +1676,20 @@ async fn bits_own_answer_shows_in_its_feed_when_on() {
     let (_dir, e, rpc) = failing_main("on").await;
     e.clone().ask_on_own().await;
     assert_eq!(sent(&rpc, "turn/start").await.len(), 1);
-    let reply = json!({"answer": "Rerun the failed job first.", "proposals": []});
+    let reply = json!({
+        "answer": "Stop the loop on #1 first.",
+        "proposals": [{"action": "stop_loop", "pr": "a/b#1", "changes": []}],
+    });
     codex_says(&e, &reply.to_string(), "completed").await;
     let s = e.snapshot().await;
     let id = s.own_questions[0].note;
     let note = s.buddy_feed.notes.iter().find(|n| n.id == id).unwrap();
     assert!(note.own && !note.quiet && !note.pending);
-    assert_eq!(note.text, "Rerun the failed job first.");
+    assert_eq!(note.text, "Stop the loop on #1 first.");
+    // Using its button counts for how it turned out.
+    assert_eq!(s.own_questions[0].used_at, None);
+    e.use_proposal(id, note.proposals[0].id).await.unwrap();
+    assert!(e.snapshot().await.own_questions[0].used_at.is_some());
 }
 
 #[tokio::test]

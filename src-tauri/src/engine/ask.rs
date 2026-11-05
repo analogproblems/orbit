@@ -993,8 +993,13 @@ impl Engine {
             Action::OpenPage => return Err("The app opens this page itself.".into()),
         }?;
         // Done before the claim ends, so no tap gets in between.
-        self.update(|s| buddy::proposal_done(s, note, proposal))
-            .await;
+        self.update(|s| {
+            buddy::proposal_done(s, note, proposal);
+            // A button of Bit's own question's answer counts for how it
+            // turned out.
+            crate::own::used(s, note, chrono::Utc::now());
+        })
+        .await;
         let _ = self.flush().await;
         Ok(())
     }

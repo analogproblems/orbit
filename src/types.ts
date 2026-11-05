@@ -750,7 +750,16 @@ export interface OwnQuestion {
   proposals?: Proposal[];
   /** Why there is no answer. */
   error?: string | null;
+  /** When you first used one of its buttons. */
+  usedAt?: string | null;
+  /** How it turned out, once Orbit could tell, and in words. */
+  settledAt?: string | null;
+  turned?: OwnTurned | null;
+  how?: string;
 }
+/** How an answer to Bit's own question turned out (`own::Turned`). */
+export type OwnTurned =
+  "used_and_closed" | "used" | "closed" | "unused" | "unknown";
 /** Something Orbit looked up on GitHub for one of Bit's answers. */
 export interface Looked {
   /** What it is, in plain words, such as "The log of job 5 in a/b". */

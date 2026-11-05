@@ -478,7 +478,9 @@ impl Engine {
         let following = !settled.is_empty() && crate::outcomes::record(&mut s, now);
         // Whether each quick call was right, by what Orbit read since.
         let scored = crate::calls::settle(&mut s, now);
-        let noted = noted || checking || !settled.is_empty() || following || scored;
+        // How the answers to Bit's own questions turned out.
+        let turned = crate::own::settle(&mut s, now);
+        let noted = noted || checking || !settled.is_empty() || following || scored || turned;
         // An item Bit fixes on its own is noted instead of notified; if the
         // fix fails, it is notified then.
         let mut fixing = vec![];

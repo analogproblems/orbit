@@ -345,7 +345,8 @@ pub fn release_lines(s: &Snapshot, now: DateTime<Utc>) -> Vec<Line> {
 /// head and whether it is ready, and a release's drafts without which one
 /// is ready, so a change there is new without anything having settled.
 /// What held and what missed since `since`: a line for each miss, newest
-/// first, and one for all that held.
+/// first, one for all that held, and one for how Bit's own questions
+/// turned out.
 pub fn turned_out_lines(s: &Snapshot, since: &str) -> Vec<Line> {
     use crate::outcomes::{settled_since, Verdict, SHOWN};
     let settled = settled_since(&s.outcomes, since);
@@ -379,7 +380,46 @@ pub fn turned_out_lines(s: &Snapshot, since: &str) -> Vec<Line> {
             None,
         ));
     }
+    out.extend(own_line(s, since));
     out
+}
+/// One line for the answers to Bit's own questions that settled since
+/// `since`: the latest, and how many you used a button of.
+fn own_line(s: &Snapshot, since: &str) -> Option<Line> {
+    use crate::own::Turned;
+    let since = crate::problems::time(since)?;
+    let mut settled: Vec<&crate::own::OwnQuestion> = s
+        .own_questions
+        .iter()
+        .filter(|q| {
+            q.settled_at
+                .as_deref()
+                .and_then(crate::problems::time)
+                .is_some_and(|at| at > since)
+        })
+        .collect();
+    settled.sort_by(|a, b| b.settled_at.cmp(&a.settled_at));
+    let latest = settled.first()?;
+    let name = &s.settings.buddy.name;
+    let about = crate::own::about(latest);
+    let text = match settled.len() {
+        1 => format!("{name}'s own question {about}: {}", latest.how),
+        n => {
+            let used = settled
+                .iter()
+                .filter(|q| matches!(q.turned, Some(Turned::Used | Turned::UsedAndClosed)))
+                .count();
+            format!(
+                "{name}'s own questions: {n} turned out, and you used a button of {used}. The latest, {about}: {}",
+                latest.how
+            )
+        }
+    };
+    Some(line(
+        format!("own:{}:{}", settled.len(), latest.subject),
+        text,
+        None,
+    ))
 }
 fn thing(key: &str) -> &str {
     if let Some(rest) = key.strip_prefix("security:") {
@@ -541,7 +581,7 @@ pub fn look(s: &mut Snapshot, local: NaiveDateTime, now: DateTime<Utc>) -> bool 
     // settles.
     let settled = before
         .iter()
-        .filter(|k| !k.starts_with("missed:") && !k.starts_with("held:"))
+        .filter(|k| !k.starts_with("missed:") && !k.starts_with("held:") && !k.starts_with("own:"))
         .filter(|k| !current.iter().any(|l| thing(&l.key) == thing(k)))
         .count() as u32;
     s.brief.looked = day.clone();
@@ -552,7 +592,8 @@ pub fn look(s: &mut Snapshot, local: NaiveDateTime, now: DateTime<Utc>) -> bool 
         return true;
     }
     let first = s.brief.latest.is_none();
-    let text = say(&s.settings.buddy.tone, &current, settled, first);
+    let buddy = &s.settings.buddy;
+    let text = say(&buddy.tone, &buddy.name, &current, settled, first);
     s.brief.latest = Some(Brief {
         day,
         at: stamp(now),
@@ -597,7 +638,7 @@ fn and(parts: &[String]) -> String {
 }
 /// What Bit says first, in its tone: how many of each kind of line, how
 /// many are new, unless this is the first brief, and how many settled.
-fn say(tone: &str, lines: &[Line], settled: u32, first: bool) -> String {
+fn say(tone: &str, name: &str, lines: &[Line], settled: u32, first: bool) -> String {
     let count = |prefix: &str| lines.iter().filter(|l| l.key.starts_with(prefix)).count();
     let (clear, stuck, failing) = (count("clear:"), count("stuck:"), count("problem:"));
     let security = count("security:");
@@ -605,20 +646,36 @@ fn say(tone: &str, lines: &[Line], settled: u32, first: bool) -> String {
     let releases = count("release-");
     let missed = count("missed:");
     let held_line = count("held:");
-    let held: usize = lines
-        .iter()
-        .filter_map(|l| {
-            l.key
-                .strip_prefix("held:")?
-                .split(':')
-                .next()?
-                .parse::<usize>()
-                .ok()
-        })
-        .sum();
-    let notes =
-        lines.len() - clear - stuck - failing - security - fixes - releases - missed - held_line;
-    let parts: Vec<String> = [
+    let health = count("health:");
+    let own_line = count("own:");
+    // The number a summing line carries: `held:<n>:…`, `own:<n>:…`.
+    let summed = |prefix: &str| -> usize {
+        lines
+            .iter()
+            .filter_map(|l| {
+                l.key
+                    .strip_prefix(prefix)?
+                    .split(':')
+                    .next()?
+                    .parse::<usize>()
+                    .ok()
+            })
+            .sum()
+    };
+    let held = summed("held:");
+    let own = summed("own:");
+    let notes = lines.len()
+        - clear
+        - stuck
+        - failing
+        - security
+        - fixes
+        - releases
+        - missed
+        - held_line
+        - health
+        - own_line;
+    let mut parts: Vec<String> = [
         (
             clear,
             "pull request is clear to merge",
@@ -647,6 +704,11 @@ fn say(tone: &str, lines: &[Line], settled: u32, first: bool) -> String {
             "notes are about releases",
         ),
         (
+            health,
+            "thing is wrong with Orbit itself",
+            "things are wrong with Orbit itself",
+        ),
+        (
             missed,
             "thing Orbit or an agent did missed",
             "things Orbit or the agents did missed",
@@ -657,6 +719,12 @@ fn say(tone: &str, lines: &[Line], settled: u32, first: bool) -> String {
     .filter(|(n, ..)| *n > 0)
     .map(|(n, one, many)| plural(n, one, many))
     .collect();
+    if own > 0 {
+        parts.push(match own {
+            1 => format!("1 answer to {name}'s own questions turned out"),
+            n => format!("{n} answers to {name}'s own questions turned out"),
+        });
+    }
     let mut out = vec![];
     if parts.is_empty() {
         out.push("Nothing is clear to merge, stuck or failing.".to_string());
