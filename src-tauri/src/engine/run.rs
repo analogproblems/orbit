@@ -86,6 +86,21 @@ impl Engine {
         if r.provider != Provider::Codex && !in_container && !repo.setup_command.trim().is_empty() {
             return Err(format!("This repository's setup command runs in the Codex sandbox, which {} reviews can't use. Clear the setup command or review this repository with Codex.", r.provider.label()));
         }
+        // Antigravity takes no tool servers for a single run, and Orbit
+        // never changes its settings.
+        let tool =
+            in_container && repo.dev_container.reviewer_tool && r.provider != Provider::Antigravity;
+        let checks = in_container
+            && (!repo.setup_command.trim().is_empty()
+                || !repo.dev_container.check_command.trim().is_empty());
+        if let Some(note) = crate::review_instructions::reach(
+            r.provider,
+            in_container,
+            checks,
+            repo.dev_container.reviewer_tool,
+        ) {
+            self.say(id, note).await;
+        }
         let rpc = match r.provider {
             Provider::Codex => Some(self.client().await?),
             Provider::Claude | Provider::Antigravity => None,
@@ -160,24 +175,11 @@ impl Engine {
         self.live(id).await?;
         self.carry_previous_round(id, &pr, &worktree).await?;
         self.live(id).await?;
-        if in_container {
-            // Antigravity takes no tool servers for a single run, and Orbit
-            // never changes its settings.
-            let tool = repo.dev_container.reviewer_tool && r.provider != Provider::Antigravity;
-            if repo.dev_container.reviewer_tool && !tool {
-                self.say(
-                    id,
-                    format!("{} reviews can't be given Orbit's dev container tool, so this one can't run its own commands there.", r.provider.label()),
-                )
-                .await;
-            }
-            let commands = !repo.setup_command.trim().is_empty()
-                || !repo.dev_container.check_command.trim().is_empty();
-            if tool || commands {
-                self.run_container_checks(id, &repo, &cwd, &worktree, &r.base_sha, tool)
-                    .await?;
-                self.live(id).await?;
-            }
+        // Both need the dev container.
+        if tool || checks {
+            self.run_container_checks(id, &repo, &cwd, &worktree, &r.base_sha, tool)
+                .await?;
+            self.live(id).await?;
         }
         let Some(rpc) = rpc else {
             return self.start_cli_review(id, &worktree).await;

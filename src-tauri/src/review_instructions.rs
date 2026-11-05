@@ -2,8 +2,9 @@
 //! their own. Orbit computes the change and gives it to the reviewer, in the
 //! prompt or, when large, in a file, so the reviewer needs no commands. A
 //! security scan by Claude or Antigravity follows Orbit's scan instructions
-//! here too.
-use crate::types::id;
+//! here too, and `reach` says in a review's chat what a Claude or
+//! Antigravity review can run.
+use crate::types::{id, Provider};
 
 /// The most of a diff put in the prompt. A larger diff goes, whole, in
 /// `CHANGE_FILE` in the review's folder, for the reviewer to read in parts.
@@ -121,6 +122,52 @@ fn cut(text: &str, max: usize) -> &str {
     &text[..end]
 }
 
+/// What a review can run, said in its chat before it starts, when the
+/// reviewer can't run the code itself. Claude and Antigravity have nothing
+/// like Codex's sandboxed `command/exec`, so outside a dev container they
+/// only read the code (Antigravity also runs what its own settings allow),
+/// and in one they get the checks' results but run nothing themselves
+/// unless they have the dev container tool, which Antigravity can't be
+/// given. `None` when the reviewer can run commands: Codex in its sandbox,
+/// or Claude through the tool.
+///
+/// `checks` is whether setup or check commands run in the dev container,
+/// and `tool` whether the repository lets the reviewer run its own there.
+pub fn reach(provider: Provider, in_container: bool, checks: bool, tool: bool) -> Option<String> {
+    let name = provider.label();
+    if provider == Provider::Codex || (in_container && tool && provider != Provider::Antigravity) {
+        return None;
+    }
+    let no_tool = if in_container && tool {
+        format!("{name} reviews can't be given Orbit's dev container tool. ")
+    } else {
+        String::new()
+    };
+    if in_container && checks {
+        let hint = if provider == Provider::Claude {
+            " To let it, allow the reviewer to run commands in the dev container, in this repository's settings."
+        } else {
+            ""
+        };
+        return Some(format!(
+            "{no_tool}{name} gets the results of the dev container's setup and checks, but can't run its own commands, so it can't run the code to confirm a problem it reads.{hint}"
+        ));
+    }
+    let reads = if provider == Provider::Antigravity {
+        "reads the code here and runs only commands you allowed in its own settings, with no network"
+    } else {
+        "reads the code here but can't run it"
+    };
+    let hint = if in_container {
+        "add a setup or check command for the dev container"
+    } else {
+        "run setup and checks in the dev container"
+    };
+    Some(format!(
+        "{no_tool}{name} {reads}: no setup, build or tests, so what it finds comes from reading. To give it test results, {hint}, in this repository's settings."
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,5 +209,50 @@ mod tests {
         assert!(prompt.contains("including deleted files and removed lines"));
         assert!(prompt.contains("The summary was cut here"));
         assert!(prompt.len() < MAX_STAT_BYTES + INSTRUCTIONS.len() + 2000);
+    }
+
+    #[test]
+    fn says_what_a_review_can_run_only_when_the_reviewer_cant_run_code() {
+        // Codex runs commands in its sandbox; Claude with the tool runs them
+        // in the box.
+        assert_eq!(reach(Provider::Codex, false, false, false), None);
+        assert_eq!(reach(Provider::Codex, true, true, false), None);
+        assert_eq!(reach(Provider::Claude, true, false, true), None);
+        assert_eq!(reach(Provider::Claude, true, true, true), None);
+
+        let reads = reach(Provider::Claude, false, false, false).unwrap();
+        assert!(
+            reads.starts_with("Claude reads the code here but can't run it"),
+            "{reads}"
+        );
+        assert!(
+            reads.contains("run setup and checks in the dev container"),
+            "{reads}"
+        );
+
+        let results = reach(Provider::Claude, true, true, false).unwrap();
+        assert!(results.starts_with("Claude gets the results"), "{results}");
+        assert!(
+            results.contains("allow the reviewer to run commands"),
+            "{results}"
+        );
+
+        let agy = reach(Provider::Antigravity, false, false, false).unwrap();
+        assert!(
+            agy.contains("runs only commands you allowed in its own settings"),
+            "{agy}"
+        );
+
+        // Antigravity can't be given the tool, so asking for it says so,
+        // once, with what the review still gets.
+        let agy = reach(Provider::Antigravity, true, true, true).unwrap();
+        assert!(agy.starts_with("Antigravity reviews can't be given Orbit's dev container tool. Antigravity gets the results"), "{agy}");
+        assert!(!agy.contains("allow the reviewer"), "{agy}");
+        let agy = reach(Provider::Antigravity, true, false, true).unwrap();
+        assert!(agy.contains("reads the code here"), "{agy}");
+        assert!(
+            agy.contains("add a setup or check command for the dev container"),
+            "{agy}"
+        );
     }
 }

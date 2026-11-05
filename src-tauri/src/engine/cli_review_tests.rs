@@ -476,4 +476,35 @@ async fn claude_reviews_may_run_setup_in_a_dev_container() {
     // has no `origin` in this test.
     let error = e.prepare(&id).await.unwrap_err();
     assert!(!error.contains("setup command"), "{error}");
+    // It said first that Claude gets the checks' results but runs nothing.
+    let r = e.snapshot().await.reviews[0].clone();
+    assert!(r.messages.iter().any(|m| m
+        .text
+        .starts_with("Claude gets the results of the dev container's setup and checks")));
+}
+
+#[tokio::test]
+async fn says_in_the_chat_that_a_claude_review_only_reads_the_code() {
+    let (_d, e, id, _worktree) = claude_review("ok").await;
+    // Preparation stops at the clone, which has no `origin` in this test,
+    // after saying what the review can run.
+    let _ = e.prepare(&id).await;
+    let r = e.snapshot().await.reviews[0].clone();
+    let said: Vec<_> = r
+        .messages
+        .iter()
+        .filter(|m| m.role == "system" && m.text.contains("but can't run it"))
+        .collect();
+    assert_eq!(said.len(), 1, "{:?}", r.messages);
+    // With the dev container and the reviewer's own commands there, Claude
+    // can run the code, so there's nothing to say.
+    e.update(|s| {
+        s.reviews[0].messages.clear();
+        let repo = &mut s.settings.repositories[0];
+        repo.dev_container.enabled = true;
+        repo.dev_container.reviewer_tool = true;
+    })
+    .await;
+    let _ = e.prepare(&id).await;
+    assert!(e.snapshot().await.reviews[0].messages.is_empty());
 }

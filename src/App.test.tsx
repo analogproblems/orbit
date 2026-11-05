@@ -2189,7 +2189,7 @@ describe("initial loading and repository errors", () => {
     });
     expect(
       await screen.findByText(
-        "Reviewed by Claude · Sandboxed worktree · No network",
+        "Reviewed by Claude · Reads the code, can't run it · No network",
       ),
     ).toBeTruthy();
   });
@@ -2208,6 +2208,12 @@ describe("initial loading and repository errors", () => {
     expect(
       within(dialog).queryByRole("textbox", { name: /Check command/ }),
     ).toBeNull();
+    // Without the box, Claude only reads the code, and the reviewer says so.
+    expect(
+      within(dialog).getByText(
+        "Without the dev container, Claude reads the code but can't run it: no setup, build or tests, so it can't confirm a problem by running it. Turn on the dev container below to give it test results.",
+      ),
+    ).toBeTruthy();
     await user().click(
       within(dialog).getByRole("switch", {
         name: "Run setup and checks in the dev container",
@@ -2217,6 +2223,7 @@ describe("initial loading and repository errors", () => {
     expect(
       within(dialog).queryByText(/can only run a setup command/),
     ).toBeNull();
+    expect(within(dialog).queryByText(/Without the dev container/)).toBeNull();
     const check = within(dialog).getByRole("textbox", {
       name: /Check command/,
     });
@@ -2435,6 +2442,11 @@ describe("initial loading and repository errors", () => {
       ),
     ).toBeTruthy();
     expect(
+      within(dialog).getByText(
+        /^Without the dev container, Antigravity reads the code and runs only commands you allowed/,
+      ),
+    ).toBeTruthy();
+    expect(
       within(dialog).queryByRole("switch", {
         name: "Allow sandbox network access",
       }),
@@ -2452,7 +2464,7 @@ describe("initial loading and repository errors", () => {
     });
     expect(
       await screen.findByText(
-        "Reviewed by Antigravity · Sandboxed worktree · No network",
+        "Reviewed by Antigravity · Reads the code, runs only allowed commands · No network",
       ),
     ).toBeTruthy();
     await user().click(screen.getByRole("button", { name: "Settings" }));
