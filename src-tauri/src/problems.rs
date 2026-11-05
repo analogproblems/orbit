@@ -1638,16 +1638,20 @@ pub fn close_unwatched(
     connected: &[String],
     everything: bool,
     now: DateTime<Utc>,
-) {
+) -> bool {
     let at = stamp(now);
+    let mut closed = false;
     for p in problems.iter_mut().filter(|p| p.is_open()) {
         let security = p.kind == ProblemKind::Security;
         if everything && !security {
             p.close(&at, "Orbit stopped watching CI.".into());
+            closed = true;
         } else if !everything && !connected.iter().any(|r| same_repo(r, &p.repo)) {
             p.close(&at, "The repository was disconnected.".into());
+            closed = true;
         }
     }
+    closed
 }
 
 /// The Needs you keys of problems that closed within `FLAP_QUIET`, so one
