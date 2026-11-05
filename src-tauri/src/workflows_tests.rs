@@ -28,6 +28,10 @@ fn a_workflow_runs_on_pull_requests_when_its_on_says_so() {
         "on:\n  push:\n    branches-ignore: [main]\n",
         "on:\n  push:\n    branches:\n      - main\n      - 'feature/**'\n",
         "on:\n  push:\n    branches: [main, \"release-*\"]\n",
+        // A list at the same indent as its key, as YAML allows.
+        "on:\n- push\n- workflow_dispatch\n",
+        "on:\n- push\n\njobs:\n  test:\n    runs-on: ubuntu-latest\n",
+        "on:\n  push:\n    paths:\n    - 'src/**'\n",
         // Comments, a document start and other keys around it.
         "# CI\n---\nname: CI\n\non:\n  # pull requests\n  pull_request:\n\njobs:\n  test:\n    runs-on: ubuntu-latest\n",
     ];
@@ -107,6 +111,17 @@ fn the_tags_a_workflow_runs_on_are_what_its_push_filter_names() {
             none.clone(),
         ),
         ("on:\n  push:\n    tags:\n", vec!["**"], none.clone()),
+        // A list at the same indent as its key, as YAML allows.
+        (
+            "on:\n  push:\n    tags:\n    - 'v*'\n    branches:\n    - main\n",
+            vec!["v*"],
+            none.clone(),
+        ),
+        (
+            "on:\n  push:\n    branches:\n    - main\n    tags-ignore:\n    - '*-rc*'\n",
+            none.clone(),
+            vec!["*-rc*"],
+        ),
         (
             "on:\n  push:\n    tags-ignore: ['v*']\n",
             none.clone(),

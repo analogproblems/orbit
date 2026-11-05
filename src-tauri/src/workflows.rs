@@ -703,11 +703,14 @@ impl Event<'_> {
         }
         let indent = self.under[0].0;
         let mut filters: Vec<(&str, Vec<String>)> = vec![];
-        for (i, (at, line)) in self.under.iter().enumerate() {
-            if *at < indent {
+        let mut i = 0;
+        while i < self.under.len() {
+            let (at, line) = self.under[i];
+            i += 1;
+            if at < indent {
                 return None;
             }
-            if *at > indent {
+            if at > indent {
                 continue;
             }
             let (key, value) = split_key(line)?;
@@ -716,12 +719,18 @@ impl Event<'_> {
                 value => flow_list(value)?,
             };
             if value.is_empty() {
-                for (_, item) in self.under[i + 1..].iter().take_while(|(d, _)| *d > indent) {
+                // Its items: indented under it, or, as YAML also allows,
+                // at its own indent, each starting with `-`.
+                let items = self.under[i..]
+                    .iter()
+                    .take_while(|(d, item)| *d > indent || (*d == indent && item.starts_with('-')));
+                for (_, item) in items {
                     let item = item.strip_prefix('-')?.trim();
                     if item.is_empty() {
                         return None;
                     }
                     list.push(unquote(item).to_string());
+                    i += 1;
                 }
             }
             filters.push((key, list));
@@ -742,10 +751,11 @@ fn events(text: &str) -> Option<Vec<Event<'_>>> {
     let [start] = on[..] else {
         return None;
     };
+    // A list at the same indent as `on:` is still its list, as YAML allows.
     let end = tops
         .iter()
         .copied()
-        .find(|i| *i > start)
+        .find(|i| *i > start && !lines[*i].1.starts_with('-'))
         .unwrap_or(lines.len());
     let (_, value) = split_key(lines[start].1)?;
     let block = &lines[start + 1..end];
