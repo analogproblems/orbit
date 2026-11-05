@@ -493,6 +493,9 @@ export interface Buddy {
   /** Who takes the second look: the quick call model on Ollama, or
    * whoever answers your questions. */
   secondLookBy: SecondLookBy;
+  /** The questions Bit asks whoever answers yours, on its own, when a
+   * default branch or release build starts failing, or the brief comes. */
+  ownQuestions: CallMode;
 }
 /** Who takes the second look. */
 export type SecondLookBy = "quick_model" | "answerer";
@@ -611,6 +614,7 @@ export const defaultBuddy: Buddy = {
   faultCall: "watch",
   secondLook: "watch",
   secondLookBy: "quick_model",
+  ownQuestions: "off",
 };
 /** How Settings names who takes the second look. */
 export const lookers: Record<SecondLookBy, string> = {
@@ -724,6 +728,28 @@ export interface BuddyNote {
   looked?: Looked[];
   /** A question you typed that Bit is still answering. */
   pending?: boolean;
+  /** For an answer, whether Bit asked the question itself. */
+  own?: boolean;
+  /** Kept out of Bit's feed: Bit's own question while it only watches. */
+  quiet?: boolean;
+}
+/** A question Bit asked whoever answers yours, on its own, and its
+ * answer. */
+export interface OwnQuestion {
+  /** What it was about: `problem:<id>@<opened>` or `brief:<day>`. */
+  subject: string;
+  problemId?: string | null;
+  repo?: string | null;
+  question: string;
+  /** Watch or on, when it was asked. */
+  mode: CallMode;
+  askedAt: string;
+  note: number;
+  answeredAt?: string | null;
+  answer?: string;
+  proposals?: Proposal[];
+  /** Why there is no answer. */
+  error?: string | null;
 }
 /** Something Orbit looked up on GitHub for one of Bit's answers. */
 export interface Looked {
@@ -759,6 +785,22 @@ export const actionLabels: Record<Action, string> = {
   sign_in: "Sign in",
   open_page: "Open page",
 };
+/** What a button from one of Bit's answers says it does. */
+export function proposalLabel(p: Proposal) {
+  if (p.label) return p.label;
+  const pr = p.prId?.split("/").pop();
+  const only = (patch: object | null | undefined, key: string) =>
+    !!patch && Object.keys(patch).length === 1 && key in patch;
+  if (p.action === "set_up_repository") {
+    if (p.connect) return `Connect ${p.repo}`;
+    if (only(p.repository, "autopilot") && p.repository?.autopilot)
+      return `Review ${p.repo} automatically`;
+    return `Set up ${p.repo}`;
+  }
+  if (only(p.settings, "automatic") && p.settings?.automatic)
+    return "Turn on autopilot";
+  return pr ? `${actionLabels[p.action]}: ${pr}` : actionLabels[p.action];
+}
 /** A change to a repository's settings from one of Bit's answers. Only
  * what is given changes. */
 export interface RepositoryPatch {
@@ -1261,6 +1303,8 @@ export interface Snapshot {
   failures?: CiFailure[];
   /** Quick calls a model on Ollama made, and how each turned out. */
   calls?: QuickCall[];
+  /** Questions Bit asked on its own, and their answers. */
+  ownQuestions?: OwnQuestion[];
   /** Second looks at Bit's new posts where Orbit's sign-in isn't an
    * admin, and what happened to each. */
   looks?: SecondLook[];

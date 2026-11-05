@@ -70,6 +70,7 @@ const buddyLabels: Record<keyof Buddy, string> = {
   faultCall: "Quick call on failing already",
   secondLook: "Second look before posting",
   secondLookBy: "Who takes the second look",
+  ownQuestions: "Bit's own questions",
 };
 
 /** A buddy setting's value as the settings page names it, such as Pink. */
@@ -87,7 +88,8 @@ function buddyValue(field: string, v: unknown): unknown {
               ? lookers[v as SecondLookBy]
               : field === "luckCall" ||
                   field === "faultCall" ||
-                  field === "secondLook"
+                  field === "secondLook" ||
+                  field === "ownQuestions"
                 ? callModes[v as CallMode]
                 : field === "timeZone"
                   ? (v as string) === ""

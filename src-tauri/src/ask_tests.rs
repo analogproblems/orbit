@@ -1325,3 +1325,36 @@ fn an_answer_names_what_it_wants_looked_up() {
         }
     );
 }
+
+/// Bit hears whether it asks itself questions, and the latest it asked,
+/// newest first, and can offer to change it.
+#[test]
+fn bit_is_told_about_its_own_questions() {
+    let mut s = snapshot();
+    let b = briefing(&s, &Lookups::default());
+    assert_eq!(b["ownQuestions"], json!({"mode": "off", "recent": []}));
+    assert_eq!(b["settings"]["buddy.ownQuestions"], "off");
+    s.settings.buddy.own_questions = "watch".into();
+    s.own_questions = (0..7)
+        .map(|n| crate::own::OwnQuestion {
+            subject: format!("brief:2026-11-0{n}"),
+            question: crate::own::brief_question(),
+            mode: "watch".into(),
+            asked_at: format!("2026-11-0{n}T09:00:00Z"),
+            answer: format!("Answer {n}."),
+            ..Default::default()
+        })
+        .collect();
+    s.own_questions[6].answer.clear();
+    s.own_questions[6].error = Some("Codex couldn't finish.".into());
+    let b = briefing(&s, &Lookups::default());
+    let recent = b["ownQuestions"]["recent"].as_array().unwrap();
+    assert_eq!(recent.len(), 5);
+    assert_eq!(recent[0]["error"], "Codex couldn't finish.");
+    assert_eq!(recent[0]["answer"], Value::Null);
+    assert_eq!(recent[1]["answer"], "Answer 5.");
+    assert_eq!(b["ownQuestions"]["mode"], "watch");
+    assert!(
+        instructions(&s.settings.buddy).contains("buddy.ownQuestions is whether you ask yourself")
+    );
+}

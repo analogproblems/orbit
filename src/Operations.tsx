@@ -21,6 +21,7 @@ import {
   alertNeedsYou,
   buddyAnswerers,
   buddyOf,
+  proposalLabel,
   callScore,
   callsMode,
   callsReady,
@@ -73,6 +74,7 @@ import {
   healthLabels,
   healthNeedsYou,
 } from "./types";
+import { SafeMarkdown } from "./SafeMarkdown";
 
 /** How many closed problems the page lists, and how many writes. */
 const RECENT = 10;
@@ -2701,6 +2703,72 @@ function OrbitHealth({ go }: { go: AttentionHandlers }) {
   );
 }
 
+/** How many of Bit's own questions Operations lists. */
+const OWN_SHOWN = 10;
+
+/** The questions Bit asked on its own, newest first, with their answers:
+ * while it only watches, this is the only place they show. */
+function OwnQuestions() {
+  const { snapshot: s } = useOrbit();
+  const buddy = buddyOf(s.settings);
+  const asked = [...(s.ownQuestions ?? [])].reverse().slice(0, OWN_SHOWN);
+  if (!asked.length) return null;
+  return (
+    <VStack gap={3}>
+      <Heading level={3}>{`${buddy.name}’s own questions`}</Heading>
+      <Text color="secondary">
+        {`What ${buddy.name} asked on its own when CI started failing on a default branch or a release build, or the morning brief came, and what came back. While it only watches, the answers stay here.`}
+      </Text>
+      <Card padding={0}>
+        <List hasDividers aria-label={`${buddy.name}’s own questions`}>
+          {asked.map((q) => {
+            const waiting = !q.answeredAt && !q.error;
+            const offered = (q.proposals ?? []).map(proposalLabel);
+            return (
+              <ListItem
+                key={`${q.subject}-${q.askedAt}`}
+                startContent={
+                  <StatusDot
+                    variant={
+                      q.error ? "warning" : waiting ? "neutral" : "success"
+                    }
+                    label={
+                      q.error ? "No answer" : waiting ? "Asking" : "Answered"
+                    }
+                  />
+                }
+                label={<Text weight="medium">{q.question}</Text>}
+                description={
+                  <VStack gap={1}>
+                    {q.error ? (
+                      <Text>{`No answer: ${q.error}`}</Text>
+                    ) : waiting ? (
+                      <Text color="secondary">Waiting for the answer.</Text>
+                    ) : (
+                      <SafeMarkdown>{q.answer ?? ""}</SafeMarkdown>
+                    )}
+                    {offered.length > 0 && (
+                      <Text color="secondary" type="supporting">
+                        {`Offered: ${offered.join(", ")}`}
+                      </Text>
+                    )}
+                    <Text color="secondary" type="supporting">
+                      {q.mode === "on"
+                        ? `In ${buddy.name}’s notes · `
+                        : "Watching · "}
+                      <Timestamp value={q.askedAt} format="relative_short" />
+                    </Text>
+                  </VStack>
+                }
+              />
+            );
+          })}
+        </List>
+      </Card>
+    </VStack>
+  );
+}
+
 /** CI on every connected repository, and what is failing. */
 export function Operations(go: AttentionHandlers) {
   const { snapshot: s, updateSettings } = useOrbit();
@@ -2720,6 +2788,7 @@ export function Operations(go: AttentionHandlers) {
         </Text>
       </VStack>
       <OrbitHealth go={go} />
+      <OwnQuestions />
       {!watching ? (
         <>
           <EmptyState

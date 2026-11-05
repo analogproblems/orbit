@@ -329,6 +329,9 @@ pub struct Buddy {
     pub second_look: String,
     /// One of `LOOKERS`: who takes the second look.
     pub second_look_by: String,
+    /// One of `CALL_MODES`, for the questions Bit asks its answerer on its
+    /// own, when a problem opens or the brief comes (`crate::own`).
+    pub own_questions: String,
 }
 impl Default for Buddy {
     fn default() -> Self {
@@ -355,6 +358,7 @@ impl Default for Buddy {
             fault_call: "watch".into(),
             second_look: "watch".into(),
             second_look_by: "quick_model".into(),
+            own_questions: "off".into(),
         }
     }
 }
@@ -434,6 +438,12 @@ impl Buddy {
             return Err(format!(
                 "'{}' can't take the second look.",
                 self.second_look_by
+            ));
+        }
+        if !CALL_MODES.contains(&self.own_questions.as_str()) {
+            return Err(format!(
+                "'{}' isn't off, watch or on, for Bit's own questions.",
+                self.own_questions
             ));
         }
         Ok(())
@@ -535,6 +545,9 @@ impl Buddy {
         if !LOOKERS.contains(&self.second_look_by.as_str()) {
             self.second_look_by = default.second_look_by;
         }
+        if !CALL_MODES.contains(&self.own_questions.as_str()) {
+            self.own_questions = default.own_questions;
+        }
     }
 }
 /// Only supplied fields change.
@@ -563,6 +576,7 @@ pub struct BuddyPatch {
     pub fault_call: Option<String>,
     pub second_look: Option<String>,
     pub second_look_by: Option<String>,
+    pub own_questions: Option<String>,
 }
 impl BuddyPatch {
     pub fn apply(self, buddy: &mut Buddy) {
@@ -619,6 +633,9 @@ impl BuddyPatch {
         }
         if let Some(v) = self.second_look_by {
             buddy.second_look_by = v.trim().to_string();
+        }
+        if let Some(v) = self.own_questions {
+            buddy.own_questions = v.trim().to_string();
         }
         for (api, v) in [
             (Api::OpenAi, self.openai_model),
@@ -725,6 +742,13 @@ pub struct Note {
     /// A question you typed that Bit is still answering.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pending: bool,
+    /// For an answer, whether Bit asked the question itself
+    /// (`crate::own`), not you.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub own: bool,
+    /// Kept out of Bit's feed: Bit's own question while it only watches.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub quiet: bool,
 }
 impl Note {
     pub(crate) fn new(kind: NoteKind, text: String) -> Self {
@@ -743,6 +767,8 @@ impl Note {
             memory: vec![],
             looked: vec![],
             pending: false,
+            own: false,
+            quiet: false,
         }
     }
     /// About a Needs you item: its PR, review and repository.
@@ -1775,6 +1801,22 @@ pub fn asked(s: &mut Snapshot, question: &str) -> u64 {
         vec![Note {
             question: Some(question.into()),
             pending: true,
+            ..Note::new(NoteKind::Answer, String::new())
+        }],
+    );
+    id
+}
+/// Notes a question Bit asks itself (`crate::own`), out of the feed while
+/// it only watches, and returns its id.
+pub fn asked_itself(s: &mut Snapshot, question: &str, quiet: bool) -> u64 {
+    let id = s.buddy_feed.next_id;
+    append(
+        &mut s.buddy_feed,
+        vec![Note {
+            question: Some(question.into()),
+            pending: true,
+            own: true,
+            quiet,
             ..Note::new(NoteKind::Answer, String::new())
         }],
     );

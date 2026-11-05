@@ -1011,6 +1011,46 @@ describe("Bit", () => {
     ).toHaveLength(0);
   });
 
+  it("shows Bit's own answers as its own, and keeps watched ones out of its notes", async () => {
+    const at = new Date().toISOString();
+    const own = {
+      at,
+      kind: "answer" as const,
+      prId: null,
+      reviewId: null,
+      repo: null,
+      own: true,
+    };
+    snapshot.buddyFeed!.notes.push(
+      {
+        ...own,
+        id: 300,
+        question:
+          "CI started failing on the default branch of acme/orbit. What's the most useful thing to do about it now?",
+        text: "Rerun the end-to-end job.",
+      },
+      {
+        ...own,
+        id: 301,
+        question:
+          "What's the one thing in this morning's brief most worth doing first?",
+        text: "",
+        pending: true,
+        quiet: true,
+      },
+    );
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Bit" }));
+    const chat = within(screen.getByRole("log", { name: "Bit's notes" }));
+    expect(
+      chat.getByText(
+        "I asked myself: CI started failing on the default branch of acme/orbit. What's the most useful thing to do about it now?",
+      ),
+    ).toBeTruthy();
+    expect(chat.getByText("Rerun the end-to-end job.")).toBeTruthy();
+    expect(chat.queryByText(/morning brief most worth/)).toBeNull();
+  });
+
   it("answers a typed question and runs its buttons only when tapped", async () => {
     invoke.mockImplementation(async (cmd, args) => {
       const a = args as Record<string, unknown>;

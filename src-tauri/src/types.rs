@@ -1431,6 +1431,9 @@ pub struct Snapshot {
     /// Quick calls a model on Ollama made, and how each turned out (see
     /// `crate::calls`).
     pub calls: Vec<crate::calls::Call>,
+    /// Questions Bit asked its answerer on its own, and their answers (see
+    /// `crate::own`).
+    pub own_questions: Vec<crate::own::OwnQuestion>,
     /// Second looks a model took at Bit's new posts where Orbit's sign-in
     /// isn't an admin, and what happened to each post (see `crate::looks`).
     pub looks: Vec<crate::looks::Look>,

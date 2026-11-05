@@ -328,6 +328,49 @@ describe("operations page", () => {
     expect(go.onSettings).toHaveBeenCalled();
   });
 
+  it("lists Bit's own questions, newest first, with what came back", () => {
+    const s = freshDemo();
+    s.ownQuestions = [
+      {
+        subject: "brief:2026-11-04",
+        question:
+          "What's the one thing in this morning's brief most worth doing first?",
+        mode: "on",
+        askedAt: "2026-11-04T09:00:00.000Z",
+        note: 3,
+        error: "Codex couldn't finish.",
+      },
+      {
+        subject: "problem:p1@2026-11-05T09:00:00.000Z",
+        problemId: "p1",
+        repo: "acme/orbit",
+        question:
+          "CI started failing on the default branch of acme/orbit. What's the most useful thing to do about it now?",
+        mode: "watch",
+        askedAt: "2026-11-05T09:00:00.000Z",
+        note: 4,
+        answeredAt: "2026-11-05T09:01:00.000Z",
+        answer: "Rerun the end-to-end job.",
+        proposals: [{ id: 0, action: "review_again", prId: "acme/orbit#141" }],
+      },
+    ];
+    show(s);
+    const list = within(
+      screen.getByRole("list", { name: "Bit’s own questions" }),
+    );
+    const items = list.getAllByRole("listitem");
+    expect(items).toHaveLength(2);
+    expect(items[0].textContent).toContain("CI started failing");
+    expect(items[0].textContent).toContain("Rerun the end-to-end job.");
+    expect(items[0].textContent).toContain("Offered: Review again: orbit#141");
+    expect(items[0].textContent).toContain("Watching");
+    expect(within(items[0]).getByLabelText("Answered")).toBeTruthy();
+    // Its buttons wait in Bit's notes, never here.
+    expect(within(items[0]).queryByRole("button")).toBeNull();
+    expect(items[1].textContent).toContain("No answer: Codex couldn't finish.");
+    expect(items[1].textContent).toContain("In Bit’s notes");
+  });
+
   it("shows nothing about Orbit itself while all is well", () => {
     const s = freshDemo();
     s.health = [];
