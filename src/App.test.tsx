@@ -1681,6 +1681,32 @@ describe("Bit", () => {
     });
   });
 
+  it("chooses whether Bit asks on its own in Settings", async () => {
+    snapshot.settings.buddy = {
+      ...buddyOf(snapshot.settings),
+      ownQuestions: "off",
+    };
+    await mount();
+    await user().click(screen.getByRole("button", { name: "Settings" }));
+    await openSettingsTab("Buddy");
+    expect(
+      await screen.findByText("Bit asks nothing on its own."),
+    ).toBeTruthy();
+    await chooseOption(
+      screen.getByRole("combobox", { name: /^Ask on its own/ }),
+      "Watch",
+    );
+    expect(invoke).toHaveBeenCalledWith("update_settings", {
+      patch: { buddy: { ownQuestions: "watch" } },
+    });
+    expect(
+      await screen.findByText(
+        /The answer stays on Operations, out of Bit's notes/,
+      ),
+    ).toBeTruthy();
+    expect(buddyOf(snapshot.settings).ownQuestions).toBe("watch");
+  });
+
   it("chooses who takes the second look in Settings", async () => {
     snapshot.ollama = { ready: true };
     snapshot.ollamaModels = ["llama3.2:3b", "qwen3:8b"];
