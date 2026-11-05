@@ -258,18 +258,29 @@ fn how_far_back_orbit_looks() {
         )
     );
     assert_eq!(text(&b), None);
-    // The branch's first commit fails: the history ran out, not the limit.
-    let first = found('1', vec![node('1', None, Some("FAILURE"), none())]);
-    assert!(first.commits.is_empty());
-    assert_eq!(
-        first.error.as_deref(),
-        Some(
-            format!(
-                "The branch has failed since its first commit: Orbit found no commit before {} that passed.",
-                &sha('1')[..7]
+    // The history ran out at the branch's first commit, not at the limit.
+    // Whether it failed, or had no checks, Orbit only knows none passed.
+    let ran_out = |start: char, nodes: Vec<Value>| {
+        let b = found(start, nodes);
+        assert!(b.done && b.commits.is_empty() && b.pull.is_none());
+        assert_eq!(
+            b.error.as_deref(),
+            Some(
+                format!(
+                    "Orbit found no commit that passed before {}: the branch's history ran out at its first commit.",
+                    &sha(start)[..7]
+                )
+                .as_str()
             )
-            .as_str()
-        )
+        );
+    };
+    ran_out('1', vec![node('1', None, Some("FAILURE"), none())]);
+    ran_out(
+        '2',
+        vec![
+            node('2', Some('1'), Some("FAILURE"), none()),
+            node('1', None, None, none()),
+        ],
     );
     // GitHub has it passing now, such as after a rerun.
     let passing = found('1', vec![node('1', Some('0'), Some("SUCCESS"), none())]);

@@ -146,9 +146,11 @@ pub fn walk(start: &str, history: &HashMap<String, Seen>) -> Walked {
             }
         }
     }
+    // Reaching the first commit doesn't prove every commit failed: one may
+    // have had no checks, or checks still running. Only that none passed.
     let error = if began {
         format!(
-            "The branch has failed since its first commit: Orbit found no commit before {} that passed.",
+            "Orbit found no commit that passed before {}: the branch's history ran out at its first commit.",
             ci::short(start)
         )
     } else {
