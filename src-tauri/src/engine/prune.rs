@@ -16,8 +16,9 @@ pub(super) const KEEP_CHAT_DAYS: i64 = 30;
 /// after `problems::KEEP_CLOSED`, settled outcome checks after
 /// `outcomes::KEEP_DAYS` (misses after `outcomes::KEEP_MISSED_DAYS`), cases
 /// and lessons after `cases::KEEP_DAYS`, quick calls after
-/// `calls::KEEP_DAYS`, and
-/// what Orbit read about other Orbits on a pull request once it closes. Says whether anything changed.
+/// `calls::KEEP_DAYS`, what Orbit read about other Orbits on a pull
+/// request once it closes, and a closed pull request itself once no review,
+/// CI thread or note of Bit's names it. Says whether anything changed.
 pub(super) fn prune(s: &mut Snapshot, now: chrono::DateTime<chrono::Utc>) -> bool {
     let open: HashSet<&str> = s.prs.iter().map(|p| p.id.as_str()).collect();
     let pinned: HashSet<String> = s
@@ -77,6 +78,21 @@ pub(super) fn prune(s: &mut Snapshot, now: chrono::DateTime<chrono::Utc>) -> boo
     changed |= crate::cases::prune(s, now);
     changed |= crate::calls::prune(&mut s.calls, now);
     changed |= crate::looks::prune(&mut s.looks, &s.ops, now);
+    // A closed pull request stays while a kept review, a CI thread or a
+    // note of Bit's names it, so Loops, Operations and Bit can still say
+    // which it was. The rest go, descriptions and all.
+    let open: HashSet<&str> = s.prs.iter().map(|p| p.id.as_str()).collect();
+    let named: HashSet<&str> = s
+        .reviews
+        .iter()
+        .map(|r| r.pr_id.as_str())
+        .chain(s.ops.iter().filter_map(|t| t.pr_id.as_deref()))
+        .chain(s.buddy_feed.notes.iter().filter_map(|n| n.pr_id.as_deref()))
+        .collect();
+    let before = s.history_prs.len();
+    s.history_prs
+        .retain(|p| open.contains(p.id.as_str()) || named.contains(p.id.as_str()));
+    changed |= s.history_prs.len() != before;
     changed
 }
 

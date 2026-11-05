@@ -727,7 +727,7 @@ pub struct Note {
     pub pending: bool,
 }
 impl Note {
-    fn new(kind: NoteKind, text: String) -> Self {
+    pub(crate) fn new(kind: NoteKind, text: String) -> Self {
         Self {
             id: 0,
             at: now(),

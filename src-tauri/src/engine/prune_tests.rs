@@ -97,3 +97,39 @@ fn what_orbit_read_about_other_orbits_goes_once_a_pull_request_closes() {
     assert_eq!(s.posting, [posting(&open.id)]);
     assert!(!prune(&mut s, now));
 }
+
+#[test]
+fn a_closed_pull_request_nothing_names_goes() {
+    let open = crate::types::tests::pr();
+    let closed = |n: u64| PullRequest {
+        id: format!("a/b#{n}"),
+        number: n,
+        ..open.clone()
+    };
+    let note = |pr_id: &str| crate::buddy::Note {
+        pr_id: Some(pr_id.into()),
+        ..crate::buddy::Note::new(crate::buddy::NoteKind::Ci, "Hmm.".into())
+    };
+    let mut s = Snapshot {
+        prs: vec![open.clone()],
+        // Reviewed once, told about on GitHub, noted by Bit, and nothing.
+        history_prs: vec![closed(2), closed(3), closed(4), closed(5)],
+        reviews: vec![review(&closed(2), 1, "ready", "2026-10-01T10:00:00.000Z")],
+        ops: vec![crate::ops::Thread {
+            key: "ci:a/b#3".into(),
+            repo: "a/b".into(),
+            pr_id: Some("a/b#3".into()),
+            problem_id: "p3".into(),
+            // Still to be found on GitHub, so the thread stays.
+            unsure: true,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    s.buddy_feed.notes.push(note("a/b#4"));
+    let now = at("2026-10-02T10:00:00Z");
+    assert!(prune(&mut s, now));
+    let kept: Vec<&str> = s.history_prs.iter().map(|p| p.id.as_str()).collect();
+    assert_eq!(kept, ["a/b#2", "a/b#3", "a/b#4"]);
+    assert!(!prune(&mut s, now));
+}
