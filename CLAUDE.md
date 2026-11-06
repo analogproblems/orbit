@@ -65,4 +65,4 @@ A command is wired in four places, and missing one fails in only one mode:
 
 ## Releases
 
-Bump the version in `package.json`, `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml` (plus their lockfiles, `package-lock.json` and `src-tauri/Cargo.lock`), merge, then tag `master` as `vX.Y.Z` and push the tag. `.github/workflows/release.yml` checks the versions match and builds a draft release for Linux, macOS and Windows. Details are in [CONTRIBUTING.md](CONTRIBUTING.md#making-a-release).
+Bump the version in `package.json`, `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml` (plus their lockfiles, `package-lock.json` and `src-tauri/Cargo.lock`), add the release's notes to `CHANGELOG.md` under `## X.Y.Z`, merge, then tag `master` as `vX.Y.Z` and push the tag. `.github/workflows/release.yml` checks the versions match and builds a draft release for Linux, macOS and Windows that starts with those notes. Details are in [CONTRIBUTING.md](CONTRIBUTING.md#making-a-release).

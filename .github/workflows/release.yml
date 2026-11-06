@@ -1,8 +1,9 @@
 # Builds Orbit for Linux, macOS and Windows when a version tag such as v0.1.0
-# is pushed, and attaches the installers to a draft GitHub Release. Check the
-# draft, then publish it by hand. A pull request that changes this file or the
-# app's bundle settings, or a run started by hand from the Actions tab, builds
-# without a release and keeps the installers on the run instead.
+# is pushed, and attaches the installers to a draft GitHub Release that starts
+# with that version's notes from CHANGELOG.md. Check the draft, then publish it
+# by hand. A pull request that changes this file or the app's bundle settings,
+# or a run started by hand from the Actions tab, builds without a release and
+# keeps the installers on the run instead.
 name: Release
 
 on:
@@ -22,6 +23,8 @@ jobs:
   check-version:
     name: Check the tag matches the app version
     runs-on: ubuntu-latest
+    outputs:
+      notes: ${{ steps.notes.outputs.body }}
     steps:
       - uses: actions/checkout@v5
       - name: Compare tag with package.json, tauri.conf.json and Cargo.toml
@@ -36,6 +39,38 @@ jobs:
             echo "::error::Tag $GITHUB_REF_NAME doesn't match the version in package.json, tauri.conf.json and Cargo.toml. Bump all three, then tag again."
             exit 1
           fi
+      # The draft release starts with the notes under this version's heading in
+      # CHANGELOG.md, such as "## 0.3.0". Other runs read the app's version, so
+      # a pull request that bumps it shows the notes the release will get.
+      - name: Read this version's notes from CHANGELOG.md
+        id: notes
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version=$(node -p "require('./package.json').version")
+          fi
+          notes=$(awk -v v="$version" '
+            /^## / { if (found) exit; found = ($2 == v); next }
+            found { lines[++n] = $0; if ($0 ~ /[^[:space:]]/) { if (!first) first = n; last = n } }
+            END { for (i = first; first && i <= last; i++) print lines[i] }
+          ' CHANGELOG.md)
+          if [ -z "$notes" ]; then
+            echo "::warning::CHANGELOG.md has no notes under \"## $version\", so the release only says how to install."
+          else
+            echo "Notes for $version:"
+            echo "$notes"
+          fi
+          install="Pick the file for your system below. The macOS and Windows builds aren't signed yet, so your system will warn the first time you open them."
+          delimiter="NOTES_$(openssl rand -hex 16)"
+          {
+            echo "body<<$delimiter"
+            if [ -n "$notes" ]; then
+              printf '%s\n\n### Install\n\n' "$notes"
+            fi
+            echo "$install"
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
 
   build:
     name: Build (${{ matrix.name }})
@@ -89,7 +124,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: Orbit ${{ github.ref_name }}
-          releaseBody: Download the file for your system below. The macOS and Windows builds aren't signed yet, so your system will warn the first time you open them.
+          releaseBody: ${{ needs.check-version.outputs.notes }}
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}

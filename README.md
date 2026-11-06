@@ -11,6 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/analogproblems/orbit/releases/latest">Download</a> ·
+  <a href="CHANGELOG.md">What's new</a> ·
   <a href="docs/user-guide.md">User guide</a> ·
   <a href="docs/architecture.md">How it works</a>
 </p>
@@ -39,11 +40,15 @@ Turn on **Autopilot** and Orbit reviews every new push by itself. Each pull requ
 
 **Live** shows what needs you, what's running, and how busy each repository has been over the last day or two weeks. A usage meter in the sidebar shows how much of your Codex allowance is left.
 
+### CI, security and releases, watched
+
+**Operations** keeps an eye on the rest of each repository. It says why a check failed and which commit broke the default branch, reruns a job that failed by bad luck, and tells the project's agent what to fix, then checks that the fix held. It lists security alerts, risky workflow settings and Dependabot's updates, says whether each pull request is clear to merge, and can push a release tag or publish a draft release with your tap.
+
 ### Every finding, in one place
 
 ![The Findings page: a table of findings by priority and status, then a list of findings across repositories](docs/screenshots/findings.png)
 
-**Findings** gathers every finding from every review and security scan across your repositories. Search and filter them by repository, priority, kind and status, and open one to see its history round by round. **Security scans** runs OpenAI's Codex Security plugin over a whole repository, and its findings land here too.
+**Findings** gathers every finding from every review and security scan across your repositories. Search and filter them by repository, priority, kind and status, and open one to see its history round by round. **Security scans** checks a whole repository with OpenAI's Codex Security plugin, Claude or Antigravity, and its findings land here too.
 
 ### The story behind each pull request
 
@@ -55,13 +60,15 @@ Turn on **Autopilot** and Orbit reviews every new push by itself. Each pull requ
 
 <img src="docs/screenshots/bit.png" alt="Bit's page: Bit looking worried, notes about rounds and a stalled loop with Continue loop and Sync now buttons, and quick questions to ask" />
 
-Bit is Orbit's buddy, a little orb at the bottom of the sidebar. It notes each round and each clean loop, its face shows how things are going, and it offers a button when one of Orbit's own controls can fix a problem. Ask it what needs you or what's running, or type any question. **Help me set up** walks you through connecting your first repository, one tap per step. Bit can answer with Codex, Claude, Antigravity, Ollama or an API key, and you can rename it, pick one of 16 looks and a colour, and give it a hat.
+Bit is Orbit's buddy, a little orb at the bottom of the sidebar. It notes each round and each clean loop, sends a morning brief once a day, its face shows how things are going, and it offers a button when one of Orbit's own controls can fix a problem. Ask it what needs you or what's running, or type any question. **Help me set up** walks you through connecting your first repository, one tap per step. Bit can answer with Codex, Claude, Antigravity, Ollama or an API key, and you can rename it, pick one of 16 looks and a colour, and give it a hat.
 
 ### Take it with you
 
 <img src="docs/screenshots/phone.png" width="300" align="right" alt="Orbit's review inbox on a phone-sized screen" />
 
-Open the same workspace from your phone or laptop over [Tailscale](https://tailscale.com) while Orbit runs on your computer. Approvals, loops, publishing and chat all work there, and the layout fits a phone.
+Open the same workspace from your phone or laptop over [Tailscale](https://tailscale.com) while Orbit runs on your computer. Approvals, loops, publishing and chat all work there, the layout fits a phone, and notifications reach it even with the page closed.
+
+To keep reviewing while your laptop is closed, [run `orbit-server`](docs/user-guide.md#run-orbit-without-a-window) on a computer that stays on. The desktop app can show that Orbit instead of running its own, and move what you have there.
 
 ### Built with care for your machine
 
