@@ -48,16 +48,16 @@ UI code uses the [Astryx](https://www.npmjs.com/package/@astryxdesign/core) desi
 
 ## Making a release
 
-Pushing a version tag builds every installer. Bump the version in `package.json`, `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml` (and the lockfiles, `package-lock.json` and `src-tauri/Cargo.lock`), merge that, then tag the latest `master` and push the tag. `git tag` marks the commit you have checked out, so pull first:
+Pushing a version tag builds every installer. Bump the version in `package.json`, `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml` (and the lockfiles, `package-lock.json` and `src-tauri/Cargo.lock`), and add what changed to [CHANGELOG.md](CHANGELOG.md) under a heading with the version, such as `## 0.3.0`. Merge that, then tag the latest `master` and push the tag. `git tag` marks the commit you have checked out, so pull first:
 
 ```sh
 git checkout master
 git pull
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.3.0
+git push origin v0.3.0
 ```
 
-The [Release workflow](.github/workflows/release.yml) checks the tag matches all three versions, builds on Linux, macOS and Windows, and attaches the files to a draft release. Check the draft on the Releases page, then publish it. If nothing runs, the tag is probably on an older commit that predates the workflow: delete it (`git tag -d v0.2.0` and `git push origin :refs/tags/v0.2.0`), pull, and tag again.
+The [Release workflow](.github/workflows/release.yml) checks the tag matches all three versions, builds on Linux, macOS and Windows, and attaches the files to a draft release that starts with the version's notes from `CHANGELOG.md`. A pull request that bumps the version shows those notes in the workflow's log, and warns when there are none. Check the draft on the Releases page, then publish it. If nothing runs, the tag is probably on an older commit that predates the workflow: delete it (`git tag -d v0.3.0` and `git push origin :refs/tags/v0.3.0`), pull, and tag again.
 
 ## License
 
